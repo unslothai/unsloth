@@ -945,8 +945,14 @@ def test_notes_surface_is_borderless_and_lifts_in_dark_mode():
     src = PANEL.read_text(encoding = "utf-8")
     layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
     assert "border border-border" not in src, "the notes box is a fill, not a bordered box"
-    # Lighter than the card behind it, rather than a darker inset.
-    assert "dark:bg-white/[0.06]" in layout
+    # Lighter than the card behind it, rather than a darker inset. #11459 respelled the
+    # shorthand as an rgb() whose alpha scales with --contrast-wash-gain, which is the same
+    # 0.06 white at the default gain of 1, so read the white and the amount rather than one
+    # spelling. A darker inset, or a different amount, still fails.
+    assert re.search(
+        r"dark:bg-(?:white/\[0\.06\]|\[rgb\(255_255_255_/_calc\(0\.06\*var\(--contrast-wash-gain)",
+        layout,
+    ), "the dark notes surface is no longer a 0.06 white lift"
     # Streamdown's mt-6 clips the first heading against the scroller edge.
     assert "[&>*>*:first-child]:mt-0" in src
     # Shared utility: thumb hidden until the notes are hovered.

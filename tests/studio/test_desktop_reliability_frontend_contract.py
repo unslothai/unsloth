@@ -82,7 +82,7 @@ def _scale_constants() -> dict[str, str]:
     and provider.tsx uses the same constant as the CSS fallback, which is what keeps a
     single 34 in the codebase, so read it from there rather than repeating it here.
     """
-    source = INTERFACE_SCALE_RUNTIME.read_text(encoding = "utf-8")
+    source = _ui_source(INTERFACE_SCALE_RUNTIME)
     numbers = dict(re.findall(r"export const (\w+_PX) = (\d+);", source))
     return {
         name: re.sub(r"\$\{(\w+)\}", lambda m: numbers.get(m.group(1), m.group(0)), body)
@@ -148,10 +148,10 @@ def _px(value: str | None) -> int | None:
 
 
 def test_desktop_update_offer_remains_actionable_from_settings():
-    provider = APP_PROVIDER.read_text(encoding = "utf-8")
-    context = TAURI_UPDATE_CONTEXT.read_text(encoding = "utf-8")
-    hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
-    settings = DESKTOP_UPDATE_CONTROL.read_text(encoding = "utf-8")
+    provider = _ui_source(APP_PROVIDER)
+    context = _ui_source(TAURI_UPDATE_CONTEXT)
+    hook = _ui_source(TAURI_UPDATE_HOOK)
+    settings = _ui_source(DESKTOP_UPDATE_CONTROL)
 
     assert "<TauriUpdateContext.Provider value={update}>" in provider
     context_start = provider.index("<TauriUpdateContext.Provider value={update}>")
@@ -172,7 +172,7 @@ def test_desktop_update_offer_remains_actionable_from_settings():
 
 
 def test_desktop_update_search_has_a_stable_general_tab_destination():
-    general = GENERAL_SETTINGS.read_text(encoding = "utf-8")
+    general = _ui_source(GENERAL_SETTINGS)
 
     assert 'data-settings-label={t("settings.about.updates")}' in general
     assert "<DesktopUpdateControl />" in general
@@ -185,8 +185,8 @@ def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():
     command, which returns Ok(None) off Linux, so Settings would claim the app
     was up to date while an update was waiting.
     """
-    hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
-    policy = DESKTOP_UPDATE_POLICY.read_text(encoding = "utf-8")
+    hook = _ui_source(TAURI_UPDATE_HOOK)
+    policy = _ui_source(DESKTOP_UPDATE_POLICY)
 
     assert "resolved: boolean" in hook
     assert "resolved: false" in hook
@@ -206,7 +206,7 @@ def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():
 
 
 def test_settings_update_button_is_inert_while_an_install_runs():
-    settings = DESKTOP_UPDATE_CONTROL.read_text(encoding = "utf-8")
+    settings = _ui_source(DESKTOP_UPDATE_CONTROL)
 
     assert 'update.status === "updating-backend"' in settings
     assert 'update.status === "downloading"' in settings
@@ -216,9 +216,9 @@ def test_settings_update_button_is_inert_while_an_install_runs():
 
 
 def test_desktop_update_check_failures_are_retryable():
-    hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
-    settings = DESKTOP_UPDATE_CONTROL.read_text(encoding = "utf-8")
-    policy = DESKTOP_UPDATE_POLICY.read_text(encoding = "utf-8")
+    hook = _ui_source(TAURI_UPDATE_HOOK)
+    settings = _ui_source(DESKTOP_UPDATE_CONTROL)
+    policy = _ui_source(DESKTOP_UPDATE_POLICY)
 
     assert "setCheckError(String(e));" in hook
     assert "update.checkError !== null" in settings
@@ -233,12 +233,12 @@ def test_desktop_update_check_failures_are_retryable():
 
 
 def test_file_actions_route_through_native_commands_only_in_tauri():
-    helper = NATIVE_FILES.read_text(encoding = "utf-8")
-    history = CHAT_EXPORT.read_text(encoding = "utf-8")
-    data_tab = DATA_TAB.read_text(encoding = "utf-8")
-    prompt_storage = PROMPT_STORAGE.read_text(encoding = "utf-8")
+    helper = _ui_source(NATIVE_FILES)
+    history = _ui_source(CHAT_EXPORT)
+    data_tab = _ui_source(DATA_TAB)
+    prompt_storage = _ui_source(PROMPT_STORAGE)
 
-    projects = (FRONTEND / "features/chat/projects-page.tsx").read_text(encoding = "utf-8")
+    projects = _ui_source(FRONTEND / "features/chat/projects-page.tsx")
 
     assert 'invoke<string | null>("save_native_file", bytes, {' in helper
     assert '"x-unsloth-default-name"' in helper
@@ -263,7 +263,7 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     # Open WebUI exports are .json arrays, so the picker takes that too.
     assert 'accept=".json,.jsonl,.ndjson,.csv"' in data_tab
 
-    native_dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
+    native_dialogs = _ui_source(NATIVE_DIALOGS)
     assert 'CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv"]' in native_dialogs
     assert "InvokeBody::Raw" in native_dialogs
 
@@ -273,8 +273,8 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
 
 
 def test_media_galleries_save_natively_with_feedback():
-    images_page = IMAGES_PAGE.read_text(encoding = "utf-8")
-    video_page = VIDEO_PAGE.read_text(encoding = "utf-8")
+    images_page = _ui_source(IMAGES_PAGE)
+    video_page = _ui_source(VIDEO_PAGE)
     reencode = images_page.split("async function reencodeImage(", 1)[1].split(
         "\n}\n\nasync function downloadImage", 1
     )[0]
@@ -302,14 +302,14 @@ def test_media_galleries_save_natively_with_feedback():
 
 
 def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
-    app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
-    prompt_storage = PROMPT_STORAGE.read_text(encoding = "utf-8")
-    thread = THREAD.read_text(encoding = "utf-8")
-    thread_sidebar = THREAD_SIDEBAR.read_text(encoding = "utf-8")
-    shared_composer = SHARED_COMPOSER.read_text(encoding = "utf-8")
+    app_sidebar = _ui_source(APP_SIDEBAR)
+    prompt_storage = _ui_source(PROMPT_STORAGE)
+    thread = _ui_source(THREAD)
+    thread_sidebar = _ui_source(THREAD_SIDEBAR)
+    shared_composer = _ui_source(SHARED_COMPOSER)
 
-    data_tab = DATA_TAB.read_text(encoding = "utf-8")
-    projects = (FRONTEND / "features/chat/projects-page.tsx").read_text(encoding = "utf-8")
+    data_tab = _ui_source(DATA_TAB)
+    projects = _ui_source(FRONTEND / "features/chat/projects-page.tsx")
     assert "async function downloadBlob(" in prompt_storage
     download_blob = prompt_storage.split("async function downloadBlob(", 1)[1].split("\n}\n", 1)[0]
     assert "return downloadFile(" in download_blob
@@ -336,11 +336,11 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
 
 
 def test_generated_download_buttons_use_the_native_save_boundary():
-    helper = NATIVE_FILES.read_text(encoding = "utf-8")
-    training = TRAINING_CONFIG_ACTIONS.read_text(encoding = "utf-8")
-    markdown = MARKDOWN_TEXT.read_text(encoding = "utf-8")
-    image = IMAGE.read_text(encoding = "utf-8")
-    audio = AUDIO_PLAYER.read_text(encoding = "utf-8")
+    helper = _ui_source(NATIVE_FILES)
+    training = _ui_source(TRAINING_CONFIG_ACTIONS)
+    markdown = _ui_source(MARKDOWN_TEXT)
+    image = _ui_source(IMAGE)
+    audio = _ui_source(AUDIO_PLAYER)
 
     assert "downloadFile(bytes, filename" in helper
     assert "browserUrlDownload(url, filename)" in helper
@@ -363,9 +363,9 @@ def test_generated_download_buttons_use_the_native_save_boundary():
 
 
 def test_gallery_video_links_are_absolute_and_saved_natively():
-    video_api = VIDEO_API.read_text(encoding = "utf-8")
-    video_page = VIDEO_PAGE.read_text(encoding = "utf-8")
-    rag_api = RAG_API.read_text(encoding = "utf-8")
+    video_api = _ui_source(VIDEO_API)
+    video_page = _ui_source(VIDEO_PAGE)
+    rag_api = _ui_source(RAG_API)
 
     # The backend mints this link relative so a proxy can serve it. Its consumers are
     # <video src> and the download, none of which go through authFetch, so a relative
@@ -378,7 +378,7 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     # An absolute link is cross-origin, where the download attribute stops saving, so the
     # MP4 goes native. Streaming, not downloadUrl: a clip is capped at 2048x2048 x 1024
     # frames, too big to buffer for IPC, and the chooser must not wait on the body.
-    helper = NATIVE_FILES.read_text(encoding = "utf-8")
+    helper = _ui_source(NATIVE_FILES)
     assert "downloadUrlStreaming(src, exportFilename(video, format))" in video_page
     assert '"save_native_file_from_url"' in helper
     assert "isDownloadCancelled(err)" in video_page
@@ -394,7 +394,7 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
 
     # The save dialog now offers these to video, not just to the audio player, and the
     # streaming command is registered and pinned to the local backend.
-    dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
+    dialogs = _ui_source(NATIVE_DIALOGS)
     assert '("MPEG-4 video or audio", filter_extensions(["m4a", "mp4"]))' in dialogs
     assert '("WebM video or audio", filter_extensions(["webm"]))' in dialogs
     assert "async fn stream_url_to_path" in dialogs
@@ -420,12 +420,12 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
 
 
 def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
-    helper = CLIPBOARD_FILES.read_text(encoding = "utf-8") + CLIPBOARD_PAYLOAD.read_text(
+    helper = _ui_source(CLIPBOARD_FILES) + CLIPBOARD_PAYLOAD.read_text(
         encoding = "utf-8"
     )
-    thread = THREAD.read_text(encoding = "utf-8")
-    shared_composer = SHARED_COMPOSER.read_text(encoding = "utf-8")
-    capabilities = TAURI_CAPABILITIES.read_text(encoding = "utf-8")
+    thread = _ui_source(THREAD)
+    shared_composer = _ui_source(SHARED_COMPOSER)
+    capabilities = _ui_source(TAURI_CAPABILITIES)
 
     for contract in (
         "clipboardData.files",
@@ -460,8 +460,8 @@ def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
 
 
 def test_native_clipboard_bridge_is_bounded_and_registered():
-    native_clipboard = NATIVE_CLIPBOARD.read_text(encoding = "utf-8")
-    tauri_main = TAURI_MAIN.read_text(encoding = "utf-8")
+    native_clipboard = _ui_source(NATIVE_CLIPBOARD)
+    tauri_main = _ui_source(TAURI_MAIN)
 
     for contract in (
         "MAX_CLIPBOARD_FILES",
@@ -489,7 +489,7 @@ def test_native_clipboard_bridge_is_bounded_and_registered():
 
 
 def test_mac_dock_reopens_hidden_main_window():
-    source = TAURI_MAIN.read_text(encoding = "utf-8")
+    source = _ui_source(TAURI_MAIN)
     show_helper = source.split("fn show_main_window", 1)[1].split("\n}\n", 1)[0]
     run_handler = source.split(".run(|app, event|", 1)[1]
 
@@ -504,7 +504,7 @@ def test_mac_dock_reopens_hidden_main_window():
 def test_windows_browser_guard_runs_only_in_release_builds():
     # WebView2 is not reachable from Python, so pin the release-only call that
     # keeps refresh controls available during development.
-    source = TAURI_MAIN.read_text(encoding = "utf-8")
+    source = _ui_source(TAURI_MAIN)
 
     assert "fn setup_windows_browser_guards" in source
     before_call = source.split("setup_windows_browser_guards(app)?;", 1)[0]
@@ -512,8 +512,8 @@ def test_windows_browser_guard_runs_only_in_release_builds():
 
 
 def test_desktop_manages_the_remote_password_through_the_account_dialog():
-    section = REMOTE_ACCESS_SECTION.read_text(encoding = "utf-8")
-    dialog = PASSWORD_DIALOG.read_text(encoding = "utf-8")
+    section = _ui_source(REMOTE_ACCESS_SECTION)
+    dialog = _ui_source(PASSWORD_DIALOG)
 
     row = section.split("function RemotePasswordRow", 1)[1].split(
         "export function RemoteAccessSection", 1
@@ -521,7 +521,7 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
     assert "if (!(isTauri && status)) {" in row
     assert "initial={status.passwordPending}" in row
     assert "<RemotePasswordRow status={status} onDone={refreshStatus} />" in section
-    assert "{isTauri && isOwner ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
+    assert "{isTauri && isOwner ? null : (" in _ui_source(GENERAL_TAB)
     # A password change rotates credentials outside the polling requests.
     refresh = section.split("const refreshStatus = useCallback(", 1)[1].split("}, []);", 1)[0]
     assert "mutationEpoch.current += 1;" in refresh
@@ -543,7 +543,7 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
 
 
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
-    source = APP_PROVIDER.read_text(encoding = "utf-8")
+    source = _ui_source(APP_PROVIDER)
 
     # The gate has been renamed once already (showApp -> canMountApp) and gained a second
     # clause, so pin the CONDITION that makes the app wait for auth, not the name in front
@@ -562,7 +562,7 @@ def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
 
 
 def test_full_app_layout_uses_its_own_initialized_marker():
-    source = APP_PROVIDER.read_text(encoding = "utf-8")
+    source = _ui_source(APP_PROVIDER)
 
     assert 'invoke<boolean>("has_initialized_app_window_layout")' in source
     setup_layout = source.split("async function showSetupWindow", 1)[1].split(
@@ -576,7 +576,7 @@ def test_full_app_layout_uses_its_own_initialized_marker():
 
 
 def test_first_app_layout_survives_a_stale_setup_window_size():
-    source = APP_PROVIDER.read_text(encoding = "utf-8")
+    source = _ui_source(APP_PROVIDER)
     bounds_helper = source.split("async function enforceWindowSizeBounds", 1)[1].split(
         "async function applyAppWindowLayout", 1
     )[0]
@@ -603,9 +603,17 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
 
 
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
-    source = TITLEBAR.read_text(encoding = "utf-8")
+    source = _ui_source(TITLEBAR)
 
-    assert 'showSidebarSurface && !pinned ? "7rem" : sidebarWidth' in source
+    # Matched across whitespace, and against the floor rather than one spelling: #11458 made
+    # the slot `max(7rem, calc(7rem * var(--ui-space-scale, 1)))` so it grows with the UI font
+    # and never drops under the three 30px buttons, and prettier then wrapped the ternary over
+    # three lines. Both are the same 7rem at the default scale. A slot that stopped being
+    # 7rem-based, or stopped keying off this branch, still fails.
+    assert re.search(
+        r'showSidebarSurface && !pinned\s*\?\s*"[^"]*7rem[^"]*"\s*:\s*sidebarWidth',
+        source,
+    ), "the unpinned sidebar surface no longer sizes the titlebar navigation slot from 7rem"
     assert "style={{ width: titlebarNavigationWidth }}" in source
     assert "left: titlebarNavigationWidth" in source
     assert "<DesktopTitlebarNavigation" in source
@@ -631,8 +639,8 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
 
 
 def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
-    titlebar = TITLEBAR.read_text(encoding = "utf-8")
-    sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
+    titlebar = _ui_source(TITLEBAR)
+    sidebar = _ui_source(APP_SIDEBAR)
     header = sidebar.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
 
     # The names, not the whole import list: #8025 added Minus/Square/X to the
@@ -650,8 +658,8 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
 
 
 def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
-    titlebar = TITLEBAR.read_text(encoding = "utf-8")
-    chat_page = CHAT_PAGE.read_text(encoding = "utf-8")
+    titlebar = _ui_source(TITLEBAR)
+    chat_page = _ui_source(CHAT_PAGE)
     navigation = titlebar.split("export function DesktopTitlebarNavigation", 1)[1].split(
         "export function WindowTitlebar", 1
     )[0]
@@ -686,7 +694,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     # titlebar sets the same var to its own much smaller inset, hence the mac-only filter.
     insets = {
         name: _px(values["--studio-collapsed-chat-controls-inset"])
-        for name, values in _chrome_style_blocks(APP_PROVIDER.read_text(encoding = "utf-8")).items()
+        for name, values in _chrome_style_blocks(_ui_source(APP_PROVIDER)).items()
         if "--studio-mac-traffic-light-inset" in values
     }
     assert insets, "no style block sets both the traffic-light and collapsed-controls insets"
@@ -698,10 +706,10 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
 
 
 def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
-    titlebar = TITLEBAR.read_text(encoding = "utf-8")
-    app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
-    primitive = SIDEBAR_PRIMITIVE.read_text(encoding = "utf-8")
-    navbar = NAVBAR.read_text(encoding = "utf-8")
+    titlebar = _ui_source(TITLEBAR)
+    app_sidebar = _ui_source(APP_SIDEBAR)
+    primitive = _ui_source(SIDEBAR_PRIMITIVE)
+    navbar = _ui_source(NAVBAR)
 
     assert "collapseToZero={isTauri}" in app_sidebar
     assert "collapseToZero = false" in primitive
@@ -727,7 +735,7 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "mt-[var(--studio-titlebar-navigation-margin-top,0px)]" in navigation
     button = _titlebar_nav_button_px(titlebar)
     assert button is not None, "navigation button size no longer readable from buttonClass"
-    blocks = _chrome_style_blocks(APP_PROVIDER.read_text(encoding = "utf-8"))
+    blocks = _chrome_style_blocks(_ui_source(APP_PROVIDER))
     nudged = {
         name: values
         for name, values in blocks.items()
@@ -765,8 +773,8 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
 
 
 def test_fixed_sheets_start_below_the_custom_titlebar():
-    provider = APP_PROVIDER.read_text(encoding = "utf-8")
-    sheet = SHEET.read_text(encoding = "utf-8")
+    provider = _ui_source(APP_PROVIDER)
+    sheet = _ui_source(SHEET)
 
     # Portalled sheets read the height off <html>, so the mirror has to stay.
     assert 'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null)' in provider
@@ -791,11 +799,11 @@ def test_fixed_sheets_start_below_the_custom_titlebar():
         RESPONSE_DETAILS_SHEET,
         DOCUMENT_PREVIEW_SHEET,
     ):
-        assert "studio-custom-titlebar-height" not in portalled.read_text(encoding = "utf-8")
+        assert "studio-custom-titlebar-height" not in _ui_source(portalled)
 
 
 def test_visible_mac_sidebar_header_is_a_drag_region():
-    source = APP_SIDEBAR.read_text(encoding = "utf-8")
+    source = _ui_source(APP_SIDEBAR)
     header = source.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
     drag_region = "data-tauri-drag-region={usesNativeMacTitlebar || undefined}"
 
@@ -804,8 +812,8 @@ def test_visible_mac_sidebar_header_is_a_drag_region():
 
 
 def test_mac_chat_header_controls_share_the_titlebar_row():
-    source = CHAT_PAGE.read_text(encoding = "utf-8")
-    provider = APP_PROVIDER.read_text(encoding = "utf-8")
+    source = _ui_source(CHAT_PAGE)
+    provider = _ui_source(APP_PROVIDER)
 
     assert "shouldUseNativeMacWindowTitlebar" not in source
     assert "[--studio-content-top-inset:var(--studio-mac-titlebar-height" not in source
@@ -831,14 +839,14 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
 
 
 def test_collapsed_mac_sidebar_hides_divider():
-    source = APP_SIDEBAR.read_text(encoding = "utf-8")
+    source = _ui_source(APP_SIDEBAR)
 
     assert "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0" in source
     assert "top-[var(--studio-mac-titlebar-height,34px)]" not in source
 
 
 def test_chat_sidebar_rows_are_compact_without_vertical_padding():
-    sidebar_source = APP_SIDEBAR.read_text(encoding = "utf-8")
+    sidebar_source = _ui_source(APP_SIDEBAR)
     block = sidebar_source.split("function renderChatSidebarItem", 1)[1]
 
     assert (
@@ -948,6 +956,49 @@ def _button_classes(source: str, tag: str, variant: str) -> str | None:
     if value.startswith('"'):
         return value.strip('"')
     return _resolve_classes(source, value[1:-1], variant)
+
+
+# #11458 made spacing follow the UI font size: every fixed length in the stylesheet and in
+# the page markup became `calc(<length> * var(--ui-space-scale, 1))`, and #11459 did the same
+# for the dark wash with `--contrast-wash-gain`. Both scales default to 1, so the rendered
+# value is unchanged; only the spelling moved. These contracts are written against the
+# lengths, so resolve the wrapper back to the length it scales. A real change to the length
+# still fails, which is the whole point of reading the value rather than the spelling.
+_SCALE_WRAPPED = re.compile(
+    r"calc\(\s*(-?[\d.]+(?:px|rem|em|%)?)\s*\*\s*var\(\s*--[\w-]+\s*,\s*1\s*\)\s*\)"
+)
+
+
+# The same move in colour. #11459 respelled the opacity shorthands as a colour function
+# whose amount scales with a gain, again defaulting to 1: `foreground/10` became a
+# `color-mix` of `--foreground` at 10% with transparent, and `white/[0.06]` an `rgb()` at
+# 0.06. Those are the shorthands, written out. Reading them back keeps a contract about the
+# colour asking about the colour.
+_MIXED_TOKEN = re.compile(
+    r"\[color-mix\(in_oklab,\s*var\(--([\w-]+)\)_([\d.]+)%\s*,\s*transparent\)\]"
+)
+_WHITE_ALPHA = re.compile(r"\[rgb\(255_255_255_/_([\d.]+)\)\]")
+
+
+def _at_default_scale(source: str) -> str:
+    """*source* with every scale-wrapped length and gain-wrapped colour read back as itself."""
+    resolved = _SCALE_WRAPPED.sub(r"\1", source)
+    resolved = _MIXED_TOKEN.sub(
+        lambda m: f"{m.group(1)}/{m.group(2)[:-2] if m.group(2).endswith('.0') else m.group(2)}",
+        resolved,
+    )
+    return _WHITE_ALPHA.sub(r"white/[\1]", resolved)
+
+
+def _ui_source(path) -> str:
+    """A checked-in source, read at the default UI scale.
+
+    Every contract in this file is written against fixed lengths. #11458 wrapped those
+    lengths in `calc(... * var(--ui-space-scale, 1))` so they follow the UI font size, which
+    renders identically at the default scale of 1. Reading through `_at_default_scale` keeps
+    each contract asking about the length it was written for instead of the spelling.
+    """
+    return _at_default_scale(path.read_text(encoding = "utf-8"))
 
 
 def _spacing_rem(live_css: str) -> float | None:
@@ -1709,8 +1760,8 @@ def _cn_arguments(body: str) -> list[str]:
 
 def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     """unslothai/unsloth#7276: Recents chat kebab must be tappable on iPad."""
-    sidebar_source = APP_SIDEBAR.read_text(encoding = "utf-8")
-    css_source = INDEX_CSS.read_text(encoding = "utf-8")
+    sidebar_source = _ui_source(APP_SIDEBAR)
+    css_source = _ui_source(INDEX_CSS)
     assert "renderChatSidebarItem" in sidebar_source
     block = sidebar_source.split("function renderChatSidebarItem", 1)[1].split("\n  function ", 1)[
         0
@@ -1843,7 +1894,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # in the builder says nothing about the rows that do not take it: moving the verified
     # pair into `showWorkSpinner ? "...pair..." : undefined` leaves every ordinary row with
     # no gutter at all while a scan over literals still finds it.
-    live_css = re.sub(r"/\*.*?\*/", " ", css_source, flags = re.S)
+    live_css = _at_default_scale(re.sub(r"/\*.*?\*/", " ", css_source, flags = re.S))
     spacing = _spacing_rem(live_css)
     assert spacing is not None, (
         "index.css does not state one readable --spacing, so this guard cannot convert the "
@@ -2213,19 +2264,19 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
 
 def test_media_pages_clear_the_custom_titlebar():
     """The chat-style layout gives the media pages no outer inset, so each applies its own."""
-    root = ROOT_ROUTE.read_text(encoding = "utf-8")
+    root = _ui_source(ROOT_ROUTE)
 
     assert re.search(
         r"const isChatLike =\s*isChatRoute \|\| isImagesRoute \|\| isVideoRoute \|\| isAudioRoute;",
         root,
     )
     for page in (IMAGES_PAGE, VIDEO_PAGE):
-        shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
+        shell = _ui_source(page).split('"diffusion-surface', 1)[1].split(">", 1)[0]
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
 
 
 def test_image_page_structural_panes_share_the_container_breakpoint():
-    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    source = _ui_source(IMAGES_PAGE)
     shell = source.split('className="diffusion-surface', 1)[1].split(">", 1)[0]
     section = source.split("Settings column + preview canvas", 1)[1]
 
@@ -2244,7 +2295,7 @@ def test_image_page_structural_panes_share_the_container_breakpoint():
 
 
 def test_audio_page_matches_the_image_rail_header_and_action_footer():
-    source = AUDIO_PAGE.read_text(encoding = "utf-8")
+    source = _ui_source(AUDIO_PAGE)
     before, marker, after = source.partition("h-[48px] shrink-0")
     assert marker
     header_opening = before.rsplit('<div className="', 1)[1] + marker + after.split(">", 1)[0]
@@ -2281,7 +2332,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
 
 
 def test_image_train_rail_matches_create_and_header():
-    source = DIFFUSION_TRAIN_PANEL.read_text(encoding = "utf-8")
+    source = _ui_source(DIFFUSION_TRAIN_PANEL)
     layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
@@ -2293,7 +2344,7 @@ def test_image_train_rail_matches_create_and_header():
 
 
 def test_compact_media_link_keeps_accessible_name_and_truncation():
-    source = MEDIA_PAGE_LINK.read_text(encoding = "utf-8")
+    source = _ui_source(MEDIA_PAGE_LINK)
     button = source.split("<button", 1)[1].split("</button>", 1)[0]
 
     assert "aria-label={label}" in button
@@ -2304,7 +2355,7 @@ def test_compact_media_link_keeps_accessible_name_and_truncation():
 def test_media_page_link_tooltip_drops_below_titlebar_controls():
     """unslothai/unsloth#10226: Images/Video park this link in the top-right header beside
     Windows controls; a top tooltip blocks minimize/maximize/close."""
-    source = MEDIA_PAGE_LINK.read_text(encoding = "utf-8")
+    source = _ui_source(MEDIA_PAGE_LINK)
     tooltip = source.split("<TooltipContent", 1)[1].split("</TooltipContent>", 1)[0]
 
     assert 'side="bottom"' in tooltip
@@ -2314,7 +2365,7 @@ def test_media_page_link_tooltip_drops_below_titlebar_controls():
 def test_media_page_headers_out_stack_the_mac_drag_region():
     """macOS insets the media pages 0px, so their 48px header overlaps the navbar's 34px drag
     strip: the band must out-stack it yet stay click-through (controls click, gaps drag)."""
-    navbar = NAVBAR.read_text(encoding = "utf-8")
+    navbar = _ui_source(NAVBAR)
 
     # The strip to beat: same z-40, but earlier in DOM order.
     assert "pointer-events-none absolute inset-x-0 top-0 z-40 h-[48px]" in navbar
@@ -2326,7 +2377,7 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
         (VIDEO_PAGE, "MediaPageLink", 2),
         (AUDIO_PAGE, "PillTabs", 2),
     ):
-        source = page.read_text(encoding = "utf-8")
+        source = _ui_source(page)
         # matched on the band's size alone: Images lays its header out as a grid and Video as a
         # flex row, so the stacking contract below is what this pins, not one layout's utilities.
         before, marker, band = source.partition("h-[48px] shrink-0")
@@ -2344,7 +2395,7 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
 
 
 def test_images_header_tracks_preview_and_preserves_titlebar_controls():
-    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    source = _ui_source(IMAGES_PAGE)
     before, marker, after = source.partition("h-[48px] shrink-0")
     assert marker
     opening = before.rsplit("<div", 1)[1] + marker + after.split(">", 1)[0]
@@ -2375,7 +2426,7 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
     """unslothai/unsloth#7793: the support report prints final_status verbatim, so a
     user quitting mid-update must not read as a failed repair."""
-    source = TAURI_COMMANDS.read_text(encoding = "utf-8")
+    source = _ui_source(TAURI_COMMANDS)
     stopped_arm = source.split("if msg == update::UPDATE_STOPPED", 1)[1].split(
         "return Err(msg);", 1
     )[0]
