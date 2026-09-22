@@ -48,6 +48,7 @@
     "--contrast-control-mix",
     "--contrast-edge-gain",
     "--contrast-line-mix",
+    "--contrast-state-mix",
     "--contrast-surface-mix",
     "--contrast-target",
     "--contrast-text-mix",

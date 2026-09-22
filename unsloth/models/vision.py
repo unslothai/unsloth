@@ -22,6 +22,49 @@ try:
     AutoModelForVision2Seq = AutoModelForImageTextToText
 except:
     from transformers import AutoModelForVision2Seq
+
+
+def _embeddings_or_none(model, getter):
+    """Call `model.<getter>()`, or None when the model cannot answer.
+
+    `hasattr` is not the question: transformers 5 defines the method on every
+    PreTrainedModel with a base impl that raises, so a composite checkpoint
+    passes the hasattr check and then raises. Ask by calling.
+    """
+    fn = getattr(model, getter, None)
+    if fn is None:
+        return None
+    try:
+        return fn()
+    except Exception:
+        return None
+
+
+def _multimodal_auto_classes():
+    """Auto classes whose models need a processor rather than a tokenizer.
+
+    Processor SELECTION only, never `is_vlm`: `is_vlm` also arms the
+    image-processor repair path, and a Whisper processor legitimately has no
+    `image_processor`, so widening `is_vlm` made loading Whisper try to build an
+    image processor for an audio model.
+    """
+    import transformers
+
+    # Looked up, not referenced: which names exist varies (4.51.3 has both, 5.5.0
+    # dropped AutoModelForVision2Seq), so only the alias above is always bound.
+    classes = [AutoModelForVision2Seq]
+    # AutoModelForSpeechSeq2Seq is deliberately absent: Whisper already reaches
+    # AutoProcessor through is_whisper, so adding it would move a cell for nothing.
+    for name in (
+        "AutoModelForImageTextToText",
+        "AutoModelForTextToWaveform",
+    ):
+        extra = getattr(transformers, name, None)
+        if extra is not None and extra not in classes:
+            classes.append(extra)
+    return classes
+
+
 from ..kernels import (
     post_patch_loss_function,
 )
@@ -555,8 +598,10 @@ def _resolve_offload_embedding(model, offload_embedding):
             model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
         )
     except Exception:
-        # Cannot inspect it, so leave an explicit request alone and decline the default.
-        return False if automatic else offload_embedding
+        # Honouring an explicit request here is WRONG: the caller goes straight on
+        # to call get_input_embeddings() unguarded, turning an inapplicable VRAM
+        # optimisation into a failed load.
+        return _decline("its embeddings cannot be inspected.")
     if _embeddings_are_tied(in_embed, out_embed):
         return _decline("this model ties embed_tokens to lm_head, so offloading saves no VRAM.")
     if _embedding_dispatch_device(in_embed) is not None:
@@ -1263,10 +1308,20 @@ class FastBaseModel:
         ]:
             auto_model = AutoModelForCausalLM
         is_vlm = auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText]
-        # A repo-code VLM may register only AutoModel / AutoModelForCausalLM (DeepSeek-OCR, Nemotron-VL), so auto_model is not a VLM class though the config is a vision model. Keep is_vlm for processor selection, but treat it as a VLM on the vLLM path so a vision_config model is never silently loaded as text-only.
-        is_vlm_config = is_vlm or (not text_only and hasattr(auto_config, "vision_config"))
         is_whisper = whisper_language is not None and whisper_task is not None
-        auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
+        # Audio and omni classes need a processor but are NOT image models, so they
+        # must not widen is_vlm, which arms the image-processor repair path below.
+        needs_processor = is_vlm or auto_model in _multimodal_auto_classes()
+        # A repo-code VLM may register only AutoModel / AutoModelForCausalLM (DeepSeek-OCR, Nemotron-VL), so auto_model is not a VLM class though the config is a vision model. Keep is_vlm for processor selection, but treat it as a VLM on the vLLM path so a vision_config model is never silently loaded as text-only.
+        is_vlm_config = (
+            is_vlm
+            # An omni checkpoint hides its vision config under thinker_config, so the
+            # hasattr below misses it and fast_inference would enter the vLLM
+            # language-model path with is_vision_model=False.
+            or needs_processor
+            or (not text_only and hasattr(auto_config, "vision_config"))
+        )
+        auto_processor = AutoProcessor if (needs_processor or is_whisper) else AutoTokenizer
 
         model_type_arch = model_types[0]
         if model_type_arch == "siglip":
@@ -2626,12 +2681,8 @@ class FastBaseModel:
             if hasattr(module, "gradient_checkpointing"):
                 module.gradient_checkpointing = False
 
-        if hasattr(model, "get_input_embeddings"):
-            embeddings = model.get_input_embeddings()
-            if hasattr(embeddings, "training"):
-                embeddings.training = False
-        if hasattr(model, "get_output_embeddings"):
-            embeddings = model.get_output_embeddings()
+        for _getter in ("get_input_embeddings", "get_output_embeddings"):
+            embeddings = _embeddings_or_none(model, _getter)
             if hasattr(embeddings, "training"):
                 embeddings.training = False
         # Restore use_cache values that prepare_model_for_training disabled for gradient checkpointing (older unsloth_zoo has no restore helper).
@@ -2685,12 +2736,8 @@ class FastBaseModel:
             if hasattr(module, "gradient_checkpointing"):
                 module.gradient_checkpointing = use_gradient_checkpointing
 
-        if hasattr(model, "get_input_embeddings"):
-            embeddings = model.get_input_embeddings()
-            if hasattr(embeddings, "training"):
-                embeddings.training = True
-        if hasattr(model, "get_output_embeddings"):
-            embeddings = model.get_output_embeddings()
+        for _getter in ("get_input_embeddings", "get_output_embeddings"):
+            embeddings = _embeddings_or_none(model, _getter)
             if hasattr(embeddings, "training"):
                 embeddings.training = True
         # Re-disable use_cache if prepare_model_for_training had disabled it and for_inference restored it; the record only exists after a disable.

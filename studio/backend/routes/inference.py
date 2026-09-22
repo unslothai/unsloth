@@ -74,6 +74,7 @@ from urllib.parse import quote as _urlquote
 
 # Model size extraction (shared with core/inference/llama_cpp.py)
 from utils.models import extract_model_size_b as _extract_model_size_b
+from utils.models.checkpoints import is_full_finetune_output
 
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.audio_tokens import GGUF_TTS_AUDIO_TYPES as _GGUF_TTS_AUDIO_TYPES
@@ -703,22 +704,6 @@ def _has_openai_tool_history(messages) -> bool:
         if getattr(message, "role", None) == "tool" or getattr(message, "tool_calls", None):
             return True
     return False
-
-
-def _extra_body_enable_thinking(payload) -> Optional[bool]:
-    """``enable_thinking`` sent through the OpenAI SDK's ``extra_body``, or None.
-
-    The SDK spreads ``chat_template_kwargs`` into the request body, where ``extra="allow"``
-    stashes it in ``model_extra``; every render consumes the typed field instead, so each
-    entry point lifts it first.
-    """
-    extra = getattr(payload, "model_extra", None)
-    if not isinstance(extra, dict):
-        return None
-    template_kwargs = extra.get("chat_template_kwargs")
-    if isinstance(template_kwargs, dict) and "enable_thinking" in template_kwargs:
-        return bool(template_kwargs["enable_thinking"])
-    return None
 
 
 def _raise_unsupported_openai_parameter(param: str, message: str) -> None:
@@ -1886,6 +1871,11 @@ _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
     _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
 )
 
+# Also an upper bound: no mtmd audio projector emits over 25 embeddings a second, and
+# Whisper-style preprocessing appends 30 s of silence before cutting 30 s windows.
+_OPENAI_LLAMA_ADMISSION_AUDIO_TOKENS_PER_SECOND = 25
+_OPENAI_LLAMA_ADMISSION_AUDIO_WINDOW_SECONDS = 30
+
 # An ESTIMATE where the rest of the sizing is a bound: a run that generates more is
 # undercharged until something re-costs it, which a tool loop does every round boundary and
 # a plain chat cannot yet, so on a full cache a long uncapped generation can still overrun.
@@ -2111,6 +2101,11 @@ def _openai_llama_admission_messages_for_estimate(
                     estimate_content.append({"type": part_type, part_type: {"url": "[video]"}})
                     continue
 
+                # The recording is charged by duration from ``audio_base64``.
+                if part_type == "input_audio":
+                    estimate_content.append({"type": part_type, part_type: {"data": "[audio]"}})
+                    continue
+
                 if part_type not in _ADMISSION_IMAGE_PART_TYPES:
                     estimate_content.append(part)
                     continue
@@ -2148,6 +2143,27 @@ def _conversation_video_clips(messages) -> list[str]:
     return clips
 
 
+def _openai_llama_admission_audio_tokens(b64: str) -> int:
+    fallback = max(1, len(b64) // 4)
+    if b64.startswith("data:"):
+        b64 = b64.split(",", 1)[1] if "," in b64 else ""
+    try:
+        raw = base64.b64decode(b64)
+    except Exception:
+        return fallback
+    container = _sniff_audio_container(raw)
+    seconds = _passthrough_audio_seconds(raw, container, _MAX_AUDIO_SECONDS) if container else None
+    if seconds is None:
+        return fallback
+    return (
+        math.ceil(
+            _OPENAI_LLAMA_ADMISSION_AUDIO_TOKENS_PER_SECOND
+            * (seconds + _OPENAI_LLAMA_ADMISSION_AUDIO_WINDOW_SECONDS)
+        )
+        + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
+    )
+
+
 def _openai_llama_admission_media_tokens(
     payload,
     *,
@@ -2163,21 +2179,21 @@ def _openai_llama_admission_media_tokens(
     already carry is a second image really sent. The allowance is per-image rather than
     per-byte because the real mtmd count follows the loaded projector, not base64 length.
 
-    Audio and video keep the old top-level accounting until they have a model-specific
-    estimate; this is scoped to the image path that regressed vision concurrency.
+    Audio is charged by its header's duration, or by its bytes where none is stated. Video
+    keeps the old top-level accounting until it has a model-specific estimate.
     """
     extra = 0
     extra += max(0, message_image_parts) * image_tokens
     if _legacy_image_is_distinct(payload):
         extra += image_tokens
+    audio = getattr(payload, "audio_base64", None)
+    if isinstance(audio, str) and audio:
+        extra += _openai_llama_admission_audio_tokens(audio)
     # _inject_video_part splices the legacy clip into the conversation as input_video before the
     # loop starts, so during a recost the clips below already include it and charging the field
     # too priced it exactly twice.
-    fields = (
-        ("audio_base64",) if message_video_clips is not None else ("audio_base64", "video_base64")
-    )
-    for attribute in fields:
-        value = getattr(payload, attribute, None)
+    if message_video_clips is None:
+        value = getattr(payload, "video_base64", None)
         if isinstance(value, str) and value:
             extra += max(1, len(value) // 4)
     # Recosting passes the CURRENT conversation: a clip on a turn that truncate_oldest has since
@@ -2396,10 +2412,13 @@ async def _openai_llama_admission_reserve_async(
     messages_override = None,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     """The same reservation, with the estimate off the loop when a replayed envelope
-    would make it parse one."""
+    would make it parse one, or a recording would make it decode one."""
     tokens = _TOKENS_UNSET
-    if payload is not None and _messages_mention_mcp_images(
-        messages_override if messages_override is not None else payload.messages
+    if payload is not None and (
+        getattr(payload, "audio_base64", None)
+        or _messages_mention_mcp_images(
+            messages_override if messages_override is not None else payload.messages
+        )
     ):
         tokens = await asyncio.to_thread(
             _openai_llama_admission_estimate,
@@ -4633,19 +4652,18 @@ def _anthropic_reasoning_args(payload) -> dict:
     # whose _request_reasoning_kwargs looks at the boolean only. The
     # effort-dial families already honor effort downstream, so this is what
     # makes one request mean the same thing across template shapes.
-    enable_thinking = payload.enable_thinking
-    reasoning_effort = payload.reasoning_effort
-    # Mirror the /v1/responses mapping: an effort-only request still drives
-    # enable_thinking-style templates, whose only dial is the boolean --
-    # "none" means off, any named level means on. This keeps generation and
-    # the think-markup parsing gate reading the same effective controls.
-    if enable_thinking is None and reasoning_effort is not None:
-        enable_thinking = reasoning_effort != "none"
+    enable_thinking, reasoning_effort = _resolve_reasoning_controls(
+        payload.enable_thinking, payload.reasoning_effort
+    )
     if enable_thinking is None:
         # Neither x-unsloth control was sent: fall back to Anthropic's native
         # `thinking` block (and to None when that is absent too, leaving the
-        # model in its load-time default).
-        enable_thinking = payload.resolved_enable_thinking()
+        # model in its load-time default). A ChatCompletionRequest has already
+        # mapped that block onto the boolean and carries no resolver, so the
+        # sampling gate can share this helper.
+        resolver = getattr(payload, "resolved_enable_thinking", None)
+        if resolver is not None:
+            enable_thinking = resolver()
     return {
         "enable_thinking": enable_thinking,
         "reasoning_effort": reasoning_effort,
@@ -10650,6 +10668,10 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     if getattr(config, "audio_type", None) in NATIVE_AUDIO_TYPES:
         return False
     load_in_4bit = requested
+    if not getattr(config, "is_lora", False) and is_full_finetune_output(
+        getattr(config, "path", None)
+    ):
+        return False
     if not getattr(config, "is_lora", False) or not getattr(config, "path", None):
         return load_in_4bit
     adapter_cfg_path = Path(config.path) / "adapter_config.json"
@@ -21162,13 +21184,12 @@ def _wav_seconds(raw: bytes) -> Optional[float]:
                 # here can check a codec's own header, so say so and let the
                 # bounded decoder have it.
                 return None
-            # Among the PCM fields nAvgBytesPerSec is the redundant one, so it
-            # is the one that can be moved alone. Multiplied by ten thousand it
-            # made half an hour read as a quarter of a second, and a quarter of
-            # a second is forwarded untouched. Recompute it, and take the
-            # declaration only where it agrees.
-            computed = sample_rate * (block_align or channels * (bits // 8))
-            byte_rate = computed if computed > 0 and declared_rate != computed else declared_rate
+            # Measure a frame as llama.cpp's decoder (miniaudio) does: by sample width for
+            # byte-aligned PCM, else by nBlockAlign. Trusting either rate field as written let an
+            # inflated one make half an hour read as a quarter of a second, forwarded untouched.
+            frame_bytes = channels * bits // 8 if bits % 8 == 0 else block_align
+            computed = sample_rate * frame_bytes
+            byte_rate = computed or declared_rate
         elif chunk == b"data":
             if byte_rate <= 0:
                 return None
@@ -24004,6 +24025,101 @@ async def delete_openai_container(
         await client.close()
 
 
+_REASONING_EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
+
+
+def _valid_reasoning_effort(value) -> Optional[str]:
+    """An effort level the templates understand, else None."""
+    if isinstance(value, str) and value in _REASONING_EFFORT_VALUES:
+        return value
+    return None
+
+
+def _chat_template_reasoning_kwargs(payload) -> dict:
+    """Validated reasoning controls from OpenAI ``extra_body``."""
+    extra = getattr(payload, "model_extra", None)
+    template_kwargs = extra.get("chat_template_kwargs") if isinstance(extra, dict) else None
+    if not isinstance(template_kwargs, dict):
+        return {}
+    controls = {}
+    enable_thinking = template_kwargs.get("enable_thinking")
+    if isinstance(enable_thinking, bool):
+        controls["enable_thinking"] = enable_thinking
+    effort = _valid_reasoning_effort(template_kwargs.get("reasoning_effort"))
+    if effort is not None:
+        controls["reasoning_effort"] = effort
+    preserve = template_kwargs.get("preserve_thinking")
+    if isinstance(preserve, bool):
+        controls["preserve_thinking"] = preserve
+    return controls
+
+
+_CHAT_TEMPLATE_REASONING_KEYS = ("enable_thinking", "reasoning_effort", "preserve_thinking")
+
+
+def _consume_chat_template_reasoning_kwargs(payload) -> None:
+    """Drop the reasoning keys a lift has just taken onto the typed fields, which is what makes the lift a fixed point; every render rebuilds the nested dict from those fields through ``_reasoning_template_kwargs``. Rebinds a filtered copy rather than popping: the dict is the parsed request body, shared with anything else holding it."""
+    extra = getattr(payload, "model_extra", None)
+    template_kwargs = extra.get("chat_template_kwargs") if isinstance(extra, dict) else None
+    if not isinstance(template_kwargs, dict):
+        return
+    if not any(key in template_kwargs for key in _CHAT_TEMPLATE_REASONING_KEYS):
+        return
+    extra["chat_template_kwargs"] = {
+        key: value
+        for key, value in template_kwargs.items()
+        if key not in _CHAT_TEMPLATE_REASONING_KEYS
+    }
+
+
+def _resolve_reasoning_controls(
+    enable_thinking: Optional[bool], reasoning_effort: Optional[str]
+) -> tuple[Optional[bool], Optional[str]]:
+    """Resolve the on/off gate while keeping a compatible effort level."""
+    if reasoning_effort is None:
+        return enable_thinking, None
+    effort_enables_thinking = reasoning_effort != "none"
+    if enable_thinking is None:
+        return effort_enables_thinking, reasoning_effort
+    if enable_thinking != effort_enables_thinking:
+        return enable_thinking, None
+    return enable_thinking, reasoning_effort
+
+
+def _normalize_chat_reasoning_controls(payload) -> None:
+    """Merge typed and nested controls, then remove contradictory state. Consumes what it lifts, so the second call /v1/responses makes inside the chat route is a no-op; otherwise a dropped contradictory effort came back through the nested-effort rescue and reached generation."""
+    nested = _chat_template_reasoning_kwargs(payload)
+    _consume_chat_template_reasoning_kwargs(payload)
+    fields_set = getattr(payload, "model_fields_set", set())
+    typed_enable = payload.enable_thinking if "enable_thinking" in fields_set else None
+    typed_effort = (
+        _valid_reasoning_effort(payload.reasoning_effort)
+        if "reasoning_effort" in fields_set
+        else None
+    )
+
+    if typed_enable is not None or typed_effort is not None:
+        enable_thinking, reasoning_effort = _resolve_reasoning_controls(typed_enable, typed_effort)
+        nested_effort = nested.get("reasoning_effort")
+        if typed_effort is None and nested_effort is not None:
+            _, compatible_effort = _resolve_reasoning_controls(enable_thinking, nested_effort)
+            if compatible_effort is not None:
+                reasoning_effort = compatible_effort
+    elif "enable_thinking" in nested or "reasoning_effort" in nested:
+        enable_thinking, reasoning_effort = _resolve_reasoning_controls(
+            nested.get("enable_thinking"), nested.get("reasoning_effort")
+        )
+    else:
+        # Lowest priority: Anthropic ``thinking``, already mapped onto the boolean.
+        enable_thinking = payload.enable_thinking
+        reasoning_effort = _valid_reasoning_effort(payload.reasoning_effort)
+
+    payload.enable_thinking = enable_thinking
+    payload.reasoning_effort = reasoning_effort
+    if payload.preserve_thinking is None and "preserve_thinking" in nested:
+        payload.preserve_thinking = nested["preserve_thinking"]
+
+
 def _fill_recommended_sampling_openai(payload, model_id) -> None:
     """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a
     ChatCompletionRequest in place.
@@ -24488,12 +24604,8 @@ async def produce_openai_chat_completions(
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
-    # Clients that only know the OpenAI shape (data_designer recipe runs, etc.) control
-    # the reasoning preamble this way, so lift it onto the typed field the generators read.
-    if payload.enable_thinking is None:
-        _lifted_enable_thinking = _extra_body_enable_thinking(payload)
-        if _lifted_enable_thinking is not None:
-            payload.enable_thinking = _lifted_enable_thinking
+    # Lift ``extra_body`` template controls before sampling and generation read them.
+    _normalize_chat_reasoning_controls(payload)
 
     # ── Determine which backend is active ─────────────────────
     # Single-model server: any model name serves the loaded model (drop-in
@@ -25161,6 +25273,9 @@ async def produce_openai_chat_completions(
             except Exception as e:
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
+            # Admission reads the duration from this field's header, which only the forwarded
+            # wav/mp3 is sure to state; an m4a, ogg or flac upload would be charged by its bytes.
+            payload.audio_base64 = audio_b64
 
         # llama-server samples frames but encodes each at the clip's resolution.
         video_b64 = None
@@ -30836,7 +30951,6 @@ def _responses_tool_output_content(output: Union[str, list]) -> Union[str, list]
 
 _RESPONSES_THINK_OPEN = "<think>"
 _RESPONSES_THINK_CLOSE = "</think>"
-_RESPONSES_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
 
 
 def _coerce_responses_reasoning_text(value: Any) -> str:
@@ -31344,15 +31458,16 @@ def _build_chat_request(
     if payload.parallel_tool_calls is not None:
         chat_kwargs["parallel_tool_calls"] = payload.parallel_tool_calls
 
-    # Both Responses paths reach a Chat Completions render, and the streaming
-    # pass-through reads the typed field directly rather than re-lifting, so lift here.
+    # ``chat_template_kwargs`` arrives in ``model_extra`` (ResponsesRequest is
+    # ``extra="allow"``), but both Chat Completions paths read the typed fields,
+    # so lift it here to cover streaming and non-streaming alike.
     explicit_enable_thinking = False
-    _lifted_enable_thinking = _extra_body_enable_thinking(payload)
-    if _lifted_enable_thinking is not None:
-        chat_kwargs["enable_thinking"] = _lifted_enable_thinking
-        explicit_enable_thinking = True
     _extra = getattr(payload, "model_extra", None)
     if isinstance(_extra, dict):
+        _nested_reasoning = _chat_template_reasoning_kwargs(payload)
+        chat_kwargs.update(_nested_reasoning)
+        if "enable_thinking" in _nested_reasoning:
+            explicit_enable_thinking = True
         # auto_heal_tool_calls / nudge_tool_calls are not typed on
         # ResponsesRequest; lift them from the extra-body so passthrough
         # healing (and the opt-in nudge) honor them on both paths.
@@ -31372,7 +31487,7 @@ def _build_chat_request(
 
     if isinstance(payload.reasoning, dict):
         effort = payload.reasoning.get("effort")
-        if isinstance(effort, str) and effort in _RESPONSES_REASONING_EFFORTS:
+        if isinstance(effort, str) and effort in _REASONING_EFFORT_VALUES:
             if not explicit_enable_thinking:
                 chat_kwargs["reasoning_effort"] = effort
                 chat_kwargs["enable_thinking"] = effort != "none"
@@ -31385,7 +31500,9 @@ def _build_chat_request(
     if response_format is not None:
         chat_kwargs["response_format"] = response_format
 
-    return ChatCompletionRequest(**chat_kwargs)
+    chat_request = ChatCompletionRequest(**chat_kwargs)
+    _normalize_chat_reasoning_controls(chat_request)
+    return chat_request
 
 
 def _responses_custom_tool_input(arguments: Any) -> str:
@@ -33535,10 +33652,8 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             status_code = 503,
             detail = "Cannot count tokens for an empty prompt.",
         )
-    # The same lift the completion applies before it renders.
-    enable_thinking = payload.enable_thinking
-    if enable_thinking is None:
-        enable_thinking = _extra_body_enable_thinking(payload)
+    # The same normalization the completion applies before it renders.
+    _normalize_chat_reasoning_controls(payload)
     # Re-checked immediately before the only work that takes the orchestrator's lock:
     # everything since the endpoint's entry check awaits, so a chat can have started in
     # the gap and would then wait on this count. The GGUF path re-checks for this reason.
@@ -33553,7 +33668,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             messages,
             system_prompt or "",
             tools = _tools_to_use,
-            enable_thinking = enable_thinking,
+            enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
             preserve_thinking = payload.preserve_thinking,
         )
@@ -33806,6 +33921,7 @@ async def chat_count_tokens(
 
     # llama-server falls back to the load-time --chat-template-kwargs per key a request omits,
     # so omitting these prices the template in whatever mode the model was LOADED in.
+    _normalize_chat_reasoning_controls(payload)
     _template_kwargs = llama_backend._request_reasoning_kwargs(
         payload.enable_thinking,
         payload.reasoning_effort,
@@ -34287,8 +34403,9 @@ async def anthropic_messages(
     # Anthropic sampling fields are Optional, so None already marks "client omitted".
     from utils.inference.inference_config import resolve_effective_sampling
 
+    _anthropic_model_id = getattr(llama_backend, "model_identifier", None) or model_name
     _anthropic_sampling = resolve_effective_sampling(
-        getattr(llama_backend, "model_identifier", None) or model_name,
+        _anthropic_model_id,
         {
             "temperature": payload.temperature,
             "top_p": payload.top_p,
