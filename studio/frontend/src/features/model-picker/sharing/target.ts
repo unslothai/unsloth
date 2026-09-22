@@ -54,11 +54,16 @@ type ModelSelection = {
 };
 
 function resolveFormat(
-  value: SharedRunConfig,
+  shared: SharedRunConfig,
   id: string,
   knownFormat: boolean | null | undefined,
   selectedVariant: string | null,
+  selectedModel?: string,
 ) {
+  const value =
+    selectedModel && (isStandaloneGgufPath(id) || isOllamaModelId(id))
+      ? { ...shared, isGguf: true, ggufVariant: undefined }
+      : shared;
   const format = value.model ? value.isGguf : (knownFormat ?? value.isGguf);
   const ggufVariant =
     format === false || isStandaloneGgufPath(id)
@@ -91,12 +96,11 @@ export function resolveRunConfigTarget(
   const knownFormat =
     (sameModel ? selection.loadedIsGguf : null) ?? model?.isGguf ?? loraFormat;
   const { isGguf, ggufVariant } = resolveFormat(
-    selectedModel && (isStandaloneGgufPath(id) || isOllamaModelId(id))
-      ? { ...value, isGguf: true, ggufVariant: undefined }
-      : value,
+    value,
     id,
     knownFormat,
     sameModel ? selection.activeGgufVariant : null,
+    selectedModel,
   );
   const sameArtifact =
     sameModel &&

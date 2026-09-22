@@ -51,6 +51,7 @@ export function scheduleRunConfigImport({
       return;
     }
     if (!hydrated) {
+      runConfigInbox.take(pending.id, key);
       toast.error("Could not import run settings", {
         id: pending.id,
         description:

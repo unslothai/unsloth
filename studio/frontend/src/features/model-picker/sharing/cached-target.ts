@@ -23,6 +23,15 @@ import {
 import type { resolveRunConfigTarget } from "./target";
 
 type RunConfigTarget = NonNullable<ReturnType<typeof resolveRunConfigTarget>>;
+type ResolutionOptions = {
+  hfToken?: string;
+  inventoryVersion: number;
+  signal: AbortSignal;
+  checkLocalPath?: boolean;
+};
+type CachedVariantsResponse = GgufVariantsResponse & {
+  resolved_locally?: boolean;
+};
 
 export class RunConfigResolutionError extends Error {}
 
@@ -30,7 +39,7 @@ function listCachedVariants(
   id: string,
   localPath: string | undefined,
   options: { hfToken?: string; signal: AbortSignal },
-): Promise<GgufVariantsResponse> {
+): Promise<CachedVariantsResponse> {
   return runBoundedVariantsRequest(options.signal, async (signal) => {
     const query = ggufVariantsQuery(id, { localPath }, true);
     const response = await authFetch(`/api/hub/gguf-variants?${query}`, {
@@ -44,13 +53,57 @@ function listCachedVariants(
   });
 }
 
+function findCachedVariant(
+  target: RunConfigTarget,
+  listing: GgufVariantsResponse,
+) {
+  const requested = target.meta.ggufVariant ?? listing.default_variant;
+  return listing.variants.find(
+    (entry) =>
+      entry.downloaded === true &&
+      !entry.partial &&
+      (ggufVariantsMatch(requested, entry.quant) ||
+        requested === entry.filename),
+  );
+}
+
+function resolveLocalTarget(
+  target: RunConfigTarget,
+  listing: GgufVariantsResponse,
+): RunConfigTarget {
+  if (isStandaloneGgufPath(target.id)) {
+    return {
+      ...target,
+      meta: { ...target.meta, isGguf: true, ggufVariant: undefined },
+    };
+  }
+  if (listing.variants.length === 0) {
+    return {
+      ...target,
+      meta: { ...target.meta, isGguf: false, ggufVariant: undefined },
+    };
+  }
+  const variant = findCachedVariant(target, listing);
+  if (!variant) {
+    throw new RunConfigResolutionError(
+      "The selected folder does not contain a complete copy of the requested GGUF variant.",
+    );
+  }
+  return {
+    ...target,
+    meta: {
+      ...target.meta,
+      isGguf: true,
+      isDownloaded: true,
+      ggufVariant: variant.quant,
+      ggufFilename: variant.filename,
+    },
+  };
+}
+
 export async function resolveCachedRunConfigTarget(
   target: RunConfigTarget,
-  options: {
-    hfToken?: string;
-    inventoryVersion: number;
-    signal: AbortSignal;
-  },
+  options: ResolutionOptions,
 ): Promise<RunConfigTarget> {
   options.signal.throwIfAborted();
   if (target.meta.isDownloaded) {
@@ -62,36 +115,29 @@ export async function resolveCachedRunConfigTarget(
     }
     const listing = await listCachedVariants(target.id, target.id, options);
     options.signal.throwIfAborted();
-    if (listing.variants.length === 0) {
-      return {
-        ...target,
-        meta: { ...target.meta, isGguf: false, ggufVariant: undefined },
-      };
-    }
-    const requested = target.meta.ggufVariant ?? listing.default_variant;
-    const variant = listing.variants.find(
-      (entry) =>
-        entry.downloaded === true &&
-        !entry.partial &&
-        (ggufVariantsMatch(requested, entry.quant) ||
-          requested === entry.filename),
-    );
-    if (!variant) {
-      throw new RunConfigResolutionError(
-        "The selected folder does not contain a complete copy of the requested GGUF variant.",
+    return resolveLocalTarget(target, listing);
+  }
+  if (options.checkLocalPath) {
+    const listing = await listCachedVariants(target.id, target.id, options);
+    options.signal.throwIfAborted();
+    if (listing.resolved_locally) {
+      return resolveLocalTarget(
+        {
+          ...target,
+          id: `./${target.id}`,
+          meta: { ...target.meta, source: "local" },
+        },
+        listing,
       );
     }
-    return {
-      ...target,
-      meta: {
-        ...target.meta,
-        isGguf: true,
-        isDownloaded: true,
-        ggufVariant: variant.quant,
-        ggufFilename: variant.filename,
-      },
-    };
   }
+  return resolveHubRunConfigTarget(target, options);
+}
+
+async function resolveHubRunConfigTarget(
+  target: RunConfigTarget,
+  options: ResolutionOptions,
+): Promise<RunConfigTarget> {
   const readInventory = <
     K extends "cachedGguf" | "cachedModels" | "localModels",
   >(
@@ -165,14 +211,7 @@ export async function resolveCachedRunConfigTarget(
       options.signal.throwIfAborted();
       continue;
     }
-    const requested = target.meta.ggufVariant ?? listing.default_variant;
-    const variant = listing.variants.find(
-      (entry) =>
-        entry.downloaded === true &&
-        !entry.partial &&
-        (ggufVariantsMatch(requested, entry.quant) ||
-          requested === entry.filename),
-    );
+    const variant = findCachedVariant(target, listing);
     if (variant) {
       return {
         ...target,
@@ -186,6 +225,13 @@ export async function resolveCachedRunConfigTarget(
       };
     }
   }
+  return resolveHubVariantTarget(target, options);
+}
+
+async function resolveHubVariantTarget(
+  target: RunConfigTarget,
+  options: ResolutionOptions,
+): Promise<RunConfigTarget> {
   if (
     !target.meta.isGguf ||
     (target.meta.ggufVariant &&

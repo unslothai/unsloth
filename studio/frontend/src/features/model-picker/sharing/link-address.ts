@@ -19,7 +19,7 @@ export function isRunConfigLink(raw: string): boolean {
   try {
     const url = new URL(raw);
     return (
-      (url.protocol === "unsloth:" && url.hostname === "run") ||
+      (url.protocol === "unsloth:" && url.hostname.toLowerCase() === "run") ||
       ((url.protocol === "http:" || url.protocol === "https:") &&
         runConfigHash.test(url.hash))
     );

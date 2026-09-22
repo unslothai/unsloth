@@ -64,6 +64,7 @@ function harness() {
   const lookups: {
     target: Target;
     signal: AbortSignal;
+    checkLocalPath?: boolean;
     result: ReturnType<typeof deferred<Target>>;
   }[] = [];
   const navigationResult = deferred<void>();
@@ -121,10 +122,10 @@ function harness() {
         RunConfigResolutionError,
         resolveCachedRunConfigTarget: (
           target: Target,
-          options: { signal: AbortSignal },
+          options: { signal: AbortSignal; checkLocalPath?: boolean },
         ) => {
           const result = deferred<Target>();
-          lookups.push({ target, signal: options.signal, result });
+          lookups.push({ target, ...options, result });
           return result.promise;
         },
       },
@@ -175,6 +176,7 @@ function harness() {
     lifecycle.openRunConfigTarget({ ...open, location: context.location });
     const lookup = lookups.at(-1);
     assert.ok(lookup);
+    assert.equal(lookup.checkLocalPath, false);
     lookup.result.resolve(target);
     await settle();
     const prepared = inbox.getSnapshot();
@@ -396,36 +398,51 @@ test("availability binds the canonical draft before handing off the editor", asy
   );
 });
 
-test("a recipient's local model choice carries a settings-only import through navigation and handoff", async () => {
-  const app = harness();
-  const pending = {
-    ...app.nav.pending,
-    selectedModel: "C:\\Models\\model.gguf",
-    value: { config: { nParallel: 3 } },
-  };
-  app.inbox.submit(pending);
-  app.navigateRunConfig({ ...app.nav, pending });
-  assert.deepEqual(app.calls, []);
-  app.openRunConfigTarget({ ...app.open, pending, location: app.nav.location });
-  assert.equal(app.lookups.length, 1);
-  const target = app.lookups[0].target;
-  assert.equal(target.id, pending.selectedModel);
-  assert.equal(target.meta.source, "local");
-  assert.equal(target.meta.isGguf, true);
-  app.lookups[0].result.resolve(target);
-  await settle();
-  const prepared = app.inbox.getSnapshot();
-  app.navigateRunConfig({ ...app.nav, pending: prepared });
-  app.openRunConfigTarget({ ...app.open, pending: prepared });
-  const key = modelConfigDraftKey(pending.selectedModel, undefined);
-  assert.equal(app.inbox.getSnapshot()?.draftKey, key);
-  assert.deepEqual(app.calls.at(-1), [
-    "handoff",
-    { requestId: pending.id, ...target },
-  ]);
-  assert.deepEqual(app.inbox.take(pending.id, key), pending.value.config);
-  assert.equal(app.inbox.take(pending.id, key), null);
-});
+for (const selectedModel of [
+  "C:\\Models\\model.gguf",
+  "models/my-native-model",
+]) {
+  test(`a recipient's local model choice carries a settings-only import through handoff: ${selectedModel}`, async () => {
+    const app = harness();
+    const pending = {
+      ...app.nav.pending,
+      selectedModel,
+      value: { config: { nParallel: 3 } },
+    };
+    app.inbox.submit(pending);
+    app.navigateRunConfig({ ...app.nav, pending });
+    assert.deepEqual(app.calls, []);
+    app.openRunConfigTarget({
+      ...app.open,
+      pending,
+      location: app.nav.location,
+    });
+    assert.equal(app.lookups.length, 1);
+    const lookup = app.lookups[0];
+    assert.equal(lookup.checkLocalPath, true);
+    assert.equal(lookup.target.id, selectedModel);
+    const target: Target = {
+      ...lookup.target,
+      id: selectedModel.startsWith("models/")
+        ? `./${selectedModel}`
+        : selectedModel,
+      meta: { ...lookup.target.meta, source: "local" },
+    };
+    lookup.result.resolve(target);
+    await settle();
+    const prepared = app.inbox.getSnapshot();
+    app.navigateRunConfig({ ...app.nav, pending: prepared });
+    app.openRunConfigTarget({ ...app.open, pending: prepared });
+    const key = modelConfigDraftKey(target.id, undefined);
+    assert.equal(app.inbox.getSnapshot()?.draftKey, key);
+    assert.deepEqual(app.calls.at(-1), [
+      "handoff",
+      { requestId: pending.id, ...target },
+    ]);
+    assert.deepEqual(app.inbox.take(pending.id, key), pending.value.config);
+    assert.equal(app.inbox.take(pending.id, key), null);
+  });
+}
 
 for (const failure of [false, true]) {
   test(`effect cleanup aborts stale availability ${failure ? "failures" : "successes"}`, async () => {

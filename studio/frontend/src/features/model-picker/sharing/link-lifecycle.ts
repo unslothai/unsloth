@@ -183,6 +183,7 @@ export function openRunConfigTarget({
     hfToken,
     inventoryVersion,
     signal: controller.signal,
+    checkLocalPath: !pending.value.model || Boolean(pending.selectedModel),
   })
     .then((resolved) => {
       if (

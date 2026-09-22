@@ -86,6 +86,8 @@ function harness({
   listingErrors = [],
   inventoryDelayMs = 0,
   variantDelayMs = 0,
+  resolvedLocally = false,
+  checkLocalPath = false,
 }: {
   cachedGguf?: CachedGgufRepo[];
   cachedModels?: CachedModelRepo[];
@@ -102,6 +104,8 @@ function harness({
   listingErrors?: string[];
   inventoryDelayMs?: number;
   variantDelayMs?: number;
+  resolvedLocally?: boolean;
+  checkLocalPath?: boolean;
 } = {}) {
   const scans: string[] = [];
   const requests: URL[] = [];
@@ -131,6 +135,7 @@ function harness({
             JSON.stringify({
               variants: listed,
               default_variant: listed[0]?.quant,
+              resolved_locally: resolvedLocally,
             }),
             { status },
           );
@@ -198,9 +203,100 @@ function harness({
         inventoryVersion: 0,
         signal,
         hfToken,
+        checkLocalPath,
       }),
   };
 }
+
+for (const [id, variants, isGguf] of [
+  ["models/my-native-model", [], false],
+  ["Models/My-Native-Model-GGUF", [], false],
+  ["models/my-quantized-model", [quant], true],
+  ["models/model.gguf", [quant], true],
+] as const) {
+  test(`recipient-selected relative paths resolve locally before Hub staging: ${id}`, async () => {
+    const app = harness({
+      checkLocalPath: true,
+      resolvedLocally: true,
+      variants: [...variants],
+      inventoryError: true,
+      hubError: true,
+    });
+    const input = resolveRunConfigTarget({ config: {} }, selection, id);
+    assert.ok(input);
+    const resolved = await app.resolve(input);
+    assert.equal(resolved.id, `./${id}`);
+    assert.equal(resolved.meta.source, "local");
+    assert.equal(resolved.meta.isGguf, isGguf);
+    assert.equal(
+      resolved.meta.ggufVariant,
+      isGguf && !id.endsWith(".gguf") ? quant.quant : undefined,
+    );
+    assert.equal(modelConfigTarget(resolved.id, resolved.meta).id, `./${id}`);
+    assert.equal(
+      wantsDownloadManagerStaging({ id: resolved.id, ...resolved.meta }),
+      false,
+    );
+    assert.deepEqual(app.scans, []);
+    assert.deepEqual(app.hubRequests, []);
+    assert.equal(app.requests.length, 1);
+    assert.equal(app.requests[0].searchParams.get("repo_id"), id);
+    assert.equal(app.requests[0].searchParams.get("local_path"), id);
+    assert.equal(app.requests[0].searchParams.get("offline"), "true");
+  });
+}
+
+test("recipient-selected Hub IDs retain cached and uncached loading after the local check", async () => {
+  for (const isGguf of [false, true]) {
+    for (const cached of [false, true]) {
+      const id = isGguf ? model : "owner/native";
+      const rows = cached
+        ? [{ repo_id: id, load_id: "/cache/model", size_bytes: 1024 }]
+        : [];
+      const app = harness({
+        checkLocalPath: true,
+        variants: isGguf ? [quant] : [],
+        cachedModels: isGguf ? [] : rows,
+        cachedGguf: isGguf ? rows : [],
+      });
+      const input = resolveRunConfigTarget(
+        { config: {}, ggufVariant: isGguf ? quant.quant : undefined },
+        selection,
+        id,
+      );
+      assert.ok(input);
+      const resolved = await app.resolve(input);
+      assert.equal(resolved.id, id);
+      assert.equal(resolved.meta.source, "hub");
+      assert.equal(resolved.meta.isGguf, isGguf);
+      assert.equal(
+        wantsDownloadManagerStaging({ id, ...resolved.meta }),
+        !cached,
+      );
+      assert.deepEqual(app.scans, [
+        isGguf ? "cachedGguf" : "cachedModels",
+        "localModels",
+      ]);
+      assert.deepEqual(app.hubRequests, []);
+    }
+  }
+});
+
+test("a failed local path check cannot turn a recipient's path into a Hub download", async () => {
+  const app = harness({ checkLocalPath: true, status: 503 });
+  const input = resolveRunConfigTarget(
+    { config: {} },
+    selection,
+    "models/my-native-model",
+  );
+  assert.ok(input);
+  await assert.rejects(
+    app.resolve(input),
+    /Could not check cached GGUF variants/,
+  );
+  assert.deepEqual(app.scans, []);
+  assert.deepEqual(app.hubRequests, []);
+});
 
 test("recipient-selected local files and Ollama references need no inventory or network lookup", async () => {
   for (const [id, isGguf] of [

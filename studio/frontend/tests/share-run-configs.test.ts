@@ -60,21 +60,21 @@ const fullConfig: PerModelConfig = {
   selectedGpuIndexKind: "physical",
 };
 
-test("native schemes accept case variations without relaxing address validation", () => {
+test("native schemes and hosts accept case variations without relaxing address validation", () => {
   const value = { model: "owner/model", config: { nParallel: 3 } };
   const link = createRunConfigLink(value);
-  for (const scheme of ["unsloth:", "UNSLOTH:", "UnSlOtH:"]) {
-    const url = link.replace("unsloth:", scheme);
+  for (const address of ["unsloth://run", "UNSLOTH://RUN", "UnSlOtH://RuN"]) {
+    const url = link.replace("unsloth://run", address);
     assert.deepEqual(parseRunConfigLink(url), { kind: "valid", value });
     assert.equal(parseRunConfigLink(`${url}#ignored`).kind, "invalid");
-    assert.equal(
+    assert.deepEqual(
       parseRunConfigLink(
         `${url}&reasoningBudgetMessage=${"a".repeat(MAX_RUN_CONFIG_URL_LENGTH)}`,
-      ).kind,
-      "invalid",
+      ),
+      { kind: "invalid", error: "This run configuration link is too long." },
     );
     assert.equal(
-      parseRunConfigLink(`${scheme}//hub?model=owner/model`).kind,
+      parseRunConfigLink(`${address.slice(0, -3)}hub?model=owner/model`).kind,
       "unrelated",
     );
   }
