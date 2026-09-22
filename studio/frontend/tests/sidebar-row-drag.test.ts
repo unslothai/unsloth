@@ -993,9 +993,9 @@ test("the edge keeps scrolling while the pointer rests on it", () => {
 // could drive, and drop, a drag the mouse started, which is exactly what touch is kept out of.
 test("only the pointer that started the drag drives it", () => {
   for (const handler of [
-    /function onMove\(moved: PointerEvent\) \{\n\s*if \(moved\.pointerId !== pointerId\) return;/,
+    /function onMove\(moved: PointerEvent\) \{\n\s*if \(moved\.pointerId !== pointerId \|\| escaped\) return;/,
     /function onUp\(released: PointerEvent\) \{\n\s*if \(released\.pointerId !== pointerId\) return;/,
-    /function onCancel\(cancelled: PointerEvent\) \{\n\s*if \(cancelled\.pointerId !== pointerId\) return;/,
+    /function onCancel\(aborted: PointerEvent\) \{\n\s*if \(aborted\.pointerId !== pointerId\) return;/,
   ]) {
     assert.match(HOOK, handler);
   }
@@ -1005,4 +1005,30 @@ test("only the pointer that started the drag drives it", () => {
   assert.match(HOOK, /press\.current\?\.end\(\);/);
   assert.match(HOOK, /end: \(\) => \{\n\s*detach\(\);\n\s*if \(started\) clear\(\);/);
   assert.match(HOOK, /if \(press\.current === self\) press\.current = null;/);
+});
+
+// Escape cancels while the button is still down, and the release comes later. A click guard
+// armed at the keypress is torn down on the next tick, long before that release, so the row
+// under the pointer would open the chat the drag was cancelled out of.
+test("escape keeps the click guard until the button is released", () => {
+  assert.match(
+    HOOK,
+    /if \(pressed\.key !== "Escape" \|\| escaped\) return;\n\s*if \(!started\) \{[^]*?detach\(\);\n\s*return;\n\s*\}/,
+  );
+  // The gesture keeps its listeners: only the release detaches and swallows.
+  const onKey = HOOK.slice(
+    HOOK.indexOf("function onKey(pressed: KeyboardEvent)"),
+    HOOK.indexOf("window.addEventListener(\"pointermove\", onMove);"),
+  );
+  assert.ok(
+    !/escaped = true;[^]*?detach\(\);/.test(onKey),
+    "escape must not detach while the button is still down",
+  );
+  assert.match(onKey, /escaped = true;\n\s*clear\(\);/);
+  assert.match(
+    HOOK,
+    /swallowClick\(\);\n\s*if \(escaped\) return;/,
+  );
+  // And a cancelled drag does not come back to life on the next move.
+  assert.match(HOOK, /if \(moved\.pointerId !== pointerId \|\| escaped\) return;/);
 });
