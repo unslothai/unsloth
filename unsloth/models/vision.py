@@ -1411,7 +1411,7 @@ def _tolerate_dtype_cast_on_quantized_model(enabled):
         quantized = getattr(self, "quantization_method", None) is not None or getattr(
             self, "is_quantized", False
         )
-        dtype = kwargs.pop("dtype", None)
+        dtype = kwargs.get("dtype", None)
         rest = []
         for arg in args:
             if isinstance(arg, torch.dtype) and dtype is None:
@@ -1419,7 +1419,13 @@ def _tolerate_dtype_cast_on_quantized_model(enabled):
             else:
                 rest.append(arg)
         if not quantized or dtype is None:
+            # Nothing to tolerate here, so hand the call on exactly as it arrived.
+            # Reading `dtype` with .get above rather than popping it keeps this
+            # pass-through byte-identical: popping dropped the cast on every
+            # non-quantized `model.to(dtype = ...)` made inside the load, which a
+            # remote-code from_pretrained does to its own submodules.
             return original_to(self, *args, **kwargs)
+        kwargs.pop("dtype", None)
         _cast_unquantized_floats(self, dtype)
         if rest or kwargs:
             return original_to(self, *rest, **kwargs)

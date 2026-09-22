@@ -132,7 +132,13 @@ def _forward_accepts_packed_seq_lengths(model) -> bool:
             unwrapped = get_base_model()
         except Exception:
             unwrapped = model
-    forward = getattr(type(unwrapped), "forward", None) or getattr(unwrapped, "forward", None)
+    # Read the BOUND forward, as the already-merged `_forward_accepts_packing_kwargs`
+    # does. `type(x).forward` is never absent on an nn.Module -- it falls back to
+    # `_forward_unimplemented`, whose `(*input)` signature has no VAR_KEYWORD -- so
+    # the `or` could never reach the instance, and torch.compile (OptimizedModule
+    # sets `forward` on the INSTANCE, not the class) was read as a fixed signature,
+    # silently switching padding-free off for every compiled model.
+    forward = getattr(unwrapped, "forward", None) or getattr(type(unwrapped), "forward", None)
     if forward is None:
         return True
     try:
