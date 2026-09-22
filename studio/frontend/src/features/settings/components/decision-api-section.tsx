@@ -278,17 +278,64 @@ export function DecisionApiSection(): ReactElement | null {
 
         <SettingsRow
           label={t("settings.apiKeys.decisionApi.model")}
-          description={
+          hint={
             settings.modelLocked
               ? t("settings.apiKeys.decisionApi.lockedByEnv", {
                   name: ENV_MODEL,
                 })
               : undefined
           }
-          alignTop={true}
+          description={
+            enabled && status ? (
+              <span
+                className={cn(
+                  "flex min-w-0 items-center gap-2",
+                  tone === "error" && "text-destructive",
+                )}
+              >
+                {tone ? (
+                  <span
+                    className={cn(
+                      "size-1.5 shrink-0 rounded-full",
+                      tone === "pending"
+                        ? "animate-pulse bg-current"
+                        : tone === "ready"
+                          ? "bg-emerald-500"
+                          : "bg-destructive",
+                    )}
+                  />
+                ) : null}
+                <span className="truncate" title={status}>
+                  {status}
+                </span>
+              </span>
+            ) : undefined
+          }
           className="max-[420px]:flex-col max-[420px]:items-stretch max-[420px]:gap-3"
         >
-          <div className="flex flex-col items-end gap-1 max-[420px]:w-full">
+          <div className="flex items-center gap-2 max-[420px]:w-full">
+            {action === "download" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 shrink-0 px-2.5 text-xs"
+                disabled={busy || downloading}
+                onClick={() => plan && void startDownload(plan)}
+              >
+                {downloading ? <Spinner className="mr-1.5" /> : null}
+                {t("settings.apiKeys.decisionApi.download")}
+              </Button>
+            ) : action === "unload" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 shrink-0 px-2.5 text-xs"
+                disabled={busy}
+                onClick={() => void unload()}
+              >
+                {t("settings.apiKeys.decisionApi.unload")}
+              </Button>
+            ) : null}
             {knownModel ? (
               <Select
                 value={settings.model}
@@ -296,7 +343,7 @@ export function DecisionApiSection(): ReactElement | null {
                 onValueChange={(name) => void apply({ model: name }, true)}
               >
                 <SelectTrigger
-                  className="w-60 max-[420px]:w-full"
+                  className="w-48 max-[420px]:flex-1"
                   aria-label={t("settings.apiKeys.decisionApi.model")}
                 >
                   <SelectValue>{modelLabel(settings.model)}</SelectValue>
@@ -324,55 +371,6 @@ export function DecisionApiSection(): ReactElement | null {
                 {settings.model}
               </span>
             )}
-            {enabled ? (
-              <div className="flex min-h-7 w-full items-center justify-end gap-3">
-                <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-                  {tone ? (
-                    <span
-                      className={cn(
-                        "size-1.5 shrink-0 rounded-full",
-                        tone === "pending"
-                          ? "animate-pulse bg-current"
-                          : tone === "ready"
-                            ? "bg-emerald-500"
-                            : "bg-destructive",
-                      )}
-                    />
-                  ) : null}
-                  <span
-                    className={cn(
-                      "max-w-[260px] truncate",
-                      tone === "error" && "text-destructive",
-                    )}
-                    title={status}
-                  >
-                    {status}
-                  </span>
-                </span>
-                {action === "download" ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 shrink-0 px-2.5 text-xs"
-                    disabled={busy || downloading}
-                    onClick={() => plan && void startDownload(plan)}
-                  >
-                    {downloading ? <Spinner className="mr-1.5" /> : null}
-                    {t("settings.apiKeys.decisionApi.download")}
-                  </Button>
-                ) : action === "unload" ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 shrink-0 px-2.5 text-xs"
-                    disabled={busy}
-                    onClick={() => void unload()}
-                  >
-                    {t("settings.apiKeys.decisionApi.unload")}
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
           </div>
         </SettingsRow>
 

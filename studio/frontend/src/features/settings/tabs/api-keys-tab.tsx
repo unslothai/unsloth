@@ -195,8 +195,6 @@ export function ApiKeysTab() {
           <LanAccessSection />
 
           <ModelAutoSwitchSection />
-
-          <DecisionApiSection />
         </>
       ) : null}
 
@@ -206,6 +204,9 @@ export function ApiKeysTab() {
         keylessTools={keyless.tools}
         keylessExposure={keyless.exposure}
       />
+
+      {/* Installation-wide and owner-only, after the chat examples so those stay with the keys above them. */}
+      {isOwner ? <DecisionApiSection /> : null}
 
       <Dialog
         open={revokeTarget !== null}
