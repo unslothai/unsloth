@@ -137,7 +137,25 @@ DEFAULT_OWNERS = {
 #
 # `None` means "any credential home", used for the Hugging Face patterns because those
 # write to whichever of HF_HOME or HF_TOKEN_PATH is in force.
+# Both, because `huggingface_hub` computes the token path from HF_TOKEN_PATH when it is
+# set and from HF_HOME when it is not, independently of each other.
+_HF_HOMES = ("HF_HOME", "HF_TOKEN_PATH")
+
 LOGIN_PATTERN_HOMES = {
+    # `hf auth login` writes whichever of these is in force, and nothing else. Leaving
+    # them out of this map meant the "any home" fallback below matched them against every
+    # variable in the job, so a job caching CARGO_HOME while running an unrelated Hugging
+    # Face login failed, naming a Cargo directory the token never goes near. That is the
+    # same false pairing the map was added to remove, left in place for the patterns the
+    # map exists for.
+    r"\bhf\s+auth\s+login\b": _HF_HOMES,
+    r"\bhuggingface-cli\s+login\b": _HF_HOMES,
+    r"\bhf\s+login\b": _HF_HOMES,
+    r"huggingface_hub[.\s]*\.?\s*login\s*\(": _HF_HOMES,
+    r"\bfrom\s+huggingface_hub\s+import\s+[^\n]*\blogin\b": _HF_HOMES,
+    r"\bHfFolder\b[^\n]*\bsave_token\b": _HF_HOMES,
+    r"\bsave_token\s*\(": _HF_HOMES,
+    r"add_to_git_credential\s*=\s*True": _HF_HOMES,
     r"\bnpm\s+login\b": ("NPM_CONFIG_USERCONFIG",),
     r"\bcargo\s+login\b": ("CARGO_HOME",),
     r"\bdocker\s+login\b": ("DOCKER_CONFIG",),
@@ -358,6 +376,39 @@ def _reusable_jobs(job, env = None, inputs = None):
         out.append((inner, _env_of(inner, doc), passed))
     return out
 
+
+def _units(job, doc, env = None, inputs = None, depth = 0):
+    """The independent runners this job's work lands on, as (job, env, inputs).
+
+    A job is one runner, so a login in it and a cache save in it share a filesystem and
+    the pairing is meaningful. A job that delegates with `uses: ./.github/workflows/x.yml`
+    is NOT one runner: every job inside that workflow gets its own, exactly as if they
+    had been written out separately.
+
+    Flattening all of them into the calling job pooled their paths, so a login in one
+    inner job was reported against a cache saved by a different inner job that merely
+    used the same pathname. Two jobs writing `hf-cache` write two different directories
+    on two different machines, and a finding that says otherwise is describing something
+    that cannot happen.
+
+    The split recurses, because a reusable workflow may delegate in turn, and `depth`
+    stops a workflow that (transitively) calls itself from expanding forever.
+    """
+    env = _env_of(job, doc) if env is None else env
+    inputs = {} if inputs is None else inputs
+    if depth > 8:
+        return [(job, env, inputs)]
+    inner = _reusable_jobs(job, env, inputs)
+    if not inner:
+        return [(job, env, inputs)]
+    out = []
+    for inner_job, inner_env, passed in inner:
+        out.extend(
+            _units(inner_job, doc, {**env, **inner_env}, passed, depth + 1)
+        )
+    return out
+
+
 def _flat_steps(job, inherited = None, inputs = None, stack = None):
     """(step, inherited env, caller inputs) for this job and every local composite it uses.
 
@@ -383,8 +434,7 @@ def _flat_steps(job, inherited = None, inputs = None, stack = None):
     stack = () if stack is None else stack
     out = []
     # A job may delegate wholesale to a local reusable workflow instead of listing steps.
-    for inner, inner_env, passed in _reusable_jobs(job, inherited, inputs):
-        out.extend(_flat_steps(inner, {**inherited, **inner_env}, passed, stack))
+
     for step in _steps(job):
         own = step.get("env")
         env = {**inherited, **({str(k): str(v) for k, v in own.items()}
@@ -445,12 +495,19 @@ def _persisted_with_env(job, doc):
     not see at all: a composite saving the job's credential home while the workflow logs
     in was a combination neither half observed.
     """
-    job_env = _env_of(job, doc)
+    out = []
+    for unit, job_env, unit_inputs in _units(job, doc):
+        out.extend(_persisted_in_unit(unit, job_env, unit_inputs))
+    return out
+
+
+def _persisted_in_unit(job, job_env, unit_inputs):
+    """The paths one runner persists. See `_units` for why that boundary matters."""
     out = []
     # The job's own env seeds the walk. Without it a root-level call passing
     # `path: ${{ env.CACHE_DIR }}` resolved against inherited and step-level values only,
     # `_expand` produced an empty string, and the composite appeared to persist nothing.
-    for step, inherited, inputs in _flat_steps(job, job_env):
+    for step, inherited, inputs in _flat_steps(job, job_env, unit_inputs):
         uses = str(step.get("uses") or "").casefold()
         if not any(marker.casefold() in uses for marker in _PERSIST):
             continue
@@ -482,12 +539,19 @@ def _login_offenders(doc, job):
     credentials into `$DOCKER_CONFIG/config.json` with no shell for a pattern to match.
     An action only counts against the variables it really writes, per LOGIN_ACTIONS.
     """
-    job_env = _env_of(job, doc)
-    persisted = [path for path, _step in _persisted_with_env(job, doc)]
+    offenders = []
+    # Per runner, and a login is only ever paired with what its OWN runner persists.
+    for unit, unit_env, unit_inputs in _units(job, doc):
+        offenders.extend(_login_offenders_in_unit(unit, unit_env, unit_inputs))
+    return offenders
+
+
+def _login_offenders_in_unit(job, job_env, unit_inputs):
+    persisted = [path for path, _s in _persisted_in_unit(job, job_env, unit_inputs)]
     if not persisted:
         return []
     offenders = []
-    for step, inherited, inputs in _flat_steps(job, job_env):
+    for step, inherited, inputs in _flat_steps(job, job_env, unit_inputs):
         body = str(step.get("run") or "")
         uses = str(step.get("uses") or "").strip().strip("'\"")
         action = uses.split("@")[0]
@@ -524,7 +588,7 @@ def _login_offenders(doc, job):
                     for p in LOGIN_PATTERNS
                     if body
                     and re.search(p, body, re.IGNORECASE)
-                    and var in (LOGIN_PATTERN_HOMES.get(p) or (var,))
+                    and var in LOGIN_PATTERN_HOMES.get(p, (var,))
                 ),
                 None,
             )
@@ -1396,4 +1460,95 @@ def test_a_shell_login_only_counts_against_what_that_command_writes():
     }
     assert _login_offenders({}, docker_cached), (
         "narrowing the pairing must not stop docker being caught against its own home"
+    )
+
+
+def test_a_hugging_face_login_is_not_judged_against_an_unrelated_home():
+    """`hf auth login` writes a Hugging Face home. It does not write CARGO_HOME.
+
+    Mapping only the non-Hugging-Face patterns left the "any home" fallback covering the
+    Hugging Face ones, so they matched against every credential variable in the job. A
+    job caching `CARGO_HOME` while logging into Hugging Face was reported as leaking its
+    token into the Cargo cache -- the same false pairing the map was introduced to
+    remove, still in force for the patterns it was written for.
+    """
+    safe = {
+        "env": {"CARGO_HOME": "cargo-cache", "HF_HOME": "/tmp/hf"},
+        "steps": [
+            {"run": "hf auth login --token x"},
+            {
+                "uses": "actions/cache/save@v4",
+                "with": {"path": "cargo-cache", "key": "k"},
+            },
+        ],
+    }
+    assert _login_offenders({}, safe) == [], (
+        f"the token goes to /tmp/hf, nowhere near the cached Cargo home: "
+        f"{_login_offenders({}, safe)}"
+    )
+
+    unsafe = {
+        "env": {"CARGO_HOME": "cargo-cache", "HF_HOME": "cargo-cache/hf"},
+        "steps": [
+            {"run": "hf auth login --token x"},
+            {
+                "uses": "actions/cache/save@v4",
+                "with": {"path": "cargo-cache", "key": "k"},
+            },
+        ],
+    }
+    assert _login_offenders({}, unsafe), (
+        "with HF_HOME actually inside the cached path this is still a finding"
+    )
+
+
+def test_two_jobs_of_a_reusable_workflow_are_not_one_runner(tmp_path, monkeypatch):
+    """Each job runs on its own machine, so `hf-cache` in two jobs is two directories.
+
+    Flattening every job of a called workflow into the calling job pooled their
+    persisted paths, so a login in one job was reported against a cache saved by a
+    different job that merely used the same pathname. That finding describes something
+    that cannot happen, and the cure for a guard like that is usually an exemption
+    entry -- which then hides the real case too.
+    """
+    import sys
+
+    module = sys.modules[__name__]
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "split.yml").write_text(
+        "name: split\n"
+        "on:\n  workflow_call:\n"
+        "jobs:\n"
+        # logs in, persists nothing
+        "  login:\n    runs-on: ubuntu-latest\n"
+        "    env:\n      HF_HOME: hf-cache\n"
+        "    steps:\n      - run: hf auth login --token x\n"
+        # persists the same NAME, on a different runner, and never logs in
+        "  save:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: hf-cache\n          key: k\n"
+    )
+    monkeypatch.setattr(module, "REPO", tmp_path)
+
+    caller = {"uses": "./.github/workflows/split.yml"}
+    assert _login_offenders({}, caller) == [], (
+        f"the login and the save are on different runners: "
+        f"{_login_offenders({}, caller)}"
+    )
+
+    # Both in ONE job is a real finding, so the split did not cost the check its teeth.
+    (wf / "split.yml").write_text(
+        "name: split\n"
+        "on:\n  workflow_call:\n"
+        "jobs:\n"
+        "  both:\n    runs-on: ubuntu-latest\n"
+        "    env:\n      HF_HOME: hf-cache\n"
+        "    steps:\n      - run: hf auth login --token x\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: hf-cache\n          key: k\n"
+    )
+    assert _login_offenders({}, caller), (
+        "one job logging in and caching its own credential home is still caught"
     )

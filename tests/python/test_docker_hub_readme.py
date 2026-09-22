@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -139,7 +140,7 @@ def test_the_sync_runs_only_when_latest_moved(sync_job: dict):
 
 
 def _run_sync(
-    step: str,
+    step: dict,
     tmp_path: Path,
     *,
     live_after_patch: str,
@@ -156,6 +157,9 @@ def _run_sync(
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {log}\n"
+        # The auth body is handed over on stdin now, not in argv, so a stub that records
+        # only `$*` cannot see the request it is answering.
+        f'case "$*" in *@-*) printf \'stdin: %s\\n\' "$(cat)" >> {log} ;; esac\n'
         'case "$*" in\n'
         f'  *auth/token*) printf \'{{"access_token": "{token}"}}\' ;;\n'
         "  *-X\\ PATCH*) out=''; while [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=$2; shift; done; : > \"$out\"; printf '200' ;;\n"
@@ -166,14 +170,21 @@ def _run_sync(
     (bin_dir / "curl").chmod(0o755)
     (tmp_path / "docker").mkdir()
     shutil.copy(HUB_README, tmp_path / "docker" / "DOCKERHUB.md")
-    script = step.replace("${{ secrets.DOCKER_API_KEY }}", secret).replace(
-        "${{ env.REGISTRY_USERNAME }}", "unsloth"
+    script = step["run"].replace("${{ env.REGISTRY_USERNAME }}", "unsloth")
+    assert "${{" not in script, (
+        "the body must carry no expression at all: an interpolated secret lands in argv, "
+        "where any process on the runner can read it out of /proc/<pid>/cmdline"
     )
-    assert "${{" not in script, "unexpanded expression in the sync step"
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env["REGISTRY_USERNAME"] = "unsloth"
     env["IMAGE_NAME"] = "unsloth/unsloth"
+    # The step's own env:, which is how the key reaches it now that the body does not
+    # name it. A harness that skips this hands the script an environment the runner would
+    # never build, and the token exchange then posts an empty secret.
+    for name, value in (step.get("env") or {}).items():
+        env[str(name)] = re.sub(r"\$\{\{[^}]*\}\}", secret, str(value))
+    assert "DOCKER_API_KEY" in env, "the step has to receive the key through env:"
     res = subprocess.run(
         ["bash", "-e", "-c", script],
         capture_output = True,
@@ -186,7 +197,7 @@ def _run_sync(
 
 
 def test_the_sync_patches_the_readme_and_confirms_it(sync_job: dict, tmp_path: Path):
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     res, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
     assert res.returncode == 0, res.stdout + res.stderr
     assert "-X PATCH https://hub.docker.com/v2/namespaces/unsloth/repositories/unsloth" in log
@@ -199,7 +210,7 @@ def test_the_sync_never_touches_the_legacy_repository_route(sync_job: dict, tmp_
     /v2/repositories/{owner}/{repo}/ with 403 "token issued from organization access
     token is not allowed", whatever its scopes; only the namespace-scoped route
     accepts it. That 403 failed the sync on every publish before this test existed."""
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     _, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
     assert "/v2/repositories/" not in log
     assert "/v2/namespaces/unsloth/repositories/unsloth" in log
@@ -208,14 +219,14 @@ def test_the_sync_never_touches_the_legacy_repository_route(sync_job: dict, tmp_
 def test_the_sync_fails_when_the_page_did_not_change(sync_job: dict, tmp_path: Path):
     """A 200 from PATCH is not proof. The page is read back and compared, so a token
     without description rights cannot leave the job green and the page stale."""
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     res, _ = _run_sync(step, tmp_path, live_after_patch = "# the old page")
     assert res.returncode != 0, "the sync reported success while the page stayed stale"
     assert "does not match" in res.stdout + res.stderr
 
 
 def test_the_sync_fails_without_a_token(sync_job: dict, tmp_path: Path):
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     res, log = _run_sync(step, tmp_path, live_after_patch = "", token = "")
     assert res.returncode != 0
     assert "PATCH" not in log, "a PATCH was attempted with an empty token"

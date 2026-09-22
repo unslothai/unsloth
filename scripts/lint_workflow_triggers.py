@@ -373,16 +373,103 @@ def _shell_built_key_prefixes(
 
 
 
+
+def _target_name(path: Path) -> str:
+    """What a `uses:` line writes to reach this definition.
+
+    An action is named by its DIRECTORY (`./.github/actions/pip-cache`), a reusable
+    workflow by its FILE (`./.github/workflows/reuse.yml`). Using the directory for both
+    made every reusable workflow look like a target called `workflows`, so no call site
+    ever matched and the values its callers pass were never recovered -- and a key built
+    from one of those values then had no namespace at all.
+    """
+    return path.parent.name if path.name.startswith("action.") else path.name
+
+
+def _namespaces_by_target(callers: list, targets: list) -> dict:
+    """{target: {input name: (literal values, every call site resolved)}}.
+
+    Per target, NOT merged across all of them. Two unrelated definitions may each declare
+    an input called `cache_key`; pooling them by field name assigned one target's values
+    to the other, so a publish key matching a value that only the NON-caching composite
+    ever receives was rejected. The input name alone does not identify a namespace, and a
+    guard that rejects a correct configuration is one someone eventually deletes.
+    """
+    out: dict = {}
+    for target in targets:
+        resolved = _resolved_inputs(callers, _target_name(target))
+        # A declared default is a value the target really can be called with, so it
+        # belongs in the namespace even when no call site mentions the input, and
+        # recording it settles the OMISSION that made the input unresolved. It settles
+        # nothing else: a caller that explicitly passes `${{ matrix.cache_key }}` has
+        # overridden the default with a value this check cannot expand.
+        for field, value in _declared_defaults(target).items():
+            vals, _ok, _omitted, dynamic = resolved.get(field, (set(), True, 0, 0))
+            resolved[field] = (vals | {value}, dynamic == 0, 0, dynamic)
+        out[target] = {f: (p[0], p[1]) for f, p in resolved.items()}
+    return out
+
+
+def _expand_key(key: str, namespaces: dict) -> tuple:
+    """(every literal key this can take, whether that list is complete).
+
+    Substitutes each `${{ inputs.X }}` OCCURRENCE, rather than only a key that is
+    nothing but one expression. `key: prefix-${{ inputs.name }}` called with
+    `name: shared` runs as `prefix-shared`, and matching only whole-key expressions left
+    that exact collision uncompared -- the commonest way a composite names a key, missed
+    because it had a prefix in front of it.
+
+    `runner.os` is expanded too, so the exact comparison sees the three keys a job really
+    writes instead of one expression that equals nothing.
+    """
+    out = {key.strip()}
+    complete = True
+    for _ in range(6):
+        nxt: set = set()
+        changed = False
+        for k in out:
+            match = _INPUT_KEY.search(k)
+            if match is None:
+                nxt.add(k)
+                continue
+            values, resolved = namespaces.get(match.group(1), (set(), False))
+            if not values:
+                nxt.add(k)
+                complete = False
+                continue
+            changed = True
+            if not resolved:
+                # An unresolved call site keeps the raw expression alongside the
+                # literals, or the caller this check cannot expand is silently dropped.
+                complete = False
+                nxt.add(k)
+            for value in sorted(values):
+                nxt.add(k[: match.start()] + value + k[match.end() :])
+        out = nxt
+        if not changed:
+            break
+    expanded: set = set()
+    for k in out:
+        if _RUNNER_OS_EXPR.search(k):
+            expanded.update(_RUNNER_OS_EXPR.sub(v, k) for v in _RUNNER_OS_VALUES)
+        else:
+            expanded.add(k)
+    if any("${{" in k for k in expanded):
+        complete = False
+    return sorted(expanded), complete
+
+
 def _input_namespaces(callers: list, targets: list) -> dict:
-    """{input name: (literal values, every call site resolved)} across several targets."""
+    """The merged view of `_namespaces_by_target`, for the shell-head narrowing only.
+
+    Merging is wrong for deciding a key's value, which is what `_namespaces_by_target`
+    exists for. It stays here because narrowing a shell-built HEAD only ever adds
+    candidate heads, so a value borrowed from a neighbouring target widens the recorded
+    namespace rather than moving it, and widening is the safe direction.
+    """
     merged: dict = {}
     for target in targets:
-        name = (
-            target.parent.name
-            if target.name.startswith("action.")
-            else target.name
-        )
-        resolved = _resolved_inputs(callers, name)
+        resolved = _resolved_inputs(callers, _target_name(target))
         # A declared default is a value the target really can be called with, so it
         # belongs in the namespace even when no call site mentions the input, and
         # recording it settles the OMISSION that made the input unresolved.
@@ -840,7 +927,7 @@ def main() -> int:
         shell_built.update(built)
     for action_path in pr_reachable:
         composite_keys.extend(_extract_cache_keys(action_path))
-        resolved = _resolved_inputs(pr_callers, action_path.parent.name)
+        resolved = _resolved_inputs(pr_callers, _target_name(action_path))
         names, all_literal = resolved.get("name", (set(), False))[:2]
         built = _shell_built_key_prefixes(action_path.read_text(ENC), names, all_literal)
         composite_keys.extend(built)
@@ -873,29 +960,61 @@ def main() -> int:
     # namespace its callers actually produce before either comparison runs.
     input_namespaces = _input_namespaces(pr_callers, pr_reachable)
     publish_callers = [pth for pth, _ in publish_triggered]
-    publish_namespaces = _input_namespaces(
-        publish_callers,
-        sorted(_pr_reachable_action_dirs(workflows_dir, publish_callers)),
+    publish_reachable = sorted(
+        _pr_reachable_action_dirs(workflows_dir, publish_callers)
     )
+    publish_namespaces = _input_namespaces(publish_callers, publish_reachable)
+    # Each definition keeps its OWN inputs. See `_namespaces_by_target`.
+    pr_by_target = _namespaces_by_target(pr_callers, pr_reachable)
+    publish_by_target = _namespaces_by_target(publish_callers, publish_reachable)
 
-    pr_keys = {
-        expanded
-        for key in (
-            {k for _, keys in pr_triggered for k in keys} | set(composite_keys)
-        )
-        for expanded in _expand_input_key(key, input_namespaces)
-    }
+    # (namespace, key) rather than a bare key, so every key is expanded against the
+    # inputs of the definition that declares it and no other.
+    pr_sites = [({}, k) for _, keys in pr_triggered for k in keys]
+    pr_sites += [({}, k) for k in composite_keys]
+    for target, namespace in pr_by_target.items():
+        pr_sites += [(namespace, k) for k in _extract_cache_keys(target)]
+
+    pr_keys: set = set()
+    # PR keys whose value this check could not settle, with the literal head they are
+    # known to start with. Only these can collide with a publish key unseen.
+    pr_undecided: list = []
+    for namespace, key in pr_sites:
+        literals, complete = _expand_key(key, namespace)
+        pr_keys.update(k for k in literals if "${{" not in k)
+        if not complete:
+            pr_undecided.append((key, _prefix_candidates(key)))
+
     for pub_path, pub_keys in publish_triggered:
         for raw in pub_keys:
-          for k in _expand_input_key(raw, publish_namespaces):
-            if k in pr_keys:
-                findings.append(
-                    f"{pub_path.name}: cache key {k!r} is also declared in a "
-                    "PR-triggered workflow. A fork PR could poison this cache "
-                    "and the publish workflow would restore it on next run. "
-                    "Add a unique suffix (e.g. '-publish-only') to partition "
-                    "the namespaces."
-                )
+            literals, _complete = _expand_key(raw, publish_namespaces)
+            for k in literals:
+                if k in pr_keys:
+                    findings.append(
+                        f"{pub_path.name}: cache key {k!r} is also declared in a "
+                        "PR-triggered workflow. A fork PR could poison this cache "
+                        "and the publish workflow would restore it on next run. "
+                        "Add a unique suffix (e.g. '-publish-only') to partition "
+                        "the namespaces."
+                    )
+                    continue
+                if "${{" in k:
+                    continue
+                # Fail closed. An unsettled PR key can equal this publish key at run
+                # time, and reporting it only from the restore-prefix pass meant a
+                # publish workflow with no `restore-keys` at all -- the plainest shape
+                # there is -- never had the question asked. Narrowed to PR keys whose
+                # fixed head this publish key actually begins with, because a PR key
+                # headed `pip-v2-` cannot become `wheels-x` however its tail resolves.
+                for raw_pr, heads in pr_undecided:
+                    if any(k.startswith(h) for h in heads if h):
+                        findings.append(
+                            f"{pub_path.name}: cache key {k!r} cannot be shown not to "
+                            f"collide with the PR-reachable key {raw_pr!r}, whose value "
+                            "this check cannot resolve. Give the publish key a unique "
+                            "suffix (e.g. '-publish-only'), or make the PR key literal."
+                        )
+                        break
 
     # Same trust boundary, reached by prefix instead of by an equal key. `restore-keys`
     # restores the newest entry whose key merely STARTS WITH the prefix, so a publish

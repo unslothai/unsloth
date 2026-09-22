@@ -416,7 +416,16 @@ class TestBuildShRocm:
         body = open(_WORKFLOW, encoding = "utf-8").read()
         assert "DEFAULT_ROCM_VERSION: '7.2.4'" in body
         assert "DEFAULT_TORCH_INDEX_URL: 'https://download.pytorch.org/whl/rocm7.2'" in body
-        assert "6.2" not in body.replace("ubuntu-22.04", "")
+        # ROCm 6.2, which is what this file must no longer mention anywhere. The plain
+        # substring also matched the version comment on a pinned action
+        # (`docker/metadata-action@<sha>  # v6.2.0`), which has nothing to do with ROCm
+        # and would have forced the next person to either unpin the action or weaken the
+        # check. Comments and the `runs-on` image name are dropped first; everything the
+        # workflow actually executes still has to be free of it.
+        meaningful = "\n".join(
+            line.split("#", 1)[0] for line in body.splitlines()
+        ).replace("ubuntu-22.04", "")
+        assert "6.2" not in meaningful
         # per RUN on main: a sha would still pair a scheduled run with a dispatch on
         # an unchanged main, and the group keeps only one pending run
         assert "github.ref == 'refs/heads/main' && github.run_id" in body

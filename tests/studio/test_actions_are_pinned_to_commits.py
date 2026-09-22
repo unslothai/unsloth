@@ -71,6 +71,20 @@ DELIBERATELY_SPLIT: dict[str, str] = {
 }
 
 
+def _owner_repo(ref_repo: str) -> str:
+    """`actions/cache/save` and `actions/cache` are one repository, pinned once.
+
+    A sub-action lives in its parent repository and a `uses:` SHA names a commit of that
+    repository, so `actions/cache@<a>`, `actions/cache/restore@<b>` and
+    `actions/cache/save@<c>` are three different commits of ONE action. Grouping by the
+    full path put each under its own key, every group held a single SHA, and the
+    one-commit rule passed while three versions of `actions/cache` ran side by side --
+    exactly the half-finished upgrade it exists to catch.
+    """
+    parts = ref_repo.split("/")
+    return "/".join(parts[:2]) if len(parts) > 2 else ref_repo
+
+
 def _sources():
     """Every workflow and action definition under .github, as (path, text)."""
     for path in sorted(GITHUB.rglob("*.y*ml")):
@@ -246,7 +260,7 @@ def test_every_exemption_still_exists_and_still_needs_one():
 
 @pytest.mark.parametrize(
     "repo",
-    sorted({r for _, _, _, r, _ in _references()}),
+    sorted({_owner_repo(r) for _, _, _, r, _ in _references()}),
 )
 def test_an_action_is_pinned_to_one_sha_everywhere_it_is_used(repo):
     """Two SHAs for one action means two versions of it run, which is nearly always a slip.
@@ -254,7 +268,11 @@ def test_an_action_is_pinned_to_one_sha_everywhere_it_is_used(repo):
     Not a security property on its own, but it is how a half-finished upgrade shows up,
     and a stale copy is the one that keeps an already-fixed bug alive.
     """
-    revs = {rev for _, _, _, r, rev in _references() if r == repo and _SHA.match(rev)}
+    revs = {
+        rev
+        for _, _, _, r, rev in _references()
+        if _owner_repo(r) == repo and _SHA.match(rev)
+    }
     if len(revs) <= 1:
         return
     if repo in DELIBERATELY_SPLIT:
@@ -262,7 +280,7 @@ def test_an_action_is_pinned_to_one_sha_everywhere_it_is_used(repo):
     sites = sorted(
         f"{p.relative_to(GITHUB).as_posix()}:{ln}: {rev[:12]}"
         for p, ln, _, r, rev in _references()
-        if r == repo and _SHA.match(rev)
+        if _owner_repo(r) == repo and _SHA.match(rev)
     )
     pytest.fail(
         f"{repo} is pinned to {len(revs)} different commits, so different jobs run "
@@ -306,3 +324,24 @@ def test_the_reference_predicate_accepts_valid_git_ref_punctuation():
     # Still not references, so over-collecting does not turn into over-reporting.
     for ref in ("./.github/actions/x", "docker://alpine:3", "actions/checkout", ""):
         assert _REF.match(ref) is None, ref
+
+
+def test_a_sub_action_is_pinned_with_its_repository():
+    """`actions/cache/save` is a path inside `actions/cache`, not a separate repository.
+
+    A `uses:` SHA names a commit of the repository the action lives in, so
+    `actions/cache@<a>`, `actions/cache/restore@<b>` and `actions/cache/save@<c>` are
+    three commits of ONE action. Grouping by the full path gave each its own group,
+    every group held exactly one SHA, and the one-commit rule passed while three
+    versions of `actions/cache` ran side by side -- the precise half-finished upgrade it
+    exists to report.
+    """
+    assert _owner_repo("actions/cache/save") == "actions/cache"
+    assert _owner_repo("actions/cache/restore") == "actions/cache"
+    assert _owner_repo("actions/cache") == "actions/cache"
+    assert _owner_repo("actions/checkout") == "actions/checkout"
+    # A deep path still resolves to the repository that holds it.
+    assert _owner_repo("owner/repo/a/b/c") == "owner/repo"
+    # The grouping has to be what the rule is parametrized over, or it changes nothing.
+    groups = {_owner_repo(r) for _, _, _, r, _ in _references()}
+    assert "actions/cache/save" not in groups

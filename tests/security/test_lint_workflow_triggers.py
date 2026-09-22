@@ -2301,3 +2301,220 @@ def test_a_shell_key_that_never_leaves_the_step_is_not_a_namespace(tmp_path):
         f"$GITHUB_OUTPUT, so `shared-` is not a namespace it can "
         f"write:\n{proc.stdout}\n{proc.stderr}"
     )
+
+
+def test_an_input_embedded_in_a_key_is_expanded(tmp_path):
+    """`key: prefix-${{ inputs.name }}` with `name: shared` runs as `prefix-shared`.
+
+    Only a key that was NOTHING but one expression got expanded, so the commonest
+    spelling -- an input with a literal prefix in front of it -- kept its raw text
+    through the exact comparison and matched no publish key. With no `restore-keys` on
+    the publish side the prefix pass never looked either, leaving the plainest exact
+    collision unguarded.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "embedded"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: embedded\n"
+        "inputs:\n  name:\n    description: n\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: actions/cache@v4\n"
+        "      with:\n"
+        "        path: wheels\n"
+        "        key: prefix-${{ inputs.name }}\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/embedded\n"
+        "        with:\n          name: shared\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: prefix-shared\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the composite writes `prefix-shared`, which the publish workflow restores by "
+        f"that exact name:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "prefix-shared" in proc.stderr
+
+
+def test_runner_os_is_expanded_before_the_exact_comparison(tmp_path):
+    """`shared-${{ runner.os }}` and `shared-Linux` are the same key on a Linux runner.
+
+    The exact comparison was a plain string test, so two keys that are equal at run time
+    but differ textually never met. `_prefix_candidates` already knew the three values
+    `runner.os` takes, but only the fallback-prefix pass used them, so a publish workflow
+    with no `restore-keys` never benefited.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: shared-${{ runner.os }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: shared-Linux\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"both jobs write `shared-Linux` on a Linux runner:\n{proc.stdout}\n"
+        f"{proc.stderr}"
+    )
+
+
+def test_an_unresolvable_pr_key_is_reported_against_an_exact_publish_key(tmp_path):
+    """Fail closed when the PR key's value cannot be settled and could equal a publish key.
+
+    Unresolved keys were reported only from inside the restore-prefix pass, so a publish
+    workflow that uses an exact key and no `restore-keys` at all had the question never
+    asked: a matrix-supplied `shared-${{ matrix.tag }}` may well produce `shared-key`,
+    and the lint exited 0.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    strategy:\n      matrix:\n        tag: [a, b]\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: shared-${{ matrix.tag }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: shared-key\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the matrix value is unknown and `shared-key` is one of the keys it could "
+        f"produce:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+    # ... and a publish key the PR key's fixed head cannot lead to stays accepted, or
+    # every unresolved key in the tree would reject every publish key in it.
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: wheels-publish-only\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"a key headed `shared-` cannot become `wheels-publish-only` however its tail "
+        f"resolves:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_two_targets_sharing_an_input_name_keep_their_own_namespaces(tmp_path):
+    """An input name does not identify a namespace; the definition it belongs to does.
+
+    Merging every reachable target's inputs by field name handed one composite's values
+    to another, so a publish key equal to a value only the NON-caching composite ever
+    receives was rejected. A guard that fails a correct configuration is one that gets
+    deleted, so this direction matters as much as the bypasses.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    caching = root / "actions" / "caching"
+    unrelated = root / "actions" / "unrelated"
+    wf.mkdir(parents = True)
+    caching.mkdir(parents = True)
+    unrelated.mkdir(parents = True)
+    (caching / "action.yml").write_text(
+        "name: caching\n"
+        "inputs:\n  cache_key:\n    description: k\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - uses: actions/cache@v4\n"
+        "      with:\n        path: wheels\n        key: ${{ inputs.cache_key }}\n"
+    )
+    # Same input NAME, no cache anywhere in it.
+    (unrelated / "action.yml").write_text(
+        "name: unrelated\n"
+        "inputs:\n  cache_key:\n    description: k\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - run: echo ${{ inputs.cache_key }}\n"
+        "      shell: bash\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/caching\n"
+        "        with:\n          cache_key: safe-key\n"
+        "      - uses: ./.github/actions/unrelated\n"
+        "        with:\n          cache_key: publish-key\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: publish-key\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"`publish-key` only ever reaches the composite that caches nothing, so no PR "
+        f"cache writes it:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+    # The caching composite receiving it IS a collision, so the narrowing kept its teeth.
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/caching\n"
+        "        with:\n          cache_key: publish-key\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"now the caching composite is the one given `publish-key`:\n{proc.stdout}\n"
+        f"{proc.stderr}"
+    )
+
+
+def test_a_reusable_workflow_is_named_by_its_file_not_its_directory():
+    """`uses: ./.github/workflows/reuse.yml` names a FILE. An action names a directory.
+
+    Taking the parent directory for both made every reusable workflow a target called
+    `workflows`, which no call site mentions, so the values its callers pass were never
+    recovered and a key built from one of them had no namespace at all.
+    """
+    lint = _lint_module()
+    assert lint._target_name(Path(".github/workflows/reuse.yml")) == "reuse.yml"
+    assert lint._target_name(Path(".github/actions/pip-cache/action.yml")) == "pip-cache"
+    assert lint._target_name(Path(".github/actions/pip-cache/action.yaml")) == "pip-cache"
