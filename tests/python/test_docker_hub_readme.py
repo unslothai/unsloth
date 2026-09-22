@@ -156,6 +156,15 @@ def _run_sync(
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {log}\n"
+        # The auth body goes to curl on STDIN (`--data-binary @-`) so the key is never a
+        # command-line argument. A stub that logs only "$*" therefore cannot see the
+        # identifier at all, and the assertion that the token authenticates as the ORG
+        # passed vacuously until the body moved off argv, then failed with nothing wrong.
+        # Capture the body too, and only when curl was actually told to read stdin: the
+        # PATCH passes its body as an argument and has no stdin to drain.
+        'case "$*" in\n'
+        f"  *--data-binary\\ @-*) cat >> {log} ;;\n"
+        "esac\n"
         'case "$*" in\n'
         f'  *auth/token*) printf \'{{"access_token": "{token}"}}\' ;;\n'
         "  *-X\\ PATCH*) out=''; while [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=$2; shift; done; : > \"$out\"; printf '200' ;;\n"
@@ -174,6 +183,13 @@ def _run_sync(
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env["REGISTRY_USERNAME"] = "unsloth"
     env["IMAGE_NAME"] = "unsloth/unsloth"
+    # The key reaches the script through the step's `env:` block, not through a `${{ }}`
+    # inside the `run:`, so the replace above matches nothing and only this line supplies
+    # it. Without it the body builder dies with KeyError, curl is handed an empty request,
+    # and the step still exits 0 because the failure is inside a pipeline. The env block is
+    # pinned by test_the_step_env_is_what_this_harness_supplies so a rename cannot put it
+    # back to silently sending no credential at all.
+    env["DOCKER_API_KEY"] = secret
     res = subprocess.run(
         ["bash", "-e", "-c", script],
         capture_output = True,
@@ -183,6 +199,26 @@ def _run_sync(
         timeout = 60,
     )
     return res, log.read_text(encoding = "utf-8") if log.exists() else ""
+
+
+def test_the_step_env_is_what_this_harness_supplies(sync_job: dict):
+    """The harness hands the script its credential; this pins that it hands the RIGHT one.
+
+    The secret moved out of the `run:` body into the step's `env:` so it is never a command
+    line argument. That is a real improvement, but it also means a `.replace()` on the body
+    silently stops supplying anything, and the step exits 0 regardless because the builder
+    fails inside a pipeline. Renaming the variable must fail here, loudly, rather than
+    downgrading the assertions below to statements about an empty request.
+    """
+    env = sync_job["steps"][-1].get("env") or {}
+    assert "DOCKER_API_KEY" in env, (
+        f"the sync step no longer takes DOCKER_API_KEY from `env:` (it declares {sorted(env)}). "
+        f"_run_sync supplies that exact name; update both together."
+    )
+    assert "secrets.DOCKER_API_KEY" in env["DOCKER_API_KEY"]
+    assert (
+        "${{" not in sync_job["steps"][-1]["run"]
+    ), "the credential is back in the `run:` body, where it becomes a command-line argument"
 
 
 def test_the_sync_patches_the_readme_and_confirms_it(sync_job: dict, tmp_path: Path):
