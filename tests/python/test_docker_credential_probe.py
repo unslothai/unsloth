@@ -46,6 +46,14 @@ def _run(
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {log}\n"
+        # The auth body goes to curl on STDIN (`--data-binary @-`) so the key is never a
+        # command-line argument. A stub that logs only "$*" therefore cannot see the
+        # identifier at all, and the assertion that the token authenticates as the ORG
+        # passed vacuously until the body moved off argv, then failed with nothing wrong.
+        # Capture the body too, and only when curl was actually told to read stdin.
+        'case "$*" in\n'
+        f"  *--data-binary\\ @-*) cat >> {log} ;;\n"
+        "esac\n"
         'case "$*" in\n'
         f'  *auth/token*) printf \'{{"access_token": "{token}"}}\' ;;\n'
         "  *-X\\ DELETE*) printf '204' ;;\n"
@@ -61,6 +69,13 @@ def _run(
     env.update(
         REGISTRY_USERNAME = "unsloth", IMAGE_NAME = "unsloth/unsloth", PROBE_TAG = "credential-probe"
     )
+    # The key reaches the script through the step's `env:` block, not through a `${{ }}`
+    # inside the `run:`, so the replace above matches nothing and only this line supplies
+    # it. Without it the body builder dies with KeyError, curl is handed an empty request,
+    # and the step still exits 0 because the failure is inside a pipeline. The env block is
+    # pinned by test_the_step_env_is_what_this_harness_supplies so a rename cannot put it
+    # back to silently sending no credential at all.
+    env["DOCKER_API_KEY"] = "not-a-secret"
     res = subprocess.run(
         ["bash", "-e", "-c", script],
         capture_output = True,
@@ -70,6 +85,33 @@ def _run(
         timeout = 60,
     )
     return res, log.read_text(encoding = "utf-8") if log.exists() else ""
+
+
+def test_the_step_env_is_what_this_harness_supplies():
+    """The harness hands the script its credential; this pins that it hands the RIGHT one.
+
+    The secret moved out of the `run:` body into the step's `env:` so it is never a command
+    line argument. That is a real improvement, but it also means a `.replace()` on the body
+    silently stops supplying anything, and the step exits 0 regardless because the builder
+    fails inside a pipeline. Renaming the variable must fail here, loudly, rather than
+    downgrading the assertions below to statements about an empty request.
+    """
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    steps = [
+        s
+        for job in doc["jobs"].values()
+        for s in job["steps"]
+        if s.get("name") == "Delete the probe tag"
+    ]
+    env = steps[0].get("env") or {}
+    assert "DOCKER_API_KEY" in env, (
+        f"the delete step no longer takes DOCKER_API_KEY from `env:` (it declares "
+        f"{sorted(env)}). _run supplies that exact name; update both together."
+    )
+    assert "secrets.DOCKER_API_KEY" in env["DOCKER_API_KEY"]
+    assert (
+        "${{" not in steps[0]["run"]
+    ), "the credential is back in the `run:` body, where it becomes a command-line argument"
 
 
 def test_the_delete_uses_the_namespace_route_the_org_token_is_allowed_on(
