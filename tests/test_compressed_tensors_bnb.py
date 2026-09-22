@@ -888,3 +888,19 @@ def test_an_explicit_quantizer_other_than_bnb_4bit_keeps_the_checkpoint_config()
     )
     assert method == "compressed-tensors" and not load_in_4bit
     assert getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is None
+
+
+def test_both_loaders_gate_packed_requantization_on_the_callers_quantizer():
+    import ast, inspect
+    from unsloth.models import llama, vision
+    for module in (llama, vision):
+        calls = [
+            node
+            for node in ast.walk(ast.parse(inspect.getsource(module)))
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "check_and_disable_bitsandbytes_loading"
+        ]
+        assert calls, module.__name__
+        for call in calls:
+            flag = next(k.value for k in call.keywords if k.arg == "requantize_packed")
+            assert "quantization_config_selects_bnb_4bit" in ast.unparse(flag), module.__name__

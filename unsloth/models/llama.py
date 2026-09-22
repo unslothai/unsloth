@@ -2593,6 +2593,7 @@ class FastLlamaModel:
 
         from .loader_utils import (
             check_and_disable_bitsandbytes_loading,
+            quantization_config_selects_bnb_4bit,
             sync_unsloth_model_name_bnb_flags,
         )
         from unsloth_zoo.utils import get_quant_type
@@ -2606,7 +2607,9 @@ class FastLlamaModel:
             load_in_8bit = load_in_8bit,
             # vLLM reads a packed compressed-tensors checkpoint itself; only the transformers 4-bit load
             # re-quantizes it. A num_labels load stays in-process even with fast_inference.
-            requantize_packed = not _vllm_will_load_weights(fast_inference, num_labels),
+            requantize_packed = not _vllm_will_load_weights(fast_inference, num_labels)
+            # A caller's own quantizer must stay authoritative: only a bitsandbytes 4-bit one consumes the plan.
+            and quantization_config_selects_bnb_4bit(kwargs.get("quantization_config", None)),
         )
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env
         # was built before remap/disable). gpt-oss only.
