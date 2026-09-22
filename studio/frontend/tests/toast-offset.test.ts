@@ -103,3 +103,21 @@ test("offsets are pure, so a caller cannot poison the next lookup", () => {
     mobile: { top: 52, right: 16 },
   });
 });
+
+test("the header offset follows the UI font size, the titlebar does not", () => {
+  // The page header is 48px * the scale, so a fixed 52px top lands inside it
+  // at the 20px setting. The titlebar band is fixed and keeps its 34px.
+  assert.deepEqual(getToastOffsets("/chat", false, false, 20 / 15), {
+    default: { top: 69, right: 12 },
+    mobile: { top: 69, right: 16 },
+  });
+  assert.deepEqual(getToastOffsets("/chat", true, true, 20 / 15), {
+    default: { top: 103, right: 12 },
+    mobile: { top: 103, right: 16 },
+  });
+  // A route with no header keeps its corner inset at any size.
+  assert.deepEqual(getToastOffsets("/settings", false, false, 20 / 15), {
+    default: { top: 12, right: 12 },
+    mobile: { top: 16, right: 16 },
+  });
+});

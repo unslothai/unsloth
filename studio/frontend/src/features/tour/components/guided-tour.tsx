@@ -252,7 +252,7 @@ export function GuidedTour({
                   <SpotlightOverlay rect={spotlightRect} vw={vw} vh={vh} maskId={maskId} />
                   {spotlightRect && (
                     <motion.div
-                      className="fixed z-[51] pointer-events-none rounded-[22px] ring-1 ring-white/10"
+                      className="fixed z-[51] pointer-events-none rounded-[22px] ring-1 ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
                       initial={false}
                       animate={{
                         left: spotlightRect.x,
@@ -291,7 +291,7 @@ export function GuidedTour({
                     // hugs the corner about twice as tightly as the arc, which reads as a
                     // boxed-in card rather than a rounded one.
                     "relative overflow-hidden rounded-[28px]",
-                    "bg-white/95 text-foreground ring-1 ring-black/10 dark:bg-zinc-900/96 dark:text-zinc-100 dark:ring-white/12",
+                    "bg-white/95 text-foreground ring-1 ring-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] dark:bg-zinc-900/96 dark:text-zinc-100 dark:ring-[rgb(255_255_255_/_calc(0.12*var(--contrast-edge-gain,1)))]",
                     "shadow-[0_30px_120px_rgba(0,0,0,0.35)]",
                   )}
                   style={{
@@ -300,7 +300,7 @@ export function GuidedTour({
                 >
                   <div
                     className={cn(
-                      "absolute z-10 size-3 rotate-45 rounded-[3px] bg-white/95 ring-1 ring-black/10 dark:bg-zinc-900/96 dark:ring-white/12",
+                      "absolute z-10 size-3 rotate-45 rounded-[3px] bg-white/95 ring-1 ring-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] dark:bg-zinc-900/96 dark:ring-[rgb(255_255_255_/_calc(0.12*var(--contrast-edge-gain,1)))]",
                       placement === "right" &&
                         "-left-1 top-1/2 -translate-y-1/2",
                       placement === "left" &&
@@ -321,7 +321,7 @@ export function GuidedTour({
                   <div className="relative p-5">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="inline-flex items-center gap-2 rounded-full bg-black/[0.04] px-2.5 py-1 text-ui-10 font-mono text-foreground/60 ring-1 ring-black/10 dark:bg-white/[0.04] dark:text-zinc-200/75 dark:ring-white/14">
+                        <div className="inline-flex items-center gap-2 rounded-full bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-2.5 py-1 text-ui-10 font-mono text-foreground/60 ring-1 ring-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] dark:text-zinc-200/75 dark:ring-[rgb(255_255_255_/_calc(0.14*var(--contrast-edge-gain,1)))]">
                           {idx + 1}/{total}
                           <span className="size-1 rounded-full bg-control-accent/70" />
                           guided tour
@@ -340,7 +340,7 @@ export function GuidedTour({
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        className="text-foreground/60 hover:text-foreground hover:bg-black/[0.05] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-white/[0.1]"
+                        className="text-foreground/60 hover:text-foreground hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                         onClick={() => requestClose("skip")}
                         aria-label="Skip tour"
                       >
@@ -351,7 +351,7 @@ export function GuidedTour({
                     <div className="mt-5 flex items-center justify-between gap-3">
                       <Button
                         variant="ghost"
-                        className="text-foreground/60 hover:text-foreground hover:bg-black/[0.05] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-white/[0.1]"
+                        className="text-foreground/60 hover:text-foreground hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                         onClick={() => requestClose("skip")}
                       >
                         Skip
@@ -360,7 +360,7 @@ export function GuidedTour({
                       <div className="flex items-center gap-2">
                         <Button
                           variant="outline"
-                          className="border-black/10 bg-white/70 text-foreground hover:bg-white hover:text-foreground dark:border-transparent dark:bg-white/[0.07] dark:text-zinc-100 dark:hover:bg-white/[0.12]"
+                          className="border-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] bg-white/70 text-foreground hover:bg-white hover:text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.07*var(--contrast-wash-gain,1)))] dark:text-zinc-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
                           disabled={idx === 0}
                           onClick={() => setIdx((i) => Math.max(0, i - 1))}
                         >

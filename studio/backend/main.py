@@ -1540,16 +1540,23 @@ from utils.host_policy import cors_origins_for_mode  # noqa: E402
 
 
 class RemoteAccessCORSMiddleware(CORSMiddleware):
-    """Allow remote browser origins only while a Cloudflare URL is published."""
+    """Admit the published Cloudflare origin, on top of the startup allowlist."""
 
     def __init__(self, cors_app, *, remote_access_state, **kwargs):
         self.remote_access_state = remote_access_state
         super().__init__(cors_app, **kwargs)
 
     def is_allowed_origin(self, origin: str) -> bool:
-        return bool(
-            getattr(self.remote_access_state, "cloudflare_url", None)
-        ) or super().is_allowed_origin(origin)
+        # The tunnel names ONE origin to admit, it is not a switch admitting every origin: api-only is
+        # locked to the Tauri app (run.py) and Settings > Remote access must not hand that lock to any
+        # open page. The tunnel-served UI calls relative URLs and is already same-origin; this is for a
+        # browser that does reach the API cross-origin from the tunnel's own document.
+        published = getattr(self.remote_access_state, "cloudflare_url", None)
+        if published:
+            tunnel_origin = _origin_of(published)
+            if tunnel_origin is not None and tunnel_origin == _origin_of(origin):
+                return True
+        return super().is_allowed_origin(origin)
 
 
 _cors_origins = cors_origins_for_mode(
@@ -2680,6 +2687,17 @@ def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]
     return (scheme, host, port)
 
 
+def _origin_of(url: Optional[str]) -> Optional[tuple[str, str, int]]:
+    """Canonical origin of a URL or of an Origin header value, or ``None`` when it is neither."""
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    return _canonical_origin(parsed.scheme, parsed.netloc)
+
+
 def _is_loopback_ip(host: Optional[str]) -> bool:
     """Return whether ``host`` is a loopback IP, including IPv4-mapped IPv6."""
     if not host or "%" in host:  # a scope id (::1%eth0) is never a plain loopback
@@ -2761,13 +2779,44 @@ def _is_same_origin_request(request: Request) -> bool:
     return origin_canon == self_canon
 
 
+# Colab's proxy is itself a forwarded-header ingress, invisible to the loopback tests, so it is identified
+# positively by its own authority: naming one tunnel vendor instead leaves every other relay (ngrok,
+# localtunnel, bore, ssh -R) reading as the local browser.
+_COLAB_PROXY_HOST_SUFFIXES = ("colab.googleusercontent.com", ".googleusercontent.com", ".colab.dev")
+# The proxy relays the notebook owner and only the notebook owner, so it sets x-forwarded-for (which is why
+# run.py runs uvicorn with proxy_headers there). The other four mark a relay we cannot attribute to it.
+_COLAB_TOLERATED_PROXY_HEADERS = frozenset({"x-forwarded-for"})
+
+
+def _host_header_is_colab_proxy(host_header: Optional[str]) -> bool:
+    """Whether the Host authority belongs to Colab's own port proxy."""
+    if not host_header:
+        return False
+    host = host_header.strip()
+    if host.startswith("["):  # bracketed IPv6 is never a Colab proxy authority
+        return False
+    if host.count(":") == 1:  # host:port
+        host = host.split(":", 1)[0]
+    host = host.lower().rstrip(".")
+    return host.endswith(_COLAB_PROXY_HOST_SUFFIXES)
+
+
+def _is_colab_notebook_request(request: Request) -> bool:
+    """Allow bootstrap injection through Colab's single-user notebook proxy, and nothing else."""
+    for header in _PROXIED_CLIENT_HEADERS:
+        if header in _COLAB_TOLERATED_PROXY_HEADERS:
+            continue
+        if request.headers.get(header) is not None:
+            return False
+    return _host_header_is_colab_proxy(request.headers.get("host"))
+
+
 def _should_inject_bootstrap(request: Request) -> bool:
     """Whether to embed the seeded bootstrap password in index.html."""
     if not _is_same_origin_request(request):
         return False
-    if _IS_COLAB:
-        # Single-user notebook proxy: allow autofill, but never a public tunnel (sets cf-connecting-ip).
-        return request.headers.get("cf-connecting-ip") is None
+    if _IS_COLAB and _is_colab_notebook_request(request):
+        return True
     return _is_local_bootstrap_request(request)
 
 

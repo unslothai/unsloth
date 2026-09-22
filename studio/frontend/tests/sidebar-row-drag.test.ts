@@ -70,7 +70,6 @@ function context(
       projectChats: (projectId) =>
         ({ work: ["c1", "c2"], home: ["c3"], misc: [] })[projectId] ?? [],
     },
-    reorderSwitchesSort: true,
     ...overrides,
   };
 }
@@ -140,8 +139,8 @@ test("a chat reorders within its own list, on the edge under the pointer", () =>
   assert.equal(plan.effects.switchSort, undefined);
 });
 
-// A sorted list would undo the drop, so it switches to Manual, unless the user turned that off.
-test("a reorder in a sorted list switches it to Manual order, or is refused", () => {
+// A sorted list would undo the drop, so it switches to Manual.
+test("a reorder in a sorted list switches it to Manual order", () => {
   const drag = chat("r2", "recents", RECENTS_ORDER_SCOPE, null);
   const zone = chatRow("recents", RECENTS_ORDER_SCOPE, "r1");
   const switching = plannedDrop(planSidebarDrop(drag, zone, "top", context()));
@@ -161,22 +160,12 @@ test("a reorder in a sorted list switches it to Manual order, or is refused", ()
     ),
   );
   assert.equal(pinnedSwitch.effects.switchSort, "pinned");
-  assert.equal(
-    planSidebarDrop(drag, zone, "top", context({ reorderSwitchesSort: false })),
-    null,
-  );
   // And a list already on Manual never asks.
-  assert.equal(
-    plannedDrop(
-      planSidebarDrop(
-        drag,
-        zone,
-        "top",
-        context({ chatSort: "manual", reorderSwitchesSort: false }),
-      ),
-    ).action.kind,
-    "reorder",
+  const manual = plannedDrop(
+    planSidebarDrop(drag, zone, "top", context({ chatSort: "manual" })),
   );
+  assert.equal(manual.action.kind, "reorder");
+  assert.equal(manual.effects.switchSort, undefined);
 });
 
 // An edge the row is already on is not a move, and a line there would promise one. The spot
@@ -856,8 +845,8 @@ test("alt and an arrow reorder a row without a pointer", async () => {
     APP_SIDEBAR,
     /reorderRowBy\(item, orderedIds, sort, event\.key === "ArrowDown" \? 1 : -1\);/,
   );
-  // Same rule as a drop.
-  assert.match(APP_SIDEBAR, /if \(resorts && !reorderSwitchesSort\) return;/);
+  // Same rule as a drop: a sorted list switches to Manual.
+  assert.match(APP_SIDEBAR, /if \(resorts\) \{\n\s*sort\.set\("manual"\);/);
   // A touch browser starts no drag, so its row menus keep Move up and Move down.
   assert.match(APP_SIDEBAR, /function renderMoveRowItems\(/);
   // A pinned folder moves under Pinned's sort rule, from the keyboard and the touch menu alike:
@@ -903,43 +892,28 @@ test("the hint beside the cursor names every kind of drop", () => {
   ]) {
     assert.ok(APP_SIDEBAR.includes(use), `${use} is never rendered`);
   }
-  // In a portal, and only while the user wants it.
+  // In a portal, so the sidebar cannot clip it.
   assert.match(
     APP_SIDEBAR,
-    /draggingRow && dragHints && typeof document !== "undefined"\n\s*\? createPortal\(/,
+    /draggingRow && typeof document !== "undefined"\n\s*\? createPortal\(/,
   );
   assert.ok(APP_SIDEBAR.includes('data-testid="sidebar-drop-hint"'));
 });
 
-// The three preferences persist and sit in the Organize menu.
-test("drag-and-drop preferences persist and show in the Organize menu", () => {
-  const state = useSidebarOrganizationStore.getState();
-  assert.equal(state.dragHints, true);
-  assert.equal(state.reorderSwitchesSort, true);
-  assert.equal(state.dragOpensFolders, true);
-  state.setDragHints(false);
-  state.setReorderSwitchesSort(false);
-  state.setDragOpensFolders(false);
-  const next = useSidebarOrganizationStore.getState();
-  assert.equal(next.dragHints, false);
-  assert.equal(next.reorderSwitchesSort, false);
-  assert.equal(next.dragOpensFolders, false);
-  for (const key of [
-    "dragDrop",
-    "dragHints",
-    "reorderSwitchesSort",
-    "dragOpensFolders",
-  ]) {
-    assert.ok(EN.includes(`${key}:`), `${key} is missing from the en locale`);
-    assert.ok(
-      APP_SIDEBAR.includes(`shell.organize.${key}`),
-      `${key} is never rendered`,
-    );
+// The gesture has one behaviour, not three switches: the hint shows, a reorder in a sorted list
+// switches it to Manual, and a closed folder opens under a resting pointer. Nothing to persist.
+test("drag-and-drop has no preferences of its own", () => {
+  // `in`, not an indexed read through a cast: SidebarOrganizationState has no index
+  // signature, so `as Record<string, unknown>` is a conversion tsc rejects outright and
+  // the test never compiled. `in` needs no cast and asks the stricter question anyway,
+  // since a key that came back holding undefined is still back in the store.
+  const state: object = useSidebarOrganizationStore.getState();
+  for (const key of ["dragHints", "reorderSwitchesSort", "dragOpensFolders"]) {
+    assert.ok(!(key in state), `${key} is back in the store`);
+    assert.ok(!EN.includes(`${key}:`), `${key} is back in the en locale`);
   }
-  assert.match(
-    APP_SIDEBAR,
-    /<DropdownMenuCheckboxItem\n\s*key=\{option\.key\}\n\s*checked=\{option\.get\(\)\}/,
-  );
+  assert.ok(!EN.includes("dragDrop:"));
+  assert.ok(!APP_SIDEBAR.includes("DRAG_OPTIONS"));
 });
 
 // Resting on a closed folder or section opens it.
@@ -953,7 +927,7 @@ test("a closed folder or section opens under a resting pointer", () => {
     APP_SIDEBAR,
     /if \(zone\.section === "pinned"\) setPinnedOpen\(true\);/,
   );
-  assert.match(APP_SIDEBAR, /springOpen: dragOpensFolders,/);
+  assert.match(HOOK, /if \(zoneOptions\?\.closed\) \{/);
 });
 
 // A chat dropped into a folder or Recents is moved, and the move can fail. Its slot in the new

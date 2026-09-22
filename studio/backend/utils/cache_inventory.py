@@ -155,10 +155,8 @@ def _uv_dirs() -> list[Path]:
     return roots
 
 
-# One answer per tool per process; a config file does not change under a running
-# backend. The lock spans the probe, not just the store: recording the miss
-# first let a second cold request read it as a finished failure and show the
-# fallback path, while its Clear resolved the configured one.
+# One answer per tool per process. The lock spans the PROBE, not just the store: recording the
+# miss first let a second cold request read it as a finished failure and show the fallback path.
 _probed_cache_dirs: dict[str, Optional[Path]] = {}
 _probe_lock = threading.Lock()
 
@@ -1025,10 +1023,8 @@ def _described(definition: CacheDefinition, *, refresh: bool) -> dict:
         with _size_cache_lock:
             epoch = _size_epochs.get(definition.key, 0)
             remembered = _size_cache.get(definition.key)
-        # A read that waited takes the walk it waited for, on the terms it asked
-        # for: an ordinary one wants a fresh enough answer, a forced one wants a
-        # walk that BEGAN after the request, or it gets the very figures it
-        # asked to replace.
+        # A forced read needs a walk that BEGAN after it asked, or it gets the figures it
+        # asked to replace; an ordinary one only needs a fresh enough answer.
         if remembered is not None:
             if refresh:
                 if remembered[0] >= started:
@@ -1104,10 +1100,8 @@ def _remove_entry(
             try:
                 shutil.rmtree(path)
             except OSError:
-                # It removed some children and then hit a permission error or a file that moved
-                # under it. The whole subtree is already in the ledger, so what survived is
-                # recorded too and subtracted at the end: reporting bytes that are still on disk
-                # is the one thing a "freed" figure must not do.
+                # Partial removal: the whole subtree is already in the ledger, so survivors are
+                # recorded and subtracted. A "freed" figure must never count bytes still on disk.
                 _measure_tree(path, survivors)
                 raise
         else:
@@ -1172,9 +1166,14 @@ def _reserve_downloads(key: str) -> tuple[list, Optional[str]]:
     if not kinds:
         return [], None
     try:
-        from hub.utils.download_registry import get_datasets_registry, get_models_registry
+        from hub.services.datasets import downloads as dataset_downloads
+        from hub.utils.download_registry import get_models_registry
+
+        # The SERVICE, not get_datasets_registry(): a managed install has one dataset registry
+        # per account, and the singleton is only the owner's. The service holds them all and
+        # keeps a new one from being born free mid-purge.
         registries = [
-            get_models_registry() if kind == "models" else get_datasets_registry() for kind in kinds
+            get_models_registry() if kind == "models" else dataset_downloads for kind in kinds
         ]
     except Exception as exc:  # noqa: BLE001 - a broken registry must not block a purge
         logger.debug(f"Could not reach the download registries for {key}: {exc}")
@@ -1201,10 +1200,8 @@ def _release_downloads(reserved: Iterable) -> None:
             logger.warning(f"Could not release a download registry: {exc}")
 
 
-# Roots a spawned training worker reads and writes outside every registry here:
-# core/training/training.py hands it the same HF_HUB_CACHE and HF_XET_CACHE and
-# the trainer calls snapshot_download and load_dataset itself. The reason the
-# compiled cache is opt-in applies to these too, so a run is not lost to a clear.
+# A spawned trainer reads these outside every registry here: it gets the same HF_HUB_CACHE and
+# HF_XET_CACHE and calls snapshot_download and load_dataset itself, so a clear could cost a run.
 _WORKER_SENSITIVE_KEYS = frozenset({"hf_hub", "hf_xet", "hf_datasets"})
 
 

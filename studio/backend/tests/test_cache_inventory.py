@@ -9,6 +9,7 @@ offers, and every refusal that stands between a key and an rmtree.
 """
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -1105,7 +1106,14 @@ def test_the_hub_cache_is_reserved_in_both_registries(monkeypatch):
 
     models, datasets = _Registry(), _Registry()
     monkeypatch.setattr(download_registry, "get_models_registry", lambda: models)
+    # The purge reserves datasets through the SERVICE, not the singleton, so that a
+    # managed-account install holds every per-account registry and not just the owner's.
+    # Same stub, attached at the seam the code actually uses.
     monkeypatch.setattr(download_registry, "get_datasets_registry", lambda: datasets)
+    from hub.services.datasets import downloads as dataset_downloads
+
+    monkeypatch.setattr(dataset_downloads, "begin_cache_purge", datasets.begin_cache_purge)
+    monkeypatch.setattr(dataset_downloads, "end_cache_purge", datasets.end_cache_purge)
 
     reserved, busy = module._reserve_downloads("hf_hub")
     assert busy is None
@@ -1319,7 +1327,14 @@ def test_the_xet_cache_is_reserved_like_the_hub(monkeypatch):
 
     models, datasets = _Registry(), _Registry()
     monkeypatch.setattr(download_registry, "get_models_registry", lambda: models)
+    # The purge reserves datasets through the SERVICE, not the singleton, so that a
+    # managed-account install holds every per-account registry and not just the owner's.
+    # Same stub, attached at the seam the code actually uses.
     monkeypatch.setattr(download_registry, "get_datasets_registry", lambda: datasets)
+    from hub.services.datasets import downloads as dataset_downloads
+
+    monkeypatch.setattr(dataset_downloads, "begin_cache_purge", datasets.begin_cache_purge)
+    monkeypatch.setattr(dataset_downloads, "end_cache_purge", datasets.end_cache_purge)
 
     reserved, busy = module._reserve_downloads("hf_xet")
     assert busy is None
@@ -1606,6 +1621,47 @@ def test_an_unreachable_dictation_probe_does_not_block_a_hub_clear(monkeypatch):
     assert any_model_load_blocks_cache_clear() is None
 
 
+def test_a_whole_hub_clear_waits_for_a_chat_load_that_has_not_spawned_yet(monkeypatch):
+    """chat_load_active's own docstring: is_active covers a live llama-server process, which an
+    HF-backed load does not have until its GGUF finished downloading. Those minutes are exactly
+    when the bytes are arriving, and they come through hf_hub_download_with_xet_fallback rather
+    than the download registry, so the purge's own reservation does not cover them either."""
+    from core.inference import llama_cpp
+    from hub.services.models.deletion import any_model_load_blocks_cache_clear
+
+    _idle_dictation(monkeypatch)
+    monkeypatch.setattr(llama_cpp, "chat_load_active", lambda: True)
+
+    assert any_model_load_blocks_cache_clear() == (
+        "A model load is using the cache; wait for it to finish"
+    )
+
+
+def test_a_whole_hub_clear_waits_for_a_draining_image_load(monkeypatch):
+    """A cancelled diffusers load leaves loading_repo_ids() immediately but keeps its repos in
+    draining_repo_ids() while the worker thread reads on inside _prefetch_files, holding no lock.
+    _diffusion_blocks_delete already refuses on that, and emptying the whole cache is every repo
+    at once, so it cannot ask less than the per-repository path does."""
+    import types
+
+    from hub.services.models.deletion import any_model_load_blocks_cache_clear
+
+    _idle_dictation(monkeypatch)
+    draining = types.SimpleNamespace(
+        status = lambda: {"loaded": False},
+        loaded_repo_ids = tuple,
+        loading_repo_ids = tuple,
+        draining_repo_ids = lambda: ("black-forest-labs/FLUX.2-klein-4B",),
+    )
+    router = types.ModuleType("core.inference.diffusion_engine_router")
+    router.get_active_diffusion_engine = lambda: draining
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_engine_router", router)
+
+    assert any_model_load_blocks_cache_clear() == (
+        "An Images model load is still unwinding; wait for it to finish"
+    )
+
+
 def test_an_unverifiable_load_state_refuses_rather_than_clears(monkeypatch, isolated_caches):
     """Not being able to tell whether weights are in use is not permission to unlink them.
     The per-repo path answers 503 for the same reason."""
@@ -1727,3 +1783,47 @@ def test_the_import_route_takes_that_claim_and_gives_it_back():
     start = source.index("claim_repository_owner")
     tail = source[start:]
     assert "finally:" in tail[: tail.index("release_repository_owner")]
+
+
+def test_every_account_dataset_registry_is_reserved_by_a_purge(monkeypatch):
+    """A managed-account install has one dataset registry PER ACCOUNT, not one in total.
+
+    _account_registry() builds a fresh DownloadRegistry the first time each account downloads,
+    so reserving only the singleton left every other account's download invisible to the purge,
+    which would then remove files under its worker.
+    """
+    from hub.services.datasets import downloads as dataset_downloads
+    from hub.utils import download_registry
+
+    other = download_registry.DownloadRegistry()
+    monkeypatch.setitem(dataset_downloads._account_registries, "account-2", other)
+
+    # A download running for that OTHER account.
+    granted, _ = other.claim_repository_owner("some/set", object())
+    assert granted
+
+    assert (
+        dataset_downloads.begin_cache_purge() is False
+    ), "the purge was granted while another account's dataset download held its own registry"
+
+
+def test_a_registry_created_during_a_purge_is_born_reserved(monkeypatch):
+    """The other half: an account whose first download starts AFTER the purge began.
+
+    Reserving the registries that exist at the moment the purge starts is not enough, because
+    _account_registry() mints new ones on demand. The existing code already carries _deleting
+    into a new registry for exactly this reason; the purge count rides along the same way.
+    """
+    from hub.services.datasets import downloads as dataset_downloads
+    from hub.utils import download_registry
+
+    monkeypatch.setattr(dataset_downloads, "_account_registries", {})
+    assert dataset_downloads.begin_cache_purge() is True
+    try:
+        fresh = download_registry.DownloadRegistry()
+        for _ in range(dataset_downloads._purging):
+            fresh.begin_cache_purge()
+        # Born reserved: it must refuse to hand work out while the purge is still running.
+        assert fresh.claim_repository_owner("late/set", object()) == (False, "deleting")
+    finally:
+        dataset_downloads.end_cache_purge()

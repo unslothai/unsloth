@@ -53,6 +53,12 @@ on:
       - 'tests/studio/*.ps1'
       # The Pester phase runs this guard by name.
       - 'tests/studio/test_pester_bootstrap_hardening.py'
+      # Reached by the installer this workflow already triggers on, so a commit touching
+      # only one of these changes what the job runs while matching nothing else in the
+      # list. install.sh --local hands off to the checked-out studio/setup.sh
+      # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
+      # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
+      - 'studio/nvidia_probe.py'
       - '.github/workflows/studio-windows-inference-smoke.yml'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
@@ -65,6 +71,31 @@ on:
       - '.github/scripts/studio_smoke/multi_turn_chat.py'
   push:
     branches: [main]
+    paths:
+      - 'studio/backend/**'
+      - 'studio/frontend/**'
+      - 'studio/setup.ps1'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
+      - 'unsloth_cli/**'
+      - 'install.ps1'
+      - 'scripts/uninstall.ps1'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
+      - 'pyproject.toml'
+      - 'tests/studio_setup_ps1/**'
+      - 'tests/studio/*.ps1'
+      - 'tests/studio/test_pester_bootstrap_hardening.py'
+      - 'studio/nvidia_probe.py'
+      - '.github/workflows/studio-windows-inference-smoke.yml'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/scripts/hf-download-with-retry.sh'
+      - '.github/scripts/studio_smoke/multi_turn_chat.py'
   workflow_dispatch:
 
 concurrency:

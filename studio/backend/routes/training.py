@@ -2272,6 +2272,9 @@ def _build_training_status(
             "loss": getattr(progress, "loss", None),
             "learning_rate": getattr(progress, "learning_rate", None),
             "output_dir": getattr(backend, "_output_dir", None) or None,
+            "model_download_repo_id": (
+                getattr(backend, "_model_download_repo_id", None) if is_active else None
+            ),
         }
 
     metric_history = None

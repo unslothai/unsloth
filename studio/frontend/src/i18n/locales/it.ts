@@ -180,17 +180,10 @@ export const it = {
       priority: "Priorità",
       lastUpdated: "Ultimo aggiornamento",
       manualOrder: "Ordine manuale",
-      priorityHint: "Prima attive e non lette",
-      lastUpdatedHint: "Prima le più recenti",
-      manualOrderHint: "Trascina le righe per riordinarle",
       switchedToManual: "Ordinamento manuale: trascina le righe per riordinarle",
       organizeChats: "Organizza le chat",
       organizeProjects: "Organizza i progetti",
       sortPinnedChats: "Ordina le chat fissate",
-      dragDrop: "Trascina e rilascia",
-      dragHints: "Mostra un suggerimento durante il trascinamento",
-      reorderSwitchesSort: "Riordinare passa all'ordine manuale",
-      dragOpensFolders: "Apri le cartelle sotto il puntatore",
       moveUp: "Sposta su",
       moveDown: "Sposta giù",
     },
@@ -879,6 +872,18 @@ export const it = {
         revoked: "Tutti i link di anteprima sono stati revocati",
         revokeError: "Impossibile revocare i link di anteprima",
       },
+      managedProviderUrls: {
+        sectionTitle: "Account gestiti",
+        enableLabel: "Connessioni locali e di rete",
+        enableDescription:
+          "Consente agli account gestiti di puntare le proprie connessioni a indirizzi locali o di rete, come un server Ollama o llama.cpp su questo computer o sulla tua rete locale. Disattivato per impostazione predefinita, perché consente a quegli account di raggiungere i servizi in esecuzione sul tuo computer e sulla tua rete.",
+        lockedByEnvironment:
+          "Impostato da UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 in questo server, che rifiuta gli indirizzi privati per tutti gli account.",
+        loadError:
+          "Impossibile caricare le impostazioni di connessione degli account gestiti.",
+        saveError:
+          "Impossibile salvare le impostazioni di connessione degli account gestiti.",
+      },
       permissions: {
         sectionTitle: "Autorizzazioni",
         bypassLabel: "Autorizzazioni degli strumenti",
@@ -1120,7 +1125,7 @@ export const it = {
       custom: {
         chatWidth: {
           label: "Larghezza chat",
-          description: "Imposta la larghezza dei messaggi e del campo di testo. La larghezza piena usa lo spazio tra le barre laterali.",
+          description: "Larghezza dei messaggi e del campo di testo.",
           standard: "Standard",
           wide: "Ampia",
           full: "Larghezza piena",
@@ -1195,7 +1200,6 @@ export const it = {
         },
         contrast: {
           label: "Contrasto",
-          description: "Intensità dei bordi e del testo secondario.",
         },
         reduceMotion: {
           label: "Riduci le animazioni",
@@ -1225,7 +1229,7 @@ export const it = {
       sidebarNav: {
         title: "Navigazione della barra laterale",
         description:
-          "Fissa e riordina le schede della barra laterale. Le schede non fissate vengono raccolte nel menu «Altro»; se ne resta una sola non fissata viene nascosta invece di creare un menu con una voce sola. «Nuova chat» resta sempre al suo posto.",
+          "Fissa e riordina le schede della barra laterale. Quelle non fissate vanno nel menu «Altro».",
         dragToReorder: "Trascina per riordinare",
         pinToSidebar: "Fissa {name} nella barra laterale",
         moreHolds: "Altro ({count})",
@@ -1233,7 +1237,7 @@ export const it = {
       sidebarMenu: {
         title: "Menu della barra laterale",
         description:
-          "Mostra, nascondi e riordina le voci del menu del profilo nella barra laterale. Impostazioni, Aiuto, Esci e Arresta restano fisse.",
+          "Scegli e riordina le scorciatoie del menu del profilo.",
         darkModeToggle: "Interruttore del tema scuro",
         dragToReorder: "Trascina per riordinare",
       },
@@ -1590,11 +1594,6 @@ export const it = {
         "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
       pastedTextOffDescription:
         "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
-      compactionDescriptionInherit: "Segue la politica del contesto del server.",
-      compactionDescriptionCheckpoint:
-        "Mantiene l’ultimo scambio e le istruzioni permanenti che rientrano, e archivia il resto per poterlo recuperare.",
-      compactionDescriptionRolling:
-        "Archivia i turni più vecchi per conservare la cronologia recente e lo spazio aggiuntivo selezionato.",
       projectsSection: "Mostra la sezione Progetti",
       projectsSectionDescription:
         "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
@@ -1643,25 +1642,19 @@ export const it = {
       autoCompact: "Compatta automaticamente le chat lunghe",
       autoCompactDescription:
         "I turni più vecchi passano in un archivio consultabile quando una chat riempie il contesto.",
-      compactionStyle: "Quando il contesto è pieno",
-      compactionStyleDescription:
-        "Il valore predefinito del server mantiene UNSLOTH_CONTEXT_POLICY. Reimpostare la conversazione conserva l'ultimo turno e le istruzioni permanenti che rientrano. Una finestra scorrevole elimina i turni più vecchi e può conservare più cronologia recente.",
-      compactionStyleInherit: "Usa il valore del server",
-      compactionStyleCheckpoint: "Reimposta la conversazione",
-      compactionStyleRollingDefault:
-        "Archivia i turni precedenti (~25% di spazio aggiuntivo)",
-      compactionStyleRolling10:
-        "Archivia i turni precedenti (~10% di spazio aggiuntivo)",
-      compactionStyleRolling5:
-        "Archivia i turni precedenti (~5% di spazio aggiuntivo)",
-      compactionStyleRollingNone:
-        "Archivia i turni precedenti (nessun taglio aggiuntivo)",
       autoCompactKeywords:
         "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Compresso",
+        auto: "Espandi durante l’esecuzione",
+        expanded: "Sempre espanso",
+      },
+      visibilityKeywords:
+        "comprimi compresso espandi espanso aperto chiuso ragionamento chiamate agli strumenti attività raggruppa streaming",
       thinking: {
-        collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
-        collapseByDefaultDescription:
-          "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
+        visibility: "Ragionamento",
+        visibilityDescription:
+          "Come si apre il ragionamento. Puoi comunque espandere o comprimere ogni blocco a mano.",
       },
       currentDate: {
         label: "Comunica al modello la data di oggi",
@@ -1671,12 +1664,14 @@ export const it = {
         saveError: "Impossibile aggiornare le impostazioni della data corrente",
       },
       tools: {
-        collapseByDefault: "Comprimi l’attività degli strumenti per impostazione predefinita",
-        collapseByDefaultDescription:
-          "Mantieni compressi input e output degli strumenti durante l’esecuzione. Espandi una riga per esaminarla.",
-        foldIntoThinking: "Comprimi le chiamate agli strumenti nel Ragionamento",
+        visibility: "Chiamate agli strumenti",
+        visibilityDescription:
+          "Come si apre l’attività degli strumenti. Puoi comunque espandere o comprimere ogni chiamata a mano.",
+        foldIntoThinking: "Raggruppa le chiamate agli strumenti nel Ragionamento",
         foldIntoThinkingDescription:
-          "Nasconde le chiamate agli strumenti di un turno finché non si apre il blocco Ragionamento.",
+          "Mostra le chiamate agli strumenti di un turno nel blocco Ragionamento invece che su righe proprie.",
+        foldIntoThinkingBlocked:
+          "Non disponibile finché le chiamate agli strumenti sono su «Sempre espanso», che le tiene su righe proprie.",
       },
       webSearch: {
         title: "Ricerca web",

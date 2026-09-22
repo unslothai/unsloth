@@ -216,17 +216,10 @@ export const fr = {
       priority: "Priorité",
       lastUpdated: "Dernière mise à jour",
       manualOrder: "Ordre manuel",
-      priorityHint: "Actifs et non lus en premier",
-      lastUpdatedHint: "Les plus récents en premier",
-      manualOrderHint: "Faites glisser les lignes pour les réorganiser",
       switchedToManual: "Tri manuel : faites glisser les lignes pour les réorganiser",
       organizeChats: "Organiser les discussions",
       organizeProjects: "Organiser les projets",
       sortPinnedChats: "Trier les discussions épinglées",
-      dragDrop: "Glisser-déposer",
-      dragHints: "Afficher une indication pendant le glissement",
-      reorderSwitchesSort: "Réordonner passe en ordre manuel",
-      dragOpensFolders: "Ouvrir les dossiers sous le pointeur",
       moveUp: "Monter",
       moveDown: "Descendre",
     },
@@ -912,6 +905,18 @@ export const fr = {
         revoked: "Tous les liens d'aperçu ont été révoqués",
         revokeError: "Impossible de révoquer les liens d'aperçu",
       },
+      managedProviderUrls: {
+        sectionTitle: "Comptes gérés",
+        enableLabel: "Connexions locales et réseau",
+        enableDescription:
+          "Autorise les comptes gérés à pointer leurs connexions vers des adresses locales ou réseau, comme un serveur Ollama ou llama.cpp sur cet ordinateur ou sur votre réseau local. Désactivé par défaut, car cela permet à ces comptes d'atteindre les services exécutés sur votre ordinateur et sur votre réseau.",
+        lockedByEnvironment:
+          "Défini par UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 sur ce serveur, qui refuse les adresses privées pour tous les comptes.",
+        loadError:
+          "Impossible de charger les paramètres de connexion des comptes gérés.",
+        saveError:
+          "Impossible d'enregistrer les paramètres de connexion des comptes gérés.",
+      },
       notifications: {
         sectionTitle: "Notifications",
         showLlamaUpdates: "Notifications de mise à jour de llama.cpp",
@@ -1155,7 +1160,7 @@ export const fr = {
       custom: {
         chatWidth: {
           label: "Largeur du chat",
-          description: "Réglez la largeur des messages et de la zone de saisie. La pleine largeur utilise l’espace entre les barres latérales.",
+          description: "Largeur des messages et de la zone de saisie.",
           standard: "Standard",
           wide: "Large",
           full: "Pleine largeur",
@@ -1228,7 +1233,6 @@ export const fr = {
         },
         contrast: {
           label: "Contraste",
-          description: "Intensité des bordures et du texte secondaire.",
         },
         reduceMotion: {
           label: "Réduire les animations",
@@ -1258,7 +1262,7 @@ export const fr = {
       sidebarNav: {
         title: "Navigation de la barre latérale",
         description:
-          "Épinglez et réorganisez les onglets de la barre latérale. Les onglets non épinglés sont regroupés dans le menu « Plus » ; s'il ne reste qu'un seul onglet non épinglé, il est masqué au lieu de créer un menu à une seule entrée. « Nouvelle discussion » reste fixe.",
+          "Épinglez et réorganisez les onglets de la barre latérale. Les onglets non épinglés vont dans le menu « Plus ».",
         dragToReorder: "Faites glisser pour réorganiser",
         pinToSidebar: "Épingler {name} dans la barre latérale",
         moreHolds: "Plus ({count})",
@@ -1266,7 +1270,7 @@ export const fr = {
       sidebarMenu: {
         title: "Menu de la barre latérale",
         description:
-          "Affichez, masquez et réorganisez les éléments du menu de profil de la barre latérale. Paramètres, Aide, Se déconnecter et Arrêter restent fixes.",
+          "Choisissez et réorganisez les raccourcis du menu de profil.",
         darkModeToggle: "Bascule du mode sombre",
         dragToReorder: "Faites glisser pour réorganiser",
       },
@@ -1623,11 +1627,6 @@ export const fr = {
         "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
       pastedTextOffDescription:
         "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
-      compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
-      compactionDescriptionCheckpoint:
-        "Conserve le dernier échange et les instructions permanentes qui tiennent, et archive le reste pour pouvoir le retrouver.",
-      compactionDescriptionRolling:
-        "Archive les échanges les plus anciens pour conserver les plus récents et la marge choisie.",
       projectsSection: "Afficher la section Projets",
       projectsSectionDescription:
         "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
@@ -1675,25 +1674,19 @@ export const fr = {
       autoCompact: "Compacter automatiquement les longues discussions",
       autoCompactDescription:
         "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
-      compactionStyle: "Lorsque le contexte est plein",
-      compactionStyleDescription:
-        "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes qui tiennent. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
-      compactionStyleInherit: "Utiliser la valeur du serveur",
-      compactionStyleCheckpoint: "Réinitialiser la discussion",
-      compactionStyleRollingDefault:
-        "Archiver les anciens tours (~25 % d’espace supplémentaire)",
-      compactionStyleRolling10:
-        "Archiver les anciens tours (~10 % d’espace supplémentaire)",
-      compactionStyleRolling5:
-        "Archiver les anciens tours (~5 % d’espace supplémentaire)",
-      compactionStyleRollingNone:
-        "Archiver les anciens tours (sans réduction supplémentaire)",
       autoCompactKeywords:
         "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
+      visibility: {
+        collapsed: "Replié",
+        auto: "Déplier pendant l’exécution",
+        expanded: "Toujours déplié",
+      },
+      visibilityKeywords:
+        "replier replié déplier déplié ouvert fermé réflexion raisonnement appels d'outils activité des outils regrouper streaming",
       thinking: {
-        collapseByDefault: "Replier la réflexion par défaut",
-        collapseByDefaultDescription:
-          "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",
+        visibility: "Réflexion",
+        visibilityDescription:
+          "Comment la réflexion s’ouvre. Vous pouvez toujours déplier ou replier un bloc vous-même.",
       },
       currentDate: {
         label: "Indiquer la date du jour au modèle",
@@ -1703,12 +1696,14 @@ export const fr = {
         saveError: "Impossible de mettre à jour les paramètres de date actuelle",
       },
       tools: {
-        collapseByDefault: "Replier l’activité des outils par défaut",
-        collapseByDefaultDescription:
-          "Garde les entrées et sorties des outils repliées pendant leur exécution. Dépliez une ligne d’outil pour l’examiner.",
-        foldIntoThinking: "Replier les appels d'outils dans la Réflexion",
+        visibility: "Appels d’outils",
+        visibilityDescription:
+          "Comment l’activité des outils s’ouvre. Vous pouvez toujours déplier ou replier un appel vous-même.",
+        foldIntoThinking: "Regrouper les appels d’outils dans la Réflexion",
         foldIntoThinkingDescription:
-          "Masque les appels d'outils d'un tour jusqu'à l'ouverture de son bloc de Réflexion.",
+          "Affiche les appels d’outils d’un tour dans son bloc de Réflexion plutôt que sur leurs propres lignes.",
+        foldIntoThinkingBlocked:
+          "Indisponible tant que les appels d’outils sont sur « Toujours déplié », qui les garde sur leurs propres lignes.",
       },
       webSearch: {
         title: "Recherche web",

@@ -216,17 +216,10 @@ export const de = {
       priority: "Priorität",
       lastUpdated: "Zuletzt aktualisiert",
       manualOrder: "Manuelle Reihenfolge",
-      priorityHint: "Aktive und ungelesene zuerst",
-      lastUpdatedHint: "Neueste zuerst",
-      manualOrderHint: "Zeilen zum Umordnen ziehen",
       switchedToManual: "Manuell sortiert: Zeilen zum Umordnen ziehen",
       organizeChats: "Chats organisieren",
       organizeProjects: "Projekte organisieren",
       sortPinnedChats: "Angeheftete Chats sortieren",
-      dragDrop: "Ziehen und Ablegen",
-      dragHints: "Hinweis beim Ziehen anzeigen",
-      reorderSwitchesSort: "Umordnen wechselt zu manueller Reihenfolge",
-      dragOpensFolders: "Ordner unter dem Zeiger öffnen",
       moveUp: "Nach oben",
       moveDown: "Nach unten",
     },
@@ -914,6 +907,18 @@ export const de = {
         revoked: "Alle Vorschaulinks widerrufen",
         revokeError: "Vorschaulinks konnten nicht widerrufen werden",
       },
+      managedProviderUrls: {
+        sectionTitle: "Verwaltete Konten",
+        enableLabel: "Lokale und Netzwerkverbindungen",
+        enableDescription:
+          "Verwaltete Konten dürfen ihre Verbindungen auf lokale oder Netzwerkadressen richten, etwa einen Ollama- oder llama.cpp-Server auf diesem Computer oder in Ihrem LAN. Standardmäßig aus, denn damit erreichen diese Konten Dienste, die auf Ihrem Computer und in Ihrem Netzwerk laufen.",
+        lockedByEnvironment:
+          "Durch UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 auf diesem Server festgelegt, das private Adressen für alle Konten ablehnt.",
+        loadError:
+          "Verbindungseinstellungen für verwaltete Konten konnten nicht geladen werden.",
+        saveError:
+          "Verbindungseinstellungen für verwaltete Konten konnten nicht gespeichert werden.",
+      },
       notifications: {
         sectionTitle: "Benachrichtigungen",
         showLlamaUpdates: "llama.cpp-Update-Benachrichtigungen",
@@ -1156,7 +1161,7 @@ export const de = {
       custom: {
         chatWidth: {
           label: "Chatbreite",
-          description: "Breite von Nachrichten und Eingabefeld festlegen. Volle Breite nutzt den Platz zwischen den Seitenleisten.",
+          description: "Breite von Nachrichten und Eingabefeld.",
           standard: "Standard",
           wide: "Breit",
           full: "Volle Breite",
@@ -1229,7 +1234,6 @@ export const de = {
         },
         contrast: {
           label: "Kontrast",
-          description: "Intensität von Rahmen und sekundärem Text.",
         },
         reduceMotion: {
           label: "Bewegung reduzieren",
@@ -1259,7 +1263,7 @@ export const de = {
       sidebarNav: {
         title: "Seitenleisten-Navigation",
         description:
-          "Tabs der Seitenleiste anheften und neu anordnen. Nicht angeheftete Tabs sammeln sich im Menü „Mehr“; ein einzelner nicht angehefteter Tab wird ausgeblendet, statt ein Menü mit nur einem Eintrag zu erhalten. „Neuer Chat“ bleibt fest.",
+          "Tabs der Seitenleiste anheften und neu anordnen. Nicht angeheftete Tabs landen im Menü „Mehr“.",
         dragToReorder: "Zum Neuanordnen ziehen",
         pinToSidebar: "{name} an die Seitenleiste anheften",
         moreHolds: "Mehr ({count})",
@@ -1267,7 +1271,7 @@ export const de = {
       sidebarMenu: {
         title: "Seitenleistenmenü",
         description:
-          "Elemente im Profilmenü der Seitenleiste anzeigen, ausblenden und neu anordnen. Einstellungen, Hilfe, Abmelden und Herunterfahren bleiben an ihrem Platz.",
+          "Verknüpfungen im Profilmenü auswählen und neu anordnen.",
         darkModeToggle: "Umschalter für den dunklen Modus",
         dragToReorder: "Zum Neuanordnen ziehen",
       },
@@ -1626,11 +1630,6 @@ export const de = {
         "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
       pastedTextOffDescription:
         "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
-      compactionDescriptionInherit: "Folgt der Kontextrichtlinie des Servers.",
-      compactionDescriptionCheckpoint:
-        "Behält den letzten Austausch und so viele der dauerhaft geltenden Anweisungen bei, wie hineinpassen, und archiviert den Rest zum Nachschlagen.",
-      compactionDescriptionRolling:
-        "Archiviert die ältesten Gesprächsrunden und behält neuere Inhalte mit dem gewählten zusätzlichen Freiraum.",
       projectsSection: "Projektbereich anzeigen",
       projectsSectionDescription:
         "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
@@ -1678,25 +1677,19 @@ export const de = {
       autoCompact: "Lange Chats automatisch komprimieren",
       autoCompactDescription:
         "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
-      compactionStyle: "Wenn der Kontext voll ist",
-      compactionStyleDescription:
-        "Die Servervorgabe behält UNSLOTH_CONTEXT_POLICY bei. Gespräch zurücksetzen behält die letzte Runde und so viele dauerhafte Anweisungen, wie hineinpassen. Ein gleitendes Fenster verwirft die ältesten Runden und kann mehr aktuellen Verlauf behalten.",
-      compactionStyleInherit: "Servervorgabe verwenden",
-      compactionStyleCheckpoint: "Gespräch zurücksetzen",
-      compactionStyleRollingDefault:
-        "Älteste Runden archivieren (~25 % zusätzlicher Platz)",
-      compactionStyleRolling10:
-        "Älteste Runden archivieren (~10 % zusätzlicher Platz)",
-      compactionStyleRolling5:
-        "Älteste Runden archivieren (~5 % zusätzlicher Platz)",
-      compactionStyleRollingNone:
-        "Älteste Runden archivieren (keine zusätzliche Kürzung)",
       autoCompactKeywords:
         "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Eingeklappt",
+        auto: "Während der Ausführung ausklappen",
+        expanded: "Immer ausgeklappt",
+      },
+      visibilityKeywords:
+        "einklappen eingeklappt ausklappen ausgeklappt offen geschlossen Denken Reasoning Tool-Aufrufe Tool-Aktivität gruppieren Streaming",
       thinking: {
-        collapseByDefault: "Denken standardmäßig einklappen",
-        collapseByDefaultDescription:
-          "Das Denken bleibt eingeklappt, während das Modell denkt, statt automatisch aufzuklappen. Zum Lesen einen Block ausklappen.",
+        visibility: "Denken",
+        visibilityDescription:
+          "Wie das Denken geöffnet wird. Einzelne Blöcke lassen sich weiterhin selbst aus- und einklappen.",
       },
       currentDate: {
         label: "Dem Modell das heutige Datum mitteilen",
@@ -1706,12 +1699,14 @@ export const de = {
         saveError: "Einstellungen zum aktuellen Datum konnten nicht aktualisiert werden",
       },
       tools: {
-        collapseByDefault: "Tool-Aktivität standardmäßig einklappen",
-        collapseByDefaultDescription:
-          "Tool-Eingaben und -Ausgaben bleiben während der Ausführung eingeklappt. Zum Prüfen eine Tool-Zeile ausklappen.",
-        foldIntoThinking: "Tool-Aufrufe ins Denken einklappen",
+        visibility: "Tool-Aufrufe",
+        visibilityDescription:
+          "Wie die Tool-Aktivität geöffnet wird. Einzelne Aufrufe lassen sich weiterhin selbst aus- und einklappen.",
+        foldIntoThinking: "Tool-Aufrufe unter Denken gruppieren",
         foldIntoThinkingDescription:
-          "Tool-Aufrufe eines Zuges ausblenden, bis der Denken-Block geöffnet wird.",
+          "Die Tool-Aufrufe eines Zuges im Denken-Block statt in eigenen Zeilen anzeigen.",
+        foldIntoThinkingBlocked:
+          "Nicht verfügbar, solange Tool-Aufrufe auf „Immer ausgeklappt“ stehen, dann bleiben sie in eigenen Zeilen.",
       },
       webSearch: {
         title: "Websuche",

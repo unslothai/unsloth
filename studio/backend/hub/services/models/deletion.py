@@ -677,6 +677,19 @@ def any_model_load_blocks_cache_clear() -> Optional[str]:
         if (backend.is_loaded or backend.is_active) and backend.model_identifier:
             return "Unload the model before clearing the model cache"
 
+    # is_active above only covers a live llama-server process, which an HF-backed chat load does
+    # not have until its GGUF finished downloading: minutes, per chat_load_active's own docstring.
+    # Those files come down through hf_hub_download_with_xet_fallback rather than the download
+    # registry, so the reservation taken later in the purge does not cover them either.
+    try:
+        from core.inference.llama_cpp import chat_load_active
+        loading_chat = chat_load_active()
+    except Exception as exc:  # noqa: BLE001 - unavailable is not "in use", as above
+        logger.debug(f"Chat load state unavailable during the cache-clear guard: {exc}")
+    else:
+        if loading_chat:
+            return "A model load is using the cache; wait for it to finish"
+
     try:
         from core.inference.orchestrator import peek_inference_backend
 
@@ -707,6 +720,12 @@ def any_model_load_blocks_cache_clear() -> Optional[str]:
             return "Unload the model before clearing the model cache"
         if any(getattr(held, "loading_repo_ids", tuple)()):
             return f"An {label} model load is using the cache; wait for it to finish"
+        # A cancelled load leaves loading_repo_ids() at once but keeps its repos in
+        # draining_repo_ids() while the worker thread reads on inside _prefetch_files,
+        # holding no lock. _diffusion_blocks_delete already refuses on that; emptying the
+        # whole cache is every repo at once, so it cannot ask less than the per-repo path.
+        if any(getattr(held, "draining_repo_ids", tuple)()):
+            return f"An {label} model load is still unwinding; wait for it to finish"
 
     # Dictation is the fifth backend and the one none of the four above reports. Its sidecars are
     # managed by stt_registry, and stt_sidecar resolves their checkpoints under the SAME hub cache
