@@ -318,8 +318,15 @@ def _uninstall_runtime_repair(import_fixes, monkeypatch):
     repair covers exactly these releases, so advising a downgrade would contradict it.
     These tests are about the message shown when the repair is NOT in effect, so they
     have to say so rather than depend on whether an earlier test installed it.
+
+    A missing transformers is not an error here: nothing can have installed the repair,
+    so there is nothing to undo, and the caller goes on to install a stand-in module.
+    This file runs with pytest alone.
     """
-    from transformers import conversion_mapping
+    try:
+        from transformers import conversion_mapping
+    except Exception:
+        return
 
     current = conversion_mapping.get_model_conversion_mapping
     while getattr(current, import_fixes._COMPOSITE_PREFIX_RENAMING_FLAG, False):
@@ -457,7 +464,11 @@ def test_warning_is_silent_once_the_runtime_repair_is_installed(import_fixes, mo
 
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.5.4")
     monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
-    from transformers import conversion_mapping
+    # This one really does need the live module: it installs the repair onto it. Skipping
+    # keeps the rest of the file runnable with pytest alone.
+    transformers = pytest.importorskip("transformers")
+    conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
+    del transformers
 
     import_fixes.fix_transformers_composite_prefix_renaming()
     installed = getattr(
