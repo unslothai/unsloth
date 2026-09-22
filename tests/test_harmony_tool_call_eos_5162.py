@@ -406,7 +406,9 @@ def test_the_vllm_stop_token_cap_is_respected(ns, harmony_tokenizer):
     assert fields["eos_token_id"] == full
 
 
-@pytest.mark.parametrize("path", [("llm_engine", "input_processor"), ("input_processor",), ("processor",)])
+@pytest.mark.parametrize(
+    "path", [("llm_engine", "input_processor"), ("input_processor",), ("processor",)]
+)
 def test_every_supported_attribute_path_is_found(ns, harmony_tokenizer, path):
     """vLLM has moved this attribute between releases; each spelling must resolve."""
     engine = type("_Engine", (), {})()
