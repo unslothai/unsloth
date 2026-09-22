@@ -1118,27 +1118,30 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         # A string `model=` (or one built by `model_init`) has no forward to read before TRL
         # materializes it, so the gate above fails open on it. `self.model` exists now, so ask
-        # for real -- and then re-run `__init__`, because by this point TRL has built its
-        # collator from `padding_free=True` and, under packing, already transformed the
-        # dataset. Clearing the flags alone would leave those in place while skipping the
-        # wrapper that names the sequence boundaries, turning a loud TypeError into silent
-        # training across them. Same retry the auto-padding-free branch above uses, and it
-        # cannot recurse: the second pass runs `original_init`, not this wrapper.
+        # for real -- and say so, rather than trying to undo it.
+        #
+        # Undoing it is what does not work here. By this point TRL has built its collator from
+        # `padding_free=True` and, under packing, already transformed the train and eval
+        # datasets, so clearing the config flags leaves batches arriving flattened while the
+        # wrapper that names the sequence boundaries is skipped: attention and loss then cross
+        # example boundaries with nothing raising, which is worse than the TypeError this gate
+        # exists to prevent. Re-running `__init__` would rebuild them, but with a string it also
+        # materializes the checkpoint a second time while the first is still reachable through
+        # `self.model`, so the fallback for a large model would OOM in exactly the case it is
+        # for. Raising costs nothing and names the remedy; passing the model object instead of
+        # its name lets the gate above handle it silently and automatically.
         if _packing_gate_deferred and not _forward_accepts_packing_kwargs(
             getattr(self, "model", None)
         ):
             if packing_active or getattr(config_arg, "padding_free", False):
-                logger.info(
-                    "Unsloth: Packing and padding-free disabled; %s's forward cannot take "
-                    "packed_seq_lengths. Rebuilding the trainer without them.",
-                    type(getattr(self, "model", None)).__name__,
+                raise ValueError(
+                    f"Unsloth: {type(getattr(self, 'model', None)).__name__}.forward cannot "
+                    "take `packed_seq_lengths`, which packing and padding-free both pass, so "
+                    "training would fail on the first step. This could not be detected earlier "
+                    "because `model` was given as a name rather than as a model. Either load it "
+                    "first and pass the model itself, and Unsloth will turn the two off for you, "
+                    "or set `packing = False` and `padding_free = False` on the config."
                 )
-                _disable_sample_packing(config_arg)
-                _disable_padding_free(config_arg)
-                packing_active = False
-                auto_padding_free_active = False
-                blocked = True
-                original_init(self, *args, **kwargs)
 
         trainer_args = getattr(self, "args", None)
         trainer_packing = bool(trainer_args and getattr(trainer_args, "packing", False))

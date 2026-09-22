@@ -172,23 +172,23 @@ def test_the_blocker_names_itself_in_the_warning():
 def test_a_string_model_is_rechecked_once_trl_has_built_it(monkeypatch, packing):
     """The gate fails open on a string, so the real check has to happen after init.
 
-    Both `enable_padding_free_metadata` and `enable_sample_packing` put
-    `packed_seq_lengths` into the batch, so the recheck has to turn both off;
-    clearing padding-free alone leaves the packing branch raising the same
-    TypeError. Driven through the real wrapper with a stub `SFTTrainer.__init__`,
-    so nothing is downloaded.
+    It has to REFUSE there rather than quietly turn the two off. By that point TRL
+    has built its collator from `padding_free=True` and, under packing, already
+    transformed the datasets, so clearing the flags would leave batches arriving
+    flattened while nothing names the sequence boundaries: attention and loss cross
+    examples with nothing raising. Re-running `__init__` would rebuild them but would
+    also materialize the checkpoint a second time, which is an OOM in the large-model
+    case this is for. Driven through the real wrapper with a stub
+    `SFTTrainer.__init__`, so nothing is downloaded.
     """
     from types import SimpleNamespace
 
     import unsloth.trainer as trainer_module
 
     built = _NoKwargs()
+    inits = []
 
     class _StubSFTTrainer:
-        # The collator and the dataset are built from the config that was live at the time,
-        # which is the point of the test: only a rebuilt trainer gets padded ones.
-        inits = []
-
         def __init__(
             self,
             model = None,
@@ -198,9 +198,7 @@ def test_a_string_model_is_rechecked_once_trl_has_built_it(monkeypatch, packing)
             # What TRL does with a string: materialize it, then expose it as self.model.
             self.model = built if isinstance(model, str) else model
             self.args = args
-            self.collator_padding_free = bool(getattr(args, "padding_free", False))
-            self.dataset_packed = bool(getattr(args, "packing", False))
-            _StubSFTTrainer.inits.append((self.collator_padding_free, self.dataset_packed))
+            inits.append(model)
 
     injected = []
     for _name in ("enable_padding_free_metadata", "enable_sample_packing"):
@@ -212,17 +210,42 @@ def test_a_string_model_is_rechecked_once_trl_has_built_it(monkeypatch, packing)
     trainer_module._patch_sft_trainer_auto_packing(module)
 
     config = SimpleNamespace(packing = packing, padding_free = True, max_length = 512)
-    instance = module.SFTTrainer(model = "microsoft/Phi-4-reasoning-vision-15B", args = config)
+    with pytest.raises(ValueError, match = "packed_seq_lengths"):
+        module.SFTTrainer(model = "microsoft/Phi-4-reasoning-vision-15B", args = config)
 
     assert injected == [], "nothing may wrap the collator for this forward"
-    for target in (config, instance.args):
-        assert target.padding_free is False
-        assert target.packing is False
-    # Flipping the flags after the fact is not enough and is worse than doing nothing: the
-    # collator and dataset TRL already built would keep flattening while nothing names the
-    # sequence boundaries, so training would cross them silently instead of raising. Only a
-    # second __init__ replaces both.
-    assert len(_StubSFTTrainer.inits) == 2, "the trainer must be rebuilt, not just re-flagged"
-    assert _StubSFTTrainer.inits[-1] == (False, False)
-    assert instance.collator_padding_free is False
-    assert instance.dataset_packed is False
+    assert len(inits) == 1, "the checkpoint must not be materialized a second time"
+
+
+def test_a_string_model_that_can_take_the_metadata_is_left_alone(monkeypatch):
+    """The refusal must fire only on the signature, never on the string itself."""
+    from types import SimpleNamespace
+
+    import unsloth.trainer as trainer_module
+
+    class _StubSFTTrainer:
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            **kwargs,
+        ):
+            self.model = _TakesKwargs() if isinstance(model, str) else model
+            self.args = args
+
+    injected = []
+    monkeypatch.setattr(
+        trainer_module,
+        "enable_padding_free_metadata",
+        lambda model, trainer: injected.append(model),
+    )
+    monkeypatch.setattr(trainer_module, "_resolve_string_model_config", lambda *a, **k: None)
+
+    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    trainer_module._patch_sft_trainer_auto_packing(module)
+
+    config = SimpleNamespace(packing = False, padding_free = True, max_length = 512)
+    instance = module.SFTTrainer(model = "meta-llama/Llama-3.1-8B", args = config)
+
+    assert len(injected) == 1
+    assert instance.args.padding_free is True
