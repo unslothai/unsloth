@@ -163,6 +163,23 @@ test("overlays that scale cannot outgrow the screen", () => {
   }
 });
 
+test("the artifact panel's vertical budget adds up at any size", () => {
+  // The shell's mb-8 scales. If the offsets above and below it do not, the
+  // panel outgrows its pane and the bottom is clipped.
+  const surface = readSrc("features/chat/artifacts/artifact-surface.tsx");
+  assert.match(surface, /\bmb-8\b/, "the panel no longer carries mb-8");
+  assert.match(
+    surface,
+    /marginTop:\s*\n?\s*"calc\(90px \* var\(--ui-space-scale, 1\) \+ var\(--studio-chat-notice-height, 0px\)\)"/,
+  );
+  assert.match(
+    surface,
+    /height:\s*\n?\s*"calc\(100% - 122px \* var\(--ui-space-scale, 1\) - var\(--studio-chat-notice-height, 0px\)\)"/,
+  );
+  // 90 above plus the 32 of mb-8 is the 122 taken off the pane.
+  assert.equal(90 + 8 * 4, 122);
+});
+
 test("the stylesheet's comments stay comments", () => {
   // A "*/" inside the prose ends the comment early and postcss then reads the
   // rest of the sentence as a declaration, taking the next one with it.

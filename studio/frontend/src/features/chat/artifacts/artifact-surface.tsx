@@ -209,8 +209,12 @@ export function ArtifactSurface({
       style={
         variant === "panel"
           ? {
-              marginTop: "calc(90px + var(--studio-chat-notice-height, 0px))",
-              height: "calc(100% - 122px - var(--studio-chat-notice-height, 0px))",
+              // 90 above and 32 below, the same 32 the shell's mb-8 draws, so
+              // the three move together with the UI font size.
+              marginTop:
+                "calc(90px * var(--ui-space-scale, 1) + var(--studio-chat-notice-height, 0px))",
+              height:
+                "calc(100% - 122px * var(--ui-space-scale, 1) - var(--studio-chat-notice-height, 0px))",
             }
           : undefined
       }
