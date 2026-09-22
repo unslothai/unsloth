@@ -283,6 +283,86 @@ def test_the_class_behind_a_string_is_resolved_without_downloading_weights():
     assert _resolve_string_model_class("any/name", bare, None) is LlamaForCausalLM
 
 
+def test_a_native_architecture_is_answered_without_touching_remote_code():
+    """A config can carry BOTH a native `architectures` and a remote `auto_map`.
+
+    TRL resolves `getattr(transformers, config.architectures[0])` and consults
+    `auto_map` not at all, so reaching for the remote module while the native name
+    would have answered executes code nothing else in the stack would have run.
+    Native therefore wins, and the remote loader is never called.
+    """
+    from types import SimpleNamespace
+
+    import transformers
+    from transformers import LlamaForCausalLM
+
+    from unsloth.trainer import _resolve_string_model_class
+
+    called = []
+
+    class _Config:
+        model_type = "llama"
+        architectures = ["LlamaForCausalLM"]
+        auto_map = {"AutoModelForCausalLM": "payload.Model"}
+
+    import transformers.dynamic_module_utils as dmu
+
+    original = dmu.get_class_from_dynamic_module
+    dmu.get_class_from_dynamic_module = lambda *a, **k: called.append(a) or _NoKwargs
+    try:
+        resolved = _resolve_string_model_class(
+            "evil/repo", _Config(), SimpleNamespace(trust_remote_code = True)
+        )
+    finally:
+        dmu.get_class_from_dynamic_module = original
+
+    assert resolved is LlamaForCausalLM
+    assert called == [], "the remote module must not be imported when a native name answers"
+
+
+@pytest.mark.parametrize(
+    "init_kwargs, top_level, may_execute",
+    [
+        ({}, True, True),
+        ({}, False, False),
+        ({}, None, False),
+        # an explicit None in model_init_kwargs is NOT a grant, and must not be
+        # overwritten by a truthy top-level attribute: `_resolve_string_model_config`
+        # reads it by membership too, and the two must agree or the module would run
+        # under a grant the config load did not accept
+        ({"trust_remote_code": None}, True, False),
+        ({"trust_remote_code": False}, True, False),
+        ({"trust_remote_code": True}, False, True),
+    ],
+)
+def test_the_remote_code_grant_is_read_by_membership(init_kwargs, top_level, may_execute):
+    from types import SimpleNamespace
+
+    from unsloth.trainer import _resolve_string_model_class
+
+    called = []
+
+    class _RemoteOnlyConfig:
+        model_type = "not-a-real-model-type"
+        architectures = ["NoSuchClassInTransformers"]
+        auto_map = {"AutoModelForCausalLM": "payload.Model"}
+
+    import transformers.dynamic_module_utils as dmu
+
+    original = dmu.get_class_from_dynamic_module
+    dmu.get_class_from_dynamic_module = lambda *a, **k: called.append(a) or _NoKwargs
+    try:
+        _resolve_string_model_class(
+            "some/repo",
+            _RemoteOnlyConfig(),
+            SimpleNamespace(model_init_kwargs = init_kwargs, trust_remote_code = top_level),
+        )
+    finally:
+        dmu.get_class_from_dynamic_module = original
+
+    assert bool(called) is may_execute
+
+
 def test_an_unresolvable_string_returns_none_rather_than_guessing():
     """None leaves the post-init backstop in charge, which is the safe answer."""
     from transformers import LlamaConfig

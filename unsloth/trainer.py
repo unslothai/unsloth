@@ -406,63 +406,34 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     if not isinstance(model_name, str) or model_config is None:
         return None
 
-    init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
-    trust_remote_code = init_kwargs.get("trust_remote_code")
-    if trust_remote_code is None:
-        trust_remote_code = getattr(config_arg, "trust_remote_code", None)
-
-    # Remote code first. `auto_map` is the only place a checkpoint outside the
-    # transformers tree names its own class, and that is exactly the population
-    # this gate exists for -- an in-tree class reachable below would have taken
-    # **kwargs anyway. Only with trust_remote_code already granted: the config
-    # load that produced `model_config` needed it too, so this imports nothing
-    # the user has not already allowed, and nothing TRL is not about to import.
-    auto_map = getattr(model_config, "auto_map", None) or {}
-    if trust_remote_code and isinstance(auto_map, dict):
-        forward = {
-            key: init_kwargs[key]
-            for key in ("revision", "subfolder", "token", "cache_dir", "code_revision")
-            if key in init_kwargs
-        }
-        for auto_class in (
-            "AutoModelForCausalLM",
-            "AutoModelForImageTextToText",
-            "AutoModelForVision2Seq",
-            "AutoModelForSeq2SeqLM",
-            "AutoModel",
-        ):
-            reference = auto_map.get(auto_class)
-            if not isinstance(reference, str):
-                continue
-            try:
-                from transformers.dynamic_module_utils import get_class_from_dynamic_module
-                return get_class_from_dynamic_module(reference, model_name, **forward)
-            except Exception:
-                continue
-
-    # In-tree, by the name the checkpoint records.
+    # In-tree first, by the name the checkpoint records. This is also the order TRL
+    # resolves in -- `create_model_from_path` does `getattr(transformers,
+    # config.architectures[0])` and consults `auto_map` not at all -- so a checkpoint
+    # with a native architecture is answered without any remote module being imported,
+    # even when its config also carries an `auto_map`.
     for architecture in getattr(model_config, "architectures", None) or ():
         try:
             import transformers
+
             resolved = getattr(transformers, architecture, None)
         except Exception:
             resolved = None
         if isinstance(resolved, type):
             return resolved
 
-    # Last, the auto mappings keyed by config class. Lazy, so this imports the
+    # Then the auto mappings keyed by config class. Lazy, so this imports the
     # modeling module and nothing else.
     try:
         from transformers.models.auto import modeling_auto
     except Exception:
-        return None
+        modeling_auto = None
     for mapping_name in (
         "MODEL_FOR_CAUSAL_LM_MAPPING",
         "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING",
         "MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING",
         "MODEL_MAPPING",
     ):
-        mapping = getattr(modeling_auto, mapping_name, None)
+        mapping = getattr(modeling_auto, mapping_name, None) if modeling_auto else None
         if mapping is None:
             continue
         try:
@@ -471,6 +442,51 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
             continue
         if isinstance(resolved, type):
             return resolved
+
+    # Remote code LAST, and only once nothing native has answered. `auto_map` is the
+    # only place a checkpoint outside the transformers tree names its own class, which
+    # is the population this gate exists for, but resolving it means importing and
+    # executing a module from the repo. Deliberately not tried first: a checkpoint can
+    # carry a native `architectures` and a remote `auto_map` at the same time, and
+    # reaching for the second while the first would have answered runs code that
+    # nothing else in the stack would have run.
+    #
+    # The grant is read the way `_resolve_string_model_config` reads it, by membership
+    # rather than by `is None`, so an explicit `model_init_kwargs["trust_remote_code"]
+    # = None` keeps its own (falsy, unresolved) meaning instead of being overwritten by
+    # a truthy top-level attribute. The two must agree: that function decides whether
+    # the config may come from remote code, and disagreeing here would execute a module
+    # under a grant the config load itself did not accept.
+    init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
+    if "trust_remote_code" in init_kwargs:
+        trust_remote_code = init_kwargs["trust_remote_code"]
+    else:
+        trust_remote_code = getattr(config_arg, "trust_remote_code", None)
+
+    auto_map = getattr(model_config, "auto_map", None) or {}
+    if not trust_remote_code or not isinstance(auto_map, dict):
+        return None
+    forward = {
+        key: init_kwargs[key]
+        for key in ("revision", "subfolder", "token", "cache_dir", "code_revision")
+        if key in init_kwargs
+    }
+    for auto_class in (
+        "AutoModelForImageTextToText",
+        "AutoModelForCausalLM",
+        "AutoModelForVision2Seq",
+        "AutoModelForSeq2SeqLM",
+        "AutoModel",
+    ):
+        reference = auto_map.get(auto_class)
+        if not isinstance(reference, str):
+            continue
+        try:
+            from transformers.dynamic_module_utils import get_class_from_dynamic_module
+
+            return get_class_from_dynamic_module(reference, model_name, **forward)
+        except Exception:
+            continue
     return None
 
 
