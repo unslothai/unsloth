@@ -99,7 +99,9 @@
   }
 
   .dark .field-soft:focus-visible {
-    background-color: #1c1c1c !important;
+    /* #1c1c1c, written as the wash its resting twin uses so focus keeps its
+       distance from rest at any contrast. */
+    background-color: color-mix(in srgb, var(--foreground) calc(1.73% * var(--contrast-wash-gain, 1)), var(--background)) !important;
   }
 
   /* The Hub search field is `type="search"` (so the browser won't offer saved
@@ -329,7 +331,8 @@
   }
 
   html.dark .hub-page .hub-model-card:hover {
-    background-color: #202020;
+    /* #202020 at the default, on the same curve as the resting fill above. */
+    background-color: color-mix(in srgb, var(--foreground) calc(3.46% * var(--contrast-wash-gain, 1)), var(--background));
     border-color: transparent;
   }
 
@@ -660,7 +663,7 @@
   }
 
   html.dark .hub-menu-instant {
-    background-color: #2e2f31 !important;
+    background-color: color-mix(in oklab, #2e2f31, var(--contrast-target, transparent) var(--contrast-surface-mix, 0%)) !important;
   }
 
   .hub-menu-instant *,
@@ -697,7 +700,8 @@
   }
 
   html:not(.dark) .hub-tab-toggle-pill:hover {
-    background-color: #f3f3f3;
+    /* #f3f3f3, on the curve its dark twin already follows. */
+    background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), var(--background));
   }
 
   html.dark .hub-tab-toggle-pill {
@@ -1405,7 +1409,7 @@
 
   html.dark .hub-page .hub-hero-panel {
     border-color: transparent;
-    background-color: #202020;
+    background-color: color-mix(in srgb, var(--foreground) calc(3.46% * var(--contrast-wash-gain, 1)), var(--background));
   }
 
   .hub-page .hub-hero-orb {
