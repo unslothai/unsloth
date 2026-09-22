@@ -305,15 +305,31 @@ function planChatDrop(
         effects: {
           orders: landing ? [landing.order] : [],
           unpinChat: drag.id,
+          switchSort: landing?.resorts ? "chats" : undefined,
         },
       };
     }
     if (!sameFolder) return moveChat(drag, zone, edge, ctx, folderId, false);
-    // Its own folder's row: already filed here.
-    if (zone.row?.kind !== "chat") return STAY;
+    const folderScope = projectOrderScope(folderId);
+    if (zone.row?.kind !== "chat") {
+      // The folder's own row is its head, where the chat already is. Its block tail, the empty
+      // line or Show more, is the end of the rows on screen and takes a drop: a folder with
+      // more than a screenful draws Show more directly under its last visible chat, so without
+      // this there is nothing below that chat a chat already in the folder can land on.
+      if (zone.row || zone.blockEnd?.scope !== folderScope) return STAY;
+      return reorder(
+        drag,
+        folderScope,
+        ctx.orders.projectChats(folderId),
+        zone.blockEnd.id,
+        "bottom",
+        "chats",
+        ctx,
+      );
+    }
     return reorder(
       drag,
-      projectOrderScope(folderId),
+      folderScope,
       ctx.orders.projectChats(folderId),
       zone.row.id,
       edge,
@@ -342,6 +358,7 @@ function planChatDrop(
           orders: landing ? [landing.order] : [],
           unpinChat: pinned ? drag.id : undefined,
           moveChat: filed ? { chatId: drag.id, projectId: null } : undefined,
+          switchSort: landing?.resorts ? "chats" : undefined,
         },
       };
     }
@@ -385,12 +402,16 @@ function moveChat(
       orders: landing ? [landing.order] : [],
       moveChat: { chatId: drag.id, projectId },
       unpinChat: unpin ? drag.id : undefined,
+      switchSort: landing?.resorts ? "chats" : undefined,
     },
   };
 }
 
-/** Where a chat from another list lands here. Only a list on Manual order has slots; the
- *  caller lights the whole target otherwise. */
+/** Where a chat from another list lands here: its slot against a row of that list. A sorted
+ *  list switches to Manual, the same as a reorder within one, or the sort would run again and
+ *  put the chat back where it wants it. Without that a drop aimed at the end of a folder landed
+ *  wherever Priority or Last updated felt like, which reads as the slot being ignored. Null only
+ *  when there is no row to land against, and the caller lights the whole target instead. */
 function landingIn(
   scope: string,
   ids: string[],
@@ -398,10 +419,12 @@ function landingIn(
   zone: SidebarDropZone,
   edge: DropEdge,
   sort: SidebarChatSort,
-): { cue: SidebarDropCue; order: SidebarDropEffects["orders"][number] } | null {
-  if (sort !== "manual" || zone.row?.kind !== "chat" || zone.row.scope !== scope) {
-    return null;
-  }
+): {
+  cue: SidebarDropCue;
+  order: SidebarDropEffects["orders"][number];
+  resorts: boolean;
+} | null {
+  if (zone.row?.kind !== "chat" || zone.row.scope !== scope) return null;
   if (zone.row.id === chatId) return null;
   return {
     cue: line(scope, zone.row.id, edge),
@@ -410,6 +433,7 @@ function landingIn(
       ids: placeIdAt(ids, chatId, zone.row.id, edge),
       place: { id: chatId, targetId: zone.row.id, edge },
     },
+    resorts: sort !== "manual",
   };
 }
 

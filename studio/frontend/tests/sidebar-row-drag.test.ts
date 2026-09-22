@@ -231,7 +231,19 @@ test("a chat dropped on a folder, its chats or its empty line is filed there", (
       planSidebarDrop(drag, zone, zone.edge ?? "top", context()),
     );
     assert.deepEqual(plan.action, { kind: "move", projectId: zone.folderId });
-    assert.deepEqual(plan.cue, { ring: folderRingKey(zone.folderId!) });
+    // A row to land against gives a slot, whatever the list is sorted by. Only a folder row or
+    // an empty line, with nothing to aim at, lights the folder whole.
+    assert.deepEqual(
+      plan.cue,
+      zone.row?.kind === "chat"
+        ? {
+            line: {
+              rowKey: rowKey(zone.row.scope, zone.row.id),
+              edge: zone.edge ?? "top",
+            },
+          }
+        : { ring: folderRingKey(zone.folderId!) },
+    );
     assert.deepEqual(plan.effects.moveChat, {
       chatId: "r1",
       projectId: zone.folderId,
@@ -1031,4 +1043,65 @@ test("escape keeps the click guard until the button is released", () => {
   );
   // And a cancelled drag does not come back to life on the next move.
   assert.match(HOOK, /if \(moved\.pointerId !== pointerId \|\| escaped\) return;/);
+});
+
+// Two ways the bottom of a pinned project was unreachable.
+test("a chat can be dropped at the bottom of a pinned project", () => {
+  const workScope = projectOrderScope("work");
+  const lastRow = chatRow("pinned", workScope, "p2", "work", {
+    index: 1,
+    count: 2,
+  });
+  // The default chat sort is Priority, and a chat arriving from another list used to lose its
+  // slot to it: the folder lit whole and the chat landed wherever the sort put it. It keeps the
+  // slot now and the list switches to Manual, the same as a reorder within one.
+  const arriving = plannedDrop(
+    planSidebarDrop(
+      chat("r1", "recents", RECENTS_ORDER_SCOPE, null),
+      lastRow,
+      "bottom",
+      context({ orders: { ...context().orders, projectChats: () => ["p1", "p2"] } }),
+    ),
+  );
+  assert.deepEqual(arriving.cue, {
+    line: { rowKey: rowKey(workScope, "p2"), edge: "bottom" },
+  });
+  assert.equal(arriving.effects.switchSort, "chats");
+  assert.deepEqual(arriving.effects.orders[0]?.ids, ["p1", "p2", "r1"]);
+
+  // A folder of more than PROJECT_CHAT_LIMIT chats draws Show more directly under its last
+  // visible one, and that row is a drop zone with no row of its own. A chat already in the
+  // folder answered nothing there, so there was no way down past the last chat.
+  const tail = plannedDrop(
+    planSidebarDrop(
+      chat("p1", "pinned", workScope, "work"),
+      {
+        section: "pinned",
+        folderId: "work",
+        blockEnd: { scope: workScope, id: "p2" },
+      },
+      "bottom",
+      context({
+        chatSort: "manual",
+        orders: { ...context().orders, projectChats: () => ["p1", "p2", "p3"] },
+      }),
+    ),
+    "the folder's block tail answered nothing",
+  );
+  assert.deepEqual(tail.action, { kind: "reorder" });
+  assert.deepEqual(tail.cue, {
+    line: { rowKey: rowKey(workScope, "p2"), edge: "bottom" },
+  });
+  assert.deepEqual(tail.effects.orders[0]?.ids, ["p2", "p1", "p3"]);
+
+  // The folder's own row is its head, not its tail: the chat is already there.
+  assert.equal(
+    planSidebarDrop(
+      chat("p1", "pinned", workScope, "work"),
+      folderRow("pinned", PINNED_ORDER_SCOPE, "work"),
+      "bottom",
+      context({ chatSort: "manual" }),
+    ),
+    STAY,
+  );
 });
