@@ -3676,3 +3676,75 @@ class TestHfUploadEnvAndSecretLeakBlock:
             ' repo_id="r", api_key="abc")',
             expect_phrase = "HF upload api_key= cannot be set",
         )
+
+
+class TestTheFastPathChangesNothing:
+    """The screen skips its alias machinery for a tree that cannot name a network module. That is
+    an argument about reachability, so these pin both halves of it: the gate says yes for every
+    route to a recognised call, and the verdicts are the same either side of it."""
+
+    @staticmethod
+    def _gate():
+        from core.inference.tools import _network_candidates_possible, _tree_nodes
+
+        import ast as _ast
+        return lambda code: _network_candidates_possible(_tree_nodes(_ast.parse(code)))
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param("import requests\n", id = "plain_import"),
+            pytest.param("import requests as r\n", id = "aliased_import"),
+            pytest.param("import urllib.request\n", id = "dotted_import"),
+            pytest.param("import urllib3\n", id = "sibling_root"),
+            pytest.param("from requests import get\n", id = "from_import"),
+            pytest.param("from requests import *\n", id = "star_import"),
+            pytest.param("from http import client\n", id = "module_as_a_from_name"),
+            pytest.param("from urllib import request\n", id = "submodule_as_a_from_name"),
+            pytest.param('requests.get("https://huggingface.co/x")\n', id = "written_without_import"),
+            pytest.param("x = socket\n", id = "module_named_in_an_assignment"),
+            pytest.param("def f():\n    import aiohttp\n", id = "import_inside_a_function"),
+            pytest.param("if False:\n    import httpx\n", id = "import_on_an_untaken_branch"),
+        ],
+    )
+    def test_every_route_to_a_recognised_call_opens_the_gate(self, code):
+        assert self._gate()(code) is True, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param('print("hello")\n', id = "no_imports_at_all"),
+            pytest.param("import math\nprint(math.sqrt(2))\n", id = "unrelated_import"),
+            # The host text of a URL is not a module name, and reading it as one put ordinary
+            # data-handling code on the slow path for nothing.
+            pytest.param(
+                'URL = "https://huggingface.co/api"\nprint(URL)\n', id = "a_url_in_a_string"
+            ),
+            pytest.param('print("http://example.com")\n', id = "http_only_inside_a_literal"),
+        ],
+    )
+    def test_ordinary_code_takes_the_fast_path(self, code):
+        assert self._gate()(code) is False, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param('import requests\nrequests.get("http://evil.example/x")', id = "hostile"),
+            pytest.param(
+                'import requests\nrequests.get("https://huggingface.co/x")', id = "allowlisted"
+            ),
+            pytest.param('open("/etc/shadow").read()', id = "sensitive_read_without_network"),
+            pytest.param('import os\nos.system("ls")', id = "no_network_at_all"),
+        ],
+    )
+    def test_the_verdict_is_the_same_either_side_of_the_gate(self, code):
+        # Forcing the slow path must reach the same answer the gate lets the screen skip to.
+        from core.inference import tools
+
+        slow = tools._network_candidates_possible
+        try:
+            tools._network_candidates_possible = lambda nodes: True
+            forced = _check_code_safety(code)
+        finally:
+            tools._network_candidates_possible = slow
+        assert forced == _check_code_safety(code), code
