@@ -3265,6 +3265,101 @@ def check_triton_py_ssize_t_clean():
     )
 
 
+def _transformers_rescopes_submodule_prefix_renamings():
+    """True when this build scopes a nested submodule's conversions to where it lives.
+
+    A submodule's mapping is written against ITS OWN key space, so once
+    `get_model_conversion_mapping` merges it into the parent (transformers PR #44300) a
+    renaming anchored at the start of the key is meaningless; PR #45567 re-scoped them by
+    the submodule's dotted path. Three spellings since, any one of which counts: the
+    `model_prefix` argument of 5.6 to 5.9, `PrefixChange.with_submodel_prefix` over the
+    same range, `scope_prefix` on every transform from 5.10 on.
+
+    Every unknown answers True: a warning is worth nothing if it fires on builds nobody
+    can show are broken.
+    """
+    try:
+        from transformers import conversion_mapping
+    except Exception:
+        return True
+    extract = getattr(conversion_mapping, "extract_weight_conversions_for_model", None)
+    if extract is None:
+        # No per-submodule extraction, so no recursion to correct: every 5.x before 5.4.0.
+        return True
+    try:
+        from transformers import core_model_loading
+    except Exception:
+        # Separate import, allowed to fail: it needs torch, and the two spellings it carries
+        # are extra evidence. The signature check below has to stand on its own.
+        core_model_loading = None
+    if core_model_loading is not None:
+        transform = getattr(core_model_loading, "WeightTransform", None)
+        if transform is not None and hasattr(transform, "scope_prefix"):
+            return True
+        prefix_change = getattr(core_model_loading, "PrefixChange", None)
+        if prefix_change is not None and hasattr(prefix_change, "with_submodel_prefix"):
+            return True
+    try:
+        return "model_prefix" in inspect.signature(extract).parameters
+    except Exception:
+        return True
+
+
+def _transformers_drops_prequantized_vlm_quant_state():
+    """True when the installed transformers loses bnb-4bit quant_state on composite models.
+
+    The text model's `^model.language_model.` -> `^model.` renaming enters the composite
+    model's mapping and runs before the bitsandbytes converter, so `weight` loads as a raw
+    packed uint8 while `weight.absmax`, `weight.quant_map`, `weight.nested_absmax`,
+    `weight.nested_quant_map` and `weight.quant_state.bitsandbytes__nf4` rename to keys the
+    model does not have and are dropped as unexpected. Affected text config types:
+    `qwen3_5_text`, `qwen3_5_moe_text`, `gemma3n_text`; flat text-only checkpoints have no
+    such prefix, which is why the window went unnoticed.
+
+    Asked of the API and not of a version, because main reported `5.3.0.dev0` at the commit
+    that introduced the defect and `5.6.0.dev0` at the one that fixed it, so an interval is
+    wrong at both ends on a source install. Among releases it is 5.4.0 and 5.5.0 to 5.5.4.
+    """
+    return not _transformers_rescopes_submodule_prefix_renamings()
+
+
+def check_transformers_prequantized_vlm_quant_state():
+    """Warn when transformers will silently drop a pre-quantized VLM's quant_state.
+
+    unsloth #9867, #10010, #10017, #10276 all report `mat1 and mat2 shapes cannot be
+    multiplied`, which reads like a corrupt checkpoint and sent reporters off regenerating
+    good ones. Warns rather than raises: a run touching only text-only or unquantized
+    checkpoints is unaffected and must not break.
+    """
+    if os.environ.get("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", "0").lower() in (
+        "1",
+        "true",
+    ):
+        return
+    if not _transformers_drops_prequantized_vlm_quant_state():
+        return
+    try:
+        transformers_version = importlib_version("transformers")
+    except Exception:
+        transformers_version = "unknown"
+
+    logger.warning(
+        f"Unsloth: transformers=={transformers_version} drops the bitsandbytes "
+        f"quant_state of pre-quantized multimodal checkpoints while loading them, so "
+        f"every quantized layer comes back unquantized and the first forward fails "
+        f"with\n"
+        f"    RuntimeError: mat1 and mat2 shapes cannot be multiplied (... and 1x...)\n"
+        f"The checkpoint is fine and must not be regenerated. This build scopes no "
+        f"submodule conversion mapping, which is the defect transformers PR #44300 "
+        f"introduced and PR #45567 fixed; among releases that is 5.4.0 and 5.5.0 to "
+        f"5.5.4. Move to a transformers that carries the fix, "
+        f'`pip install --no-deps "transformers>=5.6.0"` while unsloth still caps at '
+        f"5.5.0, or fall back to 5.3.0 or 4.57.6. Text-only checkpoints are "
+        f"unaffected. Set UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK=1 to silence "
+        f"this."
+    )
+
+
 # Fix TRL OpenEnv 0.26 NameError: name 'SamplingParams' is not defined
 def fix_openenv_no_vllm():
     spec = importlib.util.find_spec("trl")
