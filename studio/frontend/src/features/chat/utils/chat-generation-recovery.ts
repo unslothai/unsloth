@@ -357,8 +357,8 @@ export function restoreCarriedPartsFromRaw(
   return out;
 }
 
-// The adapter's think-parse decision, read back from the request it sent: the server-created
-// placeholder carries no parseThinkTags until the first client save.
+// Whether a reply to this request can carry real <think> reasoning. Recovery reads it from the
+// stored request because the server-created placeholder has no parseThinkTags until the first save.
 export function requestParsesThinkTags(payload: {
   enable_thinking?: boolean | null;
   reasoning_effort?: string | null;

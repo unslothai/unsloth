@@ -130,6 +130,27 @@ test("a recovery before the first client save reads the choice from the request"
   );
 });
 
+test("a local effort dial set to none parses like thinking off", () => {
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  const at = adapter.indexOf("const localReasoningFields");
+  assert.ok(at !== -1, "the adapter's local reasoning fields moved");
+  const fields = new Function(
+    "supportsReasoning",
+    "reasoningStyle",
+    "reasoningEnabled",
+    "localReasoningEffort",
+    `return ${adapter.slice(adapter.indexOf("=", at) + 1, adapter.indexOf(";", at)).trim()};`,
+  );
+  const parses = (...args: unknown[]) => requestParsesThinkTags(fields(...args));
+  assert.equal(parses(true, "reasoning_effort", true, "none"), false);
+  assert.equal(parses(true, "reasoning_effort", true, "high"), true);
+  assert.equal(parses(true, "reasoning_effort", false, "none"), true);
+  assert.equal(parses(true, "enable_thinking", false, "high"), false);
+  assert.equal(parses(true, "enable_thinking_effort", false, "high"), false);
+  assert.equal(parses(true, "enable_thinking_effort", true, "high"), true);
+  assert.equal(parses(false, "enable_thinking", false, "high"), true);
+});
+
 test("the adapter and recovery follow the turn's think parse state", () => {
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /parseThinkTags: parseThink,/);
@@ -144,9 +165,11 @@ test("the adapter and recovery follow the turn's think parse state", () => {
   assert.match(adapter, /parseThink && thinkTags\.endsInsideThink\(\)/);
   assert.match(
     adapter,
-    /: !supportsReasoning \|\|\s*reasoningEnabled \|\|\s*reasoningAlwaysOn \|\|\s*reasoningStyle === "reasoning_effort",/,
-    "a local model that cannot stop thinking must keep parsing its tags",
+    /setParseThink\(\s*isExternalRequest\s*\? requestParsesThinkTags\(externalReasoningFields\)\s*: reasoningAlwaysOn \|\| requestParsesThinkTags\(localReasoningFields\),\s*\);/,
+    "the live stream and recovery must read thinking off from the same request fields",
   );
+  assert.match(adapter, /\.\.\.externalReasoningFields,/);
+  assert.match(adapter, /\.\.\.localReasoningFields,/);
   const decided = adapter.search(/setParseThink\(\s*isExternalRequest/);
   const continuationYield = adapter.indexOf(
     "// Yielded before the request starts",
