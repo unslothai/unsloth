@@ -109,16 +109,13 @@ class _Borrowed:
         setattr(self._conn, name, value)
 
 
-#: Pooled entries, held WEAKLY. The sweeper runs each reconcile on a fresh daemon thread
-#: (core/inference/chat_generation_runs.py::_sweep_in_daemon_thread, every 60s per account), so a
-#: strong registry would retain one entry and one open sqlite handle per sweep, forever, and
-#: exhaust the process file descriptor limit. A weak ref lets the dead thread's entry go, and the
-#: finalizer below closes its connection when it does.
+#: Pooled entries, held WEAKLY: the sweeper reconciles on a FRESH daemon thread every 60s per
+#: account (_sweep_in_daemon_thread), so a strong registry would retain one open sqlite handle per
+#: sweep forever and exhaust the file descriptor limit.
 #:
-#: The registry exists at all so that a thread retiring an account can close handles it does not
-#: own: retirement renames the account directory and Windows refuses that while any file under it
-#: is open, so "released eventually" is not good enough. Idle entries are closed on the spot; one
-#: in use is left to its borrower, which closes rather than parks it because the generation moved.
+#: A registry at all because a thread retiring an account must close handles it does not own:
+#: retirement renames the account directory, and Windows refuses that while any file under it is
+#: open. Idle entries close here; one in use is left to its borrower.
 _pool_registry: list[weakref.ref[_PoolEntry]] = []
 _pool_generation = 0
 _pool_lock = threading.Lock()
@@ -147,9 +144,9 @@ def _live_entries_locked() -> list[_PoolEntry]:
 def _unregister_locked(entry: _PoolEntry | None) -> None:
     """Drop ``entry`` from the registry, and any reference whose thread has gone with it.
 
-    Pruning here and on insert is what keeps the list bounded. A weakref callback would be the
-    other way to do it, but those fire during garbage collection at an arbitrary point, including
-    while this thread already holds ``_pool_lock``, and the lock is not reentrant. Caller holds it.
+    Pruning here and on insert keeps the list bounded. Not a weakref callback: those fire during
+    collection at an arbitrary point, including while this thread holds ``_pool_lock``, which is
+    not reentrant. Caller holds it.
     """
     surviving: list[weakref.ref[_PoolEntry]] = []
     for ref in _pool_registry:
@@ -174,10 +171,9 @@ def _discard_pooled() -> None:
 def _discard_all_pooled() -> None:
     """Close every pooled connection on every thread, idle ones immediately.
 
-    A connection parked on an idle worker holds the database exactly as firmly as one in use, and
-    the thread that retires an account is never the worker that parked it: the SSE loop runs its
-    waits on a 32 thread pool of its own. One currently in use is left alone and closed by its
-    borrower on return, since yanking it would fail that caller's query.
+    The thread retiring an account is never the worker that parked the handle: the SSE loop waits
+    on a 32 thread pool of its own. One in use is left alone and closed by its borrower on return,
+    since yanking it would fail that caller's query.
     """
     global _pool_generation
     with _pool_lock:
@@ -238,10 +234,9 @@ def _connect() -> sqlite3.Connection:
     key = current_account_id() or ""
     reuse = None
     superseded = None
-    # Under the lock, because the idle-to-busy transition races _discard_all_pooled's decision to
-    # close: read the generation outside it and an invalidator can see this entry as idle, close it,
-    # and leave the borrow holding a handle whose next query raises ProgrammingError. Retirement
-    # invalidates every account's pool, so that would abort unrelated live generations.
+    # Under the lock: read the generation outside it and an invalidator can see this entry as idle
+    # between the check and the busy flip, close it, and leave the borrow holding a dead handle.
+    # Retirement invalidates every account's pool, so that aborts unrelated live generations.
     with _pool_lock:
         generation_before = _pool_generation
         entry = getattr(_pool, "entry", None)
@@ -277,12 +272,10 @@ def _connect() -> sqlite3.Connection:
     # behaviour of its own connection: sharing one would put two callers in one transaction.
     if entry is None and migrated:
         with _pool_lock:
-            # Fenced on the generation read before preparing. _prepare_connection opens a real
-            # connection, so an invalidation can land while it runs, and this handle is not in the
-            # registry yet to be caught by it. Registering it under the NEW generation would make a
-            # connection the invalidator meant to close look freshly pooled, and retirement renames
-            # the account roots immediately after invalidating: on Windows an open handle there
-            # fails the rename, which the uncached path never did because it always closed.
+            # Fenced on the generation read BEFORE preparing: opening a connection takes long
+            # enough for an invalidation to land, and this handle is not in the registry yet to be
+            # caught by it. Registering it under the new generation would hide it from the
+            # invalidator that retirement just ran, and the uncached path always closed.
             if _pool_generation == generation_before:
                 entry = _PoolEntry(key, conn, _schema_ready, generation_before)
                 _pool.entry = entry
@@ -298,14 +291,10 @@ def _connect() -> sqlite3.Connection:
 def _prepare_connection() -> tuple[sqlite3.Connection, bool]:
     """The original, uncached body, plus whether the lease migration is done for this database.
 
-    The flag is what keeps a blocked migration retryable. When the ALTER loses to another writer
-    this returns without marking the path ready, so that the NEXT call tries again; caching such a
-    connection would skip that next call forever, leaving the lease columns missing, progress
-    updates degrading and reconcile_runs(stale_after_ms=...) reaping nothing.
-
-    ``check_same_thread = False`` for the reason the WAL keeper sets it too: a pooled connection has
-    to be closable by whichever thread tears the pool down. It is still only ever handed out through
-    the thread-local that owns it, so nothing uses it from two threads at once.
+    The flag keeps a blocked migration retryable: when the ALTER loses to another writer this
+    returns without marking the path ready so the NEXT call retries, and caching such a connection
+    would skip that call forever, leaving the lease columns missing and reconcile_runs reaping
+    nothing.
     """
     conn = get_connection(check_same_thread = False)
     db_path = _database_path(conn)
