@@ -89,6 +89,23 @@ def test_a_whole_listing_beats_the_cache_for_an_incorrect_variant(monkeypatch, n
     assert calls == ["Q7_0"], "the listing verdict came before the cache tier"
 
 
+def test_the_menu_label_round_trips_for_a_packed_quant_name(monkeypatch, no_cached_variant):
+    """The #11343 filename: the token sits inside ``PQ2_0``.
+
+    The label extraction reads ``Q2_0`` out of it, the menu advertises ``Q2_0``, and
+    the resolver maps the SAME extraction back -- so the original repro loads without
+    reaching the synthesis tier at all. The raise this suite pins is the remaining
+    verdict for variants the listing genuinely never named; it does not repair
+    round-tripping, the shared regexp pair already does.
+    """
+    monkeypatch.setattr(
+        "huggingface_hub.list_repo_files", lambda repo_id, token = None: list(BONSAI_FILES)
+    )
+
+    filename, _ = llama_cpp._resolve_variant_gguf_files(BONSAI_REPO, "Q2_0")
+    assert filename == "Bonsai-2-27B-PQ2_0-CRACK.gguf"
+
+
 def test_a_whole_listing_still_names_a_variant_it_advertises(monkeypatch, no_cached_variant):
     """The happy path is untouched: the file the menu advertised is what resolves."""
     files = [
