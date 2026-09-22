@@ -83,12 +83,13 @@ def _forward_has_no_training_branch(cls) -> bool:
 
 
 def is_remote_deepseek_moe(module) -> bool:
+    # Matched on structure rather than class name: DeepSeek-derived remote code renames the
+    # block (sarvam's `SarvamMLAMoE`) but keeps the same inference-only port.
     cls = type(module)
     return (
-        cls.__name__ in ("DeepseekV3MoE", "DeepseekV2MoE", "DeepseekMoE")
-        and _is_remote_code(cls)
+        _is_remote_code(cls)
+        and isinstance(getattr(module, "experts", None), torch.nn.ModuleList)
         and hasattr(module, "moe_infer")
-        and hasattr(module, "experts")
         and hasattr(module, "gate")
         and _forward_has_no_training_branch(cls)
     )
@@ -149,8 +150,10 @@ def _moe_forward_with_training_path(original):
         topk_idx, topk_weight = self.gate(hidden_states)
         flat = hidden_states.view(-1, hidden_states.shape[-1])
         y = _moe_train_dispatch(self, flat, topk_idx, topk_weight).view(*orig_shape)
+        # DeepSeek ports only create `shared_experts` when `n_shared_experts` is set, and
+        # others (sarvam: `num_shared_experts`) store None, so the module itself decides.
         shared = getattr(self, "shared_experts", None)
-        if shared is not None and getattr(self.config, "n_shared_experts", None) is not None:
+        if shared is not None:
             y = y + shared(identity)
         return y
 

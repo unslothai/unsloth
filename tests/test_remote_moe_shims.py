@@ -36,8 +36,9 @@ from unsloth.models.remote_moe_shims import (
 from unsloth.models.loader_utils import enable_composite_gradient_checkpointing
 
 
-def _remote_module(name = "transformers_modules.tiny_kimi.modeling_deepseek"):
-    """The port's classes, verbatim in the parts that matter, under a remote-code module name."""
+def _remote_module(name = "transformers_modules.tiny_kimi.modeling_deepseek", edits = ()):
+    """The port's classes, verbatim in the parts that matter, under a remote-code module name.
+    ``edits`` are (old, new) source replacements for ports derived from it."""
     src = """
 import math, torch
 import torch.nn.functional as F
@@ -118,6 +119,9 @@ class DeepseekV3MoE(nn.Module):
         new_x = torch.empty_like(outs); new_x[idxs] = outs
         return (new_x.view(*topk_ids.shape, -1).type(topk_weight.dtype).mul_(topk_weight.unsqueeze(dim=-1)).sum(dim=1).type(new_x.dtype))
 """
+    for before, after in edits:
+        assert before in src, before
+        src = src.replace(before, after)
     mod = types.ModuleType(name)
     # A hub module always has a file behind it, and the shim predicate reads the forward's
     # source; give the exec'd fixture the same through linecache.
@@ -127,9 +131,23 @@ class DeepseekV3MoE(nn.Module):
     linecache.cache[filename] = (len(src), None, src.splitlines(True), filename)
     exec(compile(src, filename, "exec"), mod.__dict__)
     sys.modules[name] = mod
-    for cls in (mod.MoEGate, mod.DeepseekV3MoE, mod.MLP):
+    for cls in (mod.MoEGate, getattr(mod, "DeepseekV3MoE", None) or mod.SarvamMLAMoE, mod.MLP):
         cls.__module__ = name
     return mod
+
+
+# sarvamai/sarvam-105b's modeling_sarvam_moe.py: the same port under another class name, an
+# `else:` that still calls the no-grad `moe_infer`, and `num_shared_experts` in place of
+# `n_shared_experts` with `shared_experts = None` when there are none.
+_SARVAM_EDITS = (
+    ("class DeepseekV3MoE(nn.Module):", "class SarvamMLAMoE(nn.Module):"),
+    (
+        "        if not self.training:\n            y = self.moe_infer(hidden_states, topk_idx, topk_weight).view(*orig_shape)\n",
+        "        if not self.training:\n            y = self.moe_infer(hidden_states, topk_idx, topk_weight).view(*orig_shape)\n"
+        "        else:\n            y = self.moe_infer(hidden_states, topk_idx, topk_weight).view(*orig_shape)\n",
+    ),
+    ("        if self.config.n_shared_experts is not None:", "        if self.shared_experts is not None:"),
+)
 
 
 def test_detection_is_structural_and_ignores_native_classes():
@@ -307,3 +325,35 @@ class DeepseekV3MoE(nn.Module):
         assert not getattr(mod.MoEGate.forward, "_unsloth_remote_moe_shim", False)
     finally:
         sys.modules.pop(name, None)
+
+
+@pytest.mark.parametrize("shared", [True, False])
+def test_a_renamed_port_with_a_no_grad_else_branch_is_shimmed(shared):
+    """sarvam-105b trains through the same shims: its block is not called DeepseekV3MoE, its
+    `else:` branch computes the output under `@torch.no_grad()` (so LoRA on the experts would
+    get no gradient), and its shared expert may be None."""
+    torch.manual_seed(0)
+    mod = _remote_module(f"transformers_modules.tiny_sarvam_{int(shared)}.modeling_sarvam_moe", _SARVAM_EDITS)
+    block = mod.SarvamMLAMoE(mod.Cfg())
+    if not shared:
+        block.shared_experts = None
+    assert is_remote_deepseek_moe(block)
+    x = torch.randn(2, 5, 16)
+    block.train()
+    with pytest.raises(AssertionError):
+        block(x)
+    patched = prepare_remote_moe_for_training(block, verbose = False)
+    assert sorted(patched) == ["MoEGate", "SarvamMLAMoE"]
+    block.eval()
+    with torch.no_grad():
+        reference = block(x)
+    block.train()
+    out = block(x)
+    assert torch.allclose(out, reference, atol = 1e-5, rtol = 1e-5)
+    out.float().pow(2).sum().backward()
+    assert any(
+        e.down_proj.weight.grad is not None and e.down_proj.weight.grad.abs().sum() > 0
+        for e in block.experts
+    )
+    if shared:
+        assert block.shared_experts.down_proj.weight.grad is not None
