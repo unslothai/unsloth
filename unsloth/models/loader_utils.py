@@ -1409,12 +1409,20 @@ def check_and_disable_bitsandbytes_loading(
     load_in_4bit = True,
     load_in_8bit = False,
     verbose = True,
+    rewrite_modelopt = True,
 ):
-    """Disable bitsandbytes loading (load_in_4bit/load_in_8bit) when the model already carries a non-bitsandbytes quantization config. Returns ``(load_in_4bit, load_in_8bit, quant_method)``, with both flags False if they were disabled and quant_method the detected method or None."""
+    """Disable bitsandbytes loading (load_in_4bit/load_in_8bit) when the model already carries a non-bitsandbytes quantization config. Returns ``(load_in_4bit, load_in_8bit, quant_method)``, with both flags False if they were disabled and quant_method the detected method or None.
+
+    ``rewrite_modelopt`` turns an NVIDIA ModelOpt FP8 quantization block on ``model_config`` into the equivalent transformers ``fp8`` one (see ``modelopt_fp8.py``); the caller then moves the parked scale renaming into ``from_pretrained`` with ``pop_modelopt_key_mapping``. Pass False when vLLM reads the checkpoint itself, since it understands ModelOpt natively."""
     quant_method = get_quant_type(model_config)
 
     if quant_method is None or quant_method == "bitsandbytes":
         return load_in_4bit, load_in_8bit, quant_method
+
+    if rewrite_modelopt and str(quant_method).lower() == "modelopt":
+        from .modelopt_fp8 import arm_modelopt_fp8_loading
+        if arm_modelopt_fp8_loading(model_config, verbose = verbose) is not None:
+            quant_method = "fp8"
 
     # A non-bitsandbytes quantization config (compressed-tensors, gptq, awq) means BOTH bitsandbytes loading flags must be disabled to avoid config conflicts.
     if load_in_4bit or load_in_8bit:

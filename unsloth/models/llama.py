@@ -2600,8 +2600,16 @@ class FastLlamaModel:
 
         # Disable bitsandbytes loading if the model has non-bitsandbytes quantization.
         load_in_4bit, load_in_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
-            model_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
+            model_config,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+            rewrite_modelopt = not fast_inference,
         )
+        # A ModelOpt FP8 checkpoint was rewritten to the transformers fp8 form above. The rewrite
+        # lives on model_config, so it has to be the config the weights load against.
+        from .modelopt_fp8 import UNSLOTH_MODELOPT_KEY_MAPPING_ATTR, pop_modelopt_key_mapping
+        _modelopt_rewritten = hasattr(model_config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
+        pop_modelopt_key_mapping(model_config, kwargs)
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env
         # was built before remap/disable). gpt-oss only.
         sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
@@ -2775,7 +2783,7 @@ class FastLlamaModel:
                     variant = kwargs.get("variant"),
                 )
             elif not fast_inference:
-                if user_config is not None:
+                if user_config is not None or _modelopt_rewritten:
                     # Transformers 5.x @strict model init rejects extra kwargs next to config=, so set the override
                     # on the config and pass the single config object through.
                     if max_position_embeddings is not None:
