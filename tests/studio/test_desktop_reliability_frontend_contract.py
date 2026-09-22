@@ -2561,6 +2561,31 @@ _CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE = (
 )
 
 
+# The chat header geometry is stated once per platform chrome, and the contracts that do
+# arithmetic on it read the provider through `_ui_source`. So a header height that has gone
+# back to a bare `44px` reads as 44px, exactly what the arithmetic wants, while the padding
+# and the control height beside it still scale. Above the default they grow and it does not,
+# their sum passes the header, and the shared titlebar row is clipped. Every declaration of
+# these three is checked, not the first one found: they are written out once per chrome, and
+# a guard that stops at the first reads one platform and answers for all of them.
+_CHAT_GEOMETRY_THAT_MUST_KEEP_THE_SCALE = (
+    "--studio-chat-header-height",
+    "--studio-chat-header-padding-top",
+    "--studio-chat-control-height",
+)
+
+
+def test_every_platform_chat_header_geometry_still_follows_the_ui_scale():
+    source = APP_PROVIDER.read_text(encoding = "utf-8")
+    for name in _CHAT_GEOMETRY_THAT_MUST_KEEP_THE_SCALE:
+        stated = re.findall(rf'"{re.escape(name)}":\s*"([^"]+)"', source)
+        assert stated, f"{name} is gone from the provider"
+        for value in stated:
+            assert re.fullmatch(
+                r"calc\(\s*[\d.]+px\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)", value
+            ), f"{name} is stated as {value!r}, which stays put while the rest of the row grows"
+
+
 def test_the_sidebar_action_geometry_still_follows_the_ui_scale():
     source = INDEX_CSS.read_text(encoding = "utf-8")
     for prop, length, expected in _CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE:
