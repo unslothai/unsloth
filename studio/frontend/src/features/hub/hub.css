@@ -73,7 +73,7 @@
 	   Input utilities (bg-input/30, border, focus ring) that live in the
 	   utilities layer and would otherwise win over this base layer. */
   .field-soft {
-    background-color: color-mix(in srgb, var(--foreground) 5%, transparent) !important;
+    background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent) !important;
     border: 0;
     box-shadow: none;
     transition: background-color 160ms ease;
@@ -81,11 +81,11 @@
 
   .field-soft:hover,
   .field-soft[data-state="open"] {
-    background-color: color-mix(in srgb, var(--foreground) 8%, transparent) !important;
+    background-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-wash-gain, 1)), transparent) !important;
   }
 
   .field-soft:focus-visible {
-    background-color: color-mix(in srgb, var(--foreground) 8%, transparent) !important;
+    background-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-wash-gain, 1)), transparent) !important;
     outline: none;
   }
 
@@ -93,16 +93,16 @@
      Hover and focus step above it; focus must never match the panel or the
      field looks empty while typing. */
   .dark .field-soft {
-    background-color: color-mix(in srgb, var(--foreground) 12%, transparent) !important;
+    background-color: color-mix(in srgb, var(--foreground) calc(12% * var(--contrast-wash-gain, 1)), transparent) !important;
   }
 
   .dark .field-soft:hover,
   .dark .field-soft[data-state="open"] {
-    background-color: color-mix(in srgb, var(--foreground) 16%, transparent) !important;
+    background-color: color-mix(in srgb, var(--foreground) calc(16% * var(--contrast-wash-gain, 1)), transparent) !important;
   }
 
   .dark .field-soft:focus-visible {
-    background-color: color-mix(in srgb, var(--foreground) 16%, transparent) !important;
+    background-color: color-mix(in srgb, var(--foreground) calc(16% * var(--contrast-wash-gain, 1)), transparent) !important;
   }
 
   /* The Hub search field is `type="search"` (so the browser won't offer saved
@@ -232,7 +232,7 @@
     position: relative;
     overflow: hidden;
     border-radius: 18px;
-    background-color: color-mix(in srgb, var(--foreground) 2.5%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(2.5% * var(--contrast-wash-gain, 1)), transparent);
     border: 1px solid transparent;
     box-shadow: none;
     transition: background-color 160ms ease, border-color 160ms ease;
@@ -315,7 +315,7 @@
   }
 
   .hub-page .hub-model-card:hover {
-    background-color: color-mix(in srgb, var(--foreground) 4.5%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(4.5% * var(--contrast-wash-gain, 1)), transparent);
     border-color: transparent;
   }
 
@@ -327,12 +327,13 @@
     --hub-card-inner-opacity: 0.22;
     --hub-card-corner-mix: 9.5%;
     --hub-card-hover-edge-mix: 6%;
-    background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-wash-gain, 1)), transparent);
     border-color: transparent;
   }
 
   html.dark .hub-page .hub-model-card:hover {
-    background-color: var(--accent);
+    /* #202020 at the default, on the same curve as the resting fill above. */
+    background-color: color-mix(in srgb, var(--foreground) calc(3.46% * var(--contrast-wash-gain, 1)), var(--background));
     border-color: transparent;
   }
 
@@ -408,8 +409,8 @@
        cards: a clean elevated body, no border, no colour, no gradient. Dark
        defaults here; the html:not(.dark) block recolours for the light theme
        and adds the (light-only) drop shadow. */
-    --hub-trending-surface: color-mix(in srgb, var(--foreground) 7%, var(--background));
-    --hub-trending-surface-hover: color-mix(in srgb, var(--foreground) 10%, var(--background));
+    --hub-trending-surface: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-wash-gain, 1)), var(--background));
+    --hub-trending-surface-hover: color-mix(in srgb, var(--foreground) calc(10% * var(--contrast-wash-gain, 1)), var(--background));
     --hub-trending-title-ink: rgb(255 255 255 / 0.94);
     --hub-trending-muted-ink: rgb(255 255 255 / 0.68);
     isolation: isolate;
@@ -485,7 +486,7 @@
      dark surface; in the light theme it falls through to the base .hub-chip
      style, which is already theme-aware. */
   html.dark .hub-page .hub-trending-card .hub-chip {
-    background-color: rgb(255 255 255 / 0.12);
+    background-color: rgb(255 255 255 / calc(0.12 * var(--contrast-wash-gain, 1)));
     color: rgb(255 255 255 / 0.82);
   }
 
@@ -503,7 +504,7 @@
   html:not(.dark) .hub-page .border-b,
   html:not(.dark) .hub-page .border-r,
   html:not(.dark) .hub-page .border-t.border-border {
-    border-color: color-mix(in srgb, var(--foreground) 6%, transparent);
+    border-color: color-mix(in srgb, var(--foreground) calc(6% * var(--contrast-edge-gain, 1)), transparent);
   }
 
   html:not(.dark) .hub-page .hub-side-surface {
@@ -518,7 +519,7 @@
 
   html:not(.dark) .hub-page .hub-tag-soft:hover,
   html:not(.dark) .hub-page .hub-tag-meta:hover {
-    background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(4% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   html.dark .hub-page {
@@ -533,7 +534,7 @@
   html.dark .hub-page .border-b,
   html.dark .hub-page .border-r,
   html.dark .hub-page .border-t.border-border {
-    border-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+    border-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-edge-gain, 1)), transparent);
   }
 
   html.dark .hub-page .hub-side-surface {
@@ -556,7 +557,7 @@
 
   html.dark .hub-page .hub-tag-soft:hover,
   html.dark .hub-page .hub-tag-meta:hover {
-    background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(4% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   /* List rows share the cards' flat neutral surface: no border, no gradient,
@@ -588,23 +589,23 @@
   }
 
   html.dark .hub-page .hub-result-row {
-    background-color: color-mix(in srgb, var(--foreground) 7%, var(--background));
+    background-color: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-wash-gain, 1)), var(--background));
     box-shadow: none;
   }
 
   html.dark .hub-page .hub-result-row:hover {
-    background-color: color-mix(in srgb, var(--foreground) 10%, var(--background));
+    background-color: color-mix(in srgb, var(--foreground) calc(10% * var(--contrast-wash-gain, 1)), var(--background));
     box-shadow: none;
   }
 
   /* On-device rows reuse the result-row card with a neutral tint for the
      inspected row. */
   .hub-page .hub-result-row[data-selected="true"] {
-    background-color: color-mix(in srgb, var(--foreground) 5%, var(--card));
+    background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), var(--card));
   }
 
   html.dark .hub-page .hub-result-row[data-selected="true"] {
-    background-color: color-mix(in srgb, var(--foreground) 11%, var(--background));
+    background-color: color-mix(in srgb, var(--foreground) calc(11% * var(--contrast-wash-gain, 1)), var(--background));
     box-shadow: none;
   }
 
@@ -617,16 +618,16 @@
   }
 
   .hub-page .hub-recent-item:hover {
-    background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(6% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   html.dark .hub-page .hub-recent-item:hover {
-    background-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   .hub-page .hub-recent-clear:hover,
   .hub-page .hub-recent-remove:hover {
-    background-color: color-mix(in srgb, var(--foreground) 10%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(10% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   .hub-menu-instant {
@@ -651,7 +652,7 @@
   .hub-menu-instant [data-slot="select-item"]:focus,
   .hub-menu-instant [data-slot="select-item"][data-highlighted],
   .hub-menu-instant [role="option"][data-highlighted] {
-    background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(6% * var(--contrast-wash-gain, 1)), transparent);
     color: var(--foreground);
   }
 
@@ -660,13 +661,13 @@
   html.dark .hub-menu-instant [data-slot="select-item"]:focus,
   html.dark .hub-menu-instant [data-slot="select-item"][data-highlighted],
   html.dark .hub-menu-instant [role="option"][data-highlighted] {
-    background-color: color-mix(in srgb, var(--foreground) 14%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(14% * var(--contrast-wash-gain, 1)), transparent);
     color: var(--foreground);
   }
 
   /* Matches the pill that opens it, so trigger and menu read as one object. */
   html.dark .hub-menu-instant {
-    background-color: #3a3a3a !important;
+    background-color: color-mix(in oklab, #3a3a3a, var(--contrast-target, transparent) var(--contrast-surface-mix, 0%)) !important;
   }
 
   .hub-menu-instant *,
@@ -685,13 +686,13 @@
      Unsloth/All, Recent/Name/Size, plus Settings + Train tabs) shares one
      design: a soft track with a white, softly-shadowed sliding pill. */
   html:not(.dark) .hub-tab-toggle {
-    background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
     border: 0;
     box-shadow: none;
   }
 
   html.dark .hub-tab-toggle {
-    background-color: color-mix(in srgb, var(--foreground) 4.5%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(4.5% * var(--contrast-wash-gain, 1)), transparent);
     border: 0;
     box-shadow: none;
   }
@@ -703,17 +704,18 @@
   }
 
   html:not(.dark) .hub-tab-toggle-pill:hover {
-    background-color: #f3f3f3;
+    /* #f3f3f3, on the curve its dark twin already follows. */
+    background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), var(--background));
   }
 
   html.dark .hub-tab-toggle-pill {
-    background-color: color-mix(in srgb, var(--foreground) 10%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(10% * var(--contrast-wash-gain, 1)), transparent);
     border: 0;
     box-shadow: none;
   }
 
   html.dark .hub-tab-toggle-pill:hover {
-    background-color: color-mix(in srgb, var(--foreground) 18%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(18% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   html:not(.dark) .hub-page .catalog-row {
@@ -724,11 +726,11 @@
   }
 
   html:not(.dark) .hub-page .catalog-row:hover {
-    background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(3.5% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   html:not(.dark) .hub-page .catalog-row[data-selected="true"] {
-    background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(6% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   html.dark .hub-page .catalog-row {
@@ -739,29 +741,29 @@
   }
 
   html.dark .hub-page .catalog-row:hover {
-    background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(3.5% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   html.dark .hub-page .catalog-row[data-selected="true"] {
-    background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-wash-gain, 1)), transparent);
   }
 }
 
 @layer utilities {
   .hub-tag-soft,
   .hub-tag-meta {
-    @apply min-h-[26px] rounded-full bg-muted/70 ring-1 ring-inset;
-    --tw-ring-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
+    @apply min-h-[calc(26px*var(--ui-space-scale,1))] rounded-full bg-muted/70 ring-1 ring-inset;
+    --tw-ring-color: color-mix(in srgb, var(--foreground) calc(3.5% * var(--contrast-edge-gain, 1)), transparent);
   }
 
   .dark .hub-tag-soft,
   .dark .hub-tag-meta {
-    @apply bg-white/[0.05] ring-white/[0.035];
+    @apply bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] ring-[rgb(255_255_255_/_calc(0.035*var(--contrast-edge-gain,1)))];
   }
   .hub-download-card {
     @apply flex w-full flex-col gap-2 rounded-[22px] p-2;
-    background-color: color-mix(in srgb, var(--foreground) 3%, transparent);
-    border: 1px solid color-mix(in srgb, var(--foreground) 5.5%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(3% * var(--contrast-wash-gain, 1)), transparent);
+    border: 1px solid color-mix(in srgb, var(--foreground) calc(5.5% * var(--contrast-edge-gain, 1)), transparent);
     box-shadow: none;
   }
 
@@ -770,20 +772,20 @@
   }
 
   .dark .hub-download-card {
-    background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
-    border: 1px solid color-mix(in srgb, var(--foreground) 5.5%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(3.5% * var(--contrast-wash-gain, 1)), transparent);
+    border: 1px solid color-mix(in srgb, var(--foreground) calc(5.5% * var(--contrast-edge-gain, 1)), transparent);
     box-shadow: none;
   }
 
   .hub-download-panel {
     border-radius: 20px;
     background-color: var(--popover);
-    border: 1px solid color-mix(in srgb, var(--foreground) 6%, transparent);
+    border: 1px solid color-mix(in srgb, var(--foreground) calc(6% * var(--contrast-edge-gain, 1)), transparent);
     box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
   }
 
   .dark .hub-download-panel {
-    border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+    border-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-edge-gain, 1)), transparent);
     box-shadow: none;
   }
 
@@ -798,7 +800,7 @@
     border-radius: 9999px;
     color: var(--muted-foreground);
     background-color: var(--popover);
-    border: 1px solid color-mix(in srgb, var(--foreground) 6%, transparent);
+    border: 1px solid color-mix(in srgb, var(--foreground) calc(6% * var(--contrast-edge-gain, 1)), transparent);
     box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
     transition: color 150ms ease, background-color 150ms ease, box-shadow 150ms
       ease, transform 150ms ease;
@@ -811,7 +813,7 @@
   }
 
   .dark .hub-download-fab {
-    border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+    border-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-edge-gain, 1)), transparent);
     box-shadow: none;
   }
 
@@ -858,7 +860,7 @@
     background-color: color-mix(in srgb, var(--background) 80%, transparent);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
-    border: 1px solid color-mix(in srgb, var(--foreground) 4%, transparent);
+    border: 1px solid color-mix(in srgb, var(--foreground) calc(4% * var(--contrast-edge-gain, 1)), transparent);
     color: var(--foreground);
     box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
     transition: opacity 160ms ease, background-color 160ms ease, border-color
@@ -867,7 +869,7 @@
 
   .hub-page .hub-carousel-arrow:hover {
     background-color: var(--background);
-    border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+    border-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-edge-gain, 1)), transparent);
   }
 }
 
@@ -1074,7 +1076,7 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem;
+    gap: calc(0.5rem * var(--ui-space-scale, 1));
   }
 
   .hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > br {
@@ -1103,12 +1105,12 @@
     cursor: pointer;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
+    gap: calc(0.5rem * var(--ui-space-scale, 1));
     white-space: nowrap;
     border-radius: 9999px;
     background-color: transparent;
-    padding-left: 0.75rem;
-    padding-right: 0.75rem;
+    padding-left: calc(0.75rem * var(--ui-space-scale, 1));
+    padding-right: calc(0.75rem * var(--ui-space-scale, 1));
     font-size: calc(0.8125rem * var(--ui-font-scale, 1));
     font-weight: 500;
     line-height: calc(1.125rem * var(--ui-font-scale, 1));
@@ -1118,11 +1120,11 @@
   }
 
   .hub-action-btn:hover:not(:disabled) {
-    background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(4% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   .dark .hub-action-btn:hover:not(:disabled) {
-    background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   .hub-action-btn:disabled {
@@ -1144,12 +1146,12 @@
     cursor: pointer;
     align-items: center;
     justify-content: center;
-    gap: 0.4rem;
+    gap: calc(0.4rem * var(--ui-space-scale, 1));
     white-space: nowrap;
     border-radius: 9999px;
     background-color: var(--status-success);
-    padding-left: 1rem;
-    padding-right: 1rem;
+    padding-left: calc(1rem * var(--ui-space-scale, 1));
+    padding-right: calc(1rem * var(--ui-space-scale, 1));
     font-size: calc(0.8125rem * var(--ui-font-scale, 1));
     font-weight: 600;
     line-height: calc(1.125rem * var(--ui-font-scale, 1));
@@ -1245,8 +1247,8 @@
   .hub-page .field-trigger.field-filter {
     color: var(--muted-foreground);
     font-weight: 400;
-    padding-top: 0.25rem;
-    padding-bottom: 0.25rem;
+    padding-top: calc(0.25rem * var(--ui-space-scale, 1));
+    padding-bottom: calc(0.25rem * var(--ui-space-scale, 1));
     line-height: calc(1.25rem * var(--ui-font-scale, 1));
   }
 
@@ -1258,12 +1260,12 @@
     display: inline-flex;
     flex-shrink: 0;
     align-items: center;
-    gap: 0.4rem;
+    gap: calc(0.4rem * var(--ui-space-scale, 1));
     height: 2rem;
-    padding-inline: 0.7rem;
+    padding-inline: calc(0.7rem * var(--ui-space-scale, 1));
     border-radius: 9999px;
-    border: 1px solid color-mix(in srgb, var(--foreground) 8%, transparent);
-    background-color: color-mix(in srgb, var(--foreground) 2.5%, transparent);
+    border: 1px solid color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-edge-gain, 1)), transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(2.5% * var(--contrast-wash-gain, 1)), transparent);
     font-size: calc(0.75rem * var(--ui-font-scale, 1));
     line-height: 1;
     color: var(--muted-foreground);
@@ -1271,7 +1273,7 @@
   }
 
   html.dark .hub-page .hub-stat-pill {
-    background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(4% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   .hub-page .hub-stat-pill-value {
@@ -1281,7 +1283,7 @@
   }
 
   .hub-page .hub-hero {
-    --hub-hero-fill: color-mix(in srgb, var(--foreground) 3.2%, transparent);
+    --hub-hero-fill: color-mix(in srgb, var(--foreground) calc(3.2% * var(--contrast-wash-gain, 1)), transparent);
     --hub-card-border-accent: var(--foreground);
     --hub-card-edge-mix: 2.2%;
     --hub-card-inner-accent: var(--background);
@@ -1411,18 +1413,18 @@
 
   html.dark .hub-page .hub-hero-panel {
     border-color: transparent;
-    background-color: var(--card);
+    background-color: color-mix(in srgb, var(--foreground) calc(3.46% * var(--contrast-wash-gain, 1)), var(--background));
   }
 
   .hub-page .hub-hero-orb {
     position: absolute;
     border-radius: 9999px;
-    background-color: color-mix(in srgb, var(--foreground) 4.5%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(4.5% * var(--contrast-wash-gain, 1)), transparent);
     opacity: 0.42;
   }
 
   .hub-page .hub-hero-orb-accent {
-    background-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-wash-gain, 1)), transparent);
     opacity: 0.34;
   }
 
@@ -1452,23 +1454,23 @@
 
 @layer utilities {
   .hub-chip {
-    @apply inline-flex items-center gap-1 rounded-full px-2 py-[3px] text-ui-11 font-medium leading-none;
-    background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-[calc(3px*var(--ui-space-scale,1))] text-ui-11 font-medium leading-none;
+    background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
     color: var(--muted-foreground);
   }
 
   .dark .hub-chip {
-    background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   .hub-meta-tag {
-    @apply inline-flex h-[18px] shrink-0 items-center gap-1 rounded-full px-2 text-ui-11 font-medium leading-none;
-    background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+    @apply inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center gap-1 rounded-full px-2 text-ui-11 font-medium leading-none;
+    background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
     color: var(--muted-foreground);
   }
 
   .dark .hub-meta-tag {
-    background-color: color-mix(in srgb, var(--foreground) 7.5%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(7.5% * var(--contrast-wash-gain, 1)), transparent);
   }
 }
 

@@ -243,7 +243,7 @@ export function MemoryEstimateRow({
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
             Estimated Memory Usage
           </span>
-          <span className="shrink-0 rounded-md bg-black/[0.04] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+          <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
             Beta
           </span>
         </span>

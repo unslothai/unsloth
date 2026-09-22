@@ -181,25 +181,25 @@
 	/* Slightly warm off white; every page (and the chat surface) shares it. */
 	--background: #fefefd;
 	--foreground: oklch(0.2686 0 0);
-	--card: oklch(1 0 0);
+	--card-base: oklch(1 0 0);
 	--card-foreground: oklch(0.1281 0.0179 169.2764);
-	--popover: oklch(1 0 0);
+	--popover-base: oklch(1 0 0);
 	--popover-foreground: oklch(0.1281 0.0179 169.2764);
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
-	--secondary: oklch(0.9596 0.0275 167.8295);
+	--secondary-base: oklch(0.9596 0.0275 167.8295);
 	--secondary-foreground: oklch(0.2868 0.0649 159.9823);
-	--muted: oklch(0.9702 0 0);
+	--muted-base: oklch(0.9702 0 0);
 	--muted-foreground: oklch(0.5486 0 0);
 	/* Hover/active washes are neutral grey (matches the sidebar), not the
 	   brand green; green stays on primary controls only. */
-	--accent: #ececec;
+	--accent-base: #ececec;
 	--accent-foreground: #262626;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
 	--bypass: #c99d00;
-	--border: oklch(0.9208 0.0101 164.8536);
-	--input: oklch(0.9208 0.0101 164.8536);
+	--border-base: oklch(0.9208 0.0101 164.8536);
+	--input-base: oklch(0.9208 0.0101 164.8536);
 	--ring: #262626;
 	/* Focus and selection indicators: the element's own border, darker.
 	   Derived from the live border/foreground tokens so every palette and
@@ -219,9 +219,11 @@
 	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
-	--sidebar-accent: #ececec;
+	--sidebar-accent-base: #ececec;
 	--sidebar-accent-foreground: #262626;
-	--sidebar-border: #f2f2f2;
+	/* Selected tab on the line variant, a step above the page. */
+	--tabs-line-indicator-base: #ececec;
+	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #262626;
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
@@ -235,7 +237,11 @@
 	--shadow-offset-x: 0px;
 	--shadow-offset-y: 0px;
 	--letter-spacing: 0em;
-	--spacing: 0.25rem;
+	/* Tailwind's spacing step, scaled so every padding, margin, gap, size,
+	   width and height utility follows the UI font size. Overlays that could
+	   then outgrow a phone screen carry their own viewport cap. See
+	   --ui-space-scale below. */
+	--spacing: calc(0.25rem * var(--ui-space-scale, 1));
 	/*--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
 	/*--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
 	/*--shadow-sm:*/
@@ -259,10 +265,10 @@
 	/* Hex (not OKLCH) so the rendered surface matches the design mockup pixel-for-pixel. */
 	--nav-fg: #383835;
 	--nav-fg-muted: #858279;
-	--nav-surface-hover: #f0f0f0;
+	--nav-surface-hover-base: #f0f0f0;
 	--nav-icon-idle: #8f8f8f;
 	--nav-beta-border: #e0ded6;
-	--panel-surface-hover: #ebebeb;
+	--panel-surface-hover-base: #ebebeb;
 	/* Right-side chat-parameters panel: matches the chat content
 	   surface in both themes — distinction from the left sidebar
 	   (#f9faf9) is handled by the left border alone. Tracks
@@ -270,8 +276,8 @@
 	   through automatically. */
 	--panel-surface: var(--background);
 	--panel-surface-fg: var(--foreground);
-	--panel-input-surface: #f5f5f5;
-	--panel-input-surface-hover: #efefef;
+	--panel-input-surface-base: #f5f5f5;
+	--panel-input-surface-hover-base: #efefef;
 	/* Muted gray with a one-step warmer-blue last channel (#779 vs flat #777)
 	   so the tone has a faint hue rather than pure neutral — keeps text and
 	   sliders quiet but not lifeless. */
@@ -281,7 +287,7 @@
 	   from muted text. Light mode: lighter than the muted-text gray for
 	   a softer feel. Dark mode (further down) keeps parity with the
 	   muted-text token. */
-	--panel-slider-fg: #9a9a9c;
+	--panel-slider-fg-base: #9a9a9c;
 	/* Chat-message action icons (assistant action bar, branch picker
 	   chevrons + numbers, message-timing token counter, code-block
 	   copy/download, user action bar, delete button). One token drives
@@ -291,7 +297,7 @@
 	   text. */
 	--chat-icon-fg: #555555;
 	--chat-icon-fg-hover: var(--foreground);
-	--chat-icon-bg-hover: #ededec;
+	--chat-icon-bg-hover-base: #ededec;
 
 	/* Control accent: switches, "New" badges, notification-style chips.
 	   Follows the brand accent by default; palettes that keep their primary
@@ -309,6 +315,21 @@
 	   is 15px. An explicit user preference overrides this inline. */
 	--ui-font-scale: 0.9375;
 
+	/* Every padding, gap and margin multiplies by this, so spacing stays the
+	   same fraction of the text at any UI font size (12px -> 0.8, 20px ->
+	   1.333). Normalised at the 15px default, so the shipped look is
+	   unchanged. Values pinned outside the UI (traffic lights, title bar,
+	   hairlines) skip it. */
+	--ui-space-scale: calc(var(--ui-font-scale, 1) / 0.9375);
+
+	/* Chat chrome that holds text. Declared here because the web shell sets no
+	   chrome vars; the desktop shells override these in app/provider.tsx.
+	   Window geometry stays pinned there: it is the OS window's, not ours. */
+	--studio-chat-header-height: calc(48px * var(--ui-space-scale, 1));
+	--studio-chat-control-height: calc(33px * var(--ui-space-scale, 1));
+	--studio-chat-header-padding-top: calc(11px * var(--ui-space-scale, 1));
+	--studio-media-header-left-inset: calc(1.5rem * var(--ui-space-scale, 1));
+
 	/* Standard interactive-icon size for nav, menus, action bars, and
 	   in-message code-block actions. Sized one step above body text so
 	   icons read as minimally larger than adjacent labels (~14px text).
@@ -322,31 +343,30 @@
 	/* Mirrors the size-3.5 rule applied inside popovers (see the icon block
 	   below), so widths that reserve room for those icons track them. */
 	--ui-icon-size-sm: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1)));
-	/* Model picker header controls. Padding and gaps come from the pinned
-	   --spacing, the icons and label both scale, so reserve each separately.
-	   The trigger is 2.25rem of padding and gaps, two icons, then the label,
-	   plus --picker-control-pad. Height matches the h-9 it replaces at the
-	   16px default. */
-	--picker-control-h: calc(1.125rem + 1.125rem * var(--ui-font-scale, 1));
-	/* Padding added to Search Hub and the two dropdowns, 0.375rem a side. Pinned
-	   like the rest: it pads, and it stops the "Trending" label clipping. */
-	--picker-control-pad: 0.75rem;
+	/* Model picker header controls. Padding and gaps follow --ui-space-scale,
+	   icons and label follow --ui-font-scale, so reserve each separately. The
+	   trigger is 2.25rem of padding and gaps, two icons, then the label, plus
+	   --picker-control-pad. Height matches the h-9 it replaces at 16px. */
+	--picker-control-h: calc(1.125rem * var(--ui-space-scale, 1) + 1.125rem * var(--ui-font-scale, 1));
+	/* Padding added to Search Hub and the two dropdowns, 0.375rem a side. It
+	   also stops the "Trending" label clipping, so it tracks the scale. */
+	--picker-control-pad: calc(0.75rem * var(--ui-space-scale, 1));
 	/* Same per section pill (Recommended / On Device / Connected), 0.25rem a
 	   side, i.e. px-3 to px-4 on the tabs. */
-	--picker-tab-pad: 0.5rem;
-	--picker-control-w: calc(2.25rem + var(--picker-control-pad) + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
+	--picker-tab-pad: calc(0.5rem * var(--ui-space-scale, 1));
+	--picker-control-w: calc(2.25rem * var(--ui-space-scale, 1) + var(--picker-control-pad) + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
 	/* Panel: pl-4, two gaps and pr-2, the pills' padding, their two icons and
 	   label, then the two dropdowns. The control row fills this exactly, which
 	   keeps the last dropdown flush with Search Hub above it. Widening a
 	   control takes the difference from the search field, not the panel. */
-	--picker-panel-w: calc(6.25rem + 2 * var(--picker-tab-pad) + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
+	--picker-panel-w: calc(6.25rem * var(--ui-space-scale, 1) + 2 * var(--picker-tab-pad) + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
 	/* Provider row adds one more control and the Connected pill; split like the rest. */
-	--picker-panel-w-external: calc(var(--picker-panel-w) + var(--picker-tab-pad) + 4rem + 2.75rem * var(--ui-font-scale, 1));
-	/* Inset of a centered .size-icon glyph within a 2rem (size-8) action
-	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
-	   chat-message action bar so the leftmost icon's visual edge aligns
-	   with the message text edge. Auto-tracks --icon-size. */
-	--icon-btn-inset: calc((2rem - var(--icon-size)) / 2);
+	--picker-panel-w-external: calc(var(--picker-panel-w) + var(--picker-tab-pad) + 4rem * var(--ui-space-scale, 1) + 2.75rem * var(--ui-font-scale, 1));
+	/* Inset of a centered .size-icon glyph in a size-8 action button, i.e.
+	   (button - icon-size) / 2. Use as a negative margin on a chat-message
+	   action bar so the leftmost icon lines up with the message text edge.
+	   The button is 8 spacing steps, the glyph tracks --icon-size. */
+	--icon-btn-inset: calc((2rem * var(--ui-space-scale, 1) - var(--icon-size)) / 2);
 }
 
 .dark {
@@ -355,20 +375,20 @@
 	   only accent tokens so dark mode stays consistent across themes. */
 	--background: #181818;
 	--foreground: #dfdfdf;
-	--card: #242424;
+	--card-base: #242424;
 	--card-foreground: #dfdfdf;
-	--popover: #242424;
+	--popover-base: #242424;
 	--popover-foreground: #dfdfdf;
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
-	--secondary: #303030;
+	--secondary-base: #303030;
 	--secondary-foreground: #dfdfdf;
-	--muted: #303030;
+	--muted-base: #303030;
 	/* Secondary text: settings descriptions, empty states, captions.
 	   Under the ink, still ~7:1 on the dialog surface. */
 	--muted-foreground: #b0b0b0;
 	/* Shared hover tone: one step over --popover. */
-	--accent: #3a3a3a;
+	--accent-base: #3a3a3a;
 	--accent-foreground: #dfdfdf;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
@@ -377,8 +397,8 @@
 	   borders stay visible on muted surfaces (right config panel, export
 	   tiles, quant chips) and keep subtle contrast on card. Matches the
 	   hover tone, so outlines and hovered fills share a step. */
-	--border: #3a3a3a;
-	--input: #3a3a3a;
+	--border-base: #3a3a3a;
+	--input-base: #3a3a3a;
 	--ring: #dfdfdf;
 	--chart-1: oklch(0.7511 0.1407 166.2284);
 	--chart-2: oklch(0.75 0.14 136.5572);
@@ -391,9 +411,10 @@
 	--sidebar-foreground: #dfdfdf;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
-	--sidebar-accent: #3a3a3a;
+	--sidebar-accent-base: #3a3a3a;
 	--sidebar-accent-foreground: #dfdfdf;
-	--sidebar-border: #3a3a3a;
+	--tabs-line-indicator-base: #3a3a3a;
+	--sidebar-border-base: #3a3a3a;
 	--sidebar-ring: #dfdfdf;
 	--destructive-foreground: oklch(1 0 0);
 	/* Match light's radius so every rounded-* element is the same in both themes. */
@@ -408,7 +429,8 @@
 	--shadow-offset-x: 0px;
 	--shadow-offset-y: 0px;
 	--letter-spacing: 0em;
-	--spacing: 0.25rem;
+	/* Same scaled step as light; see the :root definition. */
+	--spacing: calc(0.25rem * var(--ui-space-scale, 1));
 	--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 	--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 	--shadow-sm: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 1px 2px 0px hsl(0 0% 0% / 0);
@@ -420,11 +442,11 @@
 
 	--nav-fg: #dfdfdf;
 	--nav-fg-muted: #b0b0b0;
-	--nav-surface-hover: #3a3a3a;
+	--nav-surface-hover-base: #3a3a3a;
 	/* Lifted with the surfaces: the sidebar is #242424, not #1f1f1f. */
 	--nav-icon-idle: #767676;
 	--nav-beta-border: #3a3a3a;
-	--panel-surface-hover: #3a3a3a;
+	--panel-surface-hover-base: #3a3a3a;
 	/* Right-side chat-parameters panel: matches the chat content
 	   surface in both themes — distinction from the left sidebar
 	   is handled by the left border alone. Tracks `--background` so
@@ -434,17 +456,17 @@
 	--panel-surface-fg: var(--foreground);
 	/* Translucent white so the same fill reads correctly on the #181818
 	   page AND on #242424 cards/dialogs. */
-	--panel-input-surface: rgba(255, 255, 255, 0.07);
-	--panel-input-surface-hover: rgba(255, 255, 255, 0.11);
+	--panel-input-surface-base: rgba(255, 255, 255, 0.07);
+	--panel-input-surface-hover-base: rgba(255, 255, 255, 0.11);
 	/* Muted panel text and sliders: one step under the ink, uncolored. */
 	--panel-surface-fg-muted: #b0b0b0;
 	/* Dark-mode slider tone matches muted text. */
-	--panel-slider-fg: #b0b0b0;
+	--panel-slider-fg-base: #b0b0b0;
 	/* Chat action icons: under the ink so they read as controls, not text.
 	   Hover restores full --foreground. */
 	--chat-icon-fg: #c4c4c4;
 	--chat-icon-fg-hover: var(--foreground);
-	--chat-icon-bg-hover: #3a3a3a;
+	--chat-icon-bg-hover-base: #3a3a3a;
 }
 
 /* ---------------------------------------------------------------------------
@@ -470,9 +492,9 @@
 :root[data-palette="classic"]:not(.dark) {
 	--background: #ffffff;
 	--foreground: #1a1c1f;
-	--card: #ffffff;
+	--card-base: #ffffff;
 	--card-foreground: #1a1c1f;
-	--popover: #ffffff;
+	--popover-base: #ffffff;
 	--popover-foreground: #1a1c1f;
 	/* Neutral black primary; blue is reserved for small controls via
 	   --control-accent (toggles, badges, focus rings). */
@@ -480,15 +502,15 @@
 	--primary-foreground: #ffffff;
 	--control-accent: #339cff;
 	--control-accent-foreground: #ffffff;
-	--secondary: #f5f5f5;
+	--secondary-base: #f5f5f5;
 	--secondary-foreground: #1a1c1f;
-	--muted: #f7f7f7;
+	--muted-base: #f7f7f7;
 	--muted-foreground: #8f8f8f;
-	--accent: #ececec;
+	--accent-base: #ececec;
 	--accent-foreground: #1a1c1f;
 	--bypass: #9a7b1e;
-	--border: #e6e6e6;
-	--input: #e6e6e6;
+	--border-base: #e6e6e6;
+	--input-base: #e6e6e6;
 	--ring: #1a1c1f;
 	--chart-1: #339cff;
 	--chart-2: #8fa3b8;
@@ -501,23 +523,23 @@
 	--sidebar-foreground: #1a1c1f;
 	--sidebar-primary: #0d0d0d;
 	--sidebar-primary-foreground: #ffffff;
-	--sidebar-accent: #ececec;
+	--sidebar-accent-base: #ececec;
 	--sidebar-accent-foreground: #1a1c1f;
-	--sidebar-border: #f2f2f2;
+	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #1a1c1f;
 
 	--nav-fg: #2d2f31;
 	--nav-fg-muted: #8f8f8f;
-	--nav-surface-hover: #ececec;
+	--nav-surface-hover-base: #ececec;
 	--nav-icon-idle: #8f8f8f;
 	--nav-beta-border: #e0e0e0;
-	--panel-surface-hover: #ececec;
-	--panel-input-surface: #f4f4f4;
-	--panel-input-surface-hover: #ededed;
+	--panel-surface-hover-base: #ececec;
+	--panel-input-surface-base: #f4f4f4;
+	--panel-input-surface-hover-base: #ededed;
 	--panel-surface-fg-muted: #7a7c7e;
-	--panel-slider-fg: #9b9d9f;
+	--panel-slider-fg-base: #9b9d9f;
 	--chat-icon-fg: #5d5f61;
-	--chat-icon-bg-hover: #ececec;
+	--chat-icon-bg-hover-base: #ececec;
 }
 
 /* Dark surfaces come from the shared base .dark block; Classic only swaps
@@ -544,21 +566,21 @@
 :root[data-palette="minimal"]:not(.dark) {
 	--background: #ffffff;
 	--foreground: #171717;
-	--card: #ffffff;
+	--card-base: #ffffff;
 	--card-foreground: #171717;
-	--popover: #ffffff;
+	--popover-base: #ffffff;
 	--popover-foreground: #171717;
 	--primary: #171717;
 	--primary-foreground: #ffffff;
-	--secondary: #f5f5f5;
+	--secondary-base: #f5f5f5;
 	--secondary-foreground: #262626;
-	--muted: #f5f5f5;
+	--muted-base: #f5f5f5;
 	--muted-foreground: #6f6f6f;
-	--accent: #ebebeb;
+	--accent-base: #ebebeb;
 	--accent-foreground: #171717;
 	--bypass: #6f6f6f;
-	--border: #e2e2e2;
-	--input: #e2e2e2;
+	--border-base: #e2e2e2;
+	--input-base: #e2e2e2;
 	--ring: #171717;
 	--chart-1: #171717;
 	--chart-2: #4d4d4d;
@@ -570,23 +592,23 @@
 	--sidebar-foreground: #171717;
 	--sidebar-primary: #171717;
 	--sidebar-primary-foreground: #ffffff;
-	--sidebar-accent: #ebebeb;
+	--sidebar-accent-base: #ebebeb;
 	--sidebar-accent-foreground: #171717;
-	--sidebar-border: #e8e8e8;
+	--sidebar-border-base: #e8e8e8;
 	--sidebar-ring: #171717;
 
 	--nav-fg: #333333;
 	--nav-fg-muted: #8a8a8a;
-	--nav-surface-hover: #efefef;
+	--nav-surface-hover-base: #efefef;
 	--nav-icon-idle: #8f8f8f;
 	--nav-beta-border: #dddddd;
-	--panel-surface-hover: #ececec;
-	--panel-input-surface: #f4f4f4;
-	--panel-input-surface-hover: #ededed;
+	--panel-surface-hover-base: #ececec;
+	--panel-input-surface-base: #f4f4f4;
+	--panel-input-surface-hover-base: #ededed;
 	--panel-surface-fg-muted: #757575;
-	--panel-slider-fg: #9b9b9b;
+	--panel-slider-fg-base: #9b9b9b;
 	--chat-icon-fg: #555555;
-	--chat-icon-bg-hover: #ececec;
+	--chat-icon-bg-hover-base: #ececec;
 }
 
 /* Dark surfaces come from the shared base .dark block; Minimal only swaps
@@ -615,18 +637,72 @@
    Custom colors/fonts are applied as inline CSS variables on <html> (inline
    wins over every :root/.dark/palette block), so they need no rules here. */
 
-/* Contrast slider: remap border and muted-text tokens by mixing their base
-   values toward the foreground (higher contrast) or background (lower).
-   --input mirrors --border in every palette, so it serves as the untouched
-   base for --border; --panel-surface-fg-muted is the closest stable base for
-   --muted-foreground. --contrast-mix / --contrast-target are set inline. */
+/* Contrast slider (Settings > Appearance).
+
+   The palettes above author their surfaces and lines as --*-base; these two
+   rules are what the app reads, so the slider retunes every card, menu row,
+   button, input pill and hairline from one place. At the default the store
+   sets nothing, this rule is the identity, and the palettes render as
+   authored. */
+:root {
+	/* Boxes and buttons: the fill that lifts a surface off the page. */
+	--card: var(--card-base);
+	--popover: var(--popover-base);
+	--secondary: var(--secondary-base);
+	--muted: var(--muted-base);
+	--accent: var(--accent-base);
+	--nav-surface-hover: var(--nav-surface-hover-base);
+	--panel-surface-hover: var(--panel-surface-hover-base);
+	--panel-input-surface: var(--panel-input-surface-base);
+	--panel-input-surface-hover: var(--panel-input-surface-hover-base);
+	--sidebar-accent: var(--sidebar-accent-base);
+	--chat-icon-bg-hover: var(--chat-icon-bg-hover-base);
+	--tabs-line-indicator: var(--tabs-line-indicator-base);
+	/* Lines: borders, dividers, control outlines. */
+	--border: var(--border-base);
+	--input: var(--input-base);
+	--sidebar-border: var(--sidebar-border-base);
+	/* Slider fill and thumb, the one panel control that takes neither. */
+	--panel-slider-fg: var(--panel-slider-fg-base);
+}
+
+/* Off the default, each token is mixed toward --contrast-target (foreground
+   above 50, background below) by the amount its group takes. See
+   applyCustomizationToDocument for the curves. Beats the palette blocks on
+   specificity, so it reaches all three palettes. */
 html[data-contrast-adjust] {
-	--border: color-mix(in oklab, var(--input), var(--contrast-target) var(--contrast-mix));
-	--sidebar-border: color-mix(in oklab, var(--input), var(--contrast-target) var(--contrast-mix));
+	--card: color-mix(in oklab, var(--card-base), var(--contrast-target) var(--contrast-surface-mix));
+	--popover: color-mix(in oklab, var(--popover-base), var(--contrast-target) var(--contrast-surface-mix));
+	--secondary: color-mix(in oklab, var(--secondary-base), var(--contrast-target) var(--contrast-surface-mix));
+	--muted: color-mix(in oklab, var(--muted-base), var(--contrast-target) var(--contrast-surface-mix));
+	--accent: color-mix(in oklab, var(--accent-base), var(--contrast-target) var(--contrast-surface-mix));
+	--nav-surface-hover: color-mix(in oklab, var(--nav-surface-hover-base), var(--contrast-target) var(--contrast-surface-mix));
+	--panel-surface-hover: color-mix(in oklab, var(--panel-surface-hover-base), var(--contrast-target) var(--contrast-surface-mix));
+	--panel-input-surface: color-mix(in oklab, var(--panel-input-surface-base), var(--contrast-target) var(--contrast-surface-mix));
+	/* Same curve as its resting twin, or the hover inverts at high contrast. */
+	--panel-input-surface-hover: color-mix(in oklab, var(--panel-input-surface-hover-base), var(--contrast-target) var(--contrast-surface-mix));
+	/* Sidebar and model picker rows, and the chat control hovers. */
+	--sidebar-accent: color-mix(in oklab, var(--sidebar-accent-base), var(--contrast-target) var(--contrast-surface-mix));
+	--chat-icon-bg-hover: color-mix(in oklab, var(--chat-icon-bg-hover-base), var(--contrast-target) var(--contrast-surface-mix));
+	--tabs-line-indicator: color-mix(in oklab, var(--tabs-line-indicator-base), var(--contrast-target) var(--contrast-surface-mix));
+	--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
+	/* Control outlines and switch tracks stop short of the hairlines: an
+	   affordance still has to be findable at the bottom of the range. */
+	--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
+	--sidebar-border: color-mix(in oklab, var(--sidebar-border-base), var(--contrast-target) var(--contrast-line-mix));
+	/* Secondary text keeps a gentler curve, it has to stay readable at both
+	   ends. --panel-surface-fg-muted is its stable base. */
 	--muted-foreground: color-mix(
 		in oklab,
 		var(--panel-surface-fg-muted),
-		var(--contrast-target) var(--contrast-mix)
+		var(--contrast-target) var(--contrast-text-mix)
+	);
+	/* Slider fill and thumb read as marks on the panel, so they take the
+	   text curve rather than the surface one. */
+	--panel-slider-fg: color-mix(
+		in oklab,
+		var(--panel-slider-fg-base),
+		var(--contrast-target) var(--contrast-text-mix)
 	);
 }
 
@@ -828,6 +904,7 @@ html[data-chat-font] .aui-root {
 	--color-sidebar-border: var(--sidebar-border);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
 	--color-sidebar-accent: var(--sidebar-accent);
+	--color-tabs-line-indicator: var(--tabs-line-indicator);
 	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
 	--color-sidebar-primary: var(--sidebar-primary);
 	--color-sidebar-foreground: var(--sidebar-foreground);
@@ -1192,8 +1269,8 @@ html[data-chat-font] .aui-root {
 	   own padding-right is the whole gap: the glyph boxes meet at 30px, so 2px
 	   here is 2px between them and 10px between the drawn icons. */
 	.sidebar-row-action.is-unpin-action {
-		right: 1.875rem;
-		padding-right: 0.125rem;
+		right: calc(1.875rem * var(--ui-space-scale, 1));
+		padding-right: calc(0.125rem * var(--ui-space-scale, 1));
 		/* The base pl-2 faces the options button, which is what opens the gap between the two
 		   icons. On the pin there is nothing to its left but the title, so that padding is
 		   dead space: invisible, but inside the button, and sidebar-touch-reveal makes the
@@ -1217,7 +1294,7 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
 		@apply text-nav-fg;
 		/* A step darker than the row hover so the circle reads on top of it. */
-		background-color: color-mix(in srgb, var(--foreground) 11%, transparent);
+		background-color: color-mix(in srgb, var(--foreground) calc(11% * var(--contrast-wash-gain, 1)), transparent);
 	}
 	.dark .sidebar-row-action:hover .sidebar-row-action-glyph,
 	.dark .sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
@@ -1228,7 +1305,7 @@ html[data-chat-font] .aui-root {
 	   + pr-1.5 inside a pill the list inset by px-1.5 = 12px). The desktop
 	   titlebar insets by 5px, so those headers override this in app-sidebar.tsx. */
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[calc(8px*var(--ui-space-scale,1))] pl-[calc(16px*var(--ui-space-scale,1))] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. */
@@ -1237,15 +1314,15 @@ html[data-chat-font] .aui-root {
 	}
 	/* These compound selectors must beat the base label's pr-3 declaration.
 	   Tailwind emits utility classes before this components block, so putting
-	   pr-[11px]/pr-[13px] on the element would lose the cascade. */
+	   pr-[calc(11px*var(--ui-space-scale,1))]/pr-[calc(13px*var(--ui-space-scale,1))] on the element would lose the cascade. */
 	.sidebar-sticky-label.sidebar-sticky-label-desktop {
-		padding-right: 11px;
+		padding-right: calc(11px * var(--ui-space-scale, 1));
 	}
 	.sidebar-sticky-label.sidebar-sticky-label-desktop-recents {
-		padding-right: 13px;
+		padding-right: calc(13px * var(--ui-space-scale, 1));
 	}
 	.sidebar-sticky-label-following {
-		@apply pt-[21px];
+		@apply pt-[calc(21px*var(--ui-space-scale,1))];
 	}
 	.dark .sidebar-sticky-label {
 		/* Muted gray, clearly dimmer than the near-white nav items (#ececee) so
@@ -1308,10 +1385,10 @@ html[data-chat-font] .aui-root {
 	   themes; the black/white base flips automatically per theme. */
 	.panel-slider [data-slot="slider-track"] {
 		height: 0.25rem !important;
-		background-color: rgb(0 0 0 / 0.025) !important;
+		background-color: rgb(0 0 0 / calc(0.025 * var(--contrast-wash-gain, 1))) !important;
 	}
 	.dark .panel-slider [data-slot="slider-track"] {
-		background-color: rgb(255 255 255 / 0.025) !important;
+		background-color: rgb(255 255 255 / calc(0.025 * var(--contrast-wash-gain, 1))) !important;
 	}
 	/* Sliders in the right-side parameters panel.
 	 *
@@ -1372,8 +1449,16 @@ html[data-chat-font] .aui-root {
 	   default. Light mode only, since dark mode draws these controls borderless.
 	   Overrides the token, so every derived shade stays in step. */
 	html:not(.dark) .diffusion-surface {
-		--border: #e9e9e9;
-		--input: #e9e9e9;
+		--border-base: #e9e9e9;
+		--input-base: #e9e9e9;
+		--border: var(--border-base);
+		--input: var(--input-base);
+	}
+	/* A scoped base has to redo the derivation: the :root one is already
+	   substituted, so otherwise the slider stops at these panels. */
+	html[data-contrast-adjust]:not(.dark) .diffusion-surface {
+		--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
+		--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
 	}
 
 	/* Settings columns on Images and Video: content dissolves at whichever edge it runs
@@ -1494,10 +1579,10 @@ html[data-chat-font] .aui-root {
 	/* Wider right gutter: the value is right-aligned on the panel's own edge. */
 	/* 32px like every other inline control on the panel. */
 	.panel-number-input {
-		@apply h-8 min-w-8 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
+		@apply h-8 min-w-8 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] focus:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
 	}
 	.dark .panel-number-input {
-		@apply hover:bg-white/[0.04] focus:bg-white/[0.06];
+		@apply hover:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] focus:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))];
 	}
 
 	/* Select trigger on the panel: the surface and padding the model rows
@@ -1513,9 +1598,9 @@ html[data-chat-font] .aui-root {
 	/* Important like .panel-input-group: these all override a base
 	   SelectTrigger class of the same weight. 14px each side optically:
 	   the chevron's stroke fills 14 of its 24 viewBox units, so its box
-	   carries ~3px of slack and pr-[11px] pays that back. */
+	   carries ~3px of slack and pr-[calc(11px*var(--ui-space-scale,1))] pays that back. */
 	.panel-select-trigger {
-		@apply rounded-full! border-transparent! bg-[var(--panel-input-surface)]! py-0! pl-3.5! pr-[11px]! text-ui-13! font-medium! text-nav-fg shadow-none! hover:bg-[var(--panel-input-surface-hover)]! focus-visible:ring-0!;
+		@apply rounded-full! border-transparent! bg-[var(--panel-input-surface)]! py-0! pl-3.5! pr-[calc(11px*var(--ui-space-scale,1))]! text-ui-13! font-medium! text-nav-fg shadow-none! hover:bg-[var(--panel-input-surface-hover)]! focus-visible:ring-0!;
 	}
 
 	/* These controls suppress the ring, so keyboard focus would otherwise
@@ -1582,8 +1667,8 @@ html[data-chat-font] .aui-root {
 	.app-user-menu [data-slot="dropdown-menu-item"],
 	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
 		height: 36px;
-		padding: 0 0.75rem !important;
-		gap: 9.5px !important;
+		padding: 0 calc(0.75rem * var(--ui-space-scale, 1)) !important;
+		gap: calc(9.5px * var(--ui-space-scale, 1)) !important;
 		border-radius: 12px;
 		font-weight: 500;
 		font-size: calc(0.9375rem * var(--ui-font-scale, 1));
@@ -1953,7 +2038,7 @@ html[data-chat-font] .aui-root {
 	/* On hover the icon swaps for an X inside a soft circle (ChatGPT-style),
 	   filling the icon slot so every pill's X is identical and centered. */
 	.composer-pill-x {
-		@apply pointer-events-none absolute inset-0 m-auto size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[3px] opacity-0 transition-opacity dark:bg-white/[0.14];
+		@apply pointer-events-none absolute inset-0 m-auto size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
@@ -2043,7 +2128,7 @@ html[data-chat-font] .aui-root {
 		order: 1;
 		/* Pull the plus button closer to the composer edge. Logical, so RTL
 		   pulls it outward instead of into the action group. */
-		margin-inline-start: -0.25rem;
+		margin-inline-start: calc(-0.25rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-composer-line .unsloth-composer-input {
@@ -2054,7 +2139,7 @@ html[data-chat-font] .aui-root {
 		order: 3;
 		margin-inline-start: auto;
 		/* Cancel the line padding to preserve the surface's 10px edge gap. */
-		margin-inline-end: -0.25rem;
+		margin-inline-end: calc(-0.25rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
@@ -2062,13 +2147,13 @@ html[data-chat-font] .aui-root {
 		flex-basis: 100%;
 		width: 100%;
 		/* Sits close to the left edge, near the plus. */
-		padding-left: calc(0.375rem + 1px);
-		padding-top: 0.5rem;
-		padding-bottom: 0.5rem;
+		padding-left: calc(0.375rem * var(--ui-space-scale, 1) + 1px);
+		padding-top: calc(0.5rem * var(--ui-space-scale, 1));
+		padding-bottom: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-composer-line[data-expanded="true"] {
-		row-gap: 0.375rem;
+		row-gap: calc(0.375rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-left {
@@ -2079,12 +2164,12 @@ html[data-chat-font] .aui-root {
 	   autosize textarea's inline !important height, so a cleared message leaves
 	   no stale tall box or stray scrollbar. */
 	.unsloth-composer-input:placeholder-shown {
-		max-height: 40px !important;
+		max-height: calc(40px * var(--ui-space-scale, 1)) !important;
 		overflow-y: hidden !important;
 	}
 
 	.unsloth-composer-input {
-		@apply min-h-[40px] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent pl-0.5 pr-2 py-2 text-ui-15 font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+		@apply min-h-[calc(40px*var(--ui-space-scale,1))] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent pl-0.5 pr-2 py-2 text-ui-15 font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
 	}
 
 	/* Animate the frame so the textarea stays mounted and keeps selection/undo. */
@@ -2093,7 +2178,10 @@ html[data-chat-font] .aui-root {
 		order: 1;
 		flex-basis: 100%;
 		width: 100%;
-		height: var(--composer-editor-height, 40px);
+		height: var(
+			--composer-editor-height,
+			calc(40px * var(--ui-space-scale, 1))
+		);
 		transition: height 280ms cubic-bezier(0.22, 1, 0.36, 1);
 	}
 
@@ -2102,14 +2190,14 @@ html[data-chat-font] .aui-root {
 		min-height: 100%;
 		max-height: 100% !important;
 		/* Reserved before typing, or the toggle appearing would reflow the text. */
-		padding-right: 2.25rem;
+		padding-right: calc(2.25rem * var(--ui-space-scale, 1));
 	}
 
 	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
 	   height, so expanding would clip. svh, since dvh tracks Safari's bar. */
 	.aui-composer-root[data-writing-expanded="true"] .unsloth-composer-editor {
 		height: max(
-			var(--composer-editor-height, 40px),
+			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))),
 			clamp(8rem, calc(80svh - 12rem), 42rem)
 		);
 	}
@@ -2120,7 +2208,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.aui-thread-welcome-center:has([data-writing-expanded="true"]) {
-		padding-top: 1rem;
+		padding-top: calc(1rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-composer-plus {
@@ -2160,7 +2248,7 @@ html[data-chat-font] .aui-root {
 			padding-left: 0;
 			padding-right: 0;
 			/* One gap for every control, so the row spaces evenly. */
-			--composer-tight-gap: 0.125rem;
+			--composer-tight-gap: calc(0.125rem * var(--ui-space-scale, 1));
 		}
 
 		.unsloth-composer-left,
@@ -2170,11 +2258,11 @@ html[data-chat-font] .aui-root {
 
 		/* Plus and send hug their edges by the same amount. */
 		.unsloth-composer-left {
-			margin-inline-start: -0.125rem;
+			margin-inline-start: calc(-0.125rem * var(--ui-space-scale, 1));
 		}
 
 		.unsloth-composer-line .aui-composer-action-wrapper {
-			margin-inline-end: -0.125rem;
+			margin-inline-end: calc(-0.125rem * var(--ui-space-scale, 1));
 		}
 
 		/* Send's own inset stacks on the gap above; drop it. The running state
@@ -2187,7 +2275,7 @@ html[data-chat-font] .aui-root {
 
 		/* Keeps the text starting just right of the plus glyph below it. */
 		.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
-			padding-left: calc(0.5rem + 1px);
+			padding-left: calc(0.5rem * var(--ui-space-scale, 1) + 1px);
 		}
 
 		/* Recording swaps the input for the dictation bar, whose timer and
@@ -2195,12 +2283,12 @@ html[data-chat-font] .aui-root {
 		   min-width 0, so past that floor it overflows the surface instead of
 		   shrinking. Trim the same paddings the rest of the row gives up. */
 		.unsloth-dictation-wave {
-			padding-left: 0.5rem;
-			padding-right: 0.25rem;
+			padding-left: calc(0.5rem * var(--ui-space-scale, 1));
+			padding-right: calc(0.25rem * var(--ui-space-scale, 1));
 		}
 
 		.unsloth-dictation-timer {
-			margin-inline-end: 0.5rem;
+			margin-inline-end: calc(0.5rem * var(--ui-space-scale, 1));
 		}
 
 		/* Past its floor the bar has to stop taking width it cannot use. Left
@@ -2264,14 +2352,14 @@ html[data-chat-font] .aui-root {
 		.unsloth-composer-line
 			.aui-composer-action-wrapper
 			> .aui-composer-run-controls {
-			margin-left: 0.25rem;
+			margin-left: calc(0.25rem * var(--ui-space-scale, 1));
 		}
 
 		/* Same 28px as the row above, and both of the bar's buttons together:
 		   stop carries none of our classes, so they have to be sized as a
 		   pair or the recording controls come out mismatched. */
 		.unsloth-dictation-actions {
-			gap: 0.375rem;
+			gap: calc(0.375rem * var(--ui-space-scale, 1));
 		}
 
 		.unsloth-dictation-actions > button {
@@ -2289,7 +2377,7 @@ html[data-chat-font] .aui-root {
 		}
 
 		.unsloth-dictation-timer {
-			margin-inline-end: 0.25rem;
+			margin-inline-end: calc(0.25rem * var(--ui-space-scale, 1));
 		}
 	}
 
@@ -2352,8 +2440,8 @@ html[data-chat-font] .aui-root {
 	   breakpoint would keep the full 20px there. */
 	@container (max-width: 31.5rem) {
 		.unsloth-composer-dock-inner {
-			padding-left: 0.75rem;
-			padding-right: 0.75rem;
+			padding-left: calc(0.75rem * var(--ui-space-scale, 1));
+			padding-right: calc(0.75rem * var(--ui-space-scale, 1));
 		}
 
 		/* The welcome screen is inside the viewport's own 20px gutter, so pull
@@ -2362,12 +2450,12 @@ html[data-chat-font] .aui-root {
 		.aui-thread-welcome-message {
 			padding-left: 0;
 			padding-right: 0;
-			margin-left: -0.5rem;
-			margin-right: -0.5rem;
+			margin-left: calc(-0.5rem * var(--ui-space-scale, 1));
+			margin-right: calc(-0.5rem * var(--ui-space-scale, 1));
 			/* w-full would pin the width and the margins would only shift the
 			   box left. An explicit width widens it into the gutter instead;
 			   auto would shrink-wrap, since the parent centres its children. */
-			width: calc(100% + 1rem);
+			width: calc(100% + 1rem * var(--ui-space-scale, 1));
 		}
 
 		.unsloth-welcome-title {
@@ -2380,7 +2468,7 @@ html[data-chat-font] .aui-root {
 		}
 
 		.unsloth-welcome-greeting {
-			gap: 0.625rem;
+			gap: calc(0.625rem * var(--ui-space-scale, 1));
 		}
 	}
 
@@ -2397,7 +2485,7 @@ html[data-chat-font] .aui-root {
 		}
 
 		.unsloth-welcome-greeting {
-			gap: 0.5rem;
+			gap: calc(0.5rem * var(--ui-space-scale, 1));
 		}
 	}
 
@@ -2455,12 +2543,12 @@ html[data-chat-font] .aui-root {
 		   item radius (12px) + side gutter (9px), so the curves run parallel.
 		   !important beats the global 14px dropdown radius. */
 		border-radius: 21px !important;
-		padding-top: 0.5rem;
-		padding-bottom: 0.5rem;
+		padding-top: calc(0.5rem * var(--ui-space-scale, 1));
+		padding-bottom: calc(0.5rem * var(--ui-space-scale, 1));
 		/* Side gutter ~matches the 0.5rem top/bottom padding so the hover box
 		   sits evenly inset on all four sides. */
-		padding-left: 9px;
-		padding-right: 9px;
+		padding-left: calc(9px * var(--ui-space-scale, 1));
+		padding-right: calc(9px * var(--ui-space-scale, 1));
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
@@ -2506,7 +2594,7 @@ html[data-chat-font] .aui-root {
 			[data-slot="dropdown-menu-item"],
 			[data-slot="dropdown-menu-sub-trigger"]
 		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
-		background-color: rgba(0, 0, 0, 0.06) !important;
+		background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1))) !important;
 	}
 
 	/* Dark hover: the accent nearly matches the surface, so use a clear overlay. */
@@ -2514,7 +2602,7 @@ html[data-chat-font] .aui-root {
 			[data-slot="dropdown-menu-item"],
 			[data-slot="dropdown-menu-sub-trigger"]
 		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
-		background-color: rgba(255, 255, 255, 0.1) !important;
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1))) !important;
 	}
 
 	/* Hover tints only the background; the item and every descendant (text, icons,
@@ -2726,15 +2814,15 @@ html[data-chat-font] .aui-root {
 	[data-streamdown="unordered-list"] {
 		list-style-type: disc;
 		list-style-position: outside;
-		padding-left: 1.25rem;
-		margin-block: 0.5rem;
+		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
 	[data-streamdown="ordered-list"] {
 		list-style-type: decimal;
 		list-style-position: outside;
-		padding-left: 1.25rem;
-		margin-block: 0.5rem;
+		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
 	[data-streamdown="list-item"] {
@@ -2751,12 +2839,12 @@ html[data-chat-font] .aui-root {
 
 	.aui-thread-root [data-streamdown="code-block-body"] {
 		/* Keep overlay scrollbars below one-line code. */
-		padding-bottom: 0.625rem !important;
+		padding-bottom: calc(0.625rem * var(--ui-space-scale, 1)) !important;
 	}
 
 	[data-streamdown="code-block"] {
-		gap: 0.25rem;
-		padding: 0.75rem 1rem;
+		gap: calc(0.25rem * var(--ui-space-scale, 1));
+		padding: calc(0.75rem * var(--ui-space-scale, 1)) calc(1rem * var(--ui-space-scale, 1));
 		border-radius: 1.5rem;
 		/* Wide lines must scroll inside the thread column, not widen past the composer (flex min-width:auto). */
 		max-width: 100%;
@@ -2829,7 +2917,7 @@ html[data-chat-font] .aui-root {
 	   paragraph. `:where()` keeps this at zero specificity so a part that does set its own
 	   `mt-*` still wins. The first real child follows a zero-height badge anchor and gets none. */
 	:where(.aui-assistant-message-content > * + *) {
-		margin-top: 1rem;
+		margin-top: calc(1rem * var(--ui-space-scale, 1));
 	}
 	:where(.aui-assistant-message-content > .h-0 + *) {
 		margin-top: 0;
@@ -2867,9 +2955,9 @@ html[data-chat-font] .aui-root {
 	/* Align fenced code blocks with the main chat column even when nested in lists. */
 	.aui-thread-root [data-streamdown="list-item"] > [data-streamdown="code-block"],
 	.aui-thread-root [data-streamdown="list-item"] [data-streamdown="code-block"] {
-		margin-left: -1.25rem;
-		width: calc(100% + 1.25rem);
-		max-width: calc(100% + 1.25rem);
+		margin-left: calc(-1.25rem * var(--ui-space-scale, 1));
+		width: calc(100% + 1.25rem * var(--ui-space-scale, 1));
+		max-width: calc(100% + 1.25rem * var(--ui-space-scale, 1));
 	}
 
 	.dark .aui-thread-root [data-streamdown="code-block"] {
@@ -3065,14 +3153,14 @@ html[data-chat-font] .aui-root {
 /* No border line; same drop shadow as the composer (.unsloth-composer-surface).
    !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
-	padding: 12px 18px !important;
+	padding: calc(12px * var(--ui-space-scale, 1)) calc(18px * var(--ui-space-scale, 1)) !important;
 	align-items: start !important;
-	gap: 10px !important;
+	gap: calc(10px * var(--ui-space-scale, 1)) !important;
 	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 }
 
 [data-sonner-toast][data-styled='true'] [data-icon] {
-	margin: 2px 0 0 !important;
+	margin: calc(2px * var(--ui-space-scale, 1)) 0 0 !important;
 }
 
 [data-sonner-toast][data-styled='true'] [data-content] {
@@ -3083,8 +3171,8 @@ html[data-chat-font] .aui-root {
 	display: grid !important;
 	grid-template-columns: minmax(0, 1fr);
 	align-items: start !important;
-	column-gap: 10px !important;
-	row-gap: 10px !important;
+	column-gap: calc(10px * var(--ui-space-scale, 1)) !important;
+	row-gap: calc(10px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) {
@@ -3115,7 +3203,7 @@ html[data-chat-font] .aui-root {
 }
 
 [data-sonner-toast][data-styled='true']:has([data-close-button]) {
-	padding-right: 48px !important;
+	padding-right: calc(48px * var(--ui-space-scale, 1)) !important;
 }
 
 /* Toast buttons are pills, matching the dialog actions they stand in for. */
@@ -3127,9 +3215,9 @@ html[data-chat-font] .aui-root {
 [data-sonner-toast][data-styled='true'].chat-model-load-toast {
 	display: flex !important;
 	align-items: center !important;
-	gap: 12px !important;
-	padding-top: 14px !important;
-	padding-bottom: 14px !important;
+	gap: calc(12px * var(--ui-space-scale, 1)) !important;
+	padding-top: calc(14px * var(--ui-space-scale, 1)) !important;
+	padding-bottom: calc(14px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
@@ -3144,7 +3232,7 @@ html[data-chat-font] .aui-root {
 
 /* Progress bar is the last row; give it room below. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
-	padding-bottom: 18px !important;
+	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
 }
 
 /* Dark toasts share the chatbox surface color (.chat-composer-surface
@@ -3450,7 +3538,7 @@ html[data-chat-font] .aui-root {
 
 /* Keep Sonner close button inside the toast and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
 [data-sonner-toast][data-styled="true"] [data-close-button] {
-	top: 8px !important;
+	top: calc(8px * var(--ui-space-scale, 1)) !important;
 	transform: none !important;
 	background: var(--popover) !important;
 	color: var(--popover-foreground) !important;
@@ -3481,9 +3569,9 @@ html[data-chat-font] .aui-root {
 	position: relative;
 	display: grid;
 	grid-template-columns: repeat(8, minmax(0, 1fr));
-	gap: 14px;
+	gap: calc(14px * var(--ui-space-scale, 1));
 	width: min(66%, 18rem);
-	padding: 1.5rem;
+	padding: calc(1.5rem * var(--ui-space-scale, 1));
 	border-radius: 1.5rem;
 }
 
@@ -3862,13 +3950,15 @@ html[data-chat-font] .aui-root {
 }
 
 .dark .find-bar-surface {
-	background-color: #2c2c2c;
+	/* #2c2c2c, on the same curve as --card: the bar has to stay above the
+	   cards it floats over at every contrast, not just the default. */
+	background-color: color-mix(in oklab, #2c2c2c, var(--contrast-target, transparent) var(--contrast-surface-mix, 0%));
 	box-shadow: 0 4px 20px 6px var(--background);
 }
 
 @layer components {
 	/* Align the arrow with page content while retaining its hit area. */
 	.settings-back-button {
-		margin-inline-start: -0.75rem;
+		margin-inline-start: calc(-0.75rem * var(--ui-space-scale, 1));
 	}
 }

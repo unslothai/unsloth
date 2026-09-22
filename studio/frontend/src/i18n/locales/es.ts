@@ -1156,7 +1156,7 @@ export const es = {
       custom: {
         chatWidth: {
           label: "Ancho del chat",
-          description: "Ajusta el ancho de los mensajes y del cuadro de texto. El ancho completo usa el espacio entre las barras laterales.",
+          description: "Ancho de los mensajes y del cuadro de texto.",
           standard: "Estándar",
           wide: "Amplio",
           full: "Ancho completo",
@@ -1229,7 +1229,6 @@ export const es = {
         },
         contrast: {
           label: "Contraste",
-          description: "Intensidad de los bordes y del texto secundario.",
         },
         reduceMotion: {
           label: "Reducir el movimiento",
@@ -1259,7 +1258,7 @@ export const es = {
       sidebarNav: {
         title: "Navegación de la barra lateral",
         description:
-          "Fija y reordena las pestañas de la barra lateral. Las pestañas sin fijar se agrupan en el menú «Más»; si solo queda una pestaña sin fijar, se oculta en lugar de crear un menú de un único elemento. «Nuevo chat» queda fijo.",
+          "Fija y reordena las pestañas de la barra lateral. Las que no fijes pasan al menú «Más».",
         dragToReorder: "Arrastra para reordenar",
         pinToSidebar: "Fijar {name} en la barra lateral",
         moreHolds: "Más ({count})",
@@ -1267,7 +1266,7 @@ export const es = {
       sidebarMenu: {
         title: "Menú de la barra lateral",
         description:
-          "Muestra, oculta y reordena los elementos del menú de perfil de la barra lateral. Configuración, Ayuda, Cerrar sesión y Apagar quedan fijos.",
+          "Elige y reordena los accesos del menú de perfil.",
         darkModeToggle: "Modo oscuro",
         dragToReorder: "Arrastra para reordenar",
       },
