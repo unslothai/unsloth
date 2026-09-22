@@ -13,6 +13,7 @@ stack that need not exist.
 """
 
 import json
+import math
 import os
 import re
 import tempfile
@@ -178,6 +179,23 @@ def max_steps_dataset_rows(
     replicas = _positive_int(world_size, 0) or world_size_from_env()
     per_step = _positive_int(batch_size, 1) * _positive_int(gradient_accumulation_steps, 1)
     return max(MIN_MAX_STEPS_ROWS, steps * per_step * replicas * MAX_STEPS_ROW_SLACK)
+
+
+def epoch_after_steps(
+    step: Any,
+    batch_size: Any,
+    gradient_accumulation_steps: Any,
+    dataset_rows: Any,
+    *,
+    world_size: Any = None,
+) -> float:
+    rows = _positive_int(dataset_rows, 0)
+    if rows <= 0:
+        return 0.0
+    replicas = _positive_int(world_size, 0) or world_size_from_env()
+    batches_per_pass = math.ceil(rows / (_positive_int(batch_size, 1) * replicas))
+    micro_batches = _positive_int(step, 0) * _positive_int(gradient_accumulation_steps, 1)
+    return round(micro_batches / batches_per_pass, 2)
 
 
 def effective_packing(config: dict, branch_never_packs: bool = False) -> bool:
