@@ -328,3 +328,31 @@ def test_a_connection_whose_migration_lost_the_lock_is_not_pooled():
         assert fourth._conn is underlying
     finally:
         fourth.close()
+
+
+def test_a_handle_prepared_across_an_invalidation_is_not_pooled():
+    """_prepare_connection opens a real connection, so an invalidation can land while it runs, and
+    the new handle is not in the registry yet to be caught by it. Registering it under the new
+    generation would make a connection the invalidator meant to close look freshly pooled, and
+    retirement renames the account roots immediately after invalidating. The uncached path always
+    closed, so leaving this one open would be a regression rather than an inherited gap."""
+    runs_db.reset_connection_pool_for_tests()
+    real_prepare = runs_db._prepare_connection
+
+    def prepare_then_invalidate():
+        conn, migrated = real_prepare()
+        # Exactly the window: prepared, not yet registered.
+        runs_db._discard_all_pooled()
+        return conn, migrated
+
+    runs_db._prepare_connection = prepare_then_invalidate
+    try:
+        borrowed = runs_db._connect()
+        underlying = getattr(borrowed, "_conn", borrowed)
+        borrowed.close()
+    finally:
+        runs_db._prepare_connection = real_prepare
+
+    assert runs_db._pool_registry == [], "a handle raced by invalidation must not be pooled"
+    with pytest.raises(sqlite3.ProgrammingError):
+        underlying.execute("SELECT 1")

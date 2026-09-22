@@ -189,6 +189,7 @@ def _connect() -> sqlite3.Connection:
     # and leave the borrow holding a handle whose next query raises ProgrammingError. Retirement
     # invalidates every account's pool, so that would abort unrelated live generations.
     with _pool_lock:
+        generation_before = _pool_generation
         entry = getattr(_pool, "entry", None)
         if entry is not None and entry["generation"] != _pool_generation:
             # Invalidated while this thread was elsewhere; _discard_all_pooled already closed it.
@@ -221,18 +222,24 @@ def _connect() -> sqlite3.Connection:
     # A nested _connect() on one thread (a borrowed handle is already out) also keeps the old
     # behaviour of its own connection: sharing one would put two callers in one transaction.
     if entry is None and migrated:
-        entry = {
-            "key": key,
-            "conn": conn,
-            "busy": True,
-            "schema_ready": _schema_ready,
-            "generation": _pool_generation,
-        }
-        _pool.entry = entry
         with _pool_lock:
-            entry["generation"] = _pool_generation
-            _pool_registry.append(entry)
-        return _Borrowed(conn, key)
+            # Fenced on the generation read before preparing. _prepare_connection opens a real
+            # connection, so an invalidation can land while it runs, and this handle is not in the
+            # registry yet to be caught by it. Registering it under the NEW generation would make a
+            # connection the invalidator meant to close look freshly pooled, and retirement renames
+            # the account roots immediately after invalidating: on Windows an open handle there
+            # fails the rename, which the uncached path never did because it always closed.
+            if _pool_generation == generation_before:
+                entry = {
+                    "key": key,
+                    "conn": conn,
+                    "busy": True,
+                    "schema_ready": _schema_ready,
+                    "generation": generation_before,
+                }
+                _pool.entry = entry
+                _pool_registry.append(entry)
+                return _Borrowed(conn, key)
     return conn
 
 
