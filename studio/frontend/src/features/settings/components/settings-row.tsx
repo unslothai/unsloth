@@ -107,7 +107,7 @@ export function SettingsRow({
           className={cn(
             "flex max-w-full shrink-0",
             // Line the control up with the first description line, not the label.
-            alignTop ? "items-start pt-[21px]" : "items-center",
+            alignTop ? "items-start pt-[calc(21px*var(--ui-space-scale,1))]" : "items-center",
           )}
         >
           {children}

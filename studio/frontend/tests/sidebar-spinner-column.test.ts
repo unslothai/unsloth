@@ -4,9 +4,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { atDefaultUiScale, readSrc } from "./helpers/kit.ts";
 
-const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
+const APP_SIDEBAR = atDefaultUiScale(readSrc("components/app-sidebar.tsx"));
 
 // The nav spinner is ml-auto, so it sits at its row's padding-right plus its margin-right.
 // The chat spinner is anchored at right-N off the row's edge instead: in the flow a working
@@ -64,8 +64,8 @@ test("nav and Recents spinners land on one trailing column", async () => {
 // The kebab overlays the row's right edge, so a spinner row must pad past it.
 test("a working Recents row clears the kebab on hover", async () => {
   const [source, css] = await Promise.all([
-    readSrc("components/app-sidebar.tsx"),
-    readSrc("index.css"),
+    atDefaultUiScale(readSrc("components/app-sidebar.tsx")),
+    atDefaultUiScale(readSrc("index.css")),
   ]);
 
   const kebabInset =
@@ -100,7 +100,7 @@ test("a working Recents row clears the kebab on hover", async () => {
 // one glyph can reach across the other. The options button is later in the DOM and would win
 // those clicks, taking the pin's own glyph with them.
 test("the pin and options buttons do not overlap", () => {
-  const css = readSrc("index.css");
+  const css = atDefaultUiScale(readSrc("index.css"));
 
   const px = (value: string) =>
     value.trim().endsWith("rem")
@@ -195,8 +195,8 @@ test("a pending row is marked so both renderers can show its tooltip", async () 
 
 test("the expanded row and the flyout both show a pending tooltip", async () => {
   const [sidebar, appSidebar] = await Promise.all([
-    readSrc("components/ui/sidebar.tsx"),
-    readSrc("components/app-sidebar.tsx"),
+    atDefaultUiScale(readSrc("components/ui/sidebar.tsx")),
+    atDefaultUiScale(readSrc("components/app-sidebar.tsx")),
   ]);
 
   // The rail-only rule has to make an exception, or an enabled row is silent while expanded.

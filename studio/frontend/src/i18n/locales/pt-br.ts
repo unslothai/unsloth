@@ -571,7 +571,16 @@ export const ptBR = {
       sourceHint: "Os executores de modelos gravam os próprios logs, então uma falha ao carregar ou ao gerar costuma ser explicada ali, e não no log do servidor.",
       path: "Local",
       pathCopy: "Copiar caminho",
-      refreshSection: "Atualização",
+      currentSession: "Atual",
+      statusLive: "Ao vivo",
+      statusPaused: "Pausado",
+      statusStale: "Desatualizado",
+      filterPlaceholder: "Filtrar linhas",
+      lineCount: "{count} linhas",
+      filteredLineCount: "{shown} de {total} linhas",
+      wrapLines: "Quebrar linhas",
+      jumpToLatest: "Ir para o fim",
+      noMatches: "Nenhuma linha corresponde ao filtro.",
       mode: "Modo",
       modeLive: "Ao vivo",
       modeInterval: "A cada 3 segundos",
@@ -1148,7 +1157,7 @@ export const ptBR = {
       custom: {
         chatWidth: {
           label: "Largura do chat",
-          description: "Defina a largura das mensagens e do campo de texto. A largura total usa o espaço entre as barras laterais.",
+          description: "Largura das mensagens e do campo de texto.",
           standard: "Padrão",
           wide: "Ampla",
           full: "Largura total",
@@ -1219,7 +1228,6 @@ export const ptBR = {
         },
         contrast: {
           label: "Contraste",
-          description: "Intensidade das bordas e do texto secundário.",
         },
         reduceMotion: {
           label: "Reduzir movimento",
@@ -1249,7 +1257,7 @@ export const ptBR = {
       sidebarNav: {
         title: "Navegação da barra lateral",
         description:
-          "Fixe e reordene as abas da barra lateral. As abas não fixadas ficam no menu Mais; se só houver uma aba não fixada, ela é ocultada em vez de virar um menu de um item só. Novo chat permanece fixo.",
+          "Fixe e reordene as abas da barra lateral. As não fixadas vão para o menu Mais.",
         dragToReorder: "Arraste para reordenar",
         pinToSidebar: "Fixar {name} na barra lateral",
         moreHolds: "Mais ({count})",
@@ -1257,7 +1265,7 @@ export const ptBR = {
       sidebarMenu: {
         title: "Menu da barra lateral",
         description:
-          "Mostre, oculte e reordene os itens do menu de perfil da barra lateral. Configurações, Ajuda, Sair e Desligar permanecem fixos.",
+          "Escolha e reordene os atalhos do menu de perfil.",
         darkModeToggle: "Alternador de modo escuro",
         dragToReorder: "Arraste para reordenar",
       },
@@ -1398,6 +1406,54 @@ export const ptBR = {
         copied: "Caminho copiado",
         openError: "Não foi possível abrir a pasta",
         copyError: "Não foi possível copiar o caminho",
+        caches: {
+          label: "Arquivos de cache",
+          description:
+            "{size} em caches, dos quais {reclaimable} podem ser limpos agora.",
+          hint: "Downloads de pacotes, kernels compilados e caches de transferência que o Unsloth recria quando precisa deles. Modelos baixados, projetos, conversas, configurações e o seu token do Hugging Face nunca são limpos aqui.",
+          keywords:
+            "cache caches limpar apagar esvaziar liberar espaço disco temporário compilado cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Medindo o tamanho dos caches...",
+          measureFailed: "Não foi possível medir os caches",
+          empty: "Nenhum arquivo de cache encontrado.",
+          detailsAction: "Detalhes",
+          recheckAction: "Verificar novamente",
+          hideDetailsAction: "Ocultar detalhes",
+          clearAction: "Limpar caches",
+          clearOneAction: "Limpar",
+          clearingAction: "Limpando...",
+          confirmTitle: "Limpar os arquivos em cache?",
+          confirmDescription: "Isso libera cerca de {size}.",
+          confirmOneTitle: "Limpar {name}?",
+          safety:
+            "O Unsloth recria um cache na próxima vez que precisar dele. Modelos baixados, projetos, conversas, configurações e o seu token do Hugging Face não são afetados.",
+          hubCost:
+            "Este é o cache de modelos. Ao limpá-lo, esses modelos serão baixados novamente na próxima vez que você usá-los.",
+          datasetsCost:
+            "Ao limpar isso, esses conjuntos de dados serão baixados novamente na próxima vez que você usá-los.",
+          blocked: "Não foi limpo: {reason}",
+          cleared: "{size} liberados",
+          partial: "Não foi possível remover alguns arquivos de cache",
+          clearFailed: "Não foi possível limpar os caches",
+          names: {
+            uv: "Cache de pacotes do uv",
+            pip: "Cache de downloads do pip",
+            npm: "Cache de pacotes do npm",
+            bun: "Cache de pacotes do Bun",
+            torchInductor: "Cache de compilação do Torch Inductor",
+            torchExtensions: "Builds de extensões do Torch",
+            triton: "Cache de kernels do Triton",
+            cuda: "Cache de kernels do CUDA",
+            numba: "Cache de compilação do Numba",
+            matplotlib: "Cache de fontes do Matplotlib",
+            vllm: "Cache do vLLM",
+            unslothCompiled: "Módulos compilados do Unsloth",
+            hfXet: "Cache de transferência do Hugging Face",
+            hfAssets: "Cache de recursos do Hugging Face",
+            hfDatasets: "Cache de conjuntos de dados do Hugging Face",
+            hfHub: "Cache de modelos do Hugging Face",
+          },
+        },
         futureDownloads: "Apenas novos downloads",
         environmentManaged: "Gerenciado pela variável de ambiente {variable}.",
         locationFree: "{free} livres",
