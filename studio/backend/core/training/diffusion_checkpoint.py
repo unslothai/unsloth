@@ -590,6 +590,9 @@ def capture_rng_state(streams: Optional[dict[str, Any]] = None) -> dict[str, Any
         "python": _random_state_to_json(random.getstate()),
         "streams": {},
         "numpy": None,
+        # Which accelerator the torch_* device tensors below belong to. The resume preflight reads it: the device
+        # generator of one backend says nothing on another, and nothing else in the identity distinguishes them.
+        "accelerator": _rng_accelerator(),
     }
     for name, stream in (streams or {}).items():
         try:
@@ -702,6 +705,17 @@ def restore_rng_state(
                 torch.xpu.set_rng_state(state.cpu().to(torch.uint8), i)
     except Exception:  # noqa: BLE001 -- best-effort restore, never fatal
         pass
+
+
+def _rng_accelerator() -> str:
+    """The backend whose device generator a capture holds: ``cuda``, ``xpu`` or ``cpu``."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:  # noqa: BLE001 -- probe failure -> no CUDA generator captured
+        pass
+    return "xpu" if _xpu_available() else "cpu"
 
 
 def _xpu_available() -> bool:
@@ -1744,6 +1758,17 @@ def _assert_required_state(path: Path, manifest: dict[str, Any]) -> None:
         isinstance(saved_streams.get(name), (list, tuple)) for name in _TRAINER_RNG_STREAMS
     ):
         missing.append("the trainer's random-number streams")
+    # Same failure one level down: a bundle written on CUDA carries only torch_cuda_* keys, so resuming it on an XPU
+    # box (or the reverse) leaves the destination device generator freshly seeded and every later noise draw differs,
+    # while the run reports a clean resume. Nothing else catches it -- the identity records the effective precision,
+    # which is bf16 on both. Absent on a bundle written before this was recorded, and an unknown backend must not
+    # refuse a resume that used to work, so only a KNOWN mismatch counts.
+    saved_accel = rng_manifest.get("accelerator") if isinstance(rng_manifest, dict) else None
+    if isinstance(saved_accel, str) and saved_accel and saved_accel != _rng_accelerator():
+        missing.append(
+            f"the random-number state for this accelerator (written on {saved_accel}, "
+            f"resuming on {_rng_accelerator()})"
+        )
     if not missing:
         return
     raise ResumeError(

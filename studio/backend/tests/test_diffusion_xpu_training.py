@@ -10,6 +10,7 @@ attributes, so every "this torch lacks that API" case would pass vacuously.
 
 from __future__ import annotations
 
+import random
 import types
 
 import pytest
@@ -286,6 +287,42 @@ def test_an_xpu_run_captures_and_restores_its_own_noise_generator(host, monkeypa
 
     restore_rng_state(captured["json"], captured["tensors"])
     assert seen["set"] == [(0, [7, 7, 7])]
+
+
+def test_a_checkpoint_cannot_silently_resume_across_accelerator_backends(host, tmp_path):
+    """Recording bf16 for XPU too (above) removed the accidental barrier that used to stop a
+    CUDA checkpoint resuming on XPU: the precisions now match, the identity carries no backend, and
+    the restore finds no torch_xpu_* key, so the device generator stays freshly seeded while the
+    resume reports success. Refused at the preflight, before teardown."""
+    from pathlib import Path
+
+    from core.training.diffusion_checkpoint import (
+        ResumeError,
+        _assert_required_state,
+        capture_rng_state,
+    )
+
+    complete = {
+        "kind": "image",
+        "sampler": {"pos": 0},
+        "files": {k: f"{k}.pt" for k in ("adapter", "optimizer", "scheduler", "rng")},
+    }
+    written_here = capture_rng_state({"loop": random.Random(1), "variant": random.Random(2)})["json"]
+    assert written_here["accelerator"] in ("cuda", "xpu", "cpu")
+
+    # Same host: accepted.
+    _assert_required_state(Path("ckpt"), {**complete, "rng": written_here})
+
+    # Written on the other backend: refused, and the message says which.
+    other = "xpu" if written_here["accelerator"] != "xpu" else "cuda"
+    with pytest.raises(ResumeError, match = "this accelerator"):
+        _assert_required_state(
+            Path("ckpt"), {**complete, "rng": {**written_here, "accelerator": other}}
+        )
+
+    # A bundle predating the field must still resume: unknown is not a mismatch.
+    legacy = {k: v for k, v in written_here.items() if k != "accelerator"}
+    _assert_required_state(Path("ckpt"), {**complete, "rng": legacy})
 
 
 def test_an_xpu_flow_run_records_the_bf16_it_actually_trains_in(host):
