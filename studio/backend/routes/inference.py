@@ -39275,9 +39275,21 @@ async def generate_diffusion_image(
         load_identity,
     )
 
+    from core.inference.diffusion_conditioning import LocalizedEdit
+
     backend = get_active_diffusion_engine()
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_adapters, request)
+    # An edit that names no size matches Image 1's aspect ratio in the backend, which knows the family grid; the
+    # schema default would otherwise pin it to a 1024 square.
+    size_omitted = request.workflow == "edit" and not (
+        {"width", "height"} & request.model_fields_set
+    )
+    localized_edit = (
+        LocalizedEdit(mode = request.localized_edit.mode, image = request.localized_edit.image)
+        if request.localized_edit is not None
+        else None
+    )
     result = None
     for attempt in range(2):
         expected_load = None
@@ -39299,8 +39311,8 @@ async def generate_diffusion_image(
                     expected_load = expected_load,
                     prompt = request.prompt,
                     negative_prompt = request.negative_prompt,
-                    width = request.width,
-                    height = request.height,
+                    width = None if size_omitted else request.width,
+                    height = None if size_omitted else request.height,
                     steps = request.steps,
                     guidance = request.guidance,
                     seed = request.seed,
@@ -39312,6 +39324,9 @@ async def generate_diffusion_image(
                     strength = request.strength,
                     upscale = request.upscale,
                     reference_images = request.reference_images,
+                    workflow = request.workflow,
+                    reference_resolution = request.reference_resolution,
+                    localized_edit = localized_edit,
                     loras = [(l.id, l.weight) for l in request.loras] if request.loras else None,
                     controlnet = (
                         (
@@ -39413,7 +39428,13 @@ async def generate_diffusion_image(
                             if request.controlnet and request.controlnet.strength > 0
                             else None
                         ),
+                        # Images BEYOND the source (reference_images only; a localized-edit mask is recorded
+                        # under localized_edit), as this count has always meant.
                         "reference_image_count": len(request.reference_images or []) or None,
+                        # Engaged values from the engine, not the request: an omitted resolution resolves to the
+                        # family default, and a restore must replay that.
+                        "reference_resolution": result.get("reference_resolution"),
+                        "localized_edit": result.get("localized_edit"),
                         "created_at": created_at,
                     },
                 )

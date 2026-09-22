@@ -22,6 +22,11 @@ const MODEL_DEFAULTS: Array<{
   { match: "flux.2-klein-base", steps: 50, guidance: 4 },
   { match: "flux.2-klein", steps: 4, guidance: 1 },
   { match: "flux.2-dev", steps: 28, guidance: 4 },
+  // Qwen-Image-2.1 samples without guidance at 40 steps. Its aliases too, before the generic key.
+  { match: "qwen-image-2.1", steps: 40, guidance: 1 },
+  { match: "qwen-image-21", steps: 40, guidance: 1 },
+  { match: "qwen_image_21", steps: 40, guidance: 1 },
+  { match: "qwenimage21", steps: 40, guidance: 1 },
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 20, guidance: 4 },
   { match: "ideogram", steps: 48, guidance: 7 },

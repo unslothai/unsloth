@@ -53,6 +53,9 @@ export interface DiffusionStatus {
   // Image workflows the loaded family supports (drives tab gating). Absent when nothing is loaded or
   // on the native engine.
   workflows?: string[];
+  // Image-conditioning limits of the loaded model on the active engine. Null/absent when nothing is loaded or
+  // on an older backend, in which case callers keep the historical limits (4 images, RGB, 16 px, 2048).
+  conditioning?: DiffusionConditioning | null;
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA picker enabled state).
   supports_lora?: boolean;
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
@@ -61,6 +64,25 @@ export interface DiffusionStatus {
   // backend that records it; absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
 }
+
+export interface DiffusionConditioning {
+  // Total input images per call, INCLUDING the source.
+  max_condition_images: number;
+  // Whether transparency in the inputs reaches the model.
+  alpha: boolean;
+  dimension_multiple: number;
+  max_output_side: number;
+  max_output_pixels: number;
+  // Accepted reference_resolution values; empty when the model has no such control.
+  reference_resolutions: number[];
+  // Whether Edit is the unified instruction editor (sized explicitly) rather than an edit-only pipeline.
+  unified_edit: boolean;
+  localized_edit_modes: LocalizedEditMode[];
+  // Engine-specific differences the page should show next to the inputs (the native engine's, today).
+  notes?: string[];
+}
+
+export type LocalizedEditMode = "annotate" | "paint" | "mask";
 
 export interface DiffusionGenerateProgress {
   active: boolean;
@@ -141,8 +163,14 @@ export interface DiffusionGenerateRequest {
   strength?: number;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;
-  // Additional reference images for the FLUX.2 reference workflow, combined with init_image.
+  // Additional images after init_image, in order, for the reference and edit workflows.
   reference_images?: string[];
+  // Explicit conditioned workflow. Omitted keeps the workflow the other fields imply.
+  workflow?: "edit" | "reference";
+  // Condition-image preprocessing resolution, for models that list reference_resolutions.
+  reference_resolution?: number;
+  // Localized edit layer (unified edit only): annotate/paint composite onto the source, mask is sent as Image 2.
+  localized_edit?: { mode: LocalizedEditMode; image: string };
   // LoRA adapters for this generation (discovery id + weight, 0..2). Rejected with a 400 when the
   // loaded model cannot apply LoRA.
   loras?: LoraSpecInput[];
@@ -223,7 +251,10 @@ export interface GalleryImage {
   strength?: number | null;
   upscale?: number | null;
   controlnet_guidance?: string | null;
+  // Images beyond the source (reference_images), for the reference and edit workflows.
   reference_image_count?: number | null;
+  reference_resolution?: number | null;
+  localized_edit?: LocalizedEditMode | null;
   created_at: number;
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;

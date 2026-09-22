@@ -139,7 +139,31 @@ import {
 import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { DEFAULT_GEN, defaultsFor, resolutionFor } from "./image-generation-defaults";
-import { MAX_DIM, MIN_DIM, restorableSize, snapDim } from "./image-size";
+import {
+  MIN_DIM,
+  type SizeLimits,
+  DEFAULT_SIZE_LIMITS,
+  fitSize,
+  restorableSize,
+  sizeLimitsFrom,
+  snapDim,
+} from "./image-size";
+import {
+  ANNOTATION_COLORS,
+  type EditSizing,
+  REFERENCE_DETAIL_LABELS,
+  TRANSPARENCY_CHECKER,
+  additionalImageNumber,
+  conditionedRequestFields,
+  maxAdditionalImages,
+  presetsWithin,
+  resolveEditSize,
+  restoreInputsNote,
+  seedReferenceResolution,
+  withLocalizedHint,
+  withTransparencyPrompt,
+} from "./edit-conditioning";
+import { LocalizedEditCanvas } from "./localized-edit-canvas";
 
 import {
   type ControlNetSpecInput,
@@ -150,6 +174,7 @@ import {
   type DiffusionLoadRequest,
   type DiffusionLoraInfo,
   type DiffusionStatus,
+  type LocalizedEditMode,
   type GalleryImage,
   type LoraSpecInput,
   GenerateResponseLostError,
@@ -246,8 +271,16 @@ const RUNS_SLIDER_MAX = 128;
 // Offered sizes; a locked ratio can derive one off-list, so the current value is added in.
 const DIM_OPTIONS = [
   256, 320, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024, 1152, 1280,
-  1408, 1536, 1664, 1792, 1920, 2048,
+  1408, 1536, 1664, 1792, 1920, 2048, 2304, 2560, 2752,
 ];
+
+// The longest side every family but Qwen-Image-2.1 is limited to; larger limits unlock the 2K presets.
+const MAX_OUTPUT_DEFAULT = DEFAULT_SIZE_LIMITS.maxSide;
+
+// The listed sizes the loaded model can take: on its grid and within its longest side.
+function dimOptions(limits: SizeLimits): number[] {
+  return DIM_OPTIONS.filter((n) => n <= limits.maxSide && n % limits.multiple === 0);
+}
 
 function DimensionSelect({
   icon,
@@ -256,6 +289,7 @@ function DimensionSelect({
   open,
   onOpenChange,
   onChange,
+  limits = DEFAULT_SIZE_LIMITS,
 }: {
   icon: IconSvgElement;
   label: string;
@@ -263,6 +297,7 @@ function DimensionSelect({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onChange: (value: number) => void;
+  limits?: SizeLimits;
 }) {
   // Typing is held in a draft so a half-entered number is not snapped mid-keystroke.
   const [draft, setDraft] = useState(String(value));
@@ -273,7 +308,7 @@ function DimensionSelect({
   }
   const commit = () => {
     const typed = Number(draft);
-    const next = snapDim(Number.isFinite(typed) && typed > 0 ? typed : value);
+    const next = snapDim(Number.isFinite(typed) && typed > 0 ? typed : value, limits);
     setDraft(String(next));
     setLastValue(next);
     if (next !== value) onChange(next);
@@ -312,7 +347,7 @@ function DimensionSelect({
           <ChevronDown className="size-4" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto">
-          {DIM_OPTIONS.map((n) => (
+          {dimOptions(limits).map((n) => (
             <DropdownMenuItem key={n} onSelect={() => pick(n)}>
               <span className="tabular-nums">{n}</span>
             </DropdownMenuItem>
@@ -1263,8 +1298,22 @@ export function ImagesPage({
   // Upscale (hires fix): the enlargement factor and the low denoise strength that re-details the result.
   const [upscaleFactor, setUpscaleFactor] = useState(2);
   const [upscaleStrength, setUpscaleStrength] = useState(0.35);
-  // Reference (FLUX.2): up to 3 ADDITIONAL reference images beyond the primary one.
+  // Reference and Edit: the ADDITIONAL images after the source, in order. Empty strings hold a
+  // cleared slot in place so the others do not renumber mid-edit; they are dropped at send time.
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
+  // Condition-image preprocessing resolution (Qwen-Image-2.1's reference detail), seeded from the
+  // build's canvas tier once the model is loaded.
+  const [referenceResolution, setReferenceResolution] = useState<number | null>(null);
+  // Unified Edit output size: Image 1's aspect ratio at `matchResolution`, or the custom sliders.
+  const [editSizing, setEditSizing] = useState<EditSizing>("source");
+  const [matchResolution, setMatchResolution] = useState(1024);
+  // Localized edit: the convention, the drawn layer (RGBA marks or a white-on-black mask), the
+  // annotation colour in use and the colours drawn so far.
+  const [localizedMode, setLocalizedMode] = useState<LocalizedEditMode | null>(null);
+  const [localizedLayer, setLocalizedLayer] = useState<string | null>(null);
+  const [localizedColor, setLocalizedColor] = useState(ANNOTATION_COLORS[0].value);
+  const [localizedColors, setLocalizedColors] = useState<string[]>([]);
+  const [localizedResetKey, setLocalizedResetKey] = useState(0);
   // LoRA adapters selected for the next generation (id + weight), plus the list the picker offers.
   const [loras, setLoras] = useState<LoraSpecInput[]>([]);
   const [availableLoras, setAvailableLoras] = useState<DiffusionLoraInfo[]>([]);
@@ -1340,6 +1389,11 @@ export function ImagesPage({
   // setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  const conditioning = status?.loaded ? (status.conditioning ?? null) : null;
+  const sizeLimits = useMemo(() => sizeLimitsFrom(conditioning), [conditioning]);
+  const unifiedEdit = Boolean(conditioning?.unified_edit);
+  const referenceResolutions = conditioning?.reference_resolutions ?? [];
+  const maxExtras = maxAdditionalImages(conditioning, workflow === "edit" && unifiedEdit ? localizedMode : null);
   // Controlled so the body-portaled overlays force-close while this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [aspectOpen, setAspectOpen] = useState(false);
@@ -1998,7 +2052,7 @@ export function ImagesPage({
     // Restore from the BASE batch seed, not this image's derived seed, or a replay with batch_size
     // advances it again.
     setSeed(String(image.batch_seed ?? image.seed));
-    const restored = restorableSize(image.width, image.height, image.workflow);
+    const restored = restorableSize(image.width, image.height, image.workflow, sizeLimits);
     setWidth(restored.width);
     setHeight(restored.height);
     // The batch shared one base seed, so a batch_index>0 image only reproduces by replaying the whole batch.
@@ -2023,12 +2077,26 @@ export function ImagesPage({
       else setStrength(image.strength);
     }
     if (typeof image.upscale === "number") setUpscaleFactor(image.upscale);
-    // None of the conditioning images are persisted, so a restore must clear the Transform /
-    // Inpaint / Edit uploads and return to Create.
-    setWorkflow("create");
+    // None of the conditioning images are persisted, so a restore clears every upload. Edit and
+    // Reference reopen their own workflow with its controls restored, so Generate stays blocked
+    // until the inputs are supplied again instead of replaying the recipe as text-to-image. The
+    // other conditioned workflows return to Create, as they always have.
+    const reopened: WorkflowId =
+      image.workflow === "edit" ? "edit" : image.workflow === "reference" ? "reference" : "create";
+    setWorkflow(reopened);
     setInitImage(null);
     setMaskImage(null);
-    setReferenceImages([]);
+    setReferenceImages(
+      reopened === "create" ? [] : Array.from({ length: image.reference_image_count ?? 0 }, () => ""),
+    );
+    if (typeof image.reference_resolution === "number") {
+      setReferenceResolution(image.reference_resolution);
+    }
+    setLocalizedMode(reopened === "edit" ? (image.localized_edit ?? null) : null);
+    setLocalizedLayer(null);
+    setLocalizedColors([]);
+    // The recorded size IS the size that edit rendered, so replay it exactly.
+    if (reopened === "edit") setEditSizing("custom");
     // The control image is not persisted, so clear any stale ControlNet selection.
     setControlnetId("");
     setControlImage(null);
@@ -2036,16 +2104,17 @@ export function ImagesPage({
     // so rather than leaving the two silently disagreeing.
     const rescaled =
       restored.width !== image.width || restored.height !== image.height
-        ? { description: `Size scaled to ${restored.width} × ${restored.height} to fit the ${MIN_DIM}-${MAX_DIM} range.` }
+        ? { description: `Size scaled to ${restored.width} × ${restored.height} to fit the ${MIN_DIM}-${sizeLimits.maxSide} range.` }
         : undefined;
     // Say so, rather than letting a conditioned image restore as a plain Create that generates something unrelated.
-    const conditioned = CONDITIONED_WORKFLOW_INPUTS[image.workflow ?? ""];
+    const conditioned =
+      restoreInputsNote(image) ?? CONDITIONED_WORKFLOW_INPUTS[image.workflow ?? ""];
     if (conditioned) {
       toast.success(`Settings restored. Add ${conditioned} again to reproduce this image.`, rescaled);
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [setWorkflow]);
+  }, [setWorkflow, sizeLimits]);
 
   // A locked ratio keeps the paired dimension in step; "custom" frees both, Flip swaps W/H. ratioHW is h/w for [a,b].
   const ratioHW = (a: number, b: number) => (portrait ? a / b : b / a);
@@ -2053,19 +2122,19 @@ export function ImagesPage({
     setAspect(key);
     if (key === "custom") return;
     const [a, b] = ASPECT_RATIOS[key];
-    setHeight(snapDim(width * ratioHW(a, b)));
+    setHeight(snapDim(width * ratioHW(a, b), sizeLimits));
   };
   const changeWidth = (v: number) => {
     setWidth(v);
     if (aspect === "custom") return;
     const [a, b] = ASPECT_RATIOS[aspect];
-    setHeight(snapDim(v * ratioHW(a, b)));
+    setHeight(snapDim(v * ratioHW(a, b), sizeLimits));
   };
   const changeHeight = (v: number) => {
     setHeight(v);
     if (aspect === "custom") return;
     const [a, b] = ASPECT_RATIOS[aspect];
-    setWidth(snapDim(v / ratioHW(a, b)));
+    setWidth(snapDim(v / ratioHW(a, b), sizeLimits));
   };
   const flipDimensions = () => {
     setWidth(height);
@@ -3349,6 +3418,159 @@ export function ImagesPage({
     cancelLoadRef.current = () => void handleCancelLoad();
   }, [handleCancelLoad]);
 
+  // Seed the reference detail and the match-source area from the build's canvas tier: 512 on a
+  // quantised Qwen-Image-2.1 pipeline, 1024 otherwise. 2048 is only ever an explicit choice.
+  // Adjusted during render when the loaded build changes, the way DimensionSelect tracks its value.
+  const buildKey = status?.loaded
+    ? [
+        status.repo_id,
+        status.base_repo,
+        status.model_kind,
+        status.transformer_quant,
+        (status.conditioning?.reference_resolutions ?? []).join(","),
+      ].join("|")
+    : null;
+  const [seededBuild, setSeededBuild] = useState<string | null>(null);
+  if (buildKey !== seededBuild) {
+    setSeededBuild(buildKey);
+    if (status?.loaded) {
+      const tier = resolutionFor(status.base_repo ?? status.repo_id ?? "", {
+        modelKind: status.model_kind,
+        transformerQuant: status.transformer_quant,
+      }).width;
+      setReferenceResolution(
+        seedReferenceResolution(status.conditioning?.reference_resolutions ?? [], tier),
+      );
+      setMatchResolution(tier);
+    }
+  }
+
+  // Keep the size on the loaded model's grid and inside its bounds, so the value shown is the value sent.
+  const limitsKey = `${sizeLimits.multiple}|${sizeLimits.maxSide}|${sizeLimits.maxPixels}`;
+  const [fittedLimits, setFittedLimits] = useState(limitsKey);
+  if (limitsKey !== fittedLimits) {
+    setFittedLimits(limitsKey);
+    const fitted = fitSize(width, height, sizeLimits);
+    if (fitted.width !== width) setWidth(fitted.width);
+    if (fitted.height !== height) setHeight(fitted.height);
+  }
+
+  // The source's natural size (EXIF-oriented, as the backend decodes it) for match-source sizing,
+  // keyed to the image it was read from so a stale read never sizes a newer source.
+  const [sourceRead, setSourceRead] = useState<{
+    src: string;
+    width: number;
+    height: number;
+  } | null>(null);
+  const sourceDims = sourceRead && sourceRead.src === initImage ? sourceRead : null;
+  useEffect(() => {
+    if (!initImage) return;
+    let live = true;
+    loadImage(initImage)
+      .then((img) => {
+        if (live) setSourceRead({ src: initImage, width: img.naturalWidth, height: img.naturalHeight });
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [initImage]);
+
+  // The size the unified Edit sends, shown in the form exactly as sent.
+  const editSize = useMemo(
+    () =>
+      resolveEditSize(editSizing, sourceDims, matchResolution, { width, height }, sizeLimits),
+    [editSizing, sourceDims, matchResolution, width, height, sizeLimits],
+  );
+  const officialPresets = useMemo(() => presetsWithin(sizeLimits), [sizeLimits]);
+  const showOfficialPresets = sizeLimits.maxSide > MAX_OUTPUT_DEFAULT && officialPresets.length > 0;
+  const unifiedEditActive = workflow === "edit" && unifiedEdit;
+  const onLocalizedLayer = useCallback((dataUrl: string | null) => setLocalizedLayer(dataUrl), []);
+  const onLocalizedColors = useCallback((names: string[]) => setLocalizedColors(names), []);
+
+  // The ordered additional-image slots Reference and the unified Edit share. `numberOf` is the
+  // image number the model sees for slot i (Image 2 onwards, or Image 3 onwards after a mask).
+  const renderAdditionalImages = (numberOf: (i: number) => number, hint: string) => (
+    <>
+      {referenceImages.map((img, i) => (
+        <Field key={i} label={`Image ${numberOf(i)}`} hint={hint}>
+          <div className="space-y-1.5">
+            <ImageDropzone
+              value={img}
+              onChange={(v) =>
+                // Keep the slot in place (empty string when cleared) so other slots do not renumber mid-edit;
+                // empty slots are dropped at send time.
+                setReferenceImages((prev) => prev.map((p, j) => (j === i ? (v ?? "") : p)))
+              }
+              removeLabel={`Remove image ${numberOf(i)}`}
+            />
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="w-full"
+              onClick={() => setReferenceImages((prev) => prev.filter((_, j) => j !== i))}
+            >
+              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+              Remove image {numberOf(i)}
+            </Button>
+          </div>
+        </Field>
+      ))}
+      {referenceImages.length > maxExtras && (
+        <p className="text-xs text-destructive">
+          This model takes {maxExtras} additional image{maxExtras === 1 ? "" : "s"} here. Remove{" "}
+          {referenceImages.length - maxExtras} to generate.
+        </p>
+      )}
+      {referenceImages.length < maxExtras && (
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          className="w-full"
+          disabled={!initImage}
+          onClick={() => setReferenceImages((prev) => [...prev, ""])}
+        >
+          <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+          Add image {numberOf(referenceImages.length)}
+        </Button>
+      )}
+    </>
+  );
+
+  const engineNotes = conditioning?.notes?.length ? (
+    <ul className="space-y-1 text-ui-11 leading-snug text-muted-foreground">
+      {conditioning.notes.map((note) => (
+        <li key={note}>{note}</li>
+      ))}
+    </ul>
+  ) : null;
+
+  const referenceDetailControl =
+    referenceResolutions.length > 0 && referenceResolution != null ? (
+      <Field
+        label="Reference detail"
+        hint="The resolution every input image is resized to (by area) before the model reads it. Separate from the output size: higher keeps more detail from the inputs and costs more memory and time for every image. High (2048) with many images needs a large GPU."
+      >
+        <Select
+          value={String(referenceResolution)}
+          onValueChange={(v) => setReferenceResolution(Number(v))}
+        >
+          <SelectTrigger aria-label="Reference detail">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {referenceResolutions.map((r) => (
+              <SelectItem key={r} value={String(r)}>
+                {REFERENCE_DETAIL_LABELS[r] ?? String(r)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
+    ) : null;
+
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
@@ -3380,6 +3602,27 @@ export function ImagesPage({
       toast.error("Paint a mask over the region to regenerate");
       return;
     }
+    const unifiedEditRun = isEdit && unifiedEdit;
+    if (unifiedEditRun && localizedMode && !localizedLayer) {
+      toast.error(
+        localizedMode === "annotate"
+          ? "Draw the annotations on the source image, or turn Localize off"
+          : "Paint the region on the source image, or turn Localize off",
+      );
+      return;
+    }
+    const emptySlot = (isReference || unifiedEditRun) ? referenceImages.findIndex((img) => !img) : -1;
+    if (emptySlot >= 0) {
+      const n = isReference ? emptySlot + 2 : additionalImageNumber(emptySlot, localizedMode);
+      toast.error(`Image ${n} is empty. Add it, or remove that slot.`);
+      return;
+    }
+    if ((isReference || unifiedEditRun) && referenceImages.filter(Boolean).length > maxExtras) {
+      toast.error(
+        `This model takes at most ${maxExtras + 1 + (unifiedEditRun && localizedMode === "mask" ? 1 : 0)} input images in total. Remove ${referenceImages.filter(Boolean).length - maxExtras}.`,
+      );
+      return;
+    }
     if (isExtend && !(extendSides.left || extendSides.right || extendSides.top || extendSides.bottom)) {
       toast.error("Pick at least one side to extend");
       return;
@@ -3391,7 +3634,7 @@ export function ImagesPage({
     let condMask: string | undefined;
     let condStrength: number | undefined;
     let condUpscale: number | undefined;
-    let condRefImages: string[] | undefined;
+    let condFields: ReturnType<typeof conditionedRequestFields> | undefined;
     try {
       if (isTransform) {
         condInit = initImage ?? undefined;
@@ -3411,15 +3654,24 @@ export function ImagesPage({
         condInit = initImage ?? undefined;
         condUpscale = upscaleFactor;
         condStrength = upscaleStrength;
-      } else if (isReference) {
-        // FLUX.2 reference conditioning: send the primary plus extra references. A fresh image is
-        // generated at the slider size.
-        condInit = initImage ?? undefined;
-        const extras = referenceImages.filter(Boolean);
-        if (extras.length) condRefImages = extras;
+      } else if (isReference || unifiedEditRun) {
+        // Reference conditioning, or the unified instruction edit: the source first, then every
+        // additional image in slot order, generated at the size the form shows.
+        condFields = conditionedRequestFields({
+          workflow: isReference ? "reference" : "edit",
+          initImage: initImage!,
+          extras: referenceImages,
+          referenceResolution,
+          conditioning,
+          localized:
+            unifiedEditRun && localizedMode && localizedLayer
+              ? { mode: localizedMode, image: localizedLayer }
+              : null,
+        });
       } else if (isEdit) {
-        // Instruction editing: send the source image; the prompt IS the instruction. No mask, no strength.
-        condInit = initImage ?? undefined;
+        // Instruction editing on an edit-only model: send the source image; the prompt IS the
+        // instruction. No mask, no strength, and the output takes the source's size.
+        condFields = { workflow: "edit", init_image: initImage ?? undefined };
       }
     } catch {
       toast.error("Could not prepare the source image");
@@ -3438,9 +3690,15 @@ export function ImagesPage({
       baseSeed = Math.floor(Math.random() * 2 ** 32);
     }
 
-    // Snap custom dims to the model's grid so a half-typed value cannot 422.
-    const w = snapDim(width);
-    const h = snapDim(height);
+    // Snap custom dims to the model's grid and bounds so a half-typed value cannot 400. The unified
+    // edit sends the size it displays (Image 1's aspect ratio, or the custom size fitted).
+    const sent = unifiedEditRun ? editSize : fitSize(width, height, sizeLimits);
+    const w = sent.width;
+    const h = sent.height;
+    if (!unifiedEditRun || editSizing === "custom") {
+      if (w !== width) setWidth(w);
+      if (h !== height) setHeight(h);
+    }
 
     // A large run count is legitimate, so no upper cap: floor at 1 and ignore non-numeric input.
     const runs = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
@@ -3535,7 +3793,7 @@ export function ImagesPage({
             mask_image: condMask,
             strength: condStrength,
             upscale: condUpscale,
-            reference_images: condRefImages,
+            ...condFields,
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
             // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
             loras: (() => {
@@ -3612,7 +3870,7 @@ export function ImagesPage({
       setGenDone(null);
       setGenStep(null);
     }
-  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus]);
+  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -4248,64 +4506,219 @@ export function ImagesPage({
             {workflow === "reference" && (
               <>
                 <Field
-                  label="Reference image"
+                  label={unifiedEdit ? "Image 1" : "Reference image"}
                   hint="A reference the model draws on (subject, style, or composition) while generating a NEW image from your prompt at the size below. Unlike Transform, it is not a redraw of this image, so there is no strength."
                 >
                   <ImageDropzone value={initImage} onChange={handleInitChange} />
                 </Field>
-                {referenceImages.map((img, i) => (
-                  <Field
-                    key={i}
-                    label={`Reference ${i + 2}`}
-                    hint="An extra reference combined with the others (e.g. one for the subject, one for the style)."
-                  >
-                    <div className="space-y-1.5">
-                      <ImageDropzone
-                        value={img}
-                        onChange={(v) =>
-                          // Keep the slot in place (empty string when cleared) so other slots do not renumber mid-edit;
-                          // empty slots are dropped at send time.
-                          setReferenceImages((prev) =>
-                            prev.map((p, j) => (j === i ? (v ?? "") : p)),
-                          )
-                        }
-                      />
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="sm"
-                        className="w-full"
-                        onClick={() => setReferenceImages((prev) => prev.filter((_, j) => j !== i))}
-                      >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-                        Remove reference {i + 2}
-                      </Button>
-                    </div>
-                  </Field>
-                ))}
-                {referenceImages.length < 3 && (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    className="w-full"
-                    disabled={!initImage}
-                    onClick={() => setReferenceImages((prev) => [...prev, ""])}
-                  >
-                    <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
-                    Add another reference
-                  </Button>
+                {renderAdditionalImages(
+                  (i) => i + 2,
+                  "An extra reference combined with the others (e.g. one for the subject, one for the style). Refer to it in the prompt by its number.",
                 )}
+                {referenceDetailControl}
+                {engineNotes}
               </>
             )}
 
-            {workflow === "edit" && (
+            {workflow === "edit" && !unifiedEdit && (
               <Field
                 label="Source image"
                 hint="The image to edit. Describe the change in the prompt below (e.g. 'make it night', 'add a red hat', 'change the background to a beach')."
               >
                 <ImageDropzone value={initImage} onChange={handleInitChange} />
               </Field>
+            )}
+
+            {unifiedEditActive && (
+              <>
+                {initImage && localizedMode ? (
+                  <Field
+                    label="Image 1 (source)"
+                    hint={
+                      localizedMode === "annotate"
+                        ? "Draw outlines or marks around what to change, in the colours your instruction names."
+                        : localizedMode === "paint"
+                          ? "Paint the area to change in white. The model sees the white paint on the source."
+                          : "Paint the area to change. It is sent as a white-on-black mask, Image 2, right after the source."
+                    }
+                  >
+                    <div className="space-y-1.5">
+                      <LocalizedEditCanvas
+                        image={initImage}
+                        mode={localizedMode}
+                        color={localizedColor}
+                        brushPct={brushPct}
+                        resetKey={localizedResetKey}
+                        onLayerChange={onLocalizedLayer}
+                        onColorsChange={onLocalizedColors}
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="w-full"
+                        onClick={() => handleInitChange(null)}
+                      >
+                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        Remove source image
+                      </Button>
+                    </div>
+                  </Field>
+                ) : (
+                  <Field
+                    label="Image 1 (source)"
+                    hint="The image to edit. Describe the change in the instruction below; add more images to combine them, and refer to them as Image 2, Image 3 and so on."
+                  >
+                    <ImageDropzone value={initImage} onChange={handleInitChange} />
+                  </Field>
+                )}
+                {conditioning?.localized_edit_modes?.length ? (
+                  <Field
+                    label="Localize"
+                    hint="Point the edit at a region. It guides a generative edit: the model redraws the whole image and is asked to change the marked area, so pixels outside it are not guaranteed to stay identical."
+                  >
+                    <Select
+                      value={localizedMode ?? "off"}
+                      onValueChange={(v) => {
+                        setLocalizedMode(v === "off" ? null : (v as LocalizedEditMode));
+                        setLocalizedLayer(null);
+                        setLocalizedColors([]);
+                      }}
+                    >
+                      <SelectTrigger aria-label="Localize">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="off">Off (whole image)</SelectItem>
+                        {conditioning.localized_edit_modes.includes("annotate") && (
+                          <SelectItem value="annotate">Colour annotations</SelectItem>
+                        )}
+                        {conditioning.localized_edit_modes.includes("paint") && (
+                          <SelectItem value="paint">White paint on the source</SelectItem>
+                        )}
+                        {conditioning.localized_edit_modes.includes("mask") && (
+                          <SelectItem value="mask">Separate mask (Image 2)</SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                ) : null}
+                {localizedMode && (
+                  <>
+                    {localizedMode === "annotate" && (
+                      <Field label="Annotation colour">
+                        <div className="flex gap-2">
+                          {ANNOTATION_COLORS.map((c) => (
+                            <button
+                              key={c.value}
+                              type="button"
+                              aria-label={c.name}
+                              aria-pressed={localizedColor === c.value}
+                              onClick={() => setLocalizedColor(c.value)}
+                              className={cn(
+                                "size-7 rounded-full border-2",
+                                localizedColor === c.value ? "border-foreground" : "border-transparent",
+                              )}
+                              style={{ backgroundColor: c.value }}
+                            />
+                          ))}
+                        </div>
+                      </Field>
+                    )}
+                    <SliderField
+                      label="Brush size"
+                      value={brushPct}
+                      min={1}
+                      max={25}
+                      step={1}
+                      onChange={setBrushPct}
+                    />
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1"
+                        disabled={!localizedLayer}
+                        onClick={() => setLocalizedResetKey((k) => k + 1)}
+                      >
+                        Clear
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() =>
+                          setPrompt((p) => withLocalizedHint(p, localizedMode, localizedColors))
+                        }
+                      >
+                        Add region wording
+                      </Button>
+                    </div>
+                  </>
+                )}
+                {renderAdditionalImages(
+                  (i) => additionalImageNumber(i, localizedMode),
+                  "Another input the instruction can refer to by its number, such as a person, product or style to bring into the source.",
+                )}
+                <Field
+                  label="Output size"
+                  hint="Match Image 1 keeps the source's proportions at the chosen size. Custom uses the aspect ratio and resolution below. The size shown is the size generated."
+                >
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value={editSizing}
+                      onValueChange={(v) => setEditSizing(v as EditSizing)}
+                    >
+                      <SelectTrigger aria-label="Output size" className="flex-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="source">Match Image 1</SelectItem>
+                        <SelectItem value="custom">Custom</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {editSizing === "source" && (
+                      <Select
+                        value={String(matchResolution)}
+                        onValueChange={(v) => setMatchResolution(Number(v))}
+                      >
+                        <SelectTrigger aria-label="Match size" className="w-[120px]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {[512, 768, 1024, 1536, 2048]
+                            .filter((r) => r <= sizeLimits.maxSide)
+                            .map((r) => (
+                              <SelectItem key={r} value={String(r)}>
+                                {r === 2048 ? "2K" : `${r} px`}
+                              </SelectItem>
+                            ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+                  <p className="text-ui-11 tabular-nums text-muted-foreground">
+                    {editSizing === "source" && !sourceDims
+                      ? "Add Image 1 to size the output from it."
+                      : `${editSize.width} × ${editSize.height}`}
+                  </p>
+                </Field>
+                {referenceDetailControl}
+                {engineNotes}
+                {unifiedEdit && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => setPrompt((p) => withTransparencyPrompt(p))}
+                  >
+                    Ask for a transparent background
+                  </Button>
+                )}
+              </>
             )}
 
             <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
@@ -4461,6 +4874,8 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
+            {!(unifiedEditActive && editSizing === "source") && (
+            <>
             <Field
               label="Aspect ratio"
               hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height."
@@ -4520,9 +4935,9 @@ export function ImagesPage({
                   : workflow === "inpaint" ||
                       workflow === "extend" ||
                       workflow === "upscale" ||
-                      workflow === "edit"
+                      (workflow === "edit" && !unifiedEdit)
                     ? "Not used by this workflow: the output size comes from the source image. Upload a smaller image to generate at a smaller size."
-                    : "Width and height in pixels. Sizes run from 256 to 2048 in steps of 16. Z-Image is trained around 1 megapixel, so much larger sizes can look worse."
+                    : `Width and height in pixels. Sizes run from ${MIN_DIM} to ${sizeLimits.maxSide} in steps of ${sizeLimits.multiple}${sizeLimits.maxPixels < sizeLimits.maxSide * sizeLimits.maxSide ? `, up to ${(sizeLimits.maxPixels / 1e6).toFixed(1)} megapixels` : ""}. Most models are trained around 1 megapixel, so much larger sizes can look worse.`
               }
             >
               <div className="flex items-center gap-2">
@@ -4533,6 +4948,7 @@ export function ImagesPage({
                   open={active && widthOpen}
                   onOpenChange={(o) => setWidthOpen(active && o)}
                   onChange={changeWidth}
+                  limits={sizeLimits}
                 />
                 <DimensionSelect
                   icon={ArrowUpDownIcon}
@@ -4541,9 +4957,42 @@ export function ImagesPage({
                   open={active && heightOpen}
                   onOpenChange={(o) => setHeightOpen(active && o)}
                   onChange={changeHeight}
+                  limits={sizeLimits}
                 />
               </div>
             </Field>
+            {showOfficialPresets && (
+              <Field
+                label="2K presets"
+                hint="The model's native 2K sizes. They take several times the memory and time of a 1 megapixel image."
+              >
+                <Select
+                  value=""
+                  onValueChange={(v) => {
+                    const preset = officialPresets.find((p) => `${p.width}x${p.height}` === v);
+                    if (!preset) return;
+                    setWidth(preset.width);
+                    setHeight(preset.height);
+                    const m = matchAspect(preset.width, preset.height);
+                    setAspect(m.key);
+                    setPortrait(m.portrait);
+                  }}
+                >
+                  <SelectTrigger aria-label="2K presets">
+                    <SelectValue placeholder="Choose a 2K size" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {officialPresets.map((p) => (
+                      <SelectItem key={`${p.width}x${p.height}`} value={`${p.width}x${p.height}`}>
+                        {`${p.label} (${p.width} × ${p.height})`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            )}
+            </>
+            )}
 
             {/* First of the one-line sliders, so it takes a bigger break than the gap gives. */}
             <div className="pt-2">
@@ -4637,6 +5086,7 @@ export function ImagesPage({
                 <img
                   src={selectedSrc}
                   alt={selected.prompt}
+                  style={TRANSPARENCY_CHECKER}
                   className="max-h-full max-w-full object-contain shadow-sm"
                 />
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed

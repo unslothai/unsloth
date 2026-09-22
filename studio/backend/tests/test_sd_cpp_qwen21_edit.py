@@ -1,0 +1,208 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Native (sd.cpp) Qwen-Image-2.1 editing: the vision projector asset, the --llm_vision and
+reference-image transport on both the one-shot and the server path, the readiness gate, and the
+pinned build's alpha and crop workarounds."""
+
+from __future__ import annotations
+
+import base64
+import io
+import types
+
+import pytest
+from PIL import Image
+
+from core.inference import sd_cpp_backend as bk
+from core.inference.diffusion_conditioning import LocalizedEdit
+from core.inference.diffusion_families import detect_family, sd_cpp_text_encoders_for
+from core.inference.sd_cpp_args import (
+    SdCppGenParams,
+    SdCppModelFiles,
+    build_img_gen_request,
+    build_sd_cpp_command,
+    build_sd_cpp_server_command,
+)
+from core.inference.sd_cpp_backend import SdCppDiffusionBackend
+
+from .test_sd_cpp_backend import _FakeEngine, _FakeServer
+
+FAM = detect_family("unsloth/Qwen-Image-2.1-GGUF")
+FILES = SdCppModelFiles(
+    diffusion_model = "/m/q.gguf",
+    vae = "/m/vae.safetensors",
+    llm = "/m/llm.gguf",
+    llm_vision = "/m/mmproj.gguf",
+)
+
+
+def _png(size = (64, 32), color = (200, 10, 10, 255)) -> str:
+    buf = io.BytesIO()
+    Image.new("RGBA", size, color).save(buf, format = "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _decode(blob: bytes) -> Image.Image:
+    return Image.open(io.BytesIO(blob))
+
+
+def test_the_projector_is_a_planned_companion_asset():
+    specs = SdCppDiffusionBackend(engine = _FakeEngine())._asset_specs(
+        "unsloth/Qwen-Image-2.1-GGUF", "qwen-image-2.1-Q4_K_M.gguf", FAM
+    )
+    assert ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision") in specs
+    assert any(k == "llm_vision" for _r, _f, k in sd_cpp_text_encoders_for(FAM))
+
+
+def test_both_command_builders_pass_the_projector_and_the_cli_keeps_ref_order():
+    cli = build_sd_cpp_command(
+        "sd-cli",
+        FILES,
+        SdCppGenParams(prompt = "p", width = 512, height = 512, ref_images = ("/a.png", "/b.png")),
+        output_path = "/o.png",
+    )
+    assert cli[cli.index("--llm_vision") + 1] == "/m/mmproj.gguf"
+    refs = [cli[i + 1] for i, a in enumerate(cli) if a == "--ref-image"]
+    assert refs == ["/a.png", "/b.png"]
+    assert "--init-img" not in cli and "--mask" not in cli
+    server = build_sd_cpp_server_command("sd-server", FILES, host = "127.0.0.1", port = 1)
+    assert server[server.index("--llm_vision") + 1] == "/m/mmproj.gguf"
+
+
+def test_the_server_request_carries_refs_and_nothing_img2img():
+    req = build_img_gen_request(prompt = "p", ref_images = ["data:image/png;base64,AA", "B"])
+    assert req["ref_images"] == ["data:image/png;base64,AA", "B"]
+    assert "init_image" not in req and "strength" not in req and "mask_image" not in req
+    assert "ref_images" not in build_img_gen_request(prompt = "p")
+
+
+def test_condition_images_flatten_alpha_over_white_and_pad_only_for_the_server():
+    clear = _png(size = (64, 32), color = (0, 0, 255, 0))
+    w, h, blobs = bk._native_condition_images(
+        FAM, _png(size = (64, 32)), [clear], None, None, None, pad_to_output = True
+    )
+    # Image 1's 2:1 aspect ratio at the 1024 area, the same size the diffusers engine picks.
+    assert (w, h) == (1440, 736)
+    ref = _decode(blobs[1])
+    assert ref.mode == "RGB" and ref.getpixel((32, 16)) == (255, 255, 255)
+    # A reference with another aspect ratio is padded to the output's instead of being cropped.
+    _w, _h, padded = bk._native_condition_images(
+        FAM, _png(size = (64, 32)), [_png(size = (32, 32))], None, 1024, 512, pad_to_output = True
+    )
+    assert _decode(padded[1]).size == (64, 32)
+    _w, _h, plain = bk._native_condition_images(
+        FAM, _png(size = (64, 32)), [_png(size = (32, 32))], None, 1024, 512, pad_to_output = False
+    )
+    assert _decode(plain[1]).size == (32, 32)
+
+
+def test_native_outputs_keep_alpha_for_the_family_only():
+    rgba = Image.new("RGBA", (2, 2), (1, 2, 3, 100))
+    assert bk._native_output_image(FAM, rgba).mode == "RGBA"
+    assert bk._native_output_image(detect_family("z-image"), rgba).mode == "RGB"
+
+
+def _state(
+    files = FILES,
+    mode = "oneshot",
+    server = None,
+):
+    return bk._SdState(
+        repo_id = "unsloth/Qwen-Image-2.1-GGUF",
+        base_repo = FAM.base_repo,
+        family = FAM,
+        device = "cpu",
+        files = files,
+        sampling_method = FAM.sd_cpp_sampling_method,
+        mode = mode,
+        server = server,
+    )
+
+
+def test_edit_is_advertised_only_with_the_projector_and_an_edit_capable_build(tmp_path):
+    capable = tmp_path / "sd-new"
+    capable.write_bytes(b"xx" + FAM.sd_cpp_edit_marker.encode() + b"yy qwen_image_2_1")
+    older = tmp_path / "sd-old"
+    older.write_bytes(b"qwen_image_2_1 only")
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    for binary, files, expect in (
+        (capable, FILES, True),
+        (older, FILES, False),
+        (capable, SdCppModelFiles(diffusion_model = "/m/q.gguf", llm = "/m/llm.gguf"), False),
+    ):
+        b._state = _state(
+            files,
+            mode = "server",
+            server = types.SimpleNamespace(binary = str(binary), is_alive = lambda: True),
+        )
+        status = b.status()
+        assert ("edit" in status["workflows"]) is expect, binary
+        assert ("reference" in status["workflows"]) is expect
+        if expect:
+            c = status["conditioning"]
+            assert c["reference_resolutions"] == [] and c["alpha"] is False
+            assert any("padded with white" in n for n in c["notes"])
+
+
+def test_oneshot_edit_stages_ordered_pngs_and_records_the_workflow(monkeypatch):
+    engine = _FakeEngine()
+    b = SdCppDiffusionBackend(engine = engine)
+    b._state = _state()
+    monkeypatch.setattr(SdCppDiffusionBackend, "_native_edit_ready", lambda self, st: True)
+    seen = {}
+
+    def _capture(files, params, output_path, **kw):
+        seen["refs"] = [Image.open(p).getpixel((0, 0)) for p in params.ref_images]
+        seen["size"] = (params.width, params.height)
+        Image.new("RGBA", (1, 1), (1, 2, 3, 4)).save(output_path)
+
+    monkeypatch.setattr(engine, "generate", _capture)
+    out = b.generate(
+        prompt = "p",
+        steps = 2,
+        workflow = "edit",
+        width = None,
+        height = None,
+        init_image = _png(color = (10, 0, 0, 255)),
+        reference_images = [_png(color = (20, 0, 0, 255)), _png(color = (30, 0, 0, 255))],
+        localized_edit = None,
+    )
+    assert [c[:3] for c in seen["refs"]] == [(10, 0, 0), (20, 0, 0), (30, 0, 0)]
+    assert seen["size"][0] / seen["size"][1] == pytest.approx(2.0, rel = 0.05)
+    assert out["workflow"] == "edit" and out["images"][0].mode == "RGBA"
+
+
+def test_server_edit_sends_the_mask_as_image_2(monkeypatch):
+    server = _FakeServer("sd-server")
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    b._state = _state(mode = "server", server = server)
+    monkeypatch.setattr(SdCppDiffusionBackend, "_native_edit_ready", lambda self, st: True)
+    mask = io.BytesIO()
+    Image.new("L", (64, 32), 255).save(mask, format = "PNG")
+    b.generate(
+        prompt = "p",
+        steps = 2,
+        workflow = "edit",
+        width = 512,
+        height = 256,
+        init_image = _png(),
+        localized_edit = LocalizedEdit("mask", base64.b64encode(mask.getvalue()).decode()),
+    )
+    refs = server.payloads[-1]["ref_images"]
+    assert len(refs) == 2
+    second = _decode(base64.b64decode(refs[1].split(",", 1)[1]))
+    assert second.getpixel((0, 0)) == (255, 255, 255)
+
+
+def test_native_refuses_what_it_cannot_honour(monkeypatch):
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    b._state = _state()
+    with pytest.raises(ValueError, match = "Reference detail is not adjustable"):
+        b.generate(prompt = "p", workflow = "edit", init_image = _png(), reference_resolution = 1024)
+    with pytest.raises(ValueError, match = "not yet supported"):
+        b.generate(prompt = "p", init_image = _png())  # an omitted workflow keeps its refusal
+    # Without an edit-capable build and projector, the workflow is refused rather than sent.
+    monkeypatch.setattr(SdCppDiffusionBackend, "_native_edit_ready", lambda self, st: False)
+    with pytest.raises(ValueError, match = "Image editing is not available"):
+        b.generate(prompt = "p", workflow = "edit", init_image = _png(), width = 512, height = 512)
