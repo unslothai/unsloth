@@ -32,8 +32,6 @@ on:
       - 'tests/studio/test_psmodulepath_normalization.ps1'
       - 'studio/setup.ps1'
       - 'studio/setup.bat'
-      - 'studio/install_python_stack.py'
-      - 'studio/install_llama_prebuilt.py'
       - 'studio/backend/requirements/**'
       - 'unsloth_cli/commands/studio.py'
       - 'unsloth_cli/__init__.py'
@@ -43,13 +41,13 @@ on:
       # first-order local imports, so a commit touching only one of them changes what
       # this workflow runs while matching none of the entrypoints. Invisible while the
       # push trigger was unfiltered, because every commit re-ran this after merge.
-      - 'studio/install_manifest.py'
       - 'studio/nvidia_probe.py'
       - 'studio/prebuilt_core.py'
       # setup.sh runs this at setup.sh:5130 and setup.ps1 at setup.ps1:9025, so it is the
       # last executed edge of the installer chain that was not listed here.
-      - 'studio/install_whisper_prebuilt.py'
       - 'studio/backend/utils/**'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/studio-windows-update-smoke.yml'
   push:
     branches: [main]
@@ -64,18 +62,16 @@ on:
       - 'tests/studio/test_psmodulepath_normalization.ps1'
       - 'studio/setup.ps1'
       - 'studio/setup.bat'
-      - 'studio/install_python_stack.py'
-      - 'studio/install_llama_prebuilt.py'
       - 'studio/backend/requirements/**'
       - 'unsloth_cli/commands/studio.py'
       - 'unsloth_cli/__init__.py'
       - 'unsloth_cli/_system_dir_guard.py'
       - 'pyproject.toml'
-      - 'studio/install_manifest.py'
       - 'studio/nvidia_probe.py'
       - 'studio/prebuilt_core.py'
-      - 'studio/install_whisper_prebuilt.py'
       - 'studio/backend/utils/**'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/studio-windows-update-smoke.yml'
   workflow_dispatch:
 
