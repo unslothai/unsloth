@@ -447,10 +447,12 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
             config = getattr(model, "config", None)
             plan = getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) if config is not None else None
             if plan is not None:
-                try:
-                    delattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
-                except AttributeError:
-                    config.__dict__.pop(UNSLOTH_COMPRESSED_TENSORS_ATTR, None)
+                # Read, not consumed: the device-map planner runs this same hook on a meta model
+                # built from the same config object before the real load, and a plan taken off
+                # the config there left the real load with no converters, so every packed
+                # expert was reported missing, re-initialised and bitsandbytes-quantized from
+                # random values (Kimi-K2.7-Code on four GPUs). The plan comes off the config
+                # once the weights are in, in `_process_model_after_weight_loading`.
                 self._unsloth_ct_config = _build_quantization_config(plan)
                 dtype = kwargs.get("dtype", None)
                 if not isinstance(dtype, torch.dtype):
@@ -470,6 +472,15 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
 
                 model._get_dtype_plan = _get_dtype_plan
             return super()._process_model_before_weight_loading(model, **kwargs)
+
+        def _process_model_after_weight_loading(self, model, **kwargs):
+            config = getattr(model, "config", None)
+            if config is not None and getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None:
+                try:
+                    delattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
+                except AttributeError:
+                    config.__dict__.pop(UNSLOTH_COMPRESSED_TENSORS_ATTR, None)
+            return super()._process_model_after_weight_loading(model, **kwargs)
 
         def _unsloth_keep_storage_dtype(self, target_patterns):
             """Merged expert stacks are named after the converter target, not the packed

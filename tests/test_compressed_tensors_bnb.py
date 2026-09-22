@@ -296,6 +296,43 @@ def test_arm_leaves_the_config_alone_when_the_quantizer_cannot_be_installed(monk
     assert not hasattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
 
 
+
+@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+def test_the_planner_pass_does_not_consume_the_plan():
+    """The device-map planner preprocesses a meta model built from the very config object the
+    load uses. The plan used to be taken off the config by the first pass, so on a multi-GPU
+    load the real quantizer found none, added no converters, and every packed expert was
+    reported missing and quantized from its random initialisation."""
+    from transformers import LlamaConfig, LlamaForCausalLM
+    from transformers.quantizers import AutoHfQuantizer
+    from transformers.utils.quantization_config import BitsAndBytesConfig
+    from accelerate import init_empty_weights
+
+    assert install_compressed_tensors_bnb_quantizer()
+    config = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    config.quantization_config = _w4a16()
+    plan = arm_compressed_tensors_bnb_loading(config, verbose = False)
+    assert plan is not None
+    bnb = BitsAndBytesConfig(load_in_4bit = True, bnb_4bit_compute_dtype = torch.bfloat16, bnb_4bit_quant_type = "nf4")
+
+    def preprocess():
+        quantizer = AutoHfQuantizer.from_config(bnb, pre_quantized = False)
+        with init_empty_weights():
+            model = LlamaForCausalLM(config)
+        quantizer._process_model_before_weight_loading(model, dtype = torch.bfloat16, device_map = None, checkpoint_files = [])
+        return quantizer, model
+
+    first, _ = preprocess()          # the planner's meta pass
+    assert getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is plan
+    second, model = preprocess()     # the real load
+    assert second._unsloth_ct_config is not None
+    conversions = second.update_weight_conversions([])
+    assert any(
+        getattr(c, "source_patterns", None) and "weight_packed$" in c.source_patterns for c in conversions
+    ), [getattr(c, "source_patterns", None) for c in conversions]
+    second._process_model_after_weight_loading(model)
+    assert not hasattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
+
 @pytest.mark.skipif(not HAS_CONVERTERS, reason = "needs the transformers 5 loader")
 def test_quantizer_registration_is_idempotent_and_a_subclass():
     from transformers.quantizers import auto as quantizers_auto
