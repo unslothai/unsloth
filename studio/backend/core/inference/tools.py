@@ -13961,9 +13961,13 @@ def _whatwg_codec(label: bytes) -> str | None:
     return _WHATWG_CHARSET_CODECS.get(label.strip(b"\t\n\f\r ").decode("latin-1").lower())
 
 
-def _sniff_meta_charset(head: bytes) -> str | None:
-    # Browser prescan order: the first usable <meta> declaration wins, the XML prolog is a fallback.
-    for tag in _META_TAG_RE.finditer(_HTML_COMMENT_RE.sub(b"", head)):
+def _sniff_meta_charset(head: bytes, content_type: str) -> str | None:
+    # Browsers prescan <meta> only in HTML (first usable one wins, XML prolog as fallback) and read
+    # only the prolog in XML. Other text types never declare their encoding in the body.
+    is_xml = content_type in ("text/xml", "application/xml") or content_type.endswith("+xml")
+    if not is_xml and content_type not in ("", "text/html"):
+        return None
+    for tag in () if is_xml else _META_TAG_RE.finditer(_HTML_COMMENT_RE.sub(b"", head)):
         attrs = {}
         for name, *values in _META_ATTR_RE.findall(tag.group(1)):
             attrs.setdefault(name.lower(), b"".join(values))
@@ -14724,7 +14728,7 @@ def _fetch_url_raw(
         )
         meta_codec = None
         if bom_codec is None:
-            meta_codec = _sniff_meta_charset(raw_bytes[:_META_CHARSET_SCAN_BYTES])
+            meta_codec = _sniff_meta_charset(raw_bytes[:_META_CHARSET_SCAN_BYTES], content_type)
         try:
             raw_html = raw_bytes.decode(
                 declared or bom_codec or meta_codec or "utf-8", errors = "replace"

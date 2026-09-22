@@ -592,3 +592,21 @@ def test_whatwg_charset_table_only_names_text_codecs():
         assert label == label.lower()
         assert codecs.lookup(codec)._is_text_encoding, label
         assert b"a\xff".decode(codec, "replace")
+
+
+@pytest.mark.parametrize(
+    "content_type", ["text/plain", "application/json", "application/xml", "text/css"]
+)
+def test_meta_charset_in_non_html_body_is_ignored(monkeypatch, content_type):
+    text = "日本語のテキスト。価格比較とクチコミ。MARKERWORD "
+    body = ('<p>Example:</p> <meta charset="shift_jis"/> ' + text * 40).encode("utf-8")
+    out = _fetch_with(monkeypatch, body, content_type)
+    assert text.strip() in out
+    assert "�" not in out
+
+
+def test_meta_charset_read_when_content_type_missing(monkeypatch):
+    body = _html_page('<meta charset="Shift_JIS">', _JAPANESE * 40).encode("cp932")
+    out = _fetch_with(monkeypatch, body, None)
+    assert _JAPANESE in out
+    assert "�" not in out
