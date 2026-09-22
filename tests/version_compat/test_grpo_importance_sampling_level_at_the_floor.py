@@ -16,11 +16,7 @@ import re
 
 import pytest
 
-from unsloth.models.rl_replacements import (
-    RL_PRE_ITEMS,
-    grpo_trainer_compute_loss,
-    torch_compile_options,
-)
+from unsloth.models.rl_replacements import RL_PRE_ITEMS, grpo_trainer_compute_loss
 
 
 class _Stop(Exception):
@@ -83,20 +79,22 @@ def _captured_level(
         captured["level"] = kwargs.get("importance_sampling_level", "<not passed>")
         raise _Stop
 
-    # Exec the REAL helper sources the rewriter emits, exactly as rl.py does when it builds
-    # the compiled trainer (`RL_PRE_ITEMS[trainer_file]`), instead of hand-listing stubs.
-    # Hand-listing was brittle: every helper added upstream broke this test with a NameError
-    # that said nothing about importance_sampling_level. Only the two loss entry points are
-    # stubbed, because intercepting them is the whole measurement.
-    namespace = {
-        "torch": torch,
-        "inspect": __import__("inspect"),
-        "detect_logit_transforms": None,
-        "sanitize_logprob": lambda x: x,
-        # rl.py emits this alongside the pre-items when it writes the compiled trainer; take
-        # the real one rather than a literal so a change to it cannot silently diverge here.
-        "torch_compile_options": torch_compile_options,
-    }
+    # Seed from rl_replacements' own globals, then exec the REAL pre-item sources the rewriter
+    # emits, as rl.py does when it writes the compiled trainer. Naming the helpers one at a time
+    # was whack-a-mole: torch_compile_options and then DEVICE_TYPE_TORCH each arrived upstream
+    # and broke this with a NameError about something other than the knob under test. Taking the
+    # module's namespace means a helper added there is already in scope. Only the two loss entry
+    # points are stubbed, because intercepting them is the whole measurement.
+    import unsloth.models.rl_replacements as _rl_replacements
+
+    namespace = dict(vars(_rl_replacements))
+    namespace.update(
+        {
+            "torch": torch,
+            "detect_logit_transforms": None,
+            "sanitize_logprob": lambda x: x,
+        }
+    )
     exec(compile("\n".join(RL_PRE_ITEMS["grpo_trainer"]), "<pre_items>", "exec"), namespace)
     namespace["grpo_compute_loss_slow"] = _loss_stub
     namespace["grpo_accumulated_loss"] = _loss_stub

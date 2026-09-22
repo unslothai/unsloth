@@ -768,6 +768,27 @@ def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
     )
 
 
+def bitsandbytes_optimizer_supported() -> bool:
+    """Whether a bitsandbytes optimizer can complete an update on the SELECTED backend.
+
+    False only when training actually runs on Intel XPU: bitsandbytes registers
+    optimizer_update_8bit_blockwise (and optimizer_update_32bit) to Triton in every branch of
+    backends/xpu/ops.py, and Intel's Triton backend asserts on a SYCL toolchain we do not ship.
+    Construction still succeeds, so the trainers' try/except around the constructor never sees
+    it -- the run dies at the first optimizer.step(). Mirrors core/training/training.py.
+
+    Keyed on get_device(), NOT torch.xpu.is_available(): a hybrid host with an Intel iGPU beside
+    an NVIDIA card reports both and detection prefers CUDA. Answering the presence question there
+    would drop 8-bit on a CUDA run, and worse, change optimizer_key() so restore_resume_state
+    refuses every existing AdamW8bit checkpoint with a ResumeError.
+    """
+    try:
+        from utils.hardware import DeviceType, get_device
+        return get_device() != DeviceType.XPU
+    except Exception:  # noqa: BLE001 -- a probe failure must not block a start
+        return True
+
+
 def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:
     """Reason the requested DiT precision cannot run on this host, else None -- checked by the start
     route BEFORE evicting resident GPU workloads (the trainer's own checks fire only in the

@@ -297,13 +297,37 @@ jobs:
           "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --upgrade pip
           "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --no-cache-dir \
             "torch==${MATRIX_TORCH}" --index-url https://download.pytorch.org/whl/cu130
-          # The pure-Python modules the three packages import at module load: flash-attn and
-          # mamba-ssm both `from einops import ...` on import, torch wants numpy for its tensor
-          # conversions, and packaging is read by the version checks. None of these can pull a
-          # second torch into the venv, which is what --no-deps on the wheel itself is for:
-          # causal-conv1d and mamba-ssm declare each other and transformers, none of which has
-          # anything to do with whether this .so loads.
-          "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet einops numpy packaging
+          # The wheel is installed with --no-deps so nothing can drag a second torch into the
+          # venv; every other runtime dependency the package declares is installed first, read
+          # from the wheel's own metadata rather than from a hand-kept list. The hand-kept list
+          # broke twice: einops was missing, then huggingface_hub (mamba_ssm.modules.mamba2
+          # imports PyTorchModelHubMixin at module load). Excluded on purpose: torch itself and
+          # the two sibling packages built by this same workflow, which pip would otherwise try
+          # to compile from source because no matching wheel exists on PyPI. The constraints
+          # file pins torch and triton to what is already in the venv, so a dependency that
+          # wants a different one fails the step loudly instead of swapping torch under us.
+          "$RUNNER_TEMP/smoke/bin/python" -m pip freeze | grep -E '^(torch|triton)==' \
+            > "$RUNNER_TEMP/smoke-constraints.txt"
+          cat "$RUNNER_TEMP/smoke-constraints.txt"
+          "$RUNNER_TEMP/smoke/bin/python" - "src/dist/${WHEEL_NAME}" "$RUNNER_TEMP/smoke-constraints.txt" <<'PY'
+          import email.parser, pathlib, re, subprocess, sys, zipfile
+          wheel = pathlib.Path(sys.argv[1])
+          with zipfile.ZipFile(wheel) as zf:
+              meta = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+              headers = email.parser.Parser().parsestr(zf.read(meta).decode())
+          excluded = {"torch", "flash-attn", "flash_attn", "causal-conv1d", "causal_conv1d", "mamba-ssm", "mamba_ssm"}
+          deps = []
+          for req in headers.get_all("Requires-Dist") or []:
+              if ";" in req:  # extras and environment markers: not runtime requirements
+                  continue
+              name = re.split(r"[\s<>=!~\[;]", req.strip(), maxsplit=1)[0].lower()
+              if name in excluded:
+                  continue
+              deps.append(req.strip())
+          deps += ["numpy"]  # torch wants numpy for its tensor conversions and only warns without it
+          print("runtime dependencies from METADATA:", deps)
+          subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "--constraint", sys.argv[2], *deps])
+          PY
           "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --no-deps \
             "src/dist/${WHEEL_NAME}"
           for name in $IMPORT_NAMES; do

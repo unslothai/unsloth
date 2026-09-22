@@ -505,7 +505,9 @@
 	--secondary-base: #f5f5f5;
 	--secondary-foreground: #1a1c1f;
 	--muted-base: #f7f7f7;
-	--muted-foreground: #8f8f8f;
+	/* 4.88:1 on white. #8f8f8f was 3.23:1, under AA for normal text and the
+	   only light palette below it; standard is 4.84:1 and minimal 5.02:1. */
+	--muted-foreground: #717171;
 	--accent-base: #ececec;
 	--accent-foreground: #1a1c1f;
 	--bypass: #9a7b1e;
@@ -536,7 +538,8 @@
 	--panel-surface-hover-base: #ececec;
 	--panel-input-surface-base: #f4f4f4;
 	--panel-input-surface-hover-base: #ededed;
-	--panel-surface-fg-muted: #7a7c7e;
+	/* Same lift on the contrast-slider base: #7a7c7e was 4.19:1. Now 4.90:1. */
+	--panel-surface-fg-muted: #6f7174;
 	--panel-slider-fg-base: #9b9d9f;
 	--chat-icon-fg: #5d5f61;
 	--chat-icon-bg-hover-base: #ececec;
@@ -2853,6 +2856,50 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* Flatten code blocks: single border, language label, then code directly */
+	/* Reasoning fence fragments form one continuous surface. Interior fragments have
+	   no padding, border, or rounding at their seams. */
+	.aui-reasoning-code-fragment {
+		padding-inline: calc(1rem * var(--ui-space-scale, 1));
+		background: var(--color-background);
+		border-inline: 1px solid var(--color-border);
+		font-size: calc(0.8125rem * var(--ui-font-scale, 1));
+		line-height: 1.55;
+	}
+	.aui-reasoning-code-first {
+		margin-top: calc(1rem * var(--ui-space-scale, 1));
+		border-top: 1px solid var(--color-border);
+		padding-top: calc(0.75rem * var(--ui-space-scale, 1));
+		border-radius: 1.5rem 1.5rem 0 0;
+	}
+	.aui-reasoning-code-last {
+		border-bottom: 1px solid var(--color-border);
+		padding-bottom: calc(0.75rem * var(--ui-space-scale, 1));
+		border-bottom-left-radius: 1.5rem;
+		border-bottom-right-radius: 1.5rem;
+	}
+	.aui-reasoning-code-fragment pre,
+	.aui-reasoning-code-fragment code {
+		font-family: var(--custom-code-font, "Fira Code", ui-monospace, monospace);
+	}
+	.dark .aui-reasoning-code-fragment {
+		background: var(--color-code-block);
+	}
+	.aui-reasoning-code-fragment code > span::before {
+		display: none !important;
+	}
+	.aui-reasoning-prose-fragment > div > :first-child {
+		margin-top: 0;
+	}
+	li[data-reasoning-list-continuation] {
+		list-style-type: none;
+	}
+	.aui-reasoning-prose-fragment[data-table-continuation] thead {
+		display: none;
+	}
+	[data-reasoning-fragment][data-index="0"] > .aui-reasoning-prose-fragment {
+		padding-top: 0;
+	}
+
 	[data-streamdown="code-block-body"] {
 		border: none !important;
 		border-radius: 0 !important;
