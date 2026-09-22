@@ -268,7 +268,9 @@ def _prefix_compatible(pr_head: str, publish_prefix: str) -> bool:
 
 
 def _shell_built_key_prefixes(
-    text: str, inputs: set | None = None, all_literal: bool = True,
+    text: str,
+    inputs: set | None = None,
+    all_literal: bool = True,
 ) -> list[str]:
     """Literal key heads assembled in a composite action's shell, not in its YAML.
 
@@ -304,8 +306,6 @@ def _shell_built_key_prefixes(
     # An unresolved call site means the broad head still has to be carried, or narrowing
     # would silently drop the namespace that caller writes.
     return heads + [f"{h}{v}-" for h in heads for v in sorted(inputs or ())]
-
-
 
 
 def _pr_reachable_action_dirs(workflows_dir: Path, pr_paths: list) -> set:
@@ -706,9 +706,7 @@ def main() -> int:
         _pr_reachable_action_dirs(workflows_dir, [pth for pth, _ in publish_triggered])
     ):
         publish_triggered.append((action_path, _extract_cache_keys(action_path)))
-        publish_restore_prefixes.append(
-            (action_path, _extract_restore_key_prefixes(action_path))
-        )
+        publish_restore_prefixes.append((action_path, _extract_restore_key_prefixes(action_path)))
 
     # Composite keys belong in the exact comparison as well, not only the prefix one. A
     # PR-reachable action declaring `key: shared-key`, against a publish workflow using

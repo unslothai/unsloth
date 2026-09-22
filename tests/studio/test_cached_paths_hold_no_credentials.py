@@ -237,8 +237,11 @@ def _persisted_paths(job):
     return out
 
 
-
-def _flat_steps(job, inherited = None, seen = None):
+def _flat_steps(
+    job,
+    inherited = None,
+    seen = None,
+):
     """(step, inherited env) for this job's steps and those of every local composite.
 
     A composite's steps execute INSIDE the calling job, and the invoking step's `env:`
@@ -254,8 +257,10 @@ def _flat_steps(job, inherited = None, seen = None):
     out = []
     for step in _steps(job):
         own = step.get("env")
-        env = {**inherited, **({str(k): str(v) for k, v in own.items()}
-                               if isinstance(own, dict) else {})}
+        env = {
+            **inherited,
+            **({str(k): str(v) for k, v in own.items()} if isinstance(own, dict) else {}),
+        }
         out.append((step, inherited))
         uses = str(step.get("uses") or "").strip().strip("'\"")
         if not uses.startswith("./"):
@@ -303,8 +308,11 @@ def _persisted_with_env(job, doc):
         if not isinstance(with_, dict) or with_.get("path") is None:
             continue
         own = step.get("env")
-        env = {**job_env, **inherited, **({str(k): str(v) for k, v in own.items()}
-                                         if isinstance(own, dict) else {})}
+        env = {
+            **job_env,
+            **inherited,
+            **({str(k): str(v) for k, v in own.items()} if isinstance(own, dict) else {}),
+        }
         for line in str(with_["path"]).splitlines():
             line = line.strip()
             if line and not line.startswith("!"):
@@ -332,8 +340,11 @@ def _login_offenders(doc, job):
         if not body:
             continue
         own = step.get("env")
-        env = {**job_env, **inherited, **({str(k): str(v) for k, v in own.items()}
-                                         if isinstance(own, dict) else {})}
+        env = {
+            **job_env,
+            **inherited,
+            **({str(k): str(v) for k, v in own.items()} if isinstance(own, dict) else {}),
+        }
         homes = {v: _expand(str(env[v]), env) for v in CREDENTIAL_HOMES if v in env}
         if not homes:
             continue
@@ -355,6 +366,7 @@ def _login_offenders(doc, job):
 def _raw_persisted(job, doc = None):
     """Expanded persisted paths, including those declared inside local composites."""
     return [path for path, _step in _persisted_with_env(job, doc or {})]
+
 
 def _normalise(path: str) -> str:
     """Strip expressions and separators so a path and an env value can be compared."""
@@ -499,16 +511,19 @@ def test_a_credential_home_set_on_a_step_is_seen():
     Reading only workflow- and job-level `env:` missed it, so a job whose cached
     directory was named by the very step writing into it passed this guard.
     """
-    job = {"steps": [
-        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
-        {"run": "python probe.py", "env": {"HF_HOME": "hf-cache"}},
-    ]}
+    job = {
+        "steps": [
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+            {"run": "python probe.py", "env": {"HF_HOME": "hf-cache"}},
+        ]
+    }
     scopes = _step_envs(job)
     assert {"HF_HOME": "hf-cache"} in scopes, f"step env not collected: {scopes}"
     assert _env_of(job, {}) == {}, "the job itself sets nothing, which is the point"
     assert any(
         _inside(scope["HF_HOME"], persisted)
-        for scope in scopes if "HF_HOME" in scope
+        for scope in scopes
+        if "HF_HOME" in scope
         for persisted, _step in _persisted_paths(job)
     ), "the step-scoped credential home is inside the cached path and must be a finding"
 
@@ -576,9 +591,9 @@ def test_model_cache_variables_are_not_treated_as_credential_homes():
     home = str(getattr(hub, "HF_HOME", ""))
     token = str(getattr(hub, "HF_TOKEN_PATH", ""))
     cache = str(getattr(hub, "HUGGINGFACE_HUB_CACHE", ""))
-    assert token.startswith(home) and token.endswith("token"), (
-        f"expected the token under HF_HOME; got HF_HOME={home!r} HF_TOKEN_PATH={token!r}"
-    )
+    assert token.startswith(home) and token.endswith(
+        "token"
+    ), f"expected the token under HF_HOME; got HF_HOME={home!r} HF_TOKEN_PATH={token!r}"
     assert not _inside(token, cache), (
         f"the token is supposed to sit OUTSIDE the hub cache, which is the reason "
         f"HUGGINGFACE_HUB_CACHE is not a credential home; got {token!r} inside {cache!r}"
@@ -593,22 +608,29 @@ def test_a_login_is_judged_against_that_step_s_own_environment():
     cannot reach the cache. The effective environment of the step running the login is
     what decides, which is also all the runtime cares about.
     """
-    safe = {"steps": [
-        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
-        {"name": "warm the cache", "run": "python download.py", "env": {"HF_HOME": "hf-cache"}},
-        {"name": "log in elsewhere", "run": "hf auth login --token x",
-         "env": {"HF_HOME": "/tmp/scratch-home"}},
-    ]}
+    safe = {
+        "steps": [
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+            {"name": "warm the cache", "run": "python download.py", "env": {"HF_HOME": "hf-cache"}},
+            {
+                "name": "log in elsewhere",
+                "run": "hf auth login --token x",
+                "env": {"HF_HOME": "/tmp/scratch-home"},
+            },
+        ]
+    }
     assert _login_offenders({}, safe) == [], (
         "the login step points HF_HOME at an uncached directory, so its token cannot "
         "enter the cache and it must not be a finding"
     )
 
     # And the same shape with the login step's own home inside the cache must fire.
-    unsafe = {"steps": [
-        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
-        {"name": "log in", "run": "hf auth login --token x", "env": {"HF_HOME": "hf-cache"}},
-    ]}
+    unsafe = {
+        "steps": [
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+            {"name": "log in", "run": "hf auth login --token x", "env": {"HF_HOME": "hf-cache"}},
+        ]
+    }
     offenders = _login_offenders({}, unsafe)
     assert offenders, "a login whose own HF_HOME is inside the cached path must be a finding"
     assert "hf-cache" in offenders[0] and "log in" in offenders[0], offenders
@@ -647,7 +669,7 @@ def test_a_login_inside_a_local_composite_action_is_seen(tmp_path, monkeypatch):
         "  using: composite\n"
         "  steps:\n"
         "    - shell: bash\n"
-        "      run: hf auth login --token \"$HF_TOKEN\"\n"
+        '      run: hf auth login --token "$HF_TOKEN"\n'
     )
     monkeypatch.setattr(module, "REPO", tmp_path)
 
@@ -686,14 +708,16 @@ def test_a_composite_invoked_with_a_credential_home_carries_that_env(tmp_path, m
         "  using: composite\n"
         "  steps:\n"
         "    - shell: bash\n"
-        "      run: hf auth login --token \"$HF_TOKEN\"\n"
+        '      run: hf auth login --token "$HF_TOKEN"\n'
     )
     monkeypatch.setattr(module, "REPO", tmp_path)
 
-    job = {"steps": [
-        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
-        {"uses": "./.github/actions/hf-login", "env": {"HF_HOME": "hf-cache"}},
-    ]}
+    job = {
+        "steps": [
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+            {"uses": "./.github/actions/hf-login", "env": {"HF_HOME": "hf-cache"}},
+        ]
+    }
     offenders = _login_offenders({}, job)
     assert offenders, (
         "the credential home is set on the step that invokes the composite, and the "
@@ -749,16 +773,21 @@ def test_a_cached_path_is_expanded_with_its_own_step_s_environment():
     home under `creds`, the path resolved to empty against the login step's environment
     and the combination was missed.
     """
-    job = {"steps": [
-        {"name": "save", "uses": "actions/cache/save@v4",
-         "with": {"path": "${{ env.CACHE_DIR }}", "key": "k"},
-         "env": {"CACHE_DIR": "creds"}},
-        {"name": "log in", "run": "hf auth login --token x", "env": {"HF_HOME": "creds/hf"}},
-    ]}
+    job = {
+        "steps": [
+            {
+                "name": "save",
+                "uses": "actions/cache/save@v4",
+                "with": {"path": "${{ env.CACHE_DIR }}", "key": "k"},
+                "env": {"CACHE_DIR": "creds"},
+            },
+            {"name": "log in", "run": "hf auth login --token x", "env": {"HF_HOME": "creds/hf"}},
+        ]
+    }
     paths = [p for p, _s in _persisted_with_env(job, {})]
-    assert paths == ["creds"], (
-        f"the path had to resolve against the saving step's own CACHE_DIR; got {paths}"
-    )
-    assert _login_offenders({}, job), (
-        "HF_HOME is creds/hf, inside the cached creds, and that step logs in"
-    )
+    assert paths == [
+        "creds"
+    ], f"the path had to resolve against the saving step's own CACHE_DIR; got {paths}"
+    assert _login_offenders(
+        {}, job
+    ), "HF_HOME is creds/hf, inside the cached creds, and that step logs in"

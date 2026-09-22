@@ -1300,9 +1300,7 @@ def test_a_restore_keys_prefix_after_a_blank_line_is_still_read(tmp_path):
     (wf / "release-desktop.yml").write_text(
         _publish_with_restore_keys(
             "release-only-${{ runner.os }}",
-            "            release-only-\n"
-            "\n"
-            "            shared-\n",
+            "            release-only-\n\n            shared-\n",
         )
     )
     proc = _run(wf)
@@ -1435,9 +1433,9 @@ def test_a_shell_built_namespace_is_narrowed_by_the_inputs_callers_pass(tmp_path
         "    - id: probe\n"
         "      shell: bash\n"
         "      run: |\n"
-        "        name=\"${{ inputs.name }}\"\n"
-        "        prefix=\"pip-${name}-${{ runner.os }}-\"\n"
-        "        echo \"key=${prefix}abc\" >> \"$GITHUB_OUTPUT\"\n"
+        '        name="${{ inputs.name }}"\n'
+        '        prefix="pip-${name}-${{ runner.os }}-"\n'
+        '        echo "key=${prefix}abc" >> "$GITHUB_OUTPUT"\n'
     )
     (wf / "pr-build.yml").write_text(
         "name: pr-build\n"
@@ -1543,9 +1541,9 @@ def test_narrowing_keeps_the_broad_head_when_a_caller_is_dynamic(tmp_path):
         "    - id: probe\n"
         "      shell: bash\n"
         "      run: |\n"
-        "        name=\"${{ inputs.name }}\"\n"
-        "        prefix=\"pip-v2-${name}-\"\n"
-        "        echo \"key=${prefix}abc\" >> \"$GITHUB_OUTPUT\"\n"
+        '        name="${{ inputs.name }}"\n'
+        '        prefix="pip-v2-${name}-"\n'
+        '        echo "key=${prefix}abc" >> "$GITHUB_OUTPUT"\n'
     )
     (wf / "pr-build.yml").write_text(
         "name: pr-build\n"
@@ -1569,7 +1567,9 @@ def test_narrowing_keeps_the_broad_head_when_a_caller_is_dynamic(tmp_path):
         "          name: ${{ matrix.cache_name }}\n"
     )
     (wf / "release-desktop.yml").write_text(
-        _publish_with_restore_keys("pip-v2-shared-pub-${{ runner.os }}", "            pip-v2-shared-\n")
+        _publish_with_restore_keys(
+            "pip-v2-shared-pub-${{ runner.os }}", "            pip-v2-shared-\n"
+        )
     )
     proc = _run(wf)
     assert proc.returncode == 1, (
@@ -1655,9 +1655,9 @@ def test_a_quoted_restore_keys_field_is_read(tmp_path):
         "            shared-\n"
     )
     proc = _run(wf)
-    assert proc.returncode == 1, (
-        f"a quoted restore-keys field was not read:\n{proc.stdout}\n{proc.stderr}"
-    )
+    assert (
+        proc.returncode == 1
+    ), f"a quoted restore-keys field was not read:\n{proc.stdout}\n{proc.stderr}"
     assert "shared-" in proc.stderr
 
 
@@ -1676,14 +1676,14 @@ def test_a_restore_keys_sequence_is_read(tmp_path):
         "    steps:\n"
         "      - uses: actions/cache/restore@v4\n"
         "        with:\n"
-          "          path: wheels\n"
+        "          path: wheels\n"
         "          key: pub-${{ runner.os }}\n"
         "          restore-keys: [safe-, shared-]\n"
     )
     proc = _run(wf)
-    assert proc.returncode == 1, (
-        f"a sequence-form restore-keys was not read:\n{proc.stdout}\n{proc.stderr}"
-    )
+    assert (
+        proc.returncode == 1
+    ), f"a sequence-form restore-keys was not read:\n{proc.stdout}\n{proc.stderr}"
     assert "shared-" in proc.stderr
 
 
@@ -1856,9 +1856,9 @@ def test_inputs_are_collected_through_a_wrapper_action(tmp_path):
         "    - id: probe\n"
         "      shell: bash\n"
         "      run: |\n"
-        "        name=\"${{ inputs.name }}\"\n"
-        "        prefix=\"pip-v3-${name}-\"\n"
-        "        echo \"key=${prefix}abc\" >> \"$GITHUB_OUTPUT\"\n"
+        '        name="${{ inputs.name }}"\n'
+        '        prefix="pip-v3-${name}-"\n'
+        '        echo "key=${prefix}abc" >> "$GITHUB_OUTPUT"\n'
     )
     (wrapper / "action.yml").write_text(
         "name: setup wrapper\n"

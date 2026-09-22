@@ -77,9 +77,7 @@ def _sources():
         yield path, path.read_text(encoding = "utf-8", errors = "ignore")
 
 
-_REF = re.compile(
-    r"""^(?P<repo>[A-Za-z0-9][\w.-]*/[\w.-]+(?:/[\w.\-/]+)?)@(?P<rev>[\w.\-/]+)$"""
-)
+_REF = re.compile(r"""^(?P<repo>[A-Za-z0-9][\w.-]*/[\w.-]+(?:/[\w.\-/]+)?)@(?P<rev>[\w.\-/]+)$""")
 
 
 def _uses_values(node):
@@ -198,8 +196,8 @@ def test_the_reference_predicate_reads_owner_repo_at_ref():
         ("owner/repo@0123456789abcdef0123456789abcdef01234567", True),
         ("./.github/actions/x", False),
         ("docker://alpine:3", False),
-        ("actions/checkout", False),      # no ref at all
-        ("notapath@v4", False),           # no owner
+        ("actions/checkout", False),  # no ref at all
+        ("notapath@v4", False),  # no owner
         ("", False),
     ]
     for ref, expected in cases:
