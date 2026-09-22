@@ -79,8 +79,15 @@
     transition: background-color 160ms ease;
   }
 
+  /* [aria-expanded] as well as [data-state]: the option-menu triggers (the
+     picker's format and sort controls, the Hub's filters) are plain buttons
+     that mark themselves open with aria-expanded, so a data-state-only rule
+     left them at rest while their menu was showing. :active covers the press
+     itself on anything that opens nothing. */
   .field-soft:hover,
-  .field-soft[data-state="open"] {
+  .field-soft:active,
+  .field-soft[data-state="open"],
+  .field-soft[aria-expanded="true"] {
     background-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-wash-gain, 1)), transparent) !important;
   }
 
@@ -103,7 +110,9 @@
   }
 
   .dark .field-soft:hover,
-  .dark .field-soft[data-state="open"] {
+  .dark .field-soft:active,
+  .dark .field-soft[data-state="open"],
+  .dark .field-soft[aria-expanded="true"] {
     background-color: var(--accent) !important;
   }
 
