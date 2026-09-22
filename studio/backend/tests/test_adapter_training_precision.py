@@ -144,14 +144,32 @@ def _forced_16bit_branches_in_load_model():
     return forced
 
 
+def _declared_forced_16bit_audio_types():
+    """_FORCED_16BIT_AUDIO_TYPES read out of the source.
+
+    Read rather than imported: importing core.training.trainer pulls in torch and unsloth,
+    and a runner without them turns this assertion into a skip instead of a failure.
+    """
+    for node in ast.parse(_TRAINER.read_text(encoding = "utf-8")).body:
+        if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", None) == "_FORCED_16BIT_AUDIO_TYPES" for t in node.targets
+        ):
+            value = node.value
+            # frozenset({...}) / set({...}) today, a bare literal if that is ever simplified
+            if isinstance(value, ast.Call) and value.args:
+                value = value.args[0]
+            return set(ast.literal_eval(value))
+    raise AssertionError("_FORCED_16BIT_AUDIO_TYPES is not defined in trainer.py")
+
+
 def test_forced_16bit_audio_types_match_the_loader():
     # The constant is what _patch_adapter_config records for these runs; if a new audio type
     # hardcodes a 16-bit load and is not listed, its adapter claims a 4-bit base it never used
     # and Chat reloads it in 4-bit. Read the branches rather than trusting the list.
-    from core.training.trainer import _FORCED_16BIT_AUDIO_TYPES
-    assert set(_FORCED_16BIT_AUDIO_TYPES) == _forced_16bit_branches_in_load_model()
+    declared = _declared_forced_16bit_audio_types()
+    assert declared == _forced_16bit_branches_in_load_model()
     # snac passes the request straight through, so it must NOT be in the set.
-    assert "snac" not in _FORCED_16BIT_AUDIO_TYPES
+    assert "snac" not in declared
 
 
 def test_load_model_records_the_forced_16bit_precision():
