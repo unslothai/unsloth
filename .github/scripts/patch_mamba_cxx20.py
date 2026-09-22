@@ -37,7 +37,7 @@ EXPECTED_OCCURRENCES = 4
 
 
 def patch(path: Path) -> int:
-    source = path.read_text(encoding="utf-8")
+    source = path.read_text(encoding = "utf-8")
 
     already = source.count(NEW)
     found = source.count(OLD)
@@ -51,22 +51,22 @@ def patch(path: Path) -> int:
             f"::error::{path}: expected {EXPECTED_OCCURRENCES} occurrences of {OLD}, "
             f"found {found} (and {already} of {NEW}). Upstream changed the compile flags; "
             "re-read setup.py before bumping the pin.",
-            file=sys.stderr,
+            file = sys.stderr,
         )
         return 1
 
-    path.write_text(source.replace(OLD, NEW), encoding="utf-8")
+    path.write_text(source.replace(OLD, NEW), encoding = "utf-8")
     print(f"{path}: {found} occurrences of {OLD} -> {NEW}")
     return 0
 
 
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
-        print("usage: patch_mamba_cxx20.py <setup.py>", file=sys.stderr)
+        print("usage: patch_mamba_cxx20.py <setup.py>", file = sys.stderr)
         return 2
     path = Path(argv[1])
     if not path.is_file():
-        print(f"::error::{path} does not exist", file=sys.stderr)
+        print(f"::error::{path} does not exist", file = sys.stderr)
         return 1
     return patch(path)
 

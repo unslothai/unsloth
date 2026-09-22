@@ -75,9 +75,7 @@ def env(
     }
 
 
-OUR_BASE = (
-    "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13/"
-)
+OUR_BASE = "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13/"
 
 
 def triggers(doc: dict) -> dict:
@@ -119,15 +117,10 @@ class TestWorkflowAndResolverAgree:
 
     def test_the_versions_published_are_the_versions_resolved(self):
         for package, spec in prebuilt_wheels.SPECS.items():
-            assert (
-                wheel_utils._UNSLOTH_PREBUILT_VERSIONS[spec["dist"]] == spec["version"]
-            ), package
+            assert wheel_utils._UNSLOTH_PREBUILT_VERSIONS[spec["dist"]] == spec["version"], package
 
     def test_the_two_torch_tables_are_the_same_set(self):
-        built = {
-            prebuilt_wheels.torch_minor(version)
-            for version in prebuilt_wheels.TORCH_VERSIONS
-        }
+        built = {prebuilt_wheels.torch_minor(version) for version in prebuilt_wheels.TORCH_VERSIONS}
         assert built == set(wheel_utils._UNSLOTH_PREBUILT_TORCH_MM)
 
     def test_the_release_tag_the_workflow_defaults_to_is_the_one_we_resolve(self):
@@ -190,15 +183,11 @@ class TestOverrideScope:
         )
 
     def test_unknown_package_is_not_ours(self):
-        assert (
-            wheel_utils.unsloth_prebuilt_wheel_url(filename_prefix = "xformers", env = env())
-            is None
-        )
+        assert wheel_utils.unsloth_prebuilt_wheel_url(filename_prefix = "xformers", env = env()) is None
 
     def test_no_env_is_not_ours(self):
         assert (
-            wheel_utils.unsloth_prebuilt_wheel_url(filename_prefix = "flash_attn", env = None)
-            is None
+            wheel_utils.unsloth_prebuilt_wheel_url(filename_prefix = "flash_attn", env = None) is None
         )
 
     @pytest.mark.parametrize("python_tag", ["cp311", "cp312", "cp313"])
@@ -254,7 +243,10 @@ class TestBackwardsCompatible:
             release_base_url = "https://github.com/Dao-AILab/causal-conv1d/releases/download",
             env = env(torch_mm = "2.13"),
         )
-        assert url == f"{OUR_BASE}causal_conv1d-1.7.0+cu13torch2.13cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+        assert (
+            url
+            == f"{OUR_BASE}causal_conv1d-1.7.0+cu13torch2.13cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+        )
 
     def test_a_windows_env_still_reaches_upstream_for_a_non_our_package(self):
         """The override must not become a Windows gate for anything else that uses this path."""
@@ -320,9 +312,26 @@ class TestMatrix:
 
     def test_every_cell_carries_what_the_steps_read(self):
         needed = {
-            "package", "dist", "version", "repo", "ref", "submodules", "patch", "torch",
-            "torch_mm", "python", "python_tag", "cuda_tag", "abi", "max_jobs", "nvcc_threads",
-            "build_timeout", "build_env", "import_names", "wheel_name", "label",
+            "package",
+            "dist",
+            "version",
+            "repo",
+            "ref",
+            "submodules",
+            "patch",
+            "torch",
+            "torch_mm",
+            "python",
+            "python_tag",
+            "cuda_tag",
+            "abi",
+            "max_jobs",
+            "nvcc_threads",
+            "build_timeout",
+            "build_env",
+            "import_names",
+            "wheel_name",
+            "label",
         }
         for cell in prebuilt_wheels.build_matrix(pythons = "3.11,3.12,3.13"):
             assert needed <= set(cell), needed - set(cell)
@@ -452,7 +461,7 @@ class TestReleaseNotes:
 
 
 class TestMambaPatch:
-    SOURCE = '''
+    SOURCE = """
 extra_compile_args = {
     "cxx": ["-O3", "-std=c++17"],
     "nvcc": ["-O3", "-std=c++17"],
@@ -461,7 +470,7 @@ other = {
     "cxx": ["-O3", "-std=c++17"],
     "nvcc": ["-O3", "-std=c++17"],
 }
-'''
+"""
 
     def _run(self, tmp_path, source):
         setup = tmp_path / "setup.py"
@@ -590,10 +599,7 @@ class TestWorkflow:
         assert step["with"]["verify"] is True
         identity = step["with"]["verify-cert-identity"]
         assert ".github/workflows/prebuilt-cuda-wheels.yml@" in identity
-        assert (
-            step["with"]["verify-oidc-issuer"]
-            == "https://token.actions.githubusercontent.com"
-        )
+        assert step["with"]["verify-oidc-issuer"] == "https://token.actions.githubusercontent.com"
 
     def test_the_build_job_gates_on_the_import(self, workflow):
         """The import check is the point of the release. If it ever becomes informational this
@@ -615,9 +621,9 @@ class TestWorkflow:
         """Never invent a runner label: a job with one queues until the run is cancelled."""
         existing = set()
         for path in (REPO / ".github" / "workflows").glob("*.yml"):
-            for job in (yaml.safe_load(path.read_text(encoding = "utf-8")) or {}).get(
-                "jobs", {}
-            ).values():
+            for job in (
+                (yaml.safe_load(path.read_text(encoding = "utf-8")) or {}).get("jobs", {}).values()
+            ):
                 runs_on = job.get("runs-on")
                 if isinstance(runs_on, list):
                     existing.add(tuple(runs_on))
