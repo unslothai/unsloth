@@ -755,16 +755,11 @@ def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade
     assert "has not been released yet" in message
     assert "git --version" in message, "the likely cause has to be checkable by the reader"
 
-    pin = (
-        pathlib.Path(__file__).resolve().parents[1]
-        / "requirements"
-        / "diffusers-main.txt"
-    )
+    pin = pathlib.Path(__file__).resolve().parents[1] / "requirements" / "diffusers-main.txt"
     commit = _re.search(r"@([0-9a-fA-F]{40})\b", pin.read_text(encoding = "utf-8"))
     assert commit is not None, "the main pin must carry a full commit for the zip route to exist"
     assert (
-        f"https://github.com/huggingface/diffusers/archive/{commit.group(1).lower()}.zip"
-        in message
+        f"https://github.com/huggingface/diffusers/archive/{commit.group(1).lower()}.zip" in message
     ), message
 
     # A released minimum keeps the ordinary remedy.
