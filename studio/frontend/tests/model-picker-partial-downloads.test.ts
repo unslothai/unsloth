@@ -598,10 +598,23 @@ test("a partial alone does not open the picker on the On Device tab", () => {
 test("a torn quant inside the expander keeps its own menu", () => {
   // The expander lists torn quants, but the menu was gated on v.downloaded, so the one row that
   // holds bytes you might want back had no reveal and no delete. A partial still occupies disk.
+  // The guard became a ternary so undownloaded rows can carry an info-only menu (#11033), but
+  // the on-disk branch is unchanged: a partial still reaches the pin/update/delete/reveal set.
   assert.match(
     PICKERS,
-    /\{\(v\.downloaded \|\| v\.partial === true\) &&\n\s*\(allowPin \|\|/,
+    /\{\(v\.downloaded \|\| v\.partial === true\n\s*\? allowPin \|\|/,
     "the menu follows disk, not completeness",
+  );
+  // Reveal and delete are what a torn quant needs; both must stay reachable for a partial.
+  assert.match(
+    PICKERS,
+    /isLocalPath \|\| !\(v\.downloaded \|\| v\.partial === true\)/,
+    "reveal follows disk, so a partial keeps it",
+  );
+  assert.match(
+    PICKERS,
+    /onDeleteVariant && \(v\.downloaded \|\| v\.partial === true\)/,
+    "delete follows disk, so a partial keeps it",
   );
   // Pinning an unloadable quant would put a dead row at the top of the list.
   assert.match(

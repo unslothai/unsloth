@@ -25,10 +25,13 @@ const DEFAULT_FIELDS: CachedAdditionalField[] = [
   "config",
   "createdAt",
   "downloadsAllTime",
+  // The API and SDK support gguf; the SDK's expandable-field type omits it.
+  "gguf" as CachedAdditionalField,
 ];
 
 export type CachedResult = ModelEntry & {
   safetensors?: { total?: number; parameters?: Record<string, number> };
+  gguf?: { total?: number; architecture?: string };
   tags?: string[];
   library_name?: string;
   config?: { quantization_config?: { quant_method?: string } };
