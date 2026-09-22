@@ -1011,21 +1011,40 @@ def _resolve_amount(source: str, match: "re.Match[str]") -> str:
 # `color-mix` of `--foreground` at 10% with transparent, and `white/[0.06]` an `rgb()` at
 # 0.06. Those are the shorthands, written out. Reading them back keeps a contract about the
 # colour asking about the colour.
+#
+# The gain has to be there. A colour that keeps the amount but drops the gain renders the
+# same thing at the default setting and nothing like it anywhere else, so the two are not
+# interchangeable and only the gain-bearing spelling is read back as the shorthand.
 _MIXED_TOKEN = re.compile(
-    r"\[color-mix\(in_oklab,\s*var\(--([\w-]+)\)_([\d.]+)%\s*,\s*transparent\)\]"
+    r"\[color-mix\(in_oklab,\s*var\(--([\w-]+)\)_"
+    r"calc\(([\d.]+)%\*var\(--contrast-(edge|wash)-gain,\s*1\)\)\s*,\s*transparent\)\]"
 )
-_WHITE_ALPHA = re.compile(r"\[rgb\(255_255_255_/_([\d.]+)\)\]")
+_WHITE_ALPHA = re.compile(
+    r"\[rgb\(255_255_255_/_calc\(([\d.]+)\*var\(--contrast-(edge|wash)-gain,\s*1\)\)\)\]"
+)
+
+
+def _resolve_mix(source: str, match: "re.Match[str]") -> str:
+    """A gain-scaled `color-mix`, read back as its shorthand under its own gain."""
+    if _gain_owed_to(source[: match.start()]) != match.group(3):
+        return match.group(0)
+    amount = match.group(2)
+    return f"{match.group(1)}/{amount[:-2] if amount.endswith('.0') else amount}"
+
+
+def _resolve_white_alpha(source: str, match: "re.Match[str]") -> str:
+    """A gain-scaled white lift, read back as its shorthand under its own gain."""
+    if _gain_owed_to(source[: match.start()]) != match.group(2):
+        return match.group(0)
+    return f"white/[{match.group(1)}]"
 
 
 def _at_default_scale(source: str) -> str:
     """*source* with every scale-wrapped length and gain-wrapped colour read back as itself."""
     resolved = _SCALED_LENGTH.sub(r"\1", source)
-    resolved = _SCALED_AMOUNT.sub(lambda m: _resolve_amount(resolved, m), resolved)
-    resolved = _MIXED_TOKEN.sub(
-        lambda m: f"{m.group(1)}/{m.group(2)[:-2] if m.group(2).endswith('.0') else m.group(2)}",
-        resolved,
-    )
-    return _WHITE_ALPHA.sub(r"white/[\1]", resolved)
+    resolved = _MIXED_TOKEN.sub(lambda m: _resolve_mix(resolved, m), resolved)
+    resolved = _WHITE_ALPHA.sub(lambda m: _resolve_white_alpha(resolved, m), resolved)
+    return _SCALED_AMOUNT.sub(lambda m: _resolve_amount(resolved, m), resolved)
 
 
 def _ui_source(path) -> str:
@@ -2485,3 +2504,30 @@ def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
     call = stopped_arm.split("finish_repair_group(", 1)[1].split(");", 1)[0]
     assert '"canceled"' in call
     assert '"failed"' not in call
+
+
+# The media pages and the navbar measure their header band against this file's arithmetic,
+# and every one of those contracts reads the band through `_ui_source`. That reader answers
+# with the length at the default scale, which is the same 48px whether the source still
+# scales it or has gone back to a bare `h-[48px]`. The contracts cannot tell those apart, so
+# the scaling is stated here instead: unwrap one of these and this fails, rather than every
+# geometry contract quietly passing while the band stopped following the interface font size.
+_BANDS_THAT_MUST_KEEP_THE_SCALE = (
+    (NAVBAR, 2),
+    (IMAGES_PAGE, 1),
+    (AUDIO_PAGE, 1),
+    (VIDEO_PAGE, 1),
+    (CHAT_PAGE, 1),
+)
+
+
+def test_the_header_band_these_contracts_measure_still_follows_the_ui_scale():
+    for path, expected in _BANDS_THAT_MUST_KEEP_THE_SCALE:
+        source = path.read_text(encoding = "utf-8")
+        scaled = source.count("h-[calc(48px*var(--ui-space-scale,1))]")
+        assert scaled == expected, (
+            f"{path.name} states {scaled} scaled 48px header bands, not {expected}"
+        )
+        assert "h-[48px]" not in source, (
+            f"{path.name} has a bare 48px header band, which stays put while its labels grow"
+        )
