@@ -3648,11 +3648,6 @@ export function AppSidebar() {
     );
   }
 
-  // A folder last in Pinned runs its block to the bottom of the section, and that is the one case
-  // with no row of its own below it to aim at.
-  const pinnedEndsInFolder =
-    pinnedRows[pinnedRows.length - 1]?.kind === "project";
-
   /** One folder row and the chats under it. `order` is the list it drags within: Projects for an
    *  unpinned folder, Pinned for a pinned one, so neither renumbers the other. */
   function renderProjectFolderRow(
@@ -4361,28 +4356,28 @@ export function AppSidebar() {
                             sort: { value: pinnedSort, set: setPinnedSort },
                           }),
                     )}
-                    {/* The section ends inside that folder's block, so every pixel down here is
-                        the folder's and a chat aimed past it was filed into it instead. This is
-                        the row that means "after the folder". Only while a row is carried, so it
-                        costs no height at rest, and it draws its own line: the line under the
-                        folder's last chat already means "into the folder, last", and one drawn
-                        there for this would be the same pixels for a different drop. */}
-                    {draggingRow && pinnedEndsInFolder && (
-                      <SidebarMenuItem
-                        aria-hidden
-                        className={cn(
-                          "relative h-[calc(10px*var(--ui-space-scale,1))]",
-                          dropCueClass(PINNED_ORDER_SCOPE, SIDEBAR_TAIL_ID),
-                        )}
-                        {...dnd.dropZoneProps({
-                          section: "pinned",
-                          blockEnd: {
-                            scope: PINNED_ORDER_SCOPE,
-                            id: SIDEBAR_TAIL_ID,
-                          },
-                        })}
-                      />
-                    )}
+                    {/* The end of the list, as somewhere to aim. A folder last in Pinned runs its
+                        block to the bottom of the section, so every pixel down there is inside it
+                        and a chat meant to go after the folder was filed into it instead.
+                        Always drawn, never only while a row is carried: a row appearing at drag
+                        start shifts every section under it after the pointer was sampled, and the
+                        bottom fade measures a height this one would not be counted in.
+                        It draws its own line, since the line under the folder's last chat already
+                        means "into the folder, last" and the same pixels cannot mean both. */}
+                    <SidebarMenuItem
+                      aria-hidden
+                      className={cn(
+                        "relative h-[calc(8px*var(--ui-space-scale,1))]",
+                        dropCueClass(PINNED_ORDER_SCOPE, SIDEBAR_TAIL_ID),
+                      )}
+                      {...dnd.dropZoneProps({
+                        section: "pinned",
+                        blockEnd: {
+                          scope: PINNED_ORDER_SCOPE,
+                          id: SIDEBAR_TAIL_ID,
+                        },
+                      })}
+                    />
                   </SidebarMenu>
                 </SidebarGroupContent>
               </CollapsibleContent>

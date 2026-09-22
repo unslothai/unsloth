@@ -1004,6 +1004,12 @@ test("a closed folder or section opens under a resting pointer", () => {
     /if \(!closed\) \{\n\s*if \(spring\.current\?\.key !== springKey\) cancelSpring\(\);\n\s*return;\n\s*\}/,
   );
   assert.match(HOOK, /zoneOptions\?\.closed \? \{ zone, closed: true \} : \{ zone \}/);
+  // The timer is keyed and left alone while the pointer stays on the same zone. track runs every
+  // frame now, so re-arming on each one would reset the delay forever and nothing would open.
+  assert.match(
+    HOOK,
+    /if \(spring\.current\?\.key === springKey\) return;\n\s*cancelSpring\(\);\n\s*spring\.current = \{/,
+  );
 });
 
 // A chat dropped into a folder or Recents is moved, and the move can fail. Its slot in the new
@@ -1125,18 +1131,20 @@ test("a chat can be dropped after a folder that ends the Pinned list", () => {
     line: { rowKey: rowKey(PINNED_ORDER_SCOPE, SIDEBAR_TAIL_ID), edge: "bottom" },
   });
   assert.notDeepEqual(afterFolder.cue, intoFolder.cue);
-  // Drawn only while a row is carried, and only when a folder is what ends the list.
-  assert.match(
-    APP_SIDEBAR,
-    /const pinnedEndsInFolder =\n\s*pinnedRows\[pinnedRows\.length - 1\]\?\.kind === "project";/,
+  // Part of the layout, not summoned by the drag: a row mounting at drag start shifts every
+  // section below it after the pointer was sampled, and the cue and the drop then disagree.
+  const pinnedMenu = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf('{/* Pinned: folders and chats in one list'),
+    APP_SIDEBAR.indexOf("{/* One folder per unpinned project."),
   );
+  assert.ok(pinnedMenu.length > 0, "the Pinned section moved");
   assert.match(
-    APP_SIDEBAR,
-    /\{draggingRow && pinnedEndsInFolder && \(\n\s*<SidebarMenuItem\n\s*aria-hidden/,
+    pinnedMenu,
+    /<SidebarMenuItem\n\s*aria-hidden\n\s*className=\{cn\(\n\s*"relative h-\[calc\(8px\*var\(--ui-space-scale,1\)\)\]",\n\s*dropCueClass\(PINNED_ORDER_SCOPE, SIDEBAR_TAIL_ID\),/,
   );
-  assert.match(
-    APP_SIDEBAR,
-    /dropCueClass\(PINNED_ORDER_SCOPE, SIDEBAR_TAIL_ID\),/,
+  assert.ok(
+    !/draggingRow && /.test(pinnedMenu),
+    "the tail is conditional on a drag again",
   );
   // A folder over another folder's block still lands below that block, as it always did.
   assert.deepEqual(
@@ -1153,11 +1161,14 @@ test("a chat can be dropped after a folder that ends the Pinned list", () => {
 });
 
 // A pointer resting on the edge of a long list sends no more moves, so scrolling driven off
-// pointermove alone took one step and stalled. The frame loop keeps it going, and re-aims: the
-// rows slide under a pointer that has not moved, so the cue would otherwise stay on the row that
-// left.
+// pointermove alone took one step and stalled. The frame loop keeps it going, and re-aims every
+// frame: rows slide under a pointer that has not moved when the list scrolls, when a folder
+// springs open under it, and when the sidebar re-renders, and only the frame loop is there to
+// see it. The release hit-tests the layout as it is, so the cue has to as well.
 test("the edge keeps scrolling while the pointer rests on it", () => {
-  assert.match(HOOK, /const onFrame = \(\) => \{[^]*?frame = requestAnimationFrame\(onFrame\);\n\s*if \(edgeScroll\(at\.y\)\) track\(at\.x, at\.y\);/);
+  assert.match(HOOK, /const onFrame = \(\) => \{[^]*?frame = requestAnimationFrame\(onFrame\);\n\s*edgeScroll\(at\.y\);\n\s*track\(at\.x, at\.y\);/);
+  // Unconditionally: a re-aim only on the frames that scrolled leaves every other cause stale.
+  assert.ok(!/if \(edgeScroll\(/.test(HOOK));
   // Started with the drag and cancelled with it, and it stops itself if the drag is gone.
   assert.match(HOOK, /setDrag\(item\);\n\s*frame = requestAnimationFrame\(onFrame\);/);
   assert.match(HOOK, /if \(frame\) cancelAnimationFrame\(frame\);/);
