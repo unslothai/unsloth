@@ -913,6 +913,35 @@ def _streamable_components(pipe: Any, torch: Any) -> dict[str, tuple[Any, str]]:
     return streamed
 
 
+def _module_storage_bytes(module: Any, seen: set[int]) -> int:
+    """Bytes held by ``module``'s parameters and buffers, counting each tensor in ``seen`` once."""
+    storage_bytes = 0
+    for tensor in list(module.parameters(recurse = True)) + list(module.buffers(recurse = True)):
+        if id(tensor) in seen:
+            continue
+        seen.add(id(tensor))
+        storage_bytes += int(tensor.numel()) * int(tensor.element_size())
+    return storage_bytes
+
+
+def loaded_text_encoder_mib(pipe: Any) -> Optional[int]:
+    """MiB the assembled pipeline's text encoders hold as loaded, or None when there is nothing to
+    measure. Reads the weights themselves, so a hosted pre-cast fp8 encoder counts at its fp8 size
+    and one whose injection fell back counts dense."""
+    try:
+        import torch
+
+        seen: set[int] = set()
+        storage_bytes = 0
+        for name, module in getattr(pipe, "components", {}).items():
+            if str(name).startswith("text_encoder") and isinstance(module, torch.nn.Module):
+                storage_bytes += _module_storage_bytes(module, seen)
+    except Exception:  # noqa: BLE001 - a sizing aid; the caller keeps the table figure
+        return None
+    mib = 1024 * 1024
+    return (storage_bytes + mib - 1) // mib if storage_bytes else None
+
+
 def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
     """Replace whole-module offload when a loaded component cannot fit on the device.
 
@@ -945,18 +974,7 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
         for name, component in components.items():
             if not isinstance(component, torch.nn.Module):
                 continue
-            seen: set[int] = set()
-            storage_bytes = 0
-            tensors = list(component.parameters(recurse = True)) + list(
-                component.buffers(recurse = True)
-            )
-            for tensor in tensors:
-                marker = id(tensor)
-                if marker in seen:
-                    continue
-                seen.add(marker)
-                storage_bytes += int(tensor.numel()) * int(tensor.element_size())
-            sizes[str(name)] = (storage_bytes + mib - 1) // mib
+            sizes[str(name)] = (_module_storage_bytes(component, set()) + mib - 1) // mib
     except Exception:  # noqa: BLE001 - runtime measurement is an optional refinement
         return plan
 

@@ -97,6 +97,7 @@ from .diffusion_memory import (
     estimate_image_runtime_mib,
     estimate_safetensors_dense_mib,
     file_size_mib,
+    loaded_text_encoder_mib,
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
@@ -5163,11 +5164,10 @@ class DiffusionBackend:
                     )
 
                     # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and pre-quantised
-                    # pipelines; offloaded plans stay dense because torchao tensors cannot move. The pipeline is still
-                    # on the CPU here, unlike the GGUF path, which quantises after _assemble_pipe places it. Both
-                    # orders give bit-identical output: apply_memory_plan's one-shot `pipe.to(placement)` is survived
-                    # by the subclasses (measured on sm_89, fp8 and int8, max|diff| 0.0); only the per-forward offload
-                    # hooks are not.
+                    # pipelines; only a sequential-offload plan stays dense (see below). The pipeline is still on the
+                    # CPU here, unlike the GGUF path, which quantises after _assemble_pipe places it. Both orders give
+                    # bit-identical output: apply_memory_plan's one-shot `pipe.to(placement)` is survived by the
+                    # subclasses (measured on sm_89, fp8 and int8, max|diff| 0.0).
                     if (
                         pipe is not None
                         and kind == "pipeline"
@@ -5201,19 +5201,26 @@ class DiffusionBackend:
                                 )
                                 # This in-memory rewrite needs no cache-space or hosted-checkpoint checks.
                                 estimate = (
-                                    estimate_dense_quant(
-                                        fam,
-                                        preview_scheme,
-                                        base_repo = base,
-                                        # The encoder this load actually resolved to, not the
-                                        # table's bf16 figure: since the hosted pre-cast encoders
-                                        # became the default for the families that host one, the
-                                        # two differ by half the encoder.
-                                        text_encoder_quant = text_encoder_quant,
-                                    )
+                                    estimate_dense_quant(fam, preview_scheme, base_repo = base)
                                     if preview_scheme is not None
                                     else None
                                 )
+                                # The table's encoder is bf16, but a hosted pre-cast fp8 encoder is
+                                # already in the pipe at about half that. Size what the pipe holds
+                                # (a failed injection measures dense), capped at the table.
+                                loaded_te_mib = loaded_text_encoder_mib(pipe)
+                                if (
+                                    estimate is not None
+                                    and loaded_te_mib is not None
+                                    and loaded_te_mib < estimate.text_encoders_mib
+                                ):
+                                    estimate = replace(
+                                        estimate,
+                                        companions_mib = estimate.companions_mib
+                                        - estimate.text_encoders_mib
+                                        + loaded_te_mib,
+                                        text_encoders_mib = loaded_te_mib,
+                                    )
                                 if estimate is not None:
                                     replanned = self._plan_memory(
                                         target,

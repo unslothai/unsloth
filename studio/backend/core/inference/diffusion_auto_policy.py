@@ -30,17 +30,6 @@ _MIB_PER_GB = 1000.0**3 / (1024.0 * 1024.0)  # component sizes below are decimal
 # Steady size of a torchao-quantised transformer relative to bf16: int8/fp8 store one byte per param plus per-row
 # scales (~0.52x with slack for bf16 norms/embeddings); nvfp4 packs two per byte plus block scales. Measured on live
 # loads.
-# Resident fraction of the bf16 TEXT ENCODER once its own scheme is applied. Separate from
-# _QUANT_STEADY_FACTOR: that table is calibrated on DENOISER linears, where a large share of the
-# parameters sit in the quantisable matmuls. A text encoder carries proportionally more embedding
-# and norm weight that every scheme leaves alone, and the hosted pre-cast fp8 encoders are a
-# layerwise STORAGE cast, so measure it as the flat halving it is (Qwen3-VL-8B: 16.33 -> 8.75 GiB,
-# 0.536) rather than borrowing the denoiser's number.
-# Unlisted (and None) means "no opinion", which keeps the bf16 figure and the previous behaviour.
-_TEXT_ENCODER_STEADY_FACTOR: dict[str, float] = {
-    "fp8": 0.54,
-}
-
 _QUANT_STEADY_FACTOR: dict[str, float] = {
     "int8": 0.55,
     "fp8": 0.55,
@@ -239,26 +228,14 @@ def estimate_dense_quant(
     *,
     base_repo: Optional[str] = None,
     prequant_available: bool = False,
-    text_encoder_quant: Optional[str] = None,
 ) -> Optional[DenseQuantEstimate]:
     """Estimate the candidate's footprint from the family table, or None when the
-    family (or scheme factor) is unknown.
-
-    ``text_encoder_quant`` is the scheme the ENCODER resolved to for this load. The table is
-    bf16-resident throughout, so without it a family that takes its hosted pre-cast fp8 encoder is
-    budgeted at twice the encoder it will actually hold. That is not a rounding error: on
-    Qwen-Image-2.1 it is 8.7 GB of phantom companions, enough to send a 40 GB card to offload and
-    take the transformer's own quantisation down with it."""
+    family (or scheme factor) is unknown."""
     components = family_bf16_components_gb(fam, base_repo)
     factor = _QUANT_STEADY_FACTOR.get(scheme)
     if components is None or factor is None:
         return None
     transformer_gb, text_encoders_gb, vae_gb = components
-    te_factor = _TEXT_ENCODER_STEADY_FACTOR.get(
-        str(text_encoder_quant or "").strip().lower().replace("-", "_")
-    )
-    if te_factor is not None:
-        text_encoders_gb = text_encoders_gb * te_factor
     steady = int(transformer_gb * factor * _MIB_PER_GB)
     transient = steady if prequant_available else int(transformer_gb * _MIB_PER_GB)
     companions = int((text_encoders_gb + vae_gb) * _MIB_PER_GB)

@@ -11261,6 +11261,44 @@ def test_a_pipeline_pick_quantises_under_whole_module_offload(fake_runtime, tmp_
     backend.unload()
 
 
+def test_the_offload_replan_sizes_the_text_encoder_the_pipe_holds(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """The table's encoder is bf16, but a hosted pre-cast fp8 encoder is already in the pipe at
+    about half that. The replan takes the measured figure when it is smaller and keeps the table's
+    when it is not, so an injection that fell back to the dense encoder is never under-sized."""
+    from core.inference import diffusion as dmod
+
+    real_plan = DiffusionBackend._plan_memory
+
+    def _replan_split(loaded):
+        backend = DiffusionBackend()
+        _stub_pipeline_dense_quant(backend, monkeypatch)
+        monkeypatch.setattr(dmod, "loaded_text_encoder_mib", lambda pipe: loaded)
+        seen = []
+
+        def _plan(self, *args, **kwargs):
+            plan = real_plan(self, *args, **kwargs)
+            if kwargs.get("transformer_resident_override_mib") is not None:
+                seen.append(
+                    (kwargs.get("text_encoder_override_mib"), kwargs.get("companion_override_mib"))
+                )
+            return dataclasses.replace(plan, offload_policy = "model")
+
+        monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+        backend.load_pipeline(
+            "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+        )
+        backend.unload()
+        assert seen, "the quant replan never ran"
+        return seen[-1]
+
+    table_te, table_companions = _replan_split(None)
+    assert table_te > 1000
+    assert _replan_split(table_te + 1000) == (table_te, table_companions)
+    assert _replan_split(1000) == (1000, table_companions - table_te + 1000)
+
+
 def test_a_pipeline_pick_still_stays_dense_under_sequential_offload(
     fake_runtime, tmp_path, monkeypatch
 ):

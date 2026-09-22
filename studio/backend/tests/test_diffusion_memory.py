@@ -33,6 +33,7 @@ from core.inference.diffusion_memory import (
     apply_memory_plan,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
+    loaded_text_encoder_mib,
     normalize_memory_mode,
     plan_diffusion_memory,
     refine_memory_plan_for_components,
@@ -771,6 +772,26 @@ def test_refine_model_offload_streams_only_when_a_component_exceeds_budget(monke
     assert refined.offload_policy == OFFLOAD_STREAMING
     assert refined.estimates["largest_component_mib"] == 7500
     assert any("text_encoder" in reason for reason in refined.reasons)
+
+
+def test_loaded_text_encoder_mib_counts_every_encoder_the_pipe_holds_once(monkeypatch):
+    """The quant replan sizes the encoder from the weights the pipe holds, so a pre-cast fp8
+    encoder counts at its fp8 size and a failed injection counts dense. One module in two slots
+    is one set of weights."""
+    Module = _install_sized_torch(monkeypatch)
+    shared = Module(300)
+    pipe = types.SimpleNamespace(
+        components = {
+            "transformer": Module(9000),
+            "text_encoder": Module(1200),
+            "text_encoder_2": shared,
+            "text_encoder_3": shared,
+            "vae": Module(100),
+            "tokenizer": object(),
+        }
+    )
+    assert loaded_text_encoder_mib(pipe) == 1500
+    assert loaded_text_encoder_mib(types.SimpleNamespace(components = {"vae": Module(100)})) is None
 
 
 def test_refine_keeps_model_offload_when_streaming_cannot_help(monkeypatch):
