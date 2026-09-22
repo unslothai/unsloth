@@ -131,6 +131,17 @@ def test_plain_rows_at_the_front_do_not_decide_it_for_the_agentic_rows_behind(mo
     assert tokenizer.chat_template == OWN
 
 
+def test_a_small_dataset_probes_its_last_row(monkeypatch):
+    tokenizer = _TemplatedTokenizer()
+    agentic_tail = lambda index: (_agentic_convo(index) if index == 11 else _plain_convo(index))
+
+    result = _format(_dataset_info(agentic_tail, rows = 12), tokenizer, monkeypatch)
+
+    assert result["success"] is True
+    assert len(result["dataset"]) == 12
+    assert tokenizer.chat_template == OWN
+
+
 def test_tool_rows_between_the_sampled_rows_are_still_dropped(monkeypatch):
     # Row 37 falls between sampled indices.
     tokenizer = _TemplatedTokenizer()

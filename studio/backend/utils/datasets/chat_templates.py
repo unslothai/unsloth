@@ -146,7 +146,8 @@ def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
     conversations = []
     try:
         if n_rows > limit:
-            rows = (dataset[index] for index in range(0, n_rows, max(1, n_rows // limit)))
+            step = (n_rows - 1) / (limit - 1)
+            rows = (dataset[round(i * step)] for i in range(limit))
         else:
             rows = dataset
         for row in rows:
