@@ -555,33 +555,28 @@ def test_an_inherited_env_budget_does_not_force_a_reload():
 
 def test_canonical_model_identity_resolves_snapshot_to_repo():
     from routes.inference import _canonical_model_identity
-
     snapshot = "/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc123"
     assert _canonical_model_identity(snapshot) == "unsloth/Qwen3.8-27B-GGUF"
 
 
 def test_canonical_model_identity_passes_through_repo_id():
     from routes.inference import _canonical_model_identity
-
     assert _canonical_model_identity("unsloth/Qwen3.8-27B-GGUF") == "unsloth/Qwen3.8-27B-GGUF"
 
 
 def test_canonical_model_identity_normalizes_windows_backslashes():
     from routes.inference import _canonical_model_identity
-
     snapshot = r"C:\models--unsloth--Qwen3.8-27B-GGUF\snapshots\abc123"
     assert _canonical_model_identity(snapshot) == "unsloth/Qwen3.8-27B-GGUF"
 
 
 def test_canonical_model_identity_returns_empty_for_empty():
     from routes.inference import _canonical_model_identity
-
     assert _canonical_model_identity("") == ""
 
 
 def test_canonical_model_identity_passes_through_non_cache_path():
     from routes.inference import _canonical_model_identity
-
     assert _canonical_model_identity("/models/my-model.gguf") == "/models/my-model.gguf"
 
 
@@ -598,7 +593,6 @@ def test_normalize_extra_args_source_resolves_snapshot():
 
 def test_normalize_extra_args_source_passes_through_repo():
     from core.inference.llama_cpp import _normalize_extra_args_source
-
     result = _normalize_extra_args_source("unsloth/Qwen3.8-27B-GGUF", "Q4_K_M")
     assert result == ("unsloth/Qwen3.8-27B-GGUF", "Q4_K_M")
 
@@ -613,7 +607,6 @@ def test_normalize_extra_args_source_normalizes_windows():
 
 def test_normalize_extra_args_source_preserves_variant():
     from core.inference.llama_cpp import _normalize_extra_args_source
-
     result = _normalize_extra_args_source("models--org--name/snapshots/hash", None)
     assert result == ("org/name", None)
 
@@ -643,15 +636,19 @@ def test_inheritance_works_when_stored_is_snapshot_and_load_is_repo():
         extra_args_source = ("/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc123", "ud-q6_k_l")
 
     import routes.inference as _routes
+
     _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
     _routes.get_llama_cpp_backend = lambda: FakeBackend()
     try:
         result = _resolve_inherited_extra_args(
             FakeRequest(), FakeConfig(), "unsloth/Qwen3.8-27B-GGUF", None
         )
-        assert result == ["--rope-scaling", "yarn", "-c", "300000"], (
-            f"Expected inherited extras but got: {result}"
-        )
+        assert result == [
+            "--rope-scaling",
+            "yarn",
+            "-c",
+            "300000",
+        ], f"Expected inherited extras but got: {result}"
     finally:
         _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
 
@@ -677,15 +674,19 @@ def test_inheritance_works_when_case_differs():
         extra_args_source = ("/models--Unsloth--Qwen3.8-27B-GGUF/snapshots/abc123", "ud-q6_k_l")
 
     import routes.inference as _routes
+
     _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
     _routes.get_llama_cpp_backend = lambda: FakeBackend()
     try:
         result = _resolve_inherited_extra_args(
             FakeRequest(), FakeConfig(), "unsloth/qwen3.8-27b-gguf", None
         )
-        assert result == ["--rope-scaling", "yarn", "-c", "300000"], (
-            f"Expected inherited extras for case-variant match, got: {result}"
-        )
+        assert result == [
+            "--rope-scaling",
+            "yarn",
+            "-c",
+            "300000",
+        ], f"Expected inherited extras for case-variant match, got: {result}"
     finally:
         _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
 
@@ -710,12 +711,11 @@ def test_inheritance_refuses_different_repo():
         extra_args_source = ("/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc123", "ud-q6_k_l")
 
     import routes.inference as _routes
+
     _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
     _routes.get_llama_cpp_backend = lambda: FakeBackend()
     try:
-        result = _resolve_inherited_extra_args(
-            FakeRequest(), FakeConfig(), "different/repo", None
-        )
+        result = _resolve_inherited_extra_args(FakeRequest(), FakeConfig(), "different/repo", None)
         assert result == [], f"Expected empty extras for cross-model, got: {result}"
     finally:
         _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
@@ -741,6 +741,7 @@ def test_inheritance_refuses_different_variant():
         extra_args_source = ("/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc123", "q6_k_l")
 
     import routes.inference as _routes
+
     _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
     _routes.get_llama_cpp_backend = lambda: FakeBackend()
     try:
@@ -772,6 +773,7 @@ def test_explicit_empty_extras_still_clears():
         extra_args_source = ("unsloth/Qwen3.8-27B-GGUF", "ud-q6_k_l")
 
     import routes.inference as _routes
+
     _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
     _routes.get_llama_cpp_backend = lambda: FakeBackend()
     try:

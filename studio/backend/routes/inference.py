@@ -14748,15 +14748,10 @@ def _resolve_inherited_extra_args(
         # Log the canonical identities so a snapshot-path vs repo-id
         # mismatch for the *same* model is not confused with a real
         # cross-model case.
-        _canonical_source = (
-            _canonical_model_identity(source[0]).lower(), source[1]
-        )
-        _canonical_load = (
-            _canonical_model_identity(model_identifier).lower(), resolved_variant
-        )
+        _canonical_source = (_canonical_model_identity(source[0]).lower(), source[1])
+        _canonical_load = (_canonical_model_identity(model_identifier).lower(), resolved_variant)
         logger.info(
-            "Not inheriting llama_extra_args: stored args came from %s, "
-            "loading %s",
+            "Not inheriting llama_extra_args: stored args came from %s, loading %s",
             _canonical_source,
             _canonical_load,
         )

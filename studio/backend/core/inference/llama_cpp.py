@@ -491,7 +491,9 @@ from utils.gguf_archs import (
 logger = get_logger(__name__)
 
 
-def _normalize_extra_args_source(model_identifier: str, hf_variant: Optional[str]) -> tuple[str, Optional[str]]:
+def _normalize_extra_args_source(
+    model_identifier: str, hf_variant: Optional[str]
+) -> tuple[str, Optional[str]]:
     """Normalize the (model_identifier, hf_variant) pair stored in
     ``_extra_args_source`` so that HF cache snapshot paths
     (``.../models--org--name/snapshots/<sha>``) are resolved to their
@@ -30425,7 +30427,9 @@ class LlamaCppBackend:
                         if _gpu_ids_own_device_flags
                         else list(_pv_requested)
                     )
-                    self._extra_args_source = _normalize_extra_args_source(model_identifier, hf_variant)
+                    self._extra_args_source = _normalize_extra_args_source(
+                        model_identifier, hf_variant
+                    )
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
