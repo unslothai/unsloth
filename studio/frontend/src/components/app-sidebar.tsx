@@ -140,6 +140,7 @@ import {
   OpenChatFolderUnavailableItem,
   exportConversationByFormat,
   forkChatRow,
+  showForkCreatedToast,
   getSidebarItemThreadIds,
   useForkInFlight,
   sandboxSessionIdsHolding,
@@ -2370,13 +2371,7 @@ export function AppSidebar() {
       const result = await forkChatRow(item);
       setActiveThreadId(result.thread.id);
       navigate({ to: "/chat", search: { thread: result.thread.id } });
-      if (result.containerSnapshotWarning) {
-        toast.info("Fork created", {
-          description: result.containerSnapshotWarning,
-        });
-      } else {
-        toast.success("Fork created");
-      }
+      showForkCreatedToast(result.containerSnapshotWarning);
     } catch (error) {
       // A chat still generating is a refusal, not a failure: say so without the alarm.
       if ((error as { unslothForkRefused?: boolean } | null)?.unslothForkRefused) {
