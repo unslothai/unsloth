@@ -430,3 +430,108 @@ def test_text_with_a_few_stray_replacement_chars_kept(monkeypatch):
     out = _fetch_with(monkeypatch, body, "text/html")
     assert "Real article text." in out
     assert "binary content" not in out
+
+
+_JAPANESE = "価格.com は日本最大級の購買支援サイトです。製品の価格比較とクチコミ。"
+
+
+def _html_page(head: str, text: str) -> str:
+    return f"<html><head>{head}<title>t</title></head><body><p>{text}</p></body></html>"
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        '<meta charset="Shift_JIS">',
+        "<meta charset=shift_jis>",
+        '<meta charset="x-sjis">',
+        '<meta charset="windows-31j">',
+        '<meta http-equiv="Content-Type" content="text/html; charset=Shift_JIS">',
+        '<meta content="text/html; charset=shift_jis" http-equiv="content-type">',
+    ],
+)
+def test_meta_charset_read_when_header_names_none(monkeypatch, head):
+    body = _html_page(head, _JAPANESE * 40).encode("cp932")
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert _JAPANESE in out
+    assert "�" not in out
+    assert "binary content" not in out
+
+
+@pytest.mark.parametrize("content_type", ["text/html", "application/xhtml+xml", "text/xml"])
+def test_xml_prolog_encoding_read_when_header_names_none(monkeypatch, content_type):
+    body = ('<?xml version="1.0" encoding="EUC-JP"?>\n' + _html_page("", _JAPANESE * 40)).encode(
+        "euc_jp"
+    )
+    out = _fetch_with(monkeypatch, body, content_type)
+    assert _JAPANESE in out
+    assert "�" not in out
+
+
+@pytest.mark.parametrize(
+    "label,encoding,text",
+    [
+        ("gb2312", "gbk", "镕 GBK-only MARKERWORD"),
+        ("latin1", "cp1252", "“quoted” MARKERWORD"),
+        ("iso-8859-1", "cp1252", "“quoted” MARKERWORD"),
+        ("windows-1251", "cp1251", "Привет MARKERWORD"),
+        ("euc-jp", "euc_jp", _JAPANESE),
+    ],
+)
+def test_meta_charset_labels_decode_with_whatwg_codecs(monkeypatch, label, encoding, text):
+    body = _html_page(f'<meta charset="{label}">', text * 40).encode(encoding)
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert text in out
+    assert "�" not in out
+
+
+def test_header_charset_wins_over_contradicting_meta(monkeypatch):
+    body = _html_page('<meta charset="Shift_JIS">', _JAPANESE * 40).encode("utf-8")
+    out = _fetch_with(monkeypatch, body, "text/html; charset=utf-8")
+    assert _JAPANESE in out
+    assert "�" not in out
+
+
+def test_bom_wins_over_contradicting_meta(monkeypatch):
+    body = codecs.BOM_UTF16_LE + _html_page('<meta charset="Shift_JIS">', _JAPANESE * 40).encode(
+        "utf-16-le"
+    )
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert _JAPANESE in out
+    assert "�" not in out
+
+
+@pytest.mark.parametrize(
+    "label", ["x-mac-fantasy", "utf8mb4", "base64", "rot13", "idna", "undefined"]
+)
+def test_unknown_meta_charset_falls_back_to_utf8_without_raising(monkeypatch, label):
+    body = _html_page(f'<meta charset="{label}">', "MARKERWORD über " * 40).encode("utf-8")
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert "MARKERWORD über" in out
+    assert "Failed to fetch URL" not in out
+
+
+@pytest.mark.parametrize("meta", ['<meta charset="utf-8">', '<meta charset="utf-16">'])
+def test_meta_charset_keeps_cp1252_rescue_for_mislabeled_page(monkeypatch, meta):
+    text = "¿Qué pasó? Canción, corazón, niño, España, José, señor. "
+    body = _html_page(meta, text * 30).encode("cp1252")
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert text.strip() in out
+    assert "binary content" not in out
+
+
+def test_commented_out_meta_charset_is_ignored(monkeypatch):
+    text = "Ünïcödé “smart” 日本語 MARKERWORD "
+    head = '<!-- <meta charset="iso-8859-1"> --><meta charset="utf-8">'
+    body = _html_page(head, text * 20).encode("utf-8")
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert text.strip() in out
+    assert "Ã" not in out
+
+
+@pytest.mark.parametrize("header_label", ["x-bogus-label", "base64"])
+def test_meta_charset_used_when_header_charset_unusable(monkeypatch, header_label):
+    body = _html_page('<meta charset="Shift_JIS">', _JAPANESE * 40).encode("cp932")
+    out = _fetch_with(monkeypatch, body, f"text/html; charset={header_label}")
+    assert _JAPANESE in out
+    assert "�" not in out

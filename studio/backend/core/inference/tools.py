@@ -13839,6 +13839,39 @@ _UNICODE_BOM_CODECS = (
 _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
 
+_META_CHARSET_SCAN_BYTES = 2048
+_META_CHARSET_RE = re.compile(rb"<meta\b[^>]*?charset\s*=\s*[\"']?\s*([\w.:-]+)", re.IGNORECASE)
+_HTML_COMMENT_RE = re.compile(rb"<!--.*?(?:-->|\Z)", re.DOTALL)
+_XML_ENCODING_RE = re.compile(rb"^\s*<\?xml\b[^>]*?encoding\s*=\s*[\"']([\w.:-]+)", re.IGNORECASE)
+_META_CHARSET_ALIASES = {
+    "shift-jis": "cp932",
+    "sjis": "cp932",
+    "x-sjis": "cp932",
+    "ms-kanji": "cp932",
+    "csshiftjis": "cp932",
+    "gb2312": "gbk",
+    "gb-2312": "gbk",
+    "csgb2312": "gbk",
+    "chinese": "gbk",
+    "iso-ir-58": "gbk",
+    "x-gbk": "gbk",
+    "latin1": "cp1252",
+    "latin-1": "cp1252",
+    "l1": "cp1252",
+    "iso-8859-1": "cp1252",
+    "iso8859-1": "cp1252",
+    "iso-ir-100": "cp1252",
+    "csisolatin1": "cp1252",
+    "cp819": "cp1252",
+    "ibm819": "cp1252",
+    "ascii": "cp1252",
+    "us-ascii": "cp1252",
+    "x-user-defined": "cp1252",
+    "utf-16": "utf-8",
+    "utf-16le": "utf-8",
+    "utf-16be": "utf-8",
+}
+
 
 def _looks_binary(text: str) -> bool:
     """Whether control or undecodable characters exceed the binary threshold."""
@@ -13871,6 +13904,19 @@ def _has_single_byte_text_evidence(data: bytes) -> bool:
         return True
     ascii_text_bytes = sum(byte in _ASCII_TEXT_BYTES for byte in data)
     return ascii_text_bytes / len(data) >= _MIN_SINGLE_BYTE_ASCII_RATIO
+
+
+def _sniff_meta_charset(head: bytes) -> str | None:
+    match = _XML_ENCODING_RE.match(head) or _META_CHARSET_RE.search(_HTML_COMMENT_RE.sub(b"", head))
+    if match is None:
+        return None
+    label = match.group(1).decode("ascii").lower().replace("_", "-")
+    try:
+        codec = codecs.lookup(_META_CHARSET_ALIASES.get(label, label)).name
+        b"x".decode(codec, "replace")
+    except (LookupError, ValueError):
+        return None
+    return codec
 
 
 def _extract_pdf_text(data: bytes) -> str:
@@ -14617,14 +14663,17 @@ def _fetch_url_raw(
             (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
             None,
         )
+        meta_codec = None
+        if bom_codec is None:
+            meta_codec = _sniff_meta_charset(raw_bytes[:_META_CHARSET_SCAN_BYTES])
         try:
-            raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+            raw_html = raw_bytes.decode(declared or bom_codec or meta_codec or "utf-8", errors = "replace")
         except (LookupError, ValueError):
             # Survives lookup, fails the decode: base64/hex/zlib are not text codecs, "undefined" always raises, idna
             # rejects replace. The fallback cannot raise.
             declared = None
             declared_codec = None
-            raw_html = raw_bytes.decode(bom_codec or "utf-8", errors = "replace")
+            raw_html = raw_bytes.decode(bom_codec or meta_codec or "utf-8", errors = "replace")
 
         # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
         if _looks_binary(raw_html):
