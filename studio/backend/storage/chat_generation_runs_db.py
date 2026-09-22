@@ -55,19 +55,25 @@ class _Borrowed:
         if self._released:
             return
         object.__setattr__(self, "_released", True)
-        entry = getattr(_pool, "entry", None)
-        if (
-            entry is not None
-            and entry["conn"] is self._conn
-            and entry["generation"] == _pool_generation
-        ):
-            # A connection left mid-transaction would hand its caller's work to the next borrower.
+        # Before the lock: while this borrow is out the handle belongs to this thread alone, and a
+        # connection left mid-transaction would hand its caller's work to the next borrower.
+        try:
             if self._conn.in_transaction:
                 self._conn.rollback()
-            entry["busy"] = False
-        else:
-            # Invalidated while this borrow was out, so releasing the file is what matters now.
-            _pool.entry = None
+        except Exception:
+            pass
+        park = False
+        with _pool_lock:
+            entry = getattr(_pool, "entry", None)
+            if entry is not None and entry["conn"] is self._conn:
+                if entry["generation"] == _pool_generation:
+                    entry["busy"] = False
+                    park = True
+                else:
+                    # Invalidated while this borrow was out: releasing the file is what matters now.
+                    _pool.entry = None
+                    _unregister_locked(entry)
+        if not park:
             self._conn.close()
 
     def __getattr__(self, name: str) -> Any:
@@ -86,6 +92,14 @@ _pool_generation = 0
 _pool_lock = threading.Lock()
 
 
+def _unregister_locked(entry: dict[str, Any]) -> None:
+    """Drop ``entry`` from the registry. Caller holds ``_pool_lock``."""
+    for index, known in enumerate(_pool_registry):
+        if known is entry:
+            del _pool_registry[index]
+            break
+
+
 def _discard_pooled() -> None:
     """Drop this thread's cached connection, for when it has errored or its database has gone."""
     entry = getattr(_pool, "entry", None)
@@ -93,10 +107,7 @@ def _discard_pooled() -> None:
         return
     _pool.entry = None
     with _pool_lock:
-        for index, known in enumerate(_pool_registry):
-            if known is entry:
-                del _pool_registry[index]
-                break
+        _unregister_locked(entry)
     try:
         entry["conn"].close()
     except Exception:
@@ -171,18 +182,36 @@ def _connect() -> sqlite3.Connection:
     # Paired with the identity of _schema_ready, which conftest rebinds per test: an account id
     # alone cannot see a home that moved beneath it.
     key = current_account_id() or ""
-    entry = getattr(_pool, "entry", None)
-    if entry is not None and entry["generation"] != _pool_generation:
-        # Invalidated while this thread was elsewhere; _discard_all_pooled already closed it.
-        _pool.entry = None
-        entry = None
-    if entry is not None and not entry["busy"]:
-        if entry["key"] == key and entry["schema_ready"] is _schema_ready:
-            entry["busy"] = True
-            return _Borrowed(entry["conn"], key)
-        # A different account, or a home that moved beneath this one. Either way the cached handle
-        # points at a database this caller must not be given.
-        _discard_pooled()
+    reuse = None
+    superseded = None
+    # Under the lock, because the idle-to-busy transition races _discard_all_pooled's decision to
+    # close: read the generation outside it and an invalidator can see this entry as idle, close it,
+    # and leave the borrow holding a handle whose next query raises ProgrammingError. Retirement
+    # invalidates every account's pool, so that would abort unrelated live generations.
+    with _pool_lock:
+        entry = getattr(_pool, "entry", None)
+        if entry is not None and entry["generation"] != _pool_generation:
+            # Invalidated while this thread was elsewhere; _discard_all_pooled already closed it.
+            _pool.entry = None
+            entry = None
+        if entry is not None and not entry["busy"]:
+            if entry["key"] == key and entry["schema_ready"] is _schema_ready:
+                entry["busy"] = True
+                reuse = entry["conn"]
+            else:
+                # A different account, or a home that moved beneath this one. Either way the cached
+                # handle points at a database this caller must not be given.
+                superseded = entry["conn"]
+                _unregister_locked(entry)
+                _pool.entry = None
+            entry = None if reuse is None else entry
+    if reuse is not None:
+        return _Borrowed(reuse, key)
+    if superseded is not None:
+        try:
+            superseded.close()
+        except Exception:
+            pass
         entry = None
 
     conn = _prepare_connection()
@@ -198,6 +227,7 @@ def _connect() -> sqlite3.Connection:
         }
         _pool.entry = entry
         with _pool_lock:
+            entry["generation"] = _pool_generation
             _pool_registry.append(entry)
         return _Borrowed(conn, key)
     return conn

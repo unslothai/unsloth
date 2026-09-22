@@ -242,3 +242,49 @@ def test_a_connection_in_use_during_a_global_discard_is_closed_on_return():
     borrowed.close()
     with pytest.raises(sqlite3.ProgrammingError):
         underlying.execute("SELECT 1")
+
+
+def test_borrowing_races_a_global_discard_without_handing_out_a_closed_handle():
+    """Retirement invalidates every account's pool from an unrelated thread.
+
+    The interleaving is forced rather than hoped for: the entry's key compares equal via a probe
+    that, mid-comparison, lets another thread run _discard_all_pooled. That comparison sits between
+    the generation check and the idle-to-busy transition. Holding _pool_lock across both makes the
+    other thread block until the borrow is marked busy, so the handle survives; without the lock it
+    is closed underneath the borrow and the next query raises ProgrammingError, aborting a live
+    generation belonging to an account nobody deleted.
+    """
+    primed = runs_db._connect()
+    underlying = primed._conn
+    primed.close()
+
+    entry = runs_db._pool.entry
+    assert entry is not None and not entry["busy"], "an idle pooled entry is the precondition"
+
+    invalidated = threading.Event()
+
+    def invalidate():
+        runs_db._discard_all_pooled()
+        invalidated.set()
+
+    class _KeyProbe(str):
+        def __eq__(self, other):
+            worker = threading.Thread(target = invalidate)
+            worker.start()
+            # Long enough that an unlocked borrow really does lose the handle, short enough that the
+            # locked one is not slowed: with the lock held the worker cannot get past its acquire.
+            worker.join(timeout = 2.0)
+            return str(self) == str(other)
+
+        def __hash__(self):
+            return str.__hash__(self)
+
+    entry["key"] = _KeyProbe(entry["key"])
+
+    borrowed = runs_db._connect()
+    try:
+        assert borrowed.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        borrowed.close()
+        invalidated.wait(timeout = 10)
+    assert underlying is not None
