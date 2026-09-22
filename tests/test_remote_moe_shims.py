@@ -163,6 +163,36 @@ def test_training_forward_matches_eval_and_backpropagates():
     assert block.gate.training and block.training   # the gate flag is restored after the call
 
 
+def test_shims_reach_a_module_behind_an_accelerate_hook():
+    """A device_map load wraps forward with an accelerate hook that keeps the original as
+    `_old_forward`; the class-level shim alone is never called from `module(...)`. Kimi-K2.7-Code
+    on four GPUs still hit the gate's training assert this way."""
+    from accelerate.hooks import ModelHook, add_hook_to_module
+
+    torch.manual_seed(0)
+    mod = _remote_module("transformers_modules.tiny_kimi_c.modeling_deepseek")
+    block = mod.DeepseekV3MoE(mod.Cfg())
+    for sub in (block, block.gate):
+        add_hook_to_module(sub, ModelHook())
+    assert "_old_forward" in vars(block.gate)
+    block.train()
+    x = torch.randn(2, 5, 16)
+    with pytest.raises(AssertionError):
+        block(x)
+    prepare_remote_moe_for_training(block, verbose = False)
+    out = block(x)          # goes through the hook, which must now reach the shim
+    block.eval()
+    with torch.no_grad():
+        reference = block(x)
+    assert torch.allclose(out, reference, atol = 1e-5, rtol = 1e-5)
+    # A hook attached after the classes were shimmed (a second model of the same remote code) is rebound too.
+    block2 = mod.DeepseekV3MoE(mod.Cfg())
+    add_hook_to_module(block2.gate, ModelHook())
+    block2.train()
+    assert prepare_remote_moe_for_training(block2, verbose = False) == []
+    block2(x)
+
+
 def test_composite_gradient_checkpointing_flag():
     from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedModel, PretrainedConfig
 

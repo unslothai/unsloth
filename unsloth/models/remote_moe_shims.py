@@ -128,25 +128,50 @@ def _moe_forward_with_training_path(original):
     return forward
 
 
+def _rebind_accelerate_hook(module):
+    """Point an accelerate hook attached during loading at the shimmed forward.
+
+    A `device_map` load wraps every dispatched module's `forward` before the shims run and
+    keeps the bound original as `module._old_forward`, so a class-level patch is never reached
+    from `module(...)` on a multi-GPU model: Kimi-K2.7-Code on four cards still hit the gate's
+    `assert not self.training`. Single-GPU loads have no hook and nothing to rebind."""
+    if "_old_forward" not in vars(module):
+        return False
+    import types
+
+    module._old_forward = types.MethodType(type(module).forward, module)
+    return True
+
+
 def prepare_remote_moe_for_training(model, verbose = True):
     """Patch the remote DeepSeek-style gate and MoE classes found in `model` so the block
     runs in train mode. Idempotent; returns the names of the classes it patched."""
     patched = []
     seen = set()
+    shimmed_classes = set()
     for module in model.modules():
         cls = type(module)
         if cls in seen:
+            if cls in shimmed_classes:
+                _rebind_accelerate_hook(module)
             continue
         seen.add(cls)
         current = cls.__dict__.get("forward")
         if getattr(current, "_unsloth_remote_moe_shim", False):
+            # Already patched in an earlier call; a hook attached since still needs rebinding.
+            shimmed_classes.add(cls)
+            _rebind_accelerate_hook(module)
             continue
         if is_remote_deepseek_gate(module):
             cls.forward = _gate_forward_without_training_assert(cls.forward)
             patched.append(cls.__name__)
+            shimmed_classes.add(cls)
+            _rebind_accelerate_hook(module)
         elif is_remote_deepseek_moe(module):
             cls.forward = _moe_forward_with_training_path(cls.forward)
             patched.append(cls.__name__)
+            shimmed_classes.add(cls)
+            _rebind_accelerate_hook(module)
     if patched and verbose:
         print(
             "Unsloth: The remote MoE code only had an inference path; added a training forward to "
