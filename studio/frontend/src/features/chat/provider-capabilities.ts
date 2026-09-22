@@ -636,6 +636,12 @@ const OPENAI_COMPAT_BASE: ProviderCapabilities = {
   presencePenalty: true,
 };
 
+const CUSTOM_RESPONSES_CAPABILITIES: ProviderCapabilities = {
+  ...OPENAI_COMPAT_BASE,
+  // The Responses translator forwards temperature/top_p, but drops presence_penalty.
+  presencePenalty: false,
+};
+
 const ALL_SUPPORTED: ProviderCapabilities = {
   temperature: true,
   topP: true,
@@ -727,15 +733,30 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
 
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
 
+const OPENAI_RESPONSES_FIXED_SAMPLING_MODEL =
+  /^(?:gpt-5(?:[.-]|$)|gpt-4\.5(?:[.-]|$)|o\d+(?:[.-]|$)|codex-mini(?:[.-]|$)|gpt-6-astra(?:[.-]|$))/;
+
 /** Resolve the capability set for an external provider. Null for a local model, which
  *  callers treat as "every knob applies". */
 export function getProviderCapabilities(
   providerType: string | null | undefined,
   apiType?: "chat_completions" | "responses",
+  modelId?: string | null,
+  baseUrl?: string | null,
 ): ProviderCapabilities | null {
   if (!providerType) return null;
   if (providerType === "custom" && apiType === "responses") {
-    return PROVIDER_CAPABILITIES.openai;
+    // Custom gateways may accept sampling for these same model IDs. Only known
+    // fixed-sampling models on managed OpenAI hosts get the native restriction.
+    const model = modelId?.trim().toLowerCase() ?? "";
+    if (
+      usesOpenAIHostedResponses(providerType, baseUrl, apiType) &&
+      !OPENAI_NON_REASONING_CHAT_ALIAS.test(model) &&
+      OPENAI_RESPONSES_FIXED_SAMPLING_MODEL.test(model)
+    ) {
+      return PROVIDER_CAPABILITIES.openai;
+    }
+    return CUSTOM_RESPONSES_CAPABILITIES;
   }
   return PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
 }

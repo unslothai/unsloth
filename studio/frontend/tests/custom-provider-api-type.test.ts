@@ -45,15 +45,18 @@ test("browser cache preserves Responses and defaults legacy records to Chat Comp
 });
 
 
-test("custom Responses uses the existing Responses sampling controls", async () => {
+test("custom Responses keeps Custom sampling controls", async () => {
   const {
     getProviderCapabilities,
     getExternalReasoningCapabilities,
     resolveExternalReasoningEffort,
   } =
     await vite.ssrLoadModule("/src/features/chat/provider-capabilities.ts");
-  assert.deepEqual(getProviderCapabilities("custom", "responses"), getProviderCapabilities("openai"));
   assert.equal(getProviderCapabilities("custom", "chat_completions").temperature, true);
+  assert.equal(getProviderCapabilities("custom", "responses").temperature, true);
+  assert.equal(getProviderCapabilities("custom", "responses").topP, true);
+  assert.equal(getProviderCapabilities("custom", "responses").presencePenalty, false);
+  assert.equal(getProviderCapabilities("openai", "responses").temperature, false);
 
   const openaiReasoning = getExternalReasoningCapabilities("openai", "gpt-5");
   assert.deepEqual(

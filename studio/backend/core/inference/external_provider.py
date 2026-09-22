@@ -164,6 +164,20 @@ _ANTHROPIC_MODEL_VERSION = re.compile(
     re.IGNORECASE,
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
+_OPENAI_FIXED_SAMPLING_MODEL = re.compile(
+    r"^(?:gpt-5(?:[.-]|$)|gpt-4\.5(?:[.-]|$)|o\d+(?:[.-]|$)|codex-mini(?:[.-]|$)|gpt-6-astra(?:[.-]|$))"
+)
+_OPENAI_NON_REASONING_CHAT_ALIAS = re.compile(r"-chat(?:-latest)?$")
+
+
+def _openai_fixed_sampling_model(model: str) -> bool:
+    normalized = model.strip().lower()
+    return bool(
+        _OPENAI_FIXED_SAMPLING_MODEL.match(normalized)
+        and not _OPENAI_NON_REASONING_CHAT_ALIAS.search(normalized)
+    )
+
+
 # Gemini 3.x, dotted minor optional: gemini-3-, gemini-3.1-, gemini-3.6- ...
 _GEMINI3_FAMILY = re.compile(r"^gemini-(?:[3-9]|\d{2,})(?:\.\d+)?-")
 _GEMINI3_PRO = re.compile(r"^gemini-(?:[3-9]|\d{2,})(?:\.\d+)?-pro")
@@ -1288,9 +1302,27 @@ class ExternalProviderClient:
                 auth_prefix = "Bearer "
 
         headers = {"Content-Type": "application/json"}
-        # Skip auth header when api_key is empty (optional for local providers); httpx rejects an empty `Bearer `
-        # value as "Illegal header value".
-        if self.api_key:
+        # Azure OpenAI accepts a resource key in `api-key` or an Entra access token as a Bearer token.
+        # A saved custom provider has only one credential field, so preserve raw JWT bearer credentials and let
+        # `Bearer <token>` explicitly select bearer auth for opaque Entra tokens. Never send both credentials.
+        azure_custom_responses = (
+            self.provider_type == "custom"
+            and self.api_type == "responses"
+            and (urlparse(self.base_url).hostname or "").lower().endswith(".openai.azure.com")
+        )
+        if azure_custom_responses and self.api_key:
+            if self.api_key[:7].lower() == "bearer ":
+                bearer_token = self.api_key[7:].strip()
+            elif re.fullmatch(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", self.api_key):
+                bearer_token = self.api_key
+            else:
+                bearer_token = None
+            if bearer_token:
+                headers["Authorization"] = f"Bearer {bearer_token}"
+            elif bearer_token is None:
+                headers["api-key"] = self.api_key
+        # Skip auth when the key is empty (optional for local providers); httpx rejects an empty `Bearer `.
+        elif self.api_key:
             headers[auth_header] = f"{auth_prefix}{self.api_key}"
         # Merge provider-specific extra headers (anthropic-version, OpenRouter attribution).
         headers.update(provider_info.get("extra_headers", {}))
@@ -1347,8 +1379,14 @@ class ExternalProviderClient:
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
 
-        # custom and self-hosted endpoints apply model chat templates on both api paths.
-        if self.provider_type in _TEMPLATE_APPLYING_PROVIDERS:
+        # Managed OpenAI Responses hosts do not apply a local chat template; preserve literal delimiter text there.
+        # Custom gateways and local endpoints still need their template-control-token protection.
+        managed_custom_responses = (
+            self.provider_type == "custom"
+            and self.api_type == "responses"
+            and _is_openai_family_cloud(self.base_url)
+        )
+        if self.provider_type in _TEMPLATE_APPLYING_PROVIDERS and not managed_custom_responses:
             from core.inference.chat_template_helpers import (
                 neutralize_control_markup_in_messages,
                 neutralize_tool_descriptions,
@@ -5252,7 +5290,12 @@ class ExternalProviderClient:
             "input": input_items,
             "stream": stream,
         }
-        if self.provider_type == "custom":
+        # Hosted reasoning models reject temperature/top_p even when configured through a custom Responses row.
+        # Other custom endpoints (including gateways carrying the same model id) still receive both controls.
+        forward_custom_sampling = self.provider_type == "custom" and not (
+            is_openai_cloud and _openai_fixed_sampling_model(model)
+        )
+        if forward_custom_sampling:
             if temperature is not None:
                 body["temperature"] = temperature
             if top_p is not None:

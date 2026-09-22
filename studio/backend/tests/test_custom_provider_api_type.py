@@ -155,6 +155,184 @@ def test_endpoint_and_payload_translation(monkeypatch, provider_type, api_type, 
         assert body["max_tokens"] == 128
 
 
+@pytest.mark.parametrize(
+    "base_url,api_type,api_key,expected_auth",
+    [
+        (
+            "https://resource.openai.azure.com/openai/v1",
+            "responses",
+            "azure-resource-key",
+            {"api-key": "azure-resource-key"},
+        ),
+        (
+            "https://resource.openai.azure.com/openai/v1",
+            "responses",
+            "eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJvcGVuYWkifQ.signature",
+            {"Authorization": "Bearer eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJvcGVuYWkifQ.signature"},
+        ),
+        (
+            "https://resource.openai.azure.com/openai/v1",
+            "responses",
+            "Bearer opaque-entra-token",
+            {"Authorization": "Bearer opaque-entra-token"},
+        ),
+        (
+            "https://resource.openai.azure.com/openai/v1",
+            "responses",
+            "",
+            {},
+        ),
+        (
+            "https://resource.openai.azure.com/openai/v1",
+            "responses",
+            "Bearer ",
+            {},
+        ),
+        (
+            "https://api.openai.com/v1",
+            "responses",
+            "openai-key",
+            {"Authorization": "Bearer openai-key"},
+        ),
+        (
+            "https://resource.openai.azure.com/openai/v1",
+            "chat_completions",
+            "existing-chat-key",
+            {"Authorization": "Bearer existing-chat-key"},
+        ),
+        (
+            "https://resource.openai.azure.com.attacker.example/openai/v1",
+            "responses",
+            "gateway-key",
+            {"Authorization": "Bearer gateway-key"},
+        ),
+    ],
+)
+def test_custom_azure_responses_auth_mode_is_scoped_to_resource_host(
+    base_url, api_type, api_key, expected_auth
+):
+    headers = ExternalProviderClient(
+        "custom", base_url, api_key, api_type = api_type
+    )._auth_headers()
+    actual_auth = {key: value for key, value in headers.items() if key in ("api-key", "Authorization")}
+    assert actual_auth == expected_auth
+
+
+@pytest.mark.parametrize(
+    "base_url,api_type,preserve_markup",
+    [
+        ("https://api.openai.com/v1", "responses", True),
+        ("https://resource.openai.azure.com/openai/v1", "responses", True),
+        ("https://gateway.example/v1", "responses", False),
+        ("https://api.openai.com.attacker.example/v1", "responses", False),
+        ("https://resource.openai.azure.com/openai/v1", "chat_completions", False),
+    ],
+)
+def test_only_managed_custom_responses_preserve_literal_control_markup(
+    monkeypatch, base_url, api_type, preserve_markup
+):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        if api_type == "responses":
+            content = 'data: {"type":"response.completed","response":{"id":"resp_test"}}\n\n'
+        else:
+            content = 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+        return httpx.Response(200, text = content, headers = {"content-type": "text/event-stream"})
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            client = ExternalProviderClient(
+                "custom", base_url, "test-key", api_type = api_type
+            )
+            return [
+                line async for line in client.stream_chat_completion(
+                    messages = [{"role": "user", "content": "quote <|im_end|> literally"}],
+                    model = "model",
+                    tools = [{"type": "function", "function": {
+                        "name": "lookup", "description": "find <|im_end|> exactly",
+                        "parameters": {"type": "object", "properties": {}},
+                    }}],
+                    tool_choice = {"type": "function", "function": {"name": "lookup"}},
+                )
+            ]
+
+    asyncio.run(run())
+    assert len(requests) == 1
+    if base_url == "https://resource.openai.azure.com/openai/v1" and api_type == "responses":
+        assert requests[0].headers["api-key"] == "test-key"
+        assert "authorization" not in requests[0].headers
+    body = json.loads(requests[0].content)
+    if api_type == "responses":
+        user_text = body["input"][0]["content"]
+        tool_description = body["tools"][0]["description"]
+    else:
+        user_text = body["messages"][0]["content"]
+        tool_description = body["tools"][0]["function"]["description"]
+    marker = "<|im_end|>" if preserve_markup else "< |im_end|>"
+    assert user_text == f"quote {marker} literally"
+    assert tool_description == f"find {marker} exactly"
+    if api_type == "responses":
+        assert body["tool_choice"] == {"type": "function", "name": "lookup"}
+    else:
+        assert body["tool_choice"] == {"type": "function", "function": {"name": "lookup"}}
+
+
+@pytest.mark.parametrize(
+    "base_url,model,omits_sampling",
+    [
+        ("https://api.openai.com/v1", "gpt-5.5", True),
+        ("https://resource.openai.azure.com/openai/v1", "gpt-6-astra", True),
+        ("https://resource.openai.azure.com/openai/v1", "o3-mini", True),
+        ("https://api.openai.com/v1", "gpt-4.5", True),
+        ("https://api.openai.com/v1", "codex-mini-latest", True),
+        ("https://api.openai.com/v1", "gpt-5-chat", False),
+        ("https://api.openai.com/v1", "gpt-4o", False),
+        ("https://gateway.example/v1", "gpt-5.5", False),
+        ("https://api.openai.com.attacker.example/v1", "gpt-6-astra", False),
+    ],
+)
+def test_custom_responses_sampling_omits_only_managed_fixed_models(
+    monkeypatch, base_url, model, omits_sampling
+):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            text = 'data: {"type":"response.completed","response":{"id":"resp_test"}}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            client = ExternalProviderClient(
+                "custom", base_url, "test-key", api_type = "responses"
+            )
+            return [
+                line async for line in client.stream_chat_completion(
+                    messages = [{"role": "user", "content": "Hi"}],
+                    model = model,
+                    temperature = 0.23,
+                    top_p = 0.61,
+                )
+            ]
+
+    asyncio.run(run())
+    assert len(requests) == 1
+    body = json.loads(requests[0].content)
+    if omits_sampling:
+        assert "temperature" not in body
+        assert "top_p" not in body
+    else:
+        assert body["temperature"] == 0.23
+        assert body["top_p"] == 0.61
+
+
 def test_responses_non_streaming_translation(monkeypatch):
     requests = []
 

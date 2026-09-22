@@ -5982,6 +5982,8 @@ export function createOpenAIStreamAdapter(
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
           externalProvider?.apiType,
+          externalSelection?.modelId,
+          externalProvider?.baseUrl,
         );
         const externalReasoningCaps: ReturnType<
           typeof getExternalReasoningCapabilities
