@@ -2026,7 +2026,13 @@ def test_an_unreachable_hub_is_reported_as_itself_not_blamed_on_the_last_candida
 
     asked: list = []
 
-    def _dl(repo_id, filename, token = None, cache_dir = None, local_files_only = False):
+    def _dl(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+        local_files_only = False,
+    ):
         asked.append(filename)
         raise LocalEntryNotFoundError("connection error")
 
