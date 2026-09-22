@@ -92,13 +92,13 @@ export function dockedMonitorFits({
   }
   const usable =
     viewportWidth - Math.max(0, sidebarWidth) - Math.max(0, settingsWidth);
-  // A hand-resized monitor is wider than `w-64`, and the constant also scales
-  // with `--ui-space-scale`. Reserving only the constant docks it over the
-  // sidebar, so reserve what the panel actually renders.
+  // The rendered width, not `w-64`: the panel is natively resizable and the
+  // constant also scales with `--ui-space-scale`, so at a smaller UI font the
+  // constant over-reserves and suppresses a monitor that would have fitted.
   const width =
     monitorWidth === undefined || !Number.isFinite(monitorWidth)
       ? FLOATING_MONITOR_WIDTH
-      : Math.max(monitorWidth, FLOATING_MONITOR_WIDTH);
+      : monitorWidth;
   return usable >= width + 2 * FLOATING_MONITOR_EDGE_INSET;
 }
 

@@ -421,6 +421,21 @@ test("docking reserves the width the monitor actually renders", () => {
   };
   assert.equal(dockedMonitorFits(wide), true);
   assert.equal(dockedMonitorFits({ ...wide, monitorWidth: 500 }), false);
+  // `w-64` scales with --ui-space-scale (0.8 at a 12px UI font), so the
+  // rendered width can be NARROWER than the constant. A 205px monitor fits an
+  // 800px desktop with the default sidebar and panel; the constant says no.
+  const scaled = {
+    isOpen: true,
+    isMobile: false,
+    isChatRoute: true,
+    settingsPanelOpen: true,
+    settingsWidth: 272,
+    sidebarWidth: 280,
+    viewportWidth: 800,
+    monitorWidth: 205,
+  };
+  assert.equal(dockedMonitorFits(scaled), true);
+  assert.equal(getFloatingMonitorLayout(scaled).dockedBesideRunSettings, true);
 });
 
 test("the sidebar observer survives the responsive swap", () => {
