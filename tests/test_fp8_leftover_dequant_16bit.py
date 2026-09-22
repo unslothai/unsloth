@@ -254,3 +254,52 @@ def test_out_of_memory_on_the_device_is_finished_through_the_cpu(monkeypatch):
     assert model.experts.gate_up_proj.dtype == torch.bfloat16
     assert torch.equal(model.experts.gate_up_proj.detach().cpu(), expected["experts.gate_up_proj"])
     assert torch.equal(model.experts.down_proj.detach().cpu(), expected["experts.down_proj"])
+
+
+def test_standard_weight_and_weight_scale_inv_pair_is_dequantized():
+    """`layer.weight_scale_inv` belongs to `layer.weight`. Stripping the whole suffix left
+    `layer`, which the target lookup read as a parameter of the parent, so a raw fp8
+    `.weight` with the standard scale name was never dequantized."""
+    model, tensors, expected = _build()
+    q_w = tensors["q_proj.weight"]
+    s_w = tensors["q_proj.weight_scale_inv"]
+    model.q_proj.weight = nn.Parameter(q_w, requires_grad = False)
+    with tempfile.TemporaryDirectory() as d:
+        _write_checkpoint(d, tensors)
+        done, skipped = _dequantize_leftover_fp8_params(model, d, torch.bfloat16)
+    assert done == 3
+    assert model.q_proj.weight.dtype == torch.bfloat16
+    assert torch.equal(model.q_proj.weight.detach(), (q_w.float() * s_w).to(torch.bfloat16))
+    assert not any(p.dtype in _FP8_DTYPES for p in model.parameters())
+
+
+def test_no_reference_to_the_fp8_parameter_survives_into_the_cpu_pass(monkeypatch):
+    """The OOM fallback parks a stack on the CPU to free its device bytes. The pass kept the
+    original Parameter alive in two bookkeeping lists, so nothing was freed and the move back
+    could OOM again. Simulated on the CPU: the first attempt raises, the CPU pass must find
+    the original Parameter already collected."""
+    import gc
+    import weakref
+    from unsloth.models import loader_utils
+
+    model, tensors, expected = _build()
+    original = weakref.ref(model.experts.gate_up_proj)
+    real = loader_utils._fp8_scale_grid_dequant
+    state = {"raised": False, "alive_in_pass_2": None}
+
+    def flaky(quantized, scale, out_dtype):
+        if not state["raised"]:
+            state["raised"] = True
+            raise torch.OutOfMemoryError("out of memory (simulated)")
+        if state["alive_in_pass_2"] is None:
+            gc.collect()
+            state["alive_in_pass_2"] = original() is not None
+        return real(quantized, scale, out_dtype)
+
+    monkeypatch.setattr(loader_utils, "_fp8_scale_grid_dequant", flaky)
+    with tempfile.TemporaryDirectory() as d:
+        _write_checkpoint(d, tensors)
+        done, skipped = loader_utils._dequantize_leftover_fp8_params(model, d, torch.bfloat16)
+    assert done == 2
+    assert state["alive_in_pass_2"] is False
+    assert torch.equal(model.experts.gate_up_proj.detach(), expected["experts.gate_up_proj"])

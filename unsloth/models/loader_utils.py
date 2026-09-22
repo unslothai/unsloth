@@ -1482,7 +1482,7 @@ def _dequantize_leftover_fp8_params(
         if not _FP8_DTYPES or variant:
             return (0, 0)
         leftover = [
-            (name, param)
+            name
             for name, param in model.named_parameters()
             if param.dtype in _FP8_DTYPES and param.ndim in (2, 3)
         ]
@@ -1497,16 +1497,22 @@ def _dequantize_leftover_fp8_params(
         for key, shard in weight_map.items():
             for suffix in _FP8_SCALE_SUFFIXES:
                 if key.endswith(suffix):
-                    scale_by_weight_key[key[: -len(suffix)]] = (key, shard)
+                    weight_key = key[: -len(suffix)]
+                    # `layer.weight_scale_inv` belongs to `layer.weight`, not to `layer`.
+                    if suffix.startswith(".weight"):
+                        weight_key += ".weight"
+                    scale_by_weight_key[weight_key] = (key, shard)
                     break
         if not scale_by_weight_key:
             return (0, 0)
         # Live modules by checkpoint name, so the VLM key remappings resolve the same way as the dropped-scale repair.
         module_by_name = dict(model.named_modules())
+        # Names only from here on: a reference to the fp8 Parameter kept past pass 1 would hold
+        # its device bytes through the OOM fallback that exists to free them.
         params_by_module = {}
-        for name, param in leftover:
+        for name in leftover:
             module_name, _, attr = name.rpartition(".")
-            params_by_module.setdefault(module_name, []).append((attr, param))
+            params_by_module.setdefault(module_name, []).append(attr)
 
         # Checkpoint module name -> live module, for the modules that still hold fp8.
         target_of_ckpt = {}
