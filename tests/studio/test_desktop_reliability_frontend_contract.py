@@ -2567,9 +2567,9 @@ def test_the_sidebar_action_geometry_still_follows_the_ui_scale():
                 source,
             )
         )
-        assert scaled == expected, (
-            f"index.css states {scaled} scaled `{prop}: {length}`, not {expected}"
-        )
+        assert (
+            scaled == expected
+        ), f"index.css states {scaled} scaled `{prop}: {length}`, not {expected}"
         assert not re.search(
             rf"(?<![\w-]){re.escape(prop)}:\s*{re.escape(length)}\s*;", source
         ), f"index.css has a bare `{prop}: {length}`, which stays put while the gutter scales"
