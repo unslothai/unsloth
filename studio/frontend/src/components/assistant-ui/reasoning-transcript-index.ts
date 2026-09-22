@@ -36,6 +36,7 @@ export type ReasoningFragment = {
   last: boolean;
   code?: {
     source: string;
+    incomplete: boolean;
     language: string | null;
     lines: readonly ReasoningCodeLine[];
   };
@@ -53,6 +54,7 @@ type Block = {
   fence?: {
     bodyStart: number;
     bodyEnd: number;
+    incomplete: boolean;
     indent: number;
     language: string | null;
     index?: ReasoningCodeIndex;
@@ -341,6 +343,7 @@ class DocumentIndex {
           fence: {
             bodyStart: this.fence.bodyStart - this.offset,
             bodyEnd: 0,
+            incomplete: true,
             indent: /^ */.exec(source.slice(this.offset))![0].length,
             language: markdownBlockFallback(
               source.slice(this.offset, this.fence.bodyStart),
@@ -351,6 +354,7 @@ class DocumentIndex {
         block.text = source.slice(this.offset, block.end);
         block.fence!.bodyEnd =
           (this.fence.closeStart ?? block.end) - this.offset;
+        block.fence!.incomplete = this.fence.closeStart === undefined;
         if (end === null) {
           pending.push(block);
           break;
@@ -488,39 +492,22 @@ function fragmentsOf(
   document: number,
   generation: number,
 ): ReasoningFragment[] {
-  const fallback = markdownBlockFallback(
-    block.prefix ? block.prefix + block.text : block.text,
-  );
   const key = `${document}:${generation}:${block.start}`;
-  if (
-    !fallback.fenced ||
-    ((fallback.language === "mermaid" || fallback.language === "svg") &&
-      block.text.length <= REASONING_FRAGMENT_CHARACTERS)
-  ) {
-    return [
-      {
-        key,
-        document,
-        start: block.start,
-        end: block.end,
-        text: block.text,
-        renderText: block.prefix ? block.prefix + block.text : undefined,
-        listContinuationDepth: block.listContinuationDepth,
-        tableContinuation: block.tableContinuation,
-        hidden: block.hidden,
-        first: !block.continued,
-        last: true,
-      },
-    ];
-  }
-  return new ReasoningCodeIndex({
-    bodyStart: 0,
-    indent: 0,
-    language: fallback.language,
-    key,
-    document,
-    start: block.start,
-  }).update(fallback.text, fallback.text.length);
+  return [
+    {
+      key,
+      document,
+      start: block.start,
+      end: block.end,
+      text: block.text,
+      renderText: block.prefix ? block.prefix + block.text : undefined,
+      listContinuationDepth: block.listContinuationDepth,
+      tableContinuation: block.tableContinuation,
+      hidden: block.hidden,
+      first: !block.continued,
+      last: true,
+    },
+  ];
 }
 
 /** Stored Markdown documents never share fence or paragraph state. */
@@ -542,12 +529,10 @@ export class ReasoningTranscriptIndex {
       const index = (this.documents[document] ??= new DocumentIndex());
       index.update(source);
       return index.blocks.flatMap((block) => {
+        // Bounded fences retain the existing previews, artifact settings, and actions.
         if (
           block.fence &&
-          !(
-            (block.fence.language === "mermaid" || block.fence.language === "svg") &&
-            block.text.length <= REASONING_FRAGMENT_CHARACTERS
-          )
+          block.text.length > REASONING_FRAGMENT_CHARACTERS
         ) {
           const fence = block.fence;
           fence.index ??= new ReasoningCodeIndex({
@@ -558,7 +543,7 @@ export class ReasoningTranscriptIndex {
             document,
             start: block.start,
           });
-          return fence.index.update(block.text, fence.bodyEnd);
+          return fence.index.update(block.text, fence.bodyEnd, fence.incomplete);
         }
         let cached = this.fragments.get(block);
         if (

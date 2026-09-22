@@ -24,7 +24,7 @@ export class ReasoningCodeIndex {
   private line = 0;
   private column = 0;
   private committedSource = "";
-  private context = { source: "" };
+  private context = { source: "", incomplete: true };
   private options: Options;
   private previousText = "";
   private previousEnd = -1;
@@ -35,7 +35,8 @@ export class ReasoningCodeIndex {
     this.cursor = options.bodyStart;
   }
 
-  update(text: string, bodyEnd: number): ReasoningFragment[] {
+  update(text: string, bodyEnd: number, incomplete: boolean): ReasoningFragment[] {
+    this.context.incomplete = incomplete;
     if (text === this.previousText && bodyEnd === this.previousEnd)
       return this.result;
     this.previousText = text;
@@ -74,6 +75,9 @@ export class ReasoningCodeIndex {
         code: {
           get source() {
             return context.source;
+          },
+          get incomplete() {
+            return context.incomplete;
           },
           language: this.options.language,
           lines: group,

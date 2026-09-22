@@ -195,7 +195,7 @@ function CodeGroup({
     >
       {first.first && (
         <CodeBlockActions
-          disabled={streaming}
+          disabled={streaming && code.incomplete}
           language={code.language}
           source={code.source}
         />

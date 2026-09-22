@@ -96,8 +96,10 @@ test("incremental fence text matches Markdown indentation, CRLF, and closing sem
       const part = source.slice(0, end);
       const expected = fromMarkdown(part).children[0];
       const rows = index.update([part]);
+      const bounded = fromMarkdown(rows[0].text).children[0];
       assert.equal(
-        rows[0].code!.source,
+        rows[0].code?.source ??
+          (bounded.type === "code" ? bounded.value.replace(/\r\n/g, "\n") : ""),
         expected.type === "code"
           ? expected.value.replace(/\r\n/g, "\n")
           : "not code",
@@ -124,12 +126,42 @@ test("bounded mermaid fences retain their specialized renderer while streaming",
 });
 
 test("bounded SVG fences retain the existing sanitized preview renderer", () => {
-  const svg = '```svg\n<svg xmlns="http://www.w3.org/2000/svg"><circle r="10"/></svg>\n```';
+  for (const language of ["svg", "SVG", "xml", "html"]) {
+    const svg = `\`\`\`${language}\n<svg xmlns="http://www.w3.org/2000/svg"><circle r="10"/></svg>\n\`\`\``;
+    const rows = new ReasoningTranscriptIndex().update([
+      "Earlier thought.\n\n".repeat(1000) + svg,
+    ]);
+    assert.equal(rows.at(-1)!.code, undefined);
+    assert.equal(rows.at(-1)!.text, svg);
+  }
+});
+
+test("bounded HTML documents retain the established artifact renderer", () => {
+  const html = "```html\n<!doctype html><html><body>Game</body></html>\n```";
   const rows = new ReasoningTranscriptIndex().update([
-    "Earlier thought.\n\n".repeat(1000) + svg,
+    "Earlier thought.\n\n".repeat(1000) + html,
   ]);
   assert.equal(rows.at(-1)!.code, undefined);
-  assert.equal(rows.at(-1)!.text, svg);
+  assert.equal(rows.at(-1)!.text, html);
+});
+
+test("large fence completion follows its delimiter, not later streaming prose", () => {
+  const index = new ReasoningTranscriptIndex();
+  const open = "```js\n" + "const bird = true;\n".repeat(1000);
+  const first = index.update([open])[0];
+  assert.equal(first.code!.incomplete, true);
+  for (const [suffix, incomplete] of [
+    ["`", true],
+    ["``", true],
+    ["```", false],
+    ["```x", true],
+    ["```x\n```", false],
+    ["```x\n```\n\nLater thought", false],
+  ] as const) {
+    const rows = index.update([open + suffix]);
+    assert.equal(rows[0], first);
+    assert.equal(first.code!.incomplete, incomplete);
+  }
 });
 
 test("large tables retain headers and alignment as render-only continuation context", () => {
@@ -223,7 +255,7 @@ test("a closing delimiter split across appends cannot eat later prose", () => {
     const rows = index.update(["```js\nconst bird = true;\n" + suffix]);
     if (suffix.endsWith("After"))
       assert.ok(rows.some((row) => !row.code && row.text.includes("After")));
-    else assert.ok(rows.some((row) => row.code));
+    else assert.equal(fromMarkdown(rows[0].text).children[0].type, "code");
   }
 });
 
