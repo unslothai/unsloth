@@ -54,6 +54,13 @@ interface SettingsDialogState {
   // toast). DataTab uses it as its initial subpage, then clears it. See requestsFor
   // for how long it lives unconsumed.
   archivedRequested: ArchivedShelf | null;
+  // Set when a failure offers "View logs"; the Logs tab reads it as its initial source
+  // family, then clears it. A family rather than a source id, which is a digest of the
+  // real path the frontend cannot compute.
+  logFamilyRequested: string | null;
+  /** The exact log file the failure named, when its diagnostic carried one. Preferred over
+   *  family recency: a rolled-back switch writes a newer log than the attempt that failed. */
+  logSourcePathRequested: string | null;
   // Set when something asks for one connection's settings (the picker's Connected group gear).
   // ConnectionsTab hands it to the form, then clears it. Same lifetime as archivedRequested.
   connectionRequested: string | null;
@@ -63,6 +70,8 @@ interface SettingsDialogState {
   /** Open Connections with `providerId`'s edit form already up. */
   openConnectionSettings: (providerId: string) => void;
   consumeArchivedChatsRequest: () => void;
+  openLogs: (family?: string, sourcePath?: string | null) => void;
+  consumeLogFamilyRequest: () => void;
   consumeConnectionRequest: () => void;
   consumeScrollTarget: (target: SettingsScrollTarget) => void;
   closeDialog: () => void;
@@ -136,10 +145,30 @@ function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
         ? state.scrollTarget
         : null,
     archivedRequested: tab === "data" ? state.archivedRequested : null,
+    logFamilyRequested: tab === "debugging" ? state.logFamilyRequested : null,
+    logSourcePathRequested:
+      tab === "debugging" ? state.logSourcePathRequested : null,
     connectionRequested:
       tab === "connections" ? state.connectionRequested : null,
   };
 }
+
+/** One value identifying the log request currently pending, for a subscriber.
+ *
+ * The Logs panel needs a reason to refresh when a request ARRIVES while it is mounted:
+ * reopening the tab it is on does not remount it, and manual refresh mode rescans nothing.
+ * One derived string keeps that to a single subscription and a stable value while nothing
+ * is pending. Both fields, so a second failure in the same family naming a different log
+ * still looks different here.
+ */
+export function pendingLogRequestKey(state: {
+  logFamilyRequested: string | null;
+  logSourcePathRequested: string | null;
+}): string {
+  return `${state.logFamilyRequested ?? ""}|${state.logSourcePathRequested ?? ""}`;
+}
+
+export const NO_PENDING_LOG_REQUEST = "|";
 
 export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   open: false,
@@ -148,6 +177,8 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   opener: null,
   openerFallback: null,
   archivedRequested: null,
+  logFamilyRequested: null,
+  logSourcePathRequested: null,
   connectionRequested: null,
   openDialog: (tab, options) =>
     set((state) => {
@@ -159,6 +190,8 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
         // A caller that names a target replaces whatever was still pending.
         scrollTarget: options?.scrollTarget ?? pending.scrollTarget,
         archivedRequested: pending.archivedRequested,
+        logFamilyRequested: pending.logFamilyRequested,
+        logSourcePathRequested: pending.logSourcePathRequested,
         connectionRequested: pending.connectionRequested,
         ...focusForOpen(state, options?.focusFallback),
       };
@@ -169,6 +202,8 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       activeTab: "data",
       scrollTarget: null,
       archivedRequested: "chats",
+      logFamilyRequested: null,
+      logSourcePathRequested: null,
       connectionRequested: null,
       ...focusForOpen(state),
     })),
@@ -178,6 +213,8 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       activeTab: "data",
       scrollTarget: null,
       archivedRequested: shelf,
+      logFamilyRequested: null,
+      logSourcePathRequested: null,
       connectionRequested: null,
       ...focusForOpen(state),
     })),
@@ -187,10 +224,25 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       activeTab: "connections",
       scrollTarget: null,
       archivedRequested: null,
+      logFamilyRequested: null,
+      logSourcePathRequested: null,
       connectionRequested: providerId,
       ...focusForOpen(state),
     })),
   consumeArchivedChatsRequest: () => set({ archivedRequested: null }),
+  openLogs: (family, sourcePath) =>
+    set((state) => ({
+      open: true,
+      activeTab: "debugging",
+      scrollTarget: null,
+      archivedRequested: null,
+      logFamilyRequested: family ?? null,
+      logSourcePathRequested: sourcePath ?? null,
+      connectionRequested: null,
+      ...focusForOpen(state),
+    })),
+  consumeLogFamilyRequest: () =>
+    set({ logFamilyRequested: null, logSourcePathRequested: null }),
   consumeConnectionRequest: () => set({ connectionRequested: null }),
   consumeScrollTarget: (target) =>
     set((state) => ({
@@ -204,6 +256,8 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       open: false,
       scrollTarget: null,
       archivedRequested: null,
+      logFamilyRequested: null,
+      logSourcePathRequested: null,
       connectionRequested: null,
     }),
   setActiveTab: (tab) => {

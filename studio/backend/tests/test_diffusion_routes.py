@@ -382,6 +382,9 @@ def test_generate_progress_route_logs_backend_snapshot(client, monkeypatch):
                 "total_steps": 0,
                 "fraction": 0.0,
                 "eta_seconds": None,
+                # Classified before it is logged, so engine text with its local paths never
+                # reaches the log. None on an idle poll that named no attempt.
+                "error": None,
             },
         )
     ]

@@ -36,6 +36,11 @@ import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
 import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import {
+  failureLogPath,
+  loadFailureLogFamily,
+  viewLogsAction,
+} from "@/features/settings/lib/view-logs-action";
+import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
@@ -1261,6 +1266,16 @@ export function useChatModelRuntime() {
           hfToken = preparedToken.token;
         }
 
+        // Whether THIS load's /api/inference/load was actually SENT. A load can fail before
+        // that -- a token prompt the user declines, an abort, a guard in the preflight above
+        // -- and the backend then has nothing about it in any log, so offering "View logs"
+        // there opens an unrelated current log and points at a false diagnosis.
+        //
+        // The TARGET request only. The rollback load that follows a failed switch is a
+        // different request, and marking this on its behalf let the target's error borrow
+        // the rollback's log, which is a log of a load that SUCCEEDED.
+        let loadRequestIssued = false;
+
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           let previousWasUnloaded = false;
@@ -1876,6 +1891,13 @@ export function useChatModelRuntime() {
               force_cancel_active: forceCancelActive,
 
               force_reload: forceReload,
+            }, {
+              // The true send boundary. loadModel does its own token preparation and abort
+              // check first, so a flag set before this call is still set when that inner
+              // prompt is declined and the backend received nothing.
+              onRequestStart: () => {
+                loadRequestIssued = true;
+              },
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
@@ -2725,12 +2747,36 @@ export function useChatModelRuntime() {
           if (!abortCtrl.signal.aborted) {
             const message =
               err instanceof Error ? err.message : "Failed to load model";
+            // The backend's diagnostic (summary, runner tail, log path) arrived intact
+            // and was shown as an 8s toast TITLE: a wall of prose with no way back to it.
+            // First line as the title, the rest as the description, plus a log action.
+            const [summary, ...rest] = message.split("\n");
+            const detail = rest.join("\n").trim();
+            // The path the diagnostic names answers both halves: it pins the exact
+            // attempt even when a rollback load lands after it, and its ABSENCE says no
+            // runner of this attempt's ever wrote one (a Transformers or MLX load, or a
+            // failure before the launch), whose reason is in the current server log.
+            const runnerLogPath = failureLogPath(message);
+            // A named log pins the attempt, so it is evidence on its own; without one, the
+            // request having been sent is what says the backend could have logged anything
+            // at all.
+            const logsAction =
+              runnerLogPath || loadRequestIssued
+                ? viewLogsAction(
+                    loadFailureLogFamily(isGguf, isDiffusion, runnerLogPath),
+                    runnerLogPath,
+                  )
+                : undefined;
             if (loadToastDismissedRef.current) {
-              toast.error(message);
+              toast.error(summary, {
+                description: detail || undefined,
+                action: logsAction,
+              });
             } else {
-              toast.error(message, {
+              toast.error(summary, {
                 id: toastId,
-                description: undefined,
+                description: detail || undefined,
+                action: logsAction,
                 cancel: undefined,
                 classNames: undefined,
                 closeButton: true,

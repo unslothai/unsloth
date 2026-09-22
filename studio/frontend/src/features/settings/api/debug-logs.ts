@@ -29,6 +29,9 @@ export interface DebugLogSource {
 export interface DebugLogSources {
   sources: DebugLogSource[];
   defaultSourceId: string | null;
+  /** The source a diagnostic's own path names, canonicalised by the backend. Null when no
+   * path was sent, when it matched nothing, or on a backend older than this field. */
+  matchedSourceId: string | null;
   fileLoggingDisabled: boolean;
   /** Where the logs live. Null on a backend older than this field. */
   logRoot: string | null;
@@ -52,8 +55,15 @@ export interface DebugLogPage {
 
 export async function loadDebugLogSources(
   signal?: AbortSignal,
+  diagnosticPath?: string | null,
 ): Promise<DebugLogSources> {
-  const response = await authFetch("/api/settings/debug/logs/sources", {
+  // Matched server-side on purpose: the runner reports whatever spelling
+  // UNSLOTH_STUDIO_HOME gave it (a literal "~", a relative root) while the listing reports a
+  // realpath, so comparing the two here would miss the very file the diagnostic named.
+  const query = diagnosticPath
+    ? `?diagnostic_path=${encodeURIComponent(diagnosticPath)}`
+    : "";
+  const response = await authFetch(`/api/settings/debug/logs/sources${query}`, {
     signal,
   });
   if (!response.ok) {
@@ -73,6 +83,7 @@ export async function loadDebugLogSources(
       isCurrent: Boolean(source.is_current),
     })),
     defaultSourceId: body.default_source_id ?? null,
+    matchedSourceId: body.matched_source_id ?? null,
     fileLoggingDisabled: Boolean(body.file_logging_disabled),
     logRoot: body.log_root ?? null,
   };
@@ -156,7 +167,8 @@ const DESKTOP_STATUS_PATTERN = /^Download failed with status (\d{3})\./;
 // session (per-account isolation, shared installs). No request is made, so
 // there is no status: the command returns this exact sentence (`LOGIN_REQUIRED`
 // in native_file_dialogs.rs). Keep the two in step.
-const DESKTOP_LOGIN_REQUIRED = "Log export requires a signed-in Unsloth session.";
+const DESKTOP_LOGIN_REQUIRED =
+  "Log export requires a signed-in Unsloth session.";
 
 function desktopExportError(error: unknown): LogExportError {
   const message =
@@ -274,7 +286,8 @@ export async function openLogsFolder(
   // simply wrong under a custom home -- which is also the case where there may
   // be no readable log to take a path from, so neither of the first two can be
   // dropped in favour of the other.
-  const directory = (realpath ? parentDirectory(realpath) : null) ?? logRoot ?? null;
+  const directory =
+    (realpath ? parentDirectory(realpath) : null) ?? logRoot ?? null;
   if (directory) {
     await invoke("open_models_dir", { path: directory });
     return;

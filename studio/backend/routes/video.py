@@ -543,7 +543,7 @@ async def generate_video(
     when it is not the resident one."""
     from core.inference.gpu_arbiter import VIDEO
     from core.inference.media_auto_switch import maybe_auto_switch_media_model
-    from core.inference.video import get_video_backend
+    from core.inference.video import get_video_backend, video_failure_detail
     from core.inference.video_families import (
         VIDEO_GENERATION_BUSY_MSG,
         VIDEO_MODEL_CHANGED_MSG,
@@ -662,7 +662,9 @@ async def generate_video(
             ):
                 raise HTTPException(status_code = 409, detail = msg)
             logger.error("video.generate_failed: %s", exc, exc_info = True)
-            raise HTTPException(status_code = 500, detail = "Video generation failed.")
+            # Same classifier as the worker path, so a synchronous refusal and an async one
+            # give the caller the same reason rather than differing by which one caught it.
+            raise HTTPException(status_code = 500, detail = video_failure_detail(exc))
         break
 
     _note_generation_account()

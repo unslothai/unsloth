@@ -1307,6 +1307,49 @@ def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseExc
         pass
 
 
+VIDEO_GENERATION_FAILED_MSG = "Video generation failed."
+
+# Fixed text only, exactly as the image classifier in routes/inference.py: the engine's own
+# message can carry local paths and argv, so the CLASS of failure is named instead of echoed.
+_NATIVE_CRASH_NEEDLES = ("process exited", "ggml_abort", "signal", "connection lost", "worker died")
+
+
+def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, Any]] = None) -> str:
+    """A user-facing reason for a failed generation, or the bare fallback.
+
+    The reason was thrown away here: the exception was logged and the client was told only
+    "Video generation failed.", which is the report this exists to answer. #8233 already
+    works out the OOM-under-math-SDPA diagnosis for the log, so this reuses that rather than
+    matching on strings a second time.
+
+    Never raises: classifying a failure must not replace it with a different one."""
+    try:
+        if _is_out_of_memory(exc):
+            # The #8225 shape: the score matrix is quadratic in the token count, so the fix is
+            # fewer tokens rather than a smaller checkpoint. Only when the run was on NATIVE
+            # SDPA, for the same reason the log-side check is gated -- an explicit kernel means
+            # torch's dispatch is not what ran, and probing it would answer about other code.
+            if (
+                request_shape is not None
+                and request_shape.get("attention_backend") is None
+                and sdpa_math_only(_probe_target(request_shape))
+            ):
+                return f"{VIDEO_GENERATION_FAILED_MSG} {SDPA_MATH_ONLY_MESSAGE}"
+            return (
+                f"{VIDEO_GENERATION_FAILED_MSG} The device ran out of memory. Try a smaller "
+                "resolution, fewer frames, or fewer steps."
+            )
+        text = str(exc).lower()
+        if any(needle in text for needle in _NATIVE_CRASH_NEEDLES):
+            return (
+                f"{VIDEO_GENERATION_FAILED_MSG} The renderer stopped unexpectedly. See the "
+                "server log in Settings > Logs for its output."
+            )
+    except Exception:  # noqa: BLE001 -- diagnostics never mask the real failure
+        pass
+    return VIDEO_GENERATION_FAILED_MSG
+
+
 def _is_out_of_memory(exc: BaseException) -> bool:
     """Whether ``exc`` is an allocator failure, by name and text rather than by class: torch
     raises ``torch.OutOfMemoryError`` on CUDA and a plain RuntimeError on some backends."""
@@ -1354,6 +1397,8 @@ class VideoBackend:
         self._teardown_waiters = 0
         # Generation progress, written by the step callback / phase transitions.
         self._gen: dict[str, Any] = {"active": False}
+        # The resolved shape of the run in flight, for classifying its failure.
+        self._last_request_shape: Optional[dict[str, Any]] = None
         # True from begin_generate() until its worker records a terminal state, so a second call is refused while it
         # runs.
         self._generate_job_active = False
@@ -5518,6 +5563,9 @@ class VideoBackend:
                     "total": 0,
                     "eta_seconds": None,
                 }
+                # Cleared per run: a failure before the resolved shape exists must not be
+                # classified against the PREVIOUS generation's resolution and frame count.
+                self._last_request_shape = None
                 break
         worker = account_thread(
             # The token and the /v1/videos job id ride on the target rather than in kwargs: those kwargs are also a
@@ -5552,6 +5600,8 @@ class VideoBackend:
                 job_token = job_token,
                 cancel_event = cancel,
                 error = "Video generation could not start.",
+                # Nothing ran, so nothing was logged for it here.
+                error_logged = False,
             )
             raise
         # What this run reserved, read off the same state the lock committed. A caller that describes the job from an
@@ -5632,26 +5682,39 @@ class VideoBackend:
         try:
             result = self.generate(cancel_event = cancel_event, **gen_kwargs)
         except ValueError as exc:
+            # Bad client input: reported with its own reason, deliberately never logged.
             _record_outcome(str(exc))
             self._finish_generate_job(
-                job_token = job_token, cancel_event = cancel_event, error = str(exc)
+                job_token = job_token,
+                cancel_event = cancel_event,
+                error = str(exc),
+                error_logged = False,
             )
             return
         except RuntimeError as exc:
             msg = str(exc)
-            if msg not in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG):
+            client_state = msg in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG)
+            if not client_state:
                 logger.error("video.generate_failed: %s", exc, exc_info = True)
-                msg = "Video generation failed."
+                msg = video_failure_detail(exc, self._last_request_shape)
             _record_outcome(msg)
-            self._finish_generate_job(job_token = job_token, cancel_event = cancel_event, error = msg)
-            return
-        except Exception as exc:  # noqa: BLE001 -- worker thread: never propagate
-            logger.error("video.generate_failed: %s", exc, exc_info = True)
-            _record_outcome("Video generation failed.")
             self._finish_generate_job(
                 job_token = job_token,
                 cancel_event = cancel_event,
-                error = "Video generation failed.",
+                error = msg,
+                error_logged = not client_state,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 -- worker thread: never propagate
+            logger.error("video.generate_failed: %s", exc, exc_info = True)
+            # The classified reason is what the job records and what the client is told, so the
+            # two agree rather than the outcome keeping the bare fallback.
+            detail = video_failure_detail(exc, self._last_request_shape)
+            _record_outcome(detail)
+            self._finish_generate_job(
+                job_token = job_token,
+                cancel_event = cancel_event,
+                error = detail,
             )
             return
 
@@ -5717,6 +5780,7 @@ class VideoBackend:
         cancel_event: Optional[threading.Event] = None,
         video: Optional[dict] = None,
         error: Optional[str] = None,
+        error_logged: bool = True,
         total: int = 0,
     ) -> None:
         """Record a job's terminal state as one atomic swap. The terminal dict
@@ -5744,6 +5808,10 @@ class VideoBackend:
                     "active": False,
                     "phase": "failed",
                     "error": error,
+                    # Said rather than inferred from the text: a client-input failure is
+                    # answered with its reason and never logged, so a page offering
+                    # "View logs" off the message alone opened an unrelated current log.
+                    "error_logged": error_logged,
                     "step": 0,
                     "total": 0,
                     "eta_seconds": None,
@@ -5999,6 +6067,10 @@ class VideoBackend:
                     "offload": state.offload_policy,
                     "attention_backend": state.attention_backend,
                 }
+                # Kept on the backend so the worker that reports the failure to the client can
+                # classify it too. _run_generate catches outside this frame, so without this the
+                # user-facing message loses the OOM-under-math-SDPA diagnosis the log already has.
+                self._last_request_shape = request_shape
 
                 pipe = state.pipe
                 call_params = inspect.signature(pipe.__call__).parameters

@@ -175,7 +175,14 @@ import {
 } from "./lib/generation-stop";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
+import {
+  generationFailureForAttempt,
+  generationFailureWasLogged,
+  retainedFailureWasLogged,
+  newGenerationAttemptId,
+} from "./lib/generation-failure";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
+import { viewLogsAction } from "@/features/settings/lib/view-logs-action";
 import {
   TrainBaseSelector,
   type TrainFamilyOption,
@@ -481,6 +488,10 @@ const SETTLE_MAX_FAILS = 5; // consecutive progress failures before calling the 
 async function settleLostGeneration(
   isCurrent: () => boolean,
   baseline: NewRecordProbeBaseline,
+  // This attempt's own id, as sent with the POST: a retained reason is only this
+  // attempt's if it carries the same id. Without the match a failure that happened
+  // elsewhere is reported and the gallery probe that would have said so is skipped.
+  attemptId: string | null,
 ): Promise<void> {
   const start = Date.now();
   let fails = 0;
@@ -489,15 +500,34 @@ async function settleLostGeneration(
     await new Promise((r) => setTimeout(r, SETTLE_POLL_MS));
     if (!isCurrent()) return;
     let idle = false;
+    let reported: string | null = null;
+    // Whether that reason reached a log, read from the SAME poll: the classified message
+    // cannot say, and the catch at the call site decides whether to offer Logs.
+    let reportedWasLogged = true;
     try {
-      const p = await getGenerateProgress();
+      // Named, so the answer is about THIS generation: the engine's retained slot holds
+      // only the last run, and a queued client can start one before this poll comes round.
+      const p = await getGenerateProgress(attemptId);
       fails = 0;
+      reported = generationFailureForAttempt(p, attemptId);
+      reportedWasLogged = retainedFailureWasLogged(p);
       if (p.active) sawActive = true;
       else idle = true;
     } catch {
       fails += 1;
       if (fails >= SETTLE_MAX_FAILS) throw new Error("Lost connection to the image server.");
     }
+    // Outside the catch, so a reported reason is not counted as a transport failure. A
+    // run that failed after its POST was lost goes active-to-idle exactly like one that
+    // finished, so returning here read as success and could advance a batch past an
+    // output that never arrived. Already classified by the backend.
+    if (reported)
+      // The flag rides along, since the message cannot carry it: classification puts a
+      // client-input failure behind the same prefix as an internal one, and the catch
+      // below decides whether to offer Logs.
+      throw Object.assign(new Error(reported), {
+        errorLogged: reportedWasLogged,
+      });
     if (!idle) continue;
     if (sawActive) return;
     // Idle on the very first look: the run may have finished or never started, so a gallery
@@ -522,6 +552,53 @@ async function settleLostGeneration(
   // Out of budget with the run still active: returning would report success and start the next
   // run against a busy backend.
   throw new Error("Timed out waiting for the image generation to finish.");
+}
+
+/** The failure this page session has already put in front of the user.
+ *
+ * The backend keeps a reason until another run starts, so the idle probe answers with the
+ * same one on EVERY later mount: without this, coming back to Images replayed a failure the
+ * user had already seen, once per navigation. Module scope so it survives a remount, and
+ * deliberately lost on RELOAD, which is the case the retained reason exists for. One slot,
+ * because the progress snapshot attributes at most one run at a time.
+ */
+let surfacedGenerateFailure: string | null = null;
+
+/** The attempt if there is one, else the reason itself.
+ *
+ * Not every failure carries an attempt: the OpenAI images route posts without one, so its
+ * retained reason comes back unattributed and an id-keyed guard could never match it. The
+ * text is what the user is being shown, so showing it once per page session is the same
+ * promise made in the same terms.
+ */
+function generateFailureKey(attemptId: string | null, reason: string): string {
+  return attemptId ? `attempt:${attemptId}` : `reason:${reason}`;
+}
+
+function markGenerateFailureSurfaced(key: string): void {
+  surfacedGenerateFailure = key;
+}
+
+/** Toast a failure the backend RETAINED, for a run this page did not post itself.
+ *
+ * A reload during a generation leaves no POST to reject and no settling loop, so the
+ * retained reason is the only channel left; an idle answer carrying one is a failure, not a
+ * finished run. The action is offered only where the server logged it, as everywhere else.
+ * Once per attempt: the run that posted it reports its own failure, and a remount must not
+ * repeat either that or an earlier replay.
+ */
+function reportResumedGenerateFailure(progress: DiffusionGenerateProgress): void {
+  const reason = progress.error;
+  if (!reason) return;
+  if (!shouldReportGenerateError({ message: reason, stopRequested: false })) return;
+  const key = generateFailureKey(progress.generation_attempt ?? null, reason);
+  if (key === surfacedGenerateFailure) return;
+  markGenerateFailureSurfaced(key);
+  toast.error(reason, {
+    action: retainedFailureWasLogged(progress)
+      ? viewLogsAction("server")
+      : undefined,
+  });
 }
 
 // The chat tab model-load toast styling, reused verbatim so the diffusion load toast is identical.
@@ -2269,6 +2346,10 @@ export function ImagesPage({
           if (!isMounted.current) return;
           setBusy(null);
           setGenStep(null);
+          // A run resumed after a reload has no POST to reject and no settling loop, so the
+          // retained reason is the ONLY channel left: without this the page refreshed the
+          // gallery as if it had finished, which is what going idle also looks like.
+          reportResumedGenerateFailure(p);
           // Re-fetch the first page to merge images the finished run saved, and resync status.
           void loadGallery();
           void refreshStatus();
@@ -2314,6 +2395,10 @@ export function ImagesPage({
           setBusy("generating");
           setGenStep(g);
           resumeGeneratePoll();
+        } else {
+          // The failure may have landed before this page mounted, in which case the probe
+          // is where it surfaces. Mirrors the video page's mount-time resume.
+          reportResumedGenerateFailure(g);
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
@@ -3461,6 +3546,10 @@ export function ImagesPage({
     // Every gallery id this page has seen, captured BEFORE the first POST and grown as records
     // arrive: settleLostGeneration proves a lost POST landed by finding a record outside it.
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
+    // The attempt the catch below is reporting about, since the id is minted per run inside
+    // the loop: marking it surfaced is what stops the idle probe replaying the same failure
+    // on the next mount.
+    let postedAttemptId: string | null = null;
     try {
       for (let i = 0; i < runs; i++) {
         // Stop issuing more GPU generations once the page unmounted or Stop was pressed: the backend
@@ -3480,10 +3569,15 @@ export function ImagesPage({
           galleryCache.hasMore,
           knownIds,
         );
+        // Minted here so it describes exactly one post: a retained reason carries the id
+        // of the run it came from, and a post that never arrived started nothing.
+        const attemptId = newGenerationAttemptId();
+        postedAttemptId = attemptId;
         let res: DiffusionGenerateResponse;
         try {
           res = await generateDiffusionImage({
             prompt: prompt.trim(),
+            attempt_id: attemptId,
             // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
             negative_prompt: guidance > 0 ? negativePrompt.trim() || undefined : undefined,
             width: w,
@@ -3527,7 +3621,11 @@ export function ImagesPage({
           if (!(err instanceof GenerateResponseLostError)) throw err;
           // A record outside the baseline proves the request reached the backend. Taken per attempt, so
           // it reflects what the client could see when THIS post went out.
-          await settleLostGeneration(() => isMounted.current, probeBaseline);
+          await settleLostGeneration(
+            () => isMounted.current,
+            probeBaseline,
+            attemptId,
+          );
           if (!isMounted.current) break;
           await loadGallery();
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in
@@ -3558,8 +3656,23 @@ export function ImagesPage({
           message: msg,
           stopRequested: cancelRequested.current && cancelAcked.current,
         })
-      )
-        toast.error(msg);
+      ) {
+        // This run's failure is now in front of the user, so the reason the backend retains
+        // for it must not be toasted again by the next mount's idle probe.
+        markGenerateFailureSurfaced(generateFailureKey(postedAttemptId, msg));
+        toast.error(msg, {
+          // Only when the server logged it. A settled failure says so explicitly (the
+          // retained reason is already classified, so its text cannot); anything else is
+          // judged by the classified prefix, which the unlogged 400s do not carry.
+          action: (
+            typeof (err as { errorLogged?: boolean }).errorLogged === "boolean"
+              ? (err as { errorLogged?: boolean }).errorLogged
+              : generationFailureWasLogged(msg)
+          )
+            ? viewLogsAction("server")
+            : undefined,
+        });
+      }
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;

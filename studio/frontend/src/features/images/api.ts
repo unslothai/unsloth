@@ -68,6 +68,19 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
+  /** Why the LAST generation failed, when one did and is no longer running.
+   *
+   * The only channel left when a POST is lost past the proxy window: without it an idle
+   * read of a failed run cannot be told from a finished one. Classified by the backend,
+   * so it is safe to show; absent on an older one. */
+  error?: string | null;
+  /** Which ATTEMPT the `error` belongs to: the id that request carried, sent only beside
+   * a reason. A lost POST that never arrived started no run, so nothing carries its id,
+   * and a later run may be another client's. Only an exact match is this attempt's. */
+  generation_attempt?: string | null;
+  // Whether that reason reached the server log. False for a client-input failure the
+  // route answers without logging, which no log can explain.
+  error_logged?: boolean | null;
 }
 
 export interface DiffusionLoadProgress {
@@ -118,6 +131,8 @@ export interface DiffusionLoadRequest {
 
 export interface DiffusionGenerateRequest {
   prompt: string;
+  /** This attempt's own id, echoed back beside a retained failure. */
+  attempt_id?: string;
   negative_prompt?: string;
   width?: number;
   height?: number;
@@ -267,8 +282,16 @@ export async function getDiffusionLoadProgress(
   );
 }
 
-export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> {
-  return parseJson(await authFetch("/api/inference/images/generate-progress"));
+export async function getGenerateProgress(
+  /** Ask about this attempt's own generation rather than the last one to run. */
+  attemptId?: string | null,
+): Promise<DiffusionGenerateProgress> {
+  const query = attemptId
+    ? `?attempt_id=${encodeURIComponent(attemptId)}`
+    : "";
+  return parseJson(
+    await authFetch(`/api/inference/images/generate-progress${query}`),
+  );
 }
 
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {

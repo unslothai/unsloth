@@ -153,6 +153,11 @@ import {
 } from "./reference-image-crop";
 import { ReferenceImageEditor } from "./reference-image-editor";
 import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
+import { viewLogsAction } from "@/features/settings/lib/view-logs-action";
+
+// The prefix every classified video failure carries, and every branch that produces one
+// calls logger.error first. Mirrors GENERATE_FAILURE_LOGGED_PREFIX on the image side.
+const VIDEO_FAILURE_LOGGED_PREFIX = "Video generation failed.";
 import {
   defaultReferenceVideoTrim,
   H3_REFERENCE_MAX_SECONDS,
@@ -2263,7 +2268,14 @@ function VideoGenerator({
           } else if (p.phase === "failed") {
             const msg = p.error || "Video generation failed";
             // The user's own Cancel surfaces as the backend's cancelled sentinel; not an error.
-            if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
+            if (!msg.toLowerCase().includes("cancelled"))
+              toast.error(msg, {
+                // Only where the log can hold the failure: a client-input one is answered
+                // with its reason and never logged, and opening Logs then shows an
+                // unrelated current log.
+                action:
+                  p.error_logged === false ? undefined : viewLogsAction("server"),
+              });
           }
           return;
         }
@@ -2333,7 +2345,12 @@ function VideoGenerator({
           // The other terminal phase, kept only until the next job: without this a reload after a failed
           // generation shows an idle page and loses the error.
           const msg = g.error || "Video generation failed";
-          if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
+          if (!msg.toLowerCase().includes("cancelled"))
+            toast.error(msg, {
+              // Same gate as the live poll above.
+              action:
+                g.error_logged === false ? undefined : viewLogsAction("server"),
+            });
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
@@ -3207,7 +3224,16 @@ function VideoGenerator({
       });
     } catch (err) {
       if (!isMounted.current) return;
-      toast.error(err instanceof Error ? err.message : "Video generation failed");
+      // A refusal the backend CLASSIFIED carries the fallback prefix, and every branch that
+      // produces one logs the exception first; a 400 answers with the raw validation text
+      // and logs nothing. Polling never starts for either, so this is the only place the
+      // action can be offered for a synchronous failure.
+      const refusal = err instanceof Error ? err.message : "Video generation failed";
+      toast.error(refusal, {
+        action: refusal.startsWith(VIDEO_FAILURE_LOGGED_PREFIX)
+          ? viewLogsAction("server")
+          : undefined,
+      });
       setBusy(null);
       setGenStep(null);
       // The refusal can be "No video model is loaded": re-read rather than leave Generate enabled

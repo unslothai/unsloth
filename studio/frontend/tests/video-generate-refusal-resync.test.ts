@@ -22,9 +22,13 @@ const RESYNC = VIDEO.slice(
 );
 
 test("a refused generation re-reads the model status", () => {
+  // Anchored on the refusal the catch builds rather than on the toast call, which now
+  // carries a logs action for a refusal the backend classified and logged.
   const generateCatch = VIDEO.slice(
-    VIDEO.indexOf('toast.error(err instanceof Error ? err.message : "Video generation failed")'),
-  ).slice(0, 400);
+    VIDEO.indexOf(
+      'const refusal = err instanceof Error ? err.message : "Video generation failed";',
+    ),
+  ).slice(0, 600);
   assert.match(generateCatch, /void resyncAfterGenerateRefusal\(\);/);
 });
 

@@ -70,6 +70,11 @@ import {
   withRequestTimeout,
 } from "../lib/debug-log-buffer";
 import { isAbort, isLogSourceGone } from "../lib/debug-log-error";
+import {
+  NO_PENDING_LOG_REQUEST,
+  pendingLogRequestKey,
+  useSettingsDialogStore,
+} from "../stores/settings-dialog-store";
 
 const MODES: RefreshMode[] = ["live", "3s", "manual"];
 
@@ -189,17 +194,54 @@ export function DebuggingTab() {
       try {
         // Bounded like the tail read: the poll loop and its failure recovery
         // both await this, so an unanswered /sources would freeze both.
+        // Sent with the listing so the backend canonicalises it against the realpaths
+        // it is about to report; the spellings do not match as strings.
+        //
+        // Captured for the WHOLE fetch rather than re-read afterwards: a refresh already
+        // in flight when "View logs" is clicked would answer the new request from a
+        // listing fetched without its path, take the family's newest file, and consume
+        // the request, aborting the exact-path refresh that was about to be right.
+        const requestedFor = pendingLogRequestKey(
+          useSettingsDialogStore.getState(),
+        );
+        const pendingPath =
+          useSettingsDialogStore.getState().logSourcePathRequested;
         const result = await withRequestTimeout(
-          (signal) => loadDebugLogSources(signal),
+          (signal) => loadDebugLogSources(signal, pendingPath),
           REQUEST_TIMEOUT_MS,
           options.signal,
         );
         setSources(result.sources);
         setLogRoot(result.logRoot);
+        // Prefer the exact file the diagnostic named: a failed switch is rolled back by
+        // performLoad, and the rollback writes a NEWER log in the same family, so
+        // recency alone opens the attempt that succeeded. Recency stays the fallback
+        // when there is no path, or it names a file no longer listed.
+        const dialog = useSettingsDialogStore.getState();
+        const requested = dialog.logFamilyRequested;
+        const byPath = result.matchedSourceId
+          ? result.sources.find(
+              (source) => source.id === result.matchedSourceId,
+            )
+          : undefined;
+        const fromFailure =
+          byPath ??
+          (requested
+            ? result.sources.find((source) => source.family === requested)
+            : undefined);
+        // Only the request this fetch was made for. A newer one is left pending, so the
+        // refresh it triggered is what answers it.
+        const stillTheSameRequest =
+          pendingLogRequestKey(dialog) === requestedFor;
+        if (fromFailure && stillTheSameRequest)
+          useSettingsDialogStore.getState().consumeLogFamilyRequest();
+        if (fromFailure && !stillTheSameRequest) return;
         setSourceId((current) =>
-          options.reselect
-            ? result.defaultSourceId
-            : (current ?? result.defaultSourceId),
+          fromFailure
+            ? fromFailure.id
+            : options.reselect
+              ? result.defaultSourceId
+              : (current ?? result.defaultSourceId),
         );
       } catch {
         // The log read reports the real reason; this just leaves the picker empty.
@@ -213,6 +255,19 @@ export function DebuggingTab() {
     void refreshSources({ signal: controller.signal });
     return () => controller.abort();
   }, [refreshSources]);
+
+  // A request that arrives while this panel is ALREADY mounted. openLogs only writes
+  // the store and reopening the current tab does not remount, so the mount effect never
+  // runs again and manual refresh mode rescans nothing: the panel sat on its previous
+  // selection indefinitely. Subscribed, so the arrival itself is
+  // what triggers the rescan that consumes it.
+  const pendingLogRequest = useSettingsDialogStore(pendingLogRequestKey);
+  useEffect(() => {
+    if (pendingLogRequest === NO_PENDING_LOG_REQUEST) return;
+    const controller = new AbortController();
+    void refreshSources({ signal: controller.signal });
+    return () => controller.abort();
+  }, [pendingLogRequest, refreshSources]);
 
   const onPollFailed = useCallback(
     async (error: unknown, signal?: AbortSignal) => {

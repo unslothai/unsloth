@@ -330,3 +330,55 @@ def test_a_live_server_session_still_wins(tmp_path, monkeypatch):
 
     chosen = debug_log_sources.resolve_source_id(debug_log_sources.default_source_id())
     assert chosen == current
+
+
+def test_a_writers_own_spelling_of_a_path_resolves_to_its_source():
+    """The failure toast carries the path llama_cpp.py printed, and only the backend can
+    match it: _swa_cache_path() builds Path(home) RAW, so the runner reports whatever
+    spelling UNSLOTH_STUDIO_HOME held, while list_sources() reports os.path.realpath().
+    """
+    path = _seed("llama-server", "llama-1765000101-port-8080.log")
+    expected = next(s for s in debug_log_sources.list_sources() if s.label == path.name).id
+    assert debug_log_sources.source_id_for_path(str(path)) == expected
+    # The realpath spelling too, which is what the listing itself reports.
+    assert debug_log_sources.source_id_for_path(os.path.realpath(path)) == expected
+
+
+def test_a_relative_spelling_resolves_to_the_same_source(monkeypatch):
+    """A relative UNSLOTH_STUDIO_HOME is supported, and makes the runner print a relative
+    path while the listing prints an absolute one. String equality misses there and the
+    viewer silently falls back to family recency -- after a rolled-back load, the NEWER log
+    of the attempt that succeeded, which is the confusion the path exists to prevent."""
+    path = _seed("llama-server", "llama-1765000102-port-8080.log")
+    expected = next(s for s in debug_log_sources.list_sources() if s.label == path.name).id
+    monkeypatch.chdir(_home())
+    relative = os.path.join("logs", "llama-server", path.name)
+    assert not os.path.isabs(relative)
+    assert relative != str(path), "the two spellings must differ for this to mean anything"
+    assert debug_log_sources.source_id_for_path(relative) == expected
+
+
+def test_an_unexpanded_home_spelling_resolves_to_the_same_source(monkeypatch, tmp_path):
+    """The case _scan_roots already documents: an unexpanded value (a systemd
+    EnvironmentFile, a dotenv) makes the runner write to a directory literally NAMED "~",
+    and print that spelling, while the listing reports the realpath of it."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "~/studio")
+    directory = tmp_path / "~" / "studio" / "logs" / "llama-server"
+    directory.mkdir(parents = True, exist_ok = True)
+    path = directory / "llama-1765000103-port-8080.log"
+    path.write_text("boom\n", encoding = "utf-8")
+
+    listed = [s for s in debug_log_sources.list_sources() if s.label == path.name]
+    assert listed, "the runner's own directory must be discoverable at all"
+    raw = os.path.join("~", "studio", "logs", "llama-server", path.name)
+    assert debug_log_sources.source_id_for_path(raw) == listed[0].id
+    assert raw != listed[0].realpath, "the spellings must differ for this to mean anything"
+
+
+def test_a_path_naming_nothing_listed_matches_nothing():
+    """Falling back to family recency is the intended behaviour for an unmatched path;
+    inventing a match would open an unrelated file as though it held the reason."""
+    _seed("llama-server", "llama-1765000104-port-8080.log")
+    for absent in ("", "   ", None, "/nowhere/llama-9.log", "/etc/passwd"):
+        assert debug_log_sources.source_id_for_path(absent) is None, absent

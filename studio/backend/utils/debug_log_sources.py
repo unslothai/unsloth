@@ -193,6 +193,41 @@ def resolve_source_id(source_id: str) -> Optional[Path]:
     return None
 
 
+def source_id_for_path(raw: Optional[str]) -> Optional[str]:
+    """The opaque id of the source a WRITER's own spelling of a path names, if any.
+
+    Writer and reader disagree about spelling, so the two cannot be compared as strings.
+    _swa_cache_path() builds Path(home) raw, so a relative or unexpanded UNSLOTH_STUDIO_HOME
+    (a systemd EnvironmentFile, a dotenv) makes the runner report `~/.../llama-<epoch>.log`
+    while list_sources() reports os.path.realpath() of the same file. String equality misses
+    there and the viewer falls back to family recency -- which after a rolled-back load is the
+    NEWER log of the attempt that succeeded, the exact confusion carrying the path was meant
+    to avoid.
+
+    Both spellings are tried, like _scan_roots does and for the same reason: expanduser looks
+    in the real home while the runner may have written to a directory literally NAMED "~".
+    _identity folds the Windows extended-length-prefix and case quirks it documents, which a
+    bare realpath comparison would still trip over.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    wanted = set()
+    for spelling in (Path(raw.strip()), Path(raw.strip()).expanduser()):
+        try:
+            wanted.add(_identity(os.path.realpath(spelling)))
+        except (OSError, ValueError, RuntimeError):
+            pass
+    if not wanted:
+        return None
+    for source in list_sources():
+        try:
+            if _identity(os.path.realpath(source.realpath)) in wanted:
+                return source.id
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def default_source_id() -> Optional[str]:
     """The active server session if we have one, else the newest log we found."""
     sources = list_sources()
