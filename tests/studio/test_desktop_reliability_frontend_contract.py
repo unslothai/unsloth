@@ -2513,35 +2513,70 @@ def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
 # stated here. Each row is a length one of those contracts measures, with how many times the
 # file states it. Unwrap one and this fails, rather than every contract downstream of it
 # passing while the layout has stopped following the interface font size.
+#
+# The variant is part of the claim, so each row carries its own. `h-[...]` and
+# `hover:h-[...]` are different guarantees, and the second one is not a fixed band at all.
 _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
-    (NAVBAR, "h", "48px", 2),
-    (IMAGES_PAGE, "h", "48px", 1),
-    (AUDIO_PAGE, "h", "48px", 1),
-    (VIDEO_PAGE, "h", "48px", 1),
-    (CHAT_PAGE, "h", "48px", 1),
-    (IMAGES_PAGE, "pt", "60px", 1),
-    (AUDIO_PAGE, "pt", "60px", 2),
-    (DIFFUSION_TRAIN_PANEL, "pt", "42px", 2),
+    (NAVBAR, "", "h", "48px", 2),
+    (IMAGES_PAGE, "", "h", "48px", 1),
+    (AUDIO_PAGE, "", "h", "48px", 1),
+    (VIDEO_PAGE, "", "h", "48px", 1),
+    (CHAT_PAGE, "", "h", "48px", 1),
+    (IMAGES_PAGE, "@[50rem]:", "pt", "60px", 1),
+    (AUDIO_PAGE, "@[50rem]:", "pt", "60px", 2),
+    (DIFFUSION_TRAIN_PANEL, "@[50rem]:", "pt", "42px", 1),
+    (DIFFUSION_TRAIN_PANEL, "", "pt", "42px", 1),
+)
+
+# Where a class may begin: the start of the string it is written in, or the space after the
+# one before it. Anchoring on "not a word character" is not enough, because `:` is not one:
+# it lets `hover:h-[...]` answer for `h-[...]`, and a height that only applies under the
+# pointer is not the fixed band any of these contracts measure.
+_CLASS_STARTS = r"(?:(?<=[\s\"'`])|^)"
+
+
+# The same blind spot in colour, and it needs the same answer. `_MIXED_TOKEN` reads a
+# gain-scaled `color-mix` back as its shorthand, so a contract asking for
+# `border-foreground/10` is satisfied by either the scaled spelling or a literal
+# `border-foreground/10` that has lost the gain and stopped responding to the contrast
+# setting. The reader cannot tell them apart by design, so the gain is stated here.
+_COLOURS_THAT_MUST_KEEP_THEIR_GAIN = (
+    (IMAGES_PAGE, "border", "--foreground", "10", "edge", 1),
 )
 
 
-def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
-    # The utility has to be the whole utility. `h` is a substring of `min-h`, and a band
-    # respelled as `min-h-[calc(48px*...)]` is no longer a fixed band at all: it may grow
-    # past the titlebar geometry these contracts measure, while a count of the substring
-    # says nothing changed.
-    for path, utility, length, expected in _LENGTHS_THAT_MUST_KEEP_THE_SCALE:
+def test_the_colours_these_contracts_read_still_carry_their_gain():
+    for path, utility, colour, amount, gain, expected in _COLOURS_THAT_MUST_KEEP_THEIR_GAIN:
         source = path.read_text(encoding = "utf-8")
-        boundary = r"(?<![\w-])"
+        scaled = (
+            f"{utility}-[color-mix(in_oklab,var({colour})_"
+            f"calc({amount}%*var(--contrast-{gain}-gain,1)),transparent)]"
+        )
+        found = len(re.findall(_CLASS_STARTS + re.escape(scaled), source))
+        assert found == expected, (
+            f"{path.name} states {found} gain-scaled {utility} {colour} at {amount}%, "
+            f"not {expected}"
+        )
+        bare = f"{utility}-{colour.removeprefix('--')}/{amount}"
+        assert not re.search(_CLASS_STARTS + re.escape(bare), source), (
+            f"{path.name} has a bare {bare}, which stops following the contrast setting"
+        )
+
+
+def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
+    for path, variant, utility, length, expected in _LENGTHS_THAT_MUST_KEEP_THE_SCALE:
+        source = path.read_text(encoding = "utf-8")
+        named = f"{variant}{utility}-{length}"
         scaled = len(
             re.findall(
-                boundary + re.escape(f"{utility}-[calc({length}*var(--ui-space-scale,1))]"),
+                _CLASS_STARTS
+                + re.escape(f"{variant}{utility}-[calc({length}*var(--ui-space-scale,1))]"),
                 source,
             )
         )
         assert (
             scaled == expected
-        ), f"{path.name} states {scaled} scaled {utility}-{length}, not {expected}"
+        ), f"{path.name} states {scaled} scaled {named}, not {expected}"
         assert not re.search(
-            boundary + re.escape(f"{utility}-[{length}]"), source
-        ), f"{path.name} has a bare {utility}-[{length}], which stays put while its text grows"
+            _CLASS_STARTS + re.escape(f"{variant}{utility}-[{length}]"), source
+        ), f"{path.name} has a bare {named}, which stays put while its text grows"
