@@ -81,9 +81,10 @@ def register_unregistered_transformer_blocks(logger: Any = None) -> tuple:
         from diffusers.hooks._helpers import TransformerBlockMetadata, TransformerBlockRegistry
     except Exception:  # noqa: BLE001 - an older diffusers has no registry to fill
         return ()
-    for (module_name, class_name), (hidden_index, encoder_index) in (
-        _UNREGISTERED_BLOCK_METADATA.items()
-    ):
+    for (module_name, class_name), (
+        hidden_index,
+        encoder_index,
+    ) in _UNREGISTERED_BLOCK_METADATA.items():
         try:
             import importlib
             block_cls = getattr(importlib.import_module(module_name), class_name, None)
