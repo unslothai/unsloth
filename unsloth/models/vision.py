@@ -1250,7 +1250,7 @@ def _required_non_text_inputs(forward):
     ]
 
 
-def _text_trainable_core(model):
+def _text_trainable_core(model, text_intent = True):
     """The module a text batch can train when the loaded wrapper's forward cannot take one.
 
     nvidia/Nemotron-3-Nano-Omni-30B-A3B wraps a complete NemotronHForCausalLM as
@@ -1265,6 +1265,11 @@ def _text_trainable_core(model):
     accepts a text batch (every transformers VLM, whose image inputs default to
     None) are returned unchanged, as is anything ambiguous.
     `UNSLOTH_KEEP_COMPOSED_WRAPPER=1` turns this off.
+
+    `text_intent` is False when the load asked for the multimodal model (a
+    vision config and no `text_only = True`): an image batch does carry those
+    inputs, so the wrapper is kept and a hint names `text_only = True` for the
+    text case, instead of silently discarding the vision tower.
     """
     if os.environ.get("UNSLOTH_KEEP_COMPOSED_WRAPPER", "0") == "1":
         return model
@@ -1273,6 +1278,13 @@ def _text_trainable_core(model):
         return model
     required = _required_non_text_inputs(forward)
     if not required:
+        return model
+    if not text_intent:
+        print(
+            f"Unsloth: `{type(model).__name__}.forward` requires {', '.join(required)}, so it "
+            "trains on multimodal batches only. Pass `text_only = True` to from_pretrained to "
+            "train its language model on text batches instead."
+        )
         return model
     try:
         from transformers import PreTrainedModel
@@ -1964,7 +1976,7 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         **kwargs,
                     )
-                model = _text_trainable_core(model)
+                model = _text_trainable_core(model, text_intent = text_only or not is_vlm_config)
                 _inherit_gradient_checkpointing_support(model)
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
                 offload_embedding = _resolve_offload_embedding(

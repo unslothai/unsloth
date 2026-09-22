@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Two gates that let a remote-code multimodal model reach its first training step.
 
 Padding-free batching adds `packed_seq_lengths` to every batch. A remote-code
@@ -260,6 +261,21 @@ def test_ambiguous_wrapper_is_left_alone():
 
     model = _Two(_Cfg())
     assert _text_trainable_core(model) is model
+
+
+def test_multimodal_intent_keeps_the_wrapper(capsys):
+    """A load that asked for the multimodal model (vision config, no text_only)
+    keeps the wrapper: an image batch carries pixel_values, and unwrapping would
+    silently drop the vision tower. The hint names text_only = True."""
+    model = _OmniWrapper(_Cfg())
+    assert _text_trainable_core(model, text_intent = False) is model
+    assert hasattr(model, "vision_model")
+    out = capsys.readouterr().out
+    assert "pixel_values" in out and "text_only = True" in out
+    # A wrapper that can take a text batch prints nothing either way.
+    vlm = _VlmWrapper(_Cfg())
+    assert _text_trainable_core(vlm, text_intent = False) is vlm
+    assert capsys.readouterr().out == ""
 
 
 def test_opt_out_env_keeps_the_wrapper(monkeypatch):

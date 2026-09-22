@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """A remote-code from_pretrained that ends with model.to(dtype) must not break a 4-bit load.
 
 microsoft/Phi-4-reasoning-vision-15B overrides from_pretrained and finishes with
