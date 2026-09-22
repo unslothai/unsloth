@@ -3253,11 +3253,59 @@ def check_triton_py_ssize_t_clean():
     )
 
 
-# transformers 5.4.0 and 5.5.x drop the bnb quant_state sidecars of composite checkpoints
-_BROKEN_PREQUANTIZED_VLM_TRANSFORMERS = ("5.4.0", "5.6.0")
+def _transformers_rescopes_submodule_prefix_renamings():
+    """Does this transformers scope a submodule's conversion mapping to where the submodule lives?
+
+    `get_model_conversion_mapping` recurses into every `PreTrainedModel` submodule and
+    merges each one's registered conversions into the parent's mapping. A submodule's
+    mapping is written against ITS OWN key space, so a renaming anchored at the start of
+    the key is meaningless once the submodule is nested, and upstream's correction
+    (transformers PR #45567) was to re-scope those by the submodule's dotted path: it
+    added a `PrefixChange` transform and a `model_prefix` argument to
+    `extract_weight_conversions_for_model`.
+
+    Asked of that API, never of a version number. A transformers without
+    `conversion_mapping` at all (4.x) has no recursion to correct, so it answers True as
+    well -- True means "this build is fine".
+
+    Upstream has spelled the scoping three ways since, so all three count: the
+    `model_prefix` argument of 5.6 to 5.9, `PrefixChange.with_submodel_prefix` over the
+    same range, and the `scope_prefix` field every transform carries from 5.10 on. Any one
+    of them present means the recursion knows where a submodule's mapping belongs; none of
+    them present is the defect. Anything unrecognisable answers True, because a warning is
+    worth nothing if it fires on builds nobody can show are broken.
+    """
+    try:
+        from transformers import conversion_mapping
+    except Exception:
+        return True
+    extract = getattr(conversion_mapping, "extract_weight_conversions_for_model", None)
+    if extract is None:
+        # No per-submodule extraction, so no recursion to correct. This is every 5.x before
+        # 5.4.0, which reads the top model's mapping and stops, and it is also the answer
+        # for any future build whose machinery we cannot recognise.
+        return True
+    try:
+        from transformers import core_model_loading
+    except Exception:
+        # Imported separately and allowed to fail: `core_model_loading` pulls in torch, and
+        # the two spellings it carries are only ever extra evidence. The signature check
+        # below is the one that has to stand on its own.
+        core_model_loading = None
+    if core_model_loading is not None:
+        transform = getattr(core_model_loading, "WeightTransform", None)
+        if transform is not None and hasattr(transform, "scope_prefix"):
+            return True
+        prefix_change = getattr(core_model_loading, "PrefixChange", None)
+        if prefix_change is not None and hasattr(prefix_change, "with_submodel_prefix"):
+            return True
+    try:
+        return "model_prefix" in inspect.signature(extract).parameters
+    except Exception:
+        return True
 
 
-def _transformers_drops_prequantized_vlm_quant_state(transformers_version = None):
+def _transformers_drops_prequantized_vlm_quant_state():
     """True when the installed transformers loses bnb-4bit quant_state on composite models.
 
     transformers 5.4.0 made `get_model_conversion_mapping` recurse into
@@ -3274,7 +3322,12 @@ def _transformers_drops_prequantized_vlm_quant_state(transformers_version = None
     quantized Linear came back with `quant_state = None`.
 
     transformers PR #45567 replaced that entry with a scoped `PrefixChange` and
-    shipped in 5.6.0, so the defect window is exactly 5.4.0 and 5.5.0 to 5.5.4.
+    shipped in 5.6.0, so among RELEASES the defect window is exactly 5.4.0 and 5.5.0
+    to 5.5.4. That window is not what this asks. It asks
+    `_transformers_rescopes_submodule_prefix_renamings`, because a version number is
+    the wrong instrument for a source install: upstream main reported `5.3.0.dev0` at
+    the commit that introduced the defect and `5.6.0.dev0` at the commit that fixed it,
+    so a version interval is wrong at both ends for anyone on git main.
     Measured on unsloth/qwen3.8-27b-unsloth-bnb-4bit: 352 of 352 quantized Linear
     modules lose quant_state on 5.4.0 and 5.5.4, and 0 of 352 on 5.2.0, 5.3.0 and
     every release from 5.6.2 to 5.17.0. Flat text-only checkpoints such as
@@ -3285,17 +3338,7 @@ def _transformers_drops_prequantized_vlm_quant_state(transformers_version = None
     so the affected families are those whose text config is one of
     `qwen3_5_text`, `qwen3_5_moe_text` or `gemma3n_text`.
     """
-    if transformers_version is None:
-        try:
-            transformers_version = importlib_version("transformers")
-        except Exception:
-            return False
-    try:
-        parsed = TrueVersion(transformers_version)
-    except Exception:
-        return False
-    low, high = _BROKEN_PREQUANTIZED_VLM_TRANSFORMERS
-    return TrueVersion(low) <= parsed < TrueVersion(high)
+    return not _transformers_rescopes_submodule_prefix_renamings()
 
 
 def check_transformers_prequantized_vlm_quant_state():
@@ -3318,12 +3361,12 @@ def check_transformers_prequantized_vlm_quant_state():
         "true",
     ):
         return
+    if not _transformers_drops_prequantized_vlm_quant_state():
+        return
     try:
         transformers_version = importlib_version("transformers")
     except Exception:
-        return
-    if not _transformers_drops_prequantized_vlm_quant_state(transformers_version):
-        return
+        transformers_version = "unknown"
 
     logger.warning(
         f"Unsloth: transformers=={transformers_version} drops the bitsandbytes "
@@ -3331,11 +3374,14 @@ def check_transformers_prequantized_vlm_quant_state():
         f"every quantized layer comes back unquantized and the first forward fails "
         f"with\n"
         f"    RuntimeError: mat1 and mat2 shapes cannot be multiplied (... and 1x...)\n"
-        f"The checkpoint is fine and must not be regenerated. This affects exactly "
-        f"transformers 5.4.0 and 5.5.0 to 5.5.4; it was introduced by transformers "
-        f"PR #44300 and fixed by PR #45567. Install transformers>=5.6.0, or fall back "
-        f"to 5.3.0 or 4.57.6. Text-only checkpoints are unaffected. Set "
-        f"UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK=1 to silence this."
+        f"The checkpoint is fine and must not be regenerated. This build scopes no "
+        f"submodule conversion mapping, which is the defect transformers PR #44300 "
+        f"introduced and PR #45567 fixed; among releases that is 5.4.0 and 5.5.0 to "
+        f"5.5.4. Move to a transformers that carries the fix, "
+        f'`pip install --no-deps "transformers>=5.6.0"` while unsloth still caps at '
+        f"5.5.0, or fall back to 5.3.0 or 4.57.6. Text-only checkpoints are "
+        f"unaffected. Set UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK=1 to silence "
+        f"this."
     )
 
 

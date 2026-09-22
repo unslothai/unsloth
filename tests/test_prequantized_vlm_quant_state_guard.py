@@ -11,15 +11,28 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Lesser General Public License for more details.
 
-"""Tests for the transformers 5.4.0 / 5.5.x pre-quantized quant_state guard.
+"""Tests for the pre-quantized quant_state guard.
 
-unsloth #9867, #10010, #10017, #10276. Those releases discard the bitsandbytes
-quant_state sidecar tensors of pre-quantized composite (multimodal) checkpoints,
-so every quantized Linear loads with ``quant_state = None`` and the first forward
-raises ``mat1 and mat2 shapes cannot be multiplied``. Measured on one B200 with
-``unsloth/qwen3.8-27b-unsloth-bnb-4bit``: 352 of 352 quantized Linear modules lose
-quant_state on 5.4.0 and 5.5.4, and 0 of 352 on 5.2.0, 5.3.0 and every release from
-5.6.2 to 5.17.0.
+unsloth #9867, #10010, #10017, #10276. transformers 5.4.0 (PR #44300) made the
+conversion mapping recurse into `PreTrainedModel` submodules without re-scoping a
+submodule's renamings to where that submodule lives, so the text model's
+``^model.language_model.`` -> ``^model.`` renaming entered the composite model's
+mapping and the bitsandbytes sidecar keys (``weight.absmax``, ``weight.quant_map``,
+``weight.nested_absmax``, ``weight.nested_quant_map`` and
+``weight.quant_state.bitsandbytes__nf4``) were renamed to keys the model does not
+have and dropped as unexpected. Every quantized Linear then loads with
+``quant_state = None`` and the first forward raises ``mat1 and mat2 shapes cannot be
+multiplied``. Fixed upstream by PR #45567.
+
+Measured on one B200 with ``unsloth/qwen3.8-27b-unsloth-bnb-4bit``: 352 of 352
+quantized Linear modules lose quant_state on 5.4.0 and 5.5.4, and 0 of 352 on 5.2.0,
+5.3.0 and every release from 5.6.2 to 5.17.0.
+
+The guard asks the INSTALLED transformers whether it scopes submodule renamings. It
+never reads a version number, because a version number is the wrong instrument here:
+upstream main reported ``5.3.0.dev0`` at the commit that introduced the defect and
+``5.6.0.dev0`` at the commit that fixed it, so any closed version interval is wrong
+at both ends for a source install.
 
 Loaded in isolation, no torch, no GPU, no network.
 """
@@ -28,21 +41,23 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import sys
+import types
 from pathlib import Path
 
 import pytest
 import tomllib
 from packaging.requirements import Requirement
-from packaging.version import Version
 
 _ROOT = Path(__file__).resolve().parent.parent
 _IMPORT_FIXES_PATH = _ROOT / "unsloth" / "import_fixes.py"
 _PYPROJECT_PATH = _ROOT / "pyproject.toml"
 
-# The whole defect window, every release transformers actually published in it.
-BROKEN = ["5.4.0", "5.5.0", "5.5.1", "5.5.2", "5.5.3", "5.5.4"]
-# Neighbours on both sides, plus the 4.x floor and the current 5.x ceiling.
-GOOD = ["4.57.6", "5.2.0", "5.3.0", "5.6.0", "5.6.2", "5.14.1", "5.17.0"]
+# Releases that carry the defect, and releases that do not. Used only to document the
+# window in the warning text and to keep the pyproject specifier honest -- never as the
+# detector's input.
+BROKEN_RELEASES = ["5.4.0", "5.5.0", "5.5.1", "5.5.2", "5.5.3", "5.5.4"]
+GOOD_RELEASES = ["4.57.6", "5.2.0", "5.3.0", "5.6.0", "5.6.2", "5.14.1", "5.17.0"]
 
 
 def _load_import_fixes():
@@ -60,52 +75,290 @@ def import_fixes():
     return _load_import_fixes()
 
 
-@pytest.mark.parametrize("version", BROKEN)
-def test_broken_window_is_detected(import_fixes, version):
-    assert import_fixes._transformers_drops_prequantized_vlm_quant_state(version) is True, (
-        f"transformers {version} drops the bnb quant_state of pre-quantized composite "
-        f"checkpoints and must be detected"
+# --------------------------------------------------------------------------------------
+# Fake transformers builds. Each one is a shape upstream really shipped.
+# --------------------------------------------------------------------------------------
+
+
+def _install(monkeypatch, *, conversion_mapping = None, core_model_loading = None):
+    """Put a fake `transformers` in sys.modules for the duration of one test."""
+    fake = types.ModuleType("transformers")
+    # A real transformers may already be imported, and `from transformers import X` falls
+    # back to sys.modules["transformers.X"], so every submodule entry is pinned here --
+    # None makes the import raise, which is what "this build does not have it" means.
+    for name, submodule in (
+        ("conversion_mapping", conversion_mapping),
+        ("core_model_loading", core_model_loading),
+    ):
+        if submodule is not None:
+            setattr(fake, name, submodule)
+        monkeypatch.setitem(sys.modules, f"transformers.{name}", submodule)
+    monkeypatch.setitem(sys.modules, "transformers", fake)
+    return fake
+
+
+def _module(name, **attrs):
+    module = types.ModuleType(name)
+    for key, value in attrs.items():
+        setattr(module, key, value)
+    return module
+
+
+def _build_4x(monkeypatch):
+    """transformers 4.x: no conversion_mapping module at all, so nothing to correct."""
+    _install(monkeypatch)
+
+
+def _build_pre_recursion(monkeypatch):
+    """5.x before 5.4.0: a conversion_mapping, but no per-submodule extraction."""
+    _install(
+        monkeypatch,
+        conversion_mapping = _module("transformers.conversion_mapping"),
+        core_model_loading = _module("transformers.core_model_loading"),
     )
 
 
-@pytest.mark.parametrize("version", GOOD)
-def test_good_versions_are_not_flagged(import_fixes, version):
-    assert import_fixes._transformers_drops_prequantized_vlm_quant_state(version) is False, (
-        f"transformers {version} loads pre-quantized composite checkpoints correctly and "
-        f"must not be flagged"
+def _build_broken(monkeypatch):
+    """5.4.0 to 5.5.4: recursion, and no way to say where a submodule's mapping belongs."""
+
+    def extract_weight_conversions_for_model(model):
+        return []
+
+    class WeightTransform:
+        pass
+
+    class PrefixChange:
+        pass
+
+    _install(
+        monkeypatch,
+        conversion_mapping = _module(
+            "transformers.conversion_mapping",
+            extract_weight_conversions_for_model = extract_weight_conversions_for_model,
+        ),
+        core_model_loading = _module(
+            "transformers.core_model_loading",
+            WeightTransform = WeightTransform,
+            PrefixChange = PrefixChange,
+        ),
     )
 
 
-def test_window_boundaries_are_half_open(import_fixes):
-    """5.4.0 inclusive (first broken), 5.6.0 exclusive (transformers PR #45567)."""
-    low, high = import_fixes._BROKEN_PREQUANTIZED_VLM_TRANSFORMERS
-    assert Version(low) == Version("5.4.0")
-    assert Version(high) == Version("5.6.0")
-    assert import_fixes._transformers_drops_prequantized_vlm_quant_state(low) is True
-    assert import_fixes._transformers_drops_prequantized_vlm_quant_state(high) is False
+def _build_fixed_model_prefix(monkeypatch):
+    """5.6 to 5.9 as PR #45567 first spelled it: a `model_prefix` argument."""
+
+    def extract_weight_conversions_for_model(model, model_prefix = ""):
+        return []
+
+    _install(
+        monkeypatch,
+        conversion_mapping = _module(
+            "transformers.conversion_mapping",
+            extract_weight_conversions_for_model = extract_weight_conversions_for_model,
+        ),
+        core_model_loading = _module("transformers.core_model_loading"),
+    )
 
 
-def test_unparseable_version_never_raises(import_fixes):
-    for junk in ("", "not-a-version", "5.x", None.__class__.__name__):
-        assert import_fixes._transformers_drops_prequantized_vlm_quant_state(junk) is False
+def _build_fixed_with_submodel_prefix(monkeypatch):
+    """The same range, reached through `PrefixChange.with_submodel_prefix`."""
+
+    def extract_weight_conversions_for_model(model):
+        return []
+
+    class PrefixChange:
+        def with_submodel_prefix(self, prefix):
+            return self
+
+    _install(
+        monkeypatch,
+        conversion_mapping = _module(
+            "transformers.conversion_mapping",
+            extract_weight_conversions_for_model = extract_weight_conversions_for_model,
+        ),
+        core_model_loading = _module(
+            "transformers.core_model_loading", PrefixChange = PrefixChange
+        ),
+    )
+
+
+def _build_fixed_scope_prefix(monkeypatch):
+    """5.10 and later: every transform carries `scope_prefix`."""
+
+    def extract_weight_conversions_for_model(model):
+        return []
+
+    class WeightTransform:
+        scope_prefix = None
+
+    _install(
+        monkeypatch,
+        conversion_mapping = _module(
+            "transformers.conversion_mapping",
+            extract_weight_conversions_for_model = extract_weight_conversions_for_model,
+        ),
+        core_model_loading = _module(
+            "transformers.core_model_loading", WeightTransform = WeightTransform
+        ),
+    )
+
+
+def _build_broken_without_core_model_loading(monkeypatch):
+    """The defect, where `core_model_loading` is not importable but the recursion is.
+
+    Defensive, not observed: measured on ten real releases, `conversion_mapping` and
+    `core_model_loading` both need torch and both fail together, and a process without
+    torch cannot load a checkpoint to corrupt. The two imports are still kept separate
+    so that the `extract_weight_conversions_for_model` signature carries the answer on
+    its own if upstream ever splits them.
+    """
+
+    def extract_weight_conversions_for_model(model):
+        return []
+
+    _install(
+        monkeypatch,
+        conversion_mapping = _module(
+            "transformers.conversion_mapping",
+            extract_weight_conversions_for_model = extract_weight_conversions_for_model,
+        ),
+        core_model_loading = None,
+    )
+
+
+def _build_fixed_without_core_model_loading(monkeypatch):
+    """The same split, fixed: `model_prefix` alone is enough to clear the build."""
+
+    def extract_weight_conversions_for_model(model, model_prefix = ""):
+        return []
+
+    _install(
+        monkeypatch,
+        conversion_mapping = _module(
+            "transformers.conversion_mapping",
+            extract_weight_conversions_for_model = extract_weight_conversions_for_model,
+        ),
+        core_model_loading = None,
+    )
+
+
+def _build_no_transformers(monkeypatch):
+    """transformers is not installed."""
+    for name in ("transformers", "transformers.conversion_mapping", "transformers.core_model_loading"):
+        monkeypatch.setitem(sys.modules, name, None)
+
+
+DEFECTIVE_BUILDS = [_build_broken, _build_broken_without_core_model_loading]
+HEALTHY_BUILDS = [
+    _build_4x,
+    _build_pre_recursion,
+    _build_fixed_model_prefix,
+    _build_fixed_with_submodel_prefix,
+    _build_fixed_scope_prefix,
+    _build_fixed_without_core_model_loading,
+    _build_no_transformers,
+]
+
+
+# --------------------------------------------------------------------------------------
+# The probe
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("build", DEFECTIVE_BUILDS, ids = lambda b: b.__name__)
+def test_defective_build_is_detected(import_fixes, monkeypatch, build):
+    build(monkeypatch)
+    assert import_fixes._transformers_rescopes_submodule_prefix_renamings() is False
+    assert import_fixes._transformers_drops_prequantized_vlm_quant_state() is True
+
+
+@pytest.mark.parametrize("build", HEALTHY_BUILDS, ids = lambda b: b.__name__)
+def test_healthy_build_is_not_flagged(import_fixes, monkeypatch, build):
+    build(monkeypatch)
+    assert import_fixes._transformers_rescopes_submodule_prefix_renamings() is True
+    assert import_fixes._transformers_drops_prequantized_vlm_quant_state() is False
+
+
+def test_an_unrecognisable_build_is_left_alone(import_fixes, monkeypatch):
+    """Guessing wrong towards "broken" would warn every future build. Answer healthy."""
+
+    class Hostile:
+        def __getattr__(self, name):
+            raise RuntimeError("no introspection here")
+
+    _install(
+        monkeypatch,
+        conversion_mapping = _module(
+            "transformers.conversion_mapping",
+            extract_weight_conversions_for_model = Hostile(),
+        ),
+        core_model_loading = _module("transformers.core_model_loading"),
+    )
+    assert import_fixes._transformers_drops_prequantized_vlm_quant_state() is False
+
+
+def test_the_detector_never_reads_a_version(import_fixes, monkeypatch):
+    """The nightly trap: main was 5.3.0.dev0 when broken and 5.6.0.dev0 when fixed.
+
+    A closed version interval is wrong at both ends there, so the answer must not move
+    when the reported version does.
+    """
+    for reported in ("5.3.0.dev0", "5.6.0.dev0", "5.17.0", "4.57.6", "not-a-version"):
+        monkeypatch.setattr(
+            import_fixes, "importlib_version", lambda name, reported = reported: reported
+        )
+        _build_broken(monkeypatch)
+        assert import_fixes._transformers_drops_prequantized_vlm_quant_state() is True
+        _build_fixed_scope_prefix(monkeypatch)
+        assert import_fixes._transformers_drops_prequantized_vlm_quant_state() is False
+
+
+def test_a_git_main_build_carrying_the_defect_is_warned(import_fixes, monkeypatch, caplog):
+    """5.3.0.dev0 with the defect: the old version window let this through silently."""
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.3.0.dev0")
+    monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
+    _build_broken(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        import_fixes.check_transformers_prequantized_vlm_quant_state()
+    assert "quant_state" in caplog.text
+
+
+def test_a_fixed_nightly_is_not_told_it_is_broken(import_fixes, monkeypatch, caplog):
+    """5.6.0.dev0 with the fix: the old version window warned this one falsely."""
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.6.0.dev0")
+    monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
+    _build_fixed_scope_prefix(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        import_fixes.check_transformers_prequantized_vlm_quant_state()
+    assert "quant_state" not in caplog.text
+
+
+# --------------------------------------------------------------------------------------
+# The warning
+# --------------------------------------------------------------------------------------
 
 
 def test_warning_names_the_cause_and_the_remedy(import_fixes, monkeypatch, caplog):
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.5.4")
     monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
+    _build_broken(monkeypatch)
     with caplog.at_level(logging.WARNING):
         import_fixes.check_transformers_prequantized_vlm_quant_state()
     text = caplog.text
     assert "5.5.4" in text
     assert "quant_state" in text
-    # It must say the checkpoint is fine: the reported thread told users to regenerate it.
+    # It must say the checkpoint is fine: the reported threads told users to regenerate it.
     assert "not be regenerated" in text.lower()
     assert "transformers>=5.6.0" in text
+    # And it must not tell the user to do something this repository forbids without
+    # saying how: unsloth still caps transformers at 5.5.0.
+    assert "--no-deps" in text
 
 
-def test_warning_silent_on_a_good_version(import_fixes, monkeypatch, caplog):
+def test_warning_silent_on_a_healthy_build(import_fixes, monkeypatch, caplog):
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.17.0")
     monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
+    _build_fixed_scope_prefix(monkeypatch)
     with caplog.at_level(logging.WARNING):
         import_fixes.check_transformers_prequantized_vlm_quant_state()
     assert "quant_state" not in caplog.text
@@ -114,17 +367,35 @@ def test_warning_silent_on_a_good_version(import_fixes, monkeypatch, caplog):
 def test_env_var_silences_the_warning(import_fixes, monkeypatch, caplog):
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.5.4")
     monkeypatch.setenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", "1")
+    _build_broken(monkeypatch)
     with caplog.at_level(logging.WARNING):
         import_fixes.check_transformers_prequantized_vlm_quant_state()
     assert "quant_state" not in caplog.text
 
 
-def test_missing_transformers_never_raises(import_fixes, monkeypatch):
+def test_missing_transformers_never_raises(import_fixes, monkeypatch, caplog):
     def _boom(name):
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr(import_fixes, "importlib_version", _boom)
-    import_fixes.check_transformers_prequantized_vlm_quant_state()
+    monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
+    _build_no_transformers(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        import_fixes.check_transformers_prequantized_vlm_quant_state()
+    assert "quant_state" not in caplog.text
+
+
+def test_the_check_is_warn_only(import_fixes, monkeypatch):
+    """A text-only or unquantized run must not be broken by this."""
+    monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
+    for build in DEFECTIVE_BUILDS + HEALTHY_BUILDS:
+        build(monkeypatch)
+        assert import_fixes.check_transformers_prequantized_vlm_quant_state() is None
+
+
+# --------------------------------------------------------------------------------------
+# pyproject
+# --------------------------------------------------------------------------------------
 
 
 def _transformers_requirements():
@@ -148,29 +419,21 @@ def _transformers_requirements():
     return found
 
 
-def test_pyproject_excludes_every_broken_release():
-    """The cap alone is not enough: 5.4.0 and 5.5.x must be excluded outright.
+def test_pyproject_still_allows_a_working_version():
+    """The exclusion this PR started as would have left nothing installable.
 
-    Capping at <=5.5.0 leaves 5.4.0 and 5.5.0 installable and a fresh resolve takes
-    5.5.0, dead centre of the window. These exclusions stay correct whenever the
-    ceiling is raised later.
+    unsloth_zoo's published metadata caps transformers at 5.5.0, and
+    `unsloth/models/loader.py` requires 5.5.0 or newer for Gemma 4. Excluding 5.5.0
+    here therefore resolves DOWN to 5.3.0 and takes Gemma 4 with it. The exclusions
+    wait for the zoo cap to ship; this test is what says so.
     """
     reqs = _transformers_requirements()
     assert reqs, "no transformers requirement found in pyproject.toml"
     for req in reqs:
-        for version in BROKEN:
-            assert not req.specifier.contains(version, prereleases = True), (
-                f"pyproject allows transformers {version}, which discards the bnb "
-                f"quant_state of pre-quantized composite checkpoints "
-                f"(unsloth #9867, #10010, #10017, #10276)"
-            )
-
-
-def test_pyproject_still_allows_a_working_version():
-    """Guard against fixing the above by excluding everything."""
-    reqs = _transformers_requirements()
-    assert reqs
-    for req in reqs:
         assert any(
-            req.specifier.contains(version, prereleases = True) for version in GOOD
+            req.specifier.contains(version, prereleases = True) for version in GOOD_RELEASES
         ), f"pyproject leaves no working transformers at all: {req}"
+        assert req.specifier.contains("5.5.0", prereleases = True), (
+            f"pyproject excludes 5.5.0 while unsloth_zoo still caps transformers at "
+            f"5.5.0 and Gemma 4 requires >= 5.5.0, so this resolves backwards: {req}"
+        )
