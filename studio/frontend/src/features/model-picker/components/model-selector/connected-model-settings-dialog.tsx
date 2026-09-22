@@ -189,7 +189,7 @@ export function ConnectedModelSettingsDialog({
         </DialogHeader>
 
         {rememberParamsPerModel ? null : (
-          <p className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+          <p className="rounded-md border border-border bg-muted px-3 py-2 text-xs leading-relaxed text-muted-foreground">
             "Remember settings per model" is off in Settings → Chat, so the
             prompt and output cap below are stored but never restored. Reasoning
             effort is kept separately and still applies.

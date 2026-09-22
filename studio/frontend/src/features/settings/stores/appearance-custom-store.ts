@@ -279,6 +279,22 @@ export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 } as const;
 export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 13 } as const;
 const UI_FONT_SIZE_CSS_BASE = 16;
 
+/**
+ * What the contrast slider writes, read by `html[data-contrast-adjust]` in
+ * index.css. Exported so the reload snapshot and the tests name the same
+ * variables.
+ */
+export const CONTRAST_SURFACE_MIX_VAR = "--contrast-surface-mix";
+export const CONTRAST_LINE_MIX_VAR = "--contrast-line-mix";
+/** Control outlines and switch tracks, which fade less far than a divider. */
+export const CONTRAST_CONTROL_MIX_VAR = "--contrast-control-mix";
+/** Hover and selection fills, which fade less far than the surface under them. */
+export const CONTRAST_STATE_MIX_VAR = "--contrast-state-mix";
+export const CONTRAST_TEXT_MIX_VAR = "--contrast-text-mix";
+/** Multipliers for the hand-written washes that stand in for those tokens. */
+export const CONTRAST_WASH_GAIN_VAR = "--contrast-wash-gain";
+export const CONTRAST_EDGE_GAIN_VAR = "--contrast-edge-gain";
+
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
 export function isHexColor(value: unknown): value is string {
@@ -659,7 +675,7 @@ const PALETTE_SURFACES: Record<
   { background: string; elevated: string }
 > = {
   light: { background: "#ffffff", elevated: "#ffffff" },
-  dark: { background: "#181818", elevated: "#212121" },
+  dark: { background: "#181818", elevated: "#272727" },
 };
 
 function minimumAccentTextContrast(
@@ -933,19 +949,53 @@ export function applyCustomizationToDocument(
   }
 
   if (c.contrast !== 50) {
-    // Map |contrast - 50| ∈ (0, 50] onto a 0–40% color-mix toward the
-    // foreground (higher contrast) or background (lower contrast).
-    const mix = Math.round(Math.abs(c.contrast - 50) * 0.8);
+    // Distance from the default, then one color-mix percentage per group of
+    // tokens. Everything mixes toward --contrast-target: the foreground above
+    // 50, the background below it.
+    const distance = Math.abs(c.contrast - 50) / 50;
+    const raising = c.contrast > 50;
+    const mix = (ceiling: number) => `${Math.round(distance * ceiling)}%`;
     el.setAttribute("data-contrast-adjust", "");
-    setVar("--contrast-mix", `${mix}%`);
     setVar(
       "--contrast-target",
-      c.contrast > 50 ? "var(--foreground)" : "var(--background)",
+      raising ? "var(--foreground)" : "var(--background)",
     );
+    // Not symmetric. Lowering flattens, so surfaces and lines collapse most
+    // of the way into the page. Raising only needs a nudge: a card mixed far
+    // toward the foreground reads as a block, not a surface. Neither floor
+    // reaches the page colour, a menu still has to be findable at 0.
+    setVar(CONTRAST_SURFACE_MIX_VAR, mix(raising ? 8 : 70));
+    setVar(CONTRAST_LINE_MIX_VAR, mix(raising ? 45 : 80));
+    setVar(CONTRAST_CONTROL_MIX_VAR, mix(raising ? 45 : 55));
+    // Hover and selection fills stop well short of the surfaces they sit on.
+    // On the surface curve they collapsed toward the page faster than the
+    // sidebar and cards did, so at the bottom the lit row was darker than its
+    // own background: the pointer stopped telling you where it was.
+    setVar(CONTRAST_STATE_MIX_VAR, mix(raising ? 8 : 30));
+    // Text sits on a gentler curve at both ends: it has to stay readable.
+    setVar(CONTRAST_TEXT_MIX_VAR, mix(40));
+    // Controls that wash the page with translucent white or black instead of
+    // taking a token multiply their authored alpha by these, so they move in
+    // step with the tokens above.
+    const gain = (span: number) =>
+      (raising ? 1 + distance * span : 1 - distance * span).toFixed(3);
+    // Lowering keeps most of a wash rather than a quarter of it. These washes
+    // are the chrome you aim at, not decoration: tab tracks, header pills,
+    // chips, filter triggers. At a quarter strength a 4% fill landed 2 levels
+    // off the page, so the unselected half of a segmented control and the whole
+    // Hub toolbar read as bare background.
+    setVar(CONTRAST_WASH_GAIN_VAR, gain(raising ? 0.7 : 0.4));
+    setVar(CONTRAST_EDGE_GAIN_VAR, gain(raising ? 0.9 : 0.8));
   } else {
     el.removeAttribute("data-contrast-adjust");
-    setVar("--contrast-mix", null);
     setVar("--contrast-target", null);
+    setVar(CONTRAST_SURFACE_MIX_VAR, null);
+    setVar(CONTRAST_LINE_MIX_VAR, null);
+    setVar(CONTRAST_CONTROL_MIX_VAR, null);
+    setVar(CONTRAST_STATE_MIX_VAR, null);
+    setVar(CONTRAST_TEXT_MIX_VAR, null);
+    setVar(CONTRAST_WASH_GAIN_VAR, null);
+    setVar(CONTRAST_EDGE_GAIN_VAR, null);
   }
 
   el.classList.toggle("pointer-cursors", c.pointerCursors);

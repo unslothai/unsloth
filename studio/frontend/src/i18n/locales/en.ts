@@ -574,7 +574,16 @@ export const en = {
       sourceHint: "The model runners write their own logs, so a failed load or generation is often explained there rather than in the server log.",
       path: "Location",
       pathCopy: "Copy path",
-      refreshSection: "Refresh",
+      currentSession: "Current",
+      statusLive: "Live",
+      statusPaused: "Paused",
+      statusStale: "Stale",
+      filterPlaceholder: "Filter lines",
+      lineCount: "{count} lines",
+      filteredLineCount: "{shown} of {total} lines",
+      wrapLines: "Wrap lines",
+      jumpToLatest: "Jump to latest",
+      noMatches: "No lines match the filter.",
       mode: "Mode",
       modeLive: "Live",
       modeInterval: "Every 3 seconds",
@@ -1134,7 +1143,7 @@ export const en = {
       custom: {
         chatWidth: {
           label: "Chat width",
-          description: "Set the width of messages and the composer. Full width uses the space between sidebars.",
+          description: "Width of messages and the composer.",
           standard: "Standard",
           wide: "Wide",
           full: "Full width",
@@ -1207,7 +1216,6 @@ export const en = {
         },
         contrast: {
           label: "Contrast",
-          description: "Strength of borders and secondary text.",
         },
         reduceMotion: {
           label: "Reduce motion",
@@ -1237,7 +1245,7 @@ export const en = {
       sidebarNav: {
         title: "Sidebar navigation",
         description:
-          "Pin and reorder the sidebar tabs. Unpinned tabs collect in the More menu; a single unpinned tab is hidden instead of getting a menu of one. New chat stays fixed.",
+          "Pin and reorder the sidebar tabs. Unpinned tabs go to the More menu.",
         dragToReorder: "Drag to reorder",
         pinToSidebar: "Pin {name} to the sidebar",
         moreHolds: "More ({count})",
@@ -1245,7 +1253,7 @@ export const en = {
       sidebarMenu: {
         title: "Profile menu",
         description:
-          "Choose which shortcuts appear when you click your name at the bottom of the sidebar, and in what order. Settings, Help, Log out, and Shutdown always appear.",
+          "Pick and reorder the shortcuts under your name.",
         darkModeToggle: "Dark mode toggle",
         dragToReorder: "Drag to reorder",
       },
@@ -1396,6 +1404,60 @@ export const en = {
         copied: "Path copied",
         openError: "Couldn't open the folder",
         copyError: "Couldn't copy the path",
+        caches: {
+          label: "Cache files",
+          description: "{size} in caches, of which {reclaimable} can be cleared now.",
+          hint: "Package downloads, compiled kernels and transfer caches that Unsloth rebuilds when it needs them. Downloaded models, projects, chats, settings and your Hugging Face token are never cleared here.",
+          // Not rendered: extra terms the settings search matches this row on.
+          keywords:
+            "cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Measuring cache sizes...",
+          measureFailed: "Couldn't measure the caches",
+          empty: "No cache files found.",
+          detailsAction: "Details",
+          recheckAction: "Recheck",
+          hideDetailsAction: "Hide details",
+          clearAction: "Clear caches",
+          clearOneAction: "Clear",
+          clearingAction: "Clearing...",
+          confirmTitle: "Clear cached files?",
+          confirmDescription: "This frees about {size}.",
+          confirmOneTitle: "Clear {name}?",
+          safety:
+            "Unsloth rebuilds a cache the next time it needs it. Downloaded models, projects, chats, settings and your Hugging Face token are not touched.",
+          hubCost:
+            "This is the model cache. Clearing it downloads those models again the next time you use them.",
+          datasetsCost:
+            "Clearing this downloads those datasets again the next time you use them.",
+          blocked: "Not cleared: {reason}",
+          cleared: "Cleared {size}",
+          partial: "Some cache files could not be removed",
+          clearFailed: "Couldn't clear the caches",
+          names: {
+            uv: "uv package cache",
+            pip: "pip download cache",
+            npm: "npm package cache",
+            bun: "Bun package cache",
+            torchInductor: "Torch Inductor compile cache",
+            torchExtensions: "Torch extension builds",
+            triton: "Triton kernel cache",
+            cuda: "CUDA kernel cache",
+            numba: "Numba compile cache",
+            matplotlib: "Matplotlib font cache",
+            vllm: "vLLM cache",
+            unslothCompiled: "Unsloth compiled modules",
+            hfXet: "Hugging Face transfer cache",
+            hfAssets: "Hugging Face asset cache",
+            hfDatasets: "Hugging Face dataset cache",
+            hfHub: "Hugging Face model cache",
+          },
+        },
+        lowDisk: {
+          title: "Disk space is running low",
+          criticalTitle: "Disk space is critically low",
+          description: "{free} free of {total}. Clearing caches can free space.",
+          action: "Review caches",
+        },
       },
       environment: {
         title: "Environment",

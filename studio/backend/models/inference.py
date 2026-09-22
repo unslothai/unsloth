@@ -56,6 +56,9 @@ class LoadRequest(BaseModel):
 
     model_path: str = Field(..., description = "Model identifier or local path")
     _gguf_companion_roots: tuple[str, ...] = PrivateAttr(default = ())
+    # `()` is both the default and auto-switch's deliberate "do not widen", so only this
+    # marker separates unset from explicitly empty.
+    _gguf_companion_roots_set: bool = PrivateAttr(default = False)
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,
@@ -544,6 +547,17 @@ class ValidateModelRequest(BaseModel):
             "for VRAM. -1 (Auto) keeps the previous behaviour for callers that omit it."
         ),
     )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = (
+            "Per-GPU share (--tensor-split) intended for the follow-up load. Manual "
+            "mode promotes an explicit -ts from llama_extra_args into this field "
+            "before stripping the raw flag, so the preflight strips exactly the "
+            "tokens /load strips and judges the command /load will run (#11330). "
+            "No sizing here reads the ratio itself: _guard_chat_load_against_training "
+            "and _estimate_gguf_required_gb budget per device, not per share."
+        ),
+    )
     n_parallel: Optional[int] = Field(
         None,
         ge = PARALLEL_MIN,
@@ -632,6 +646,10 @@ class ValidateModelRequest(BaseModel):
     _no_booleans = field_validator(
         "n_batch", "n_ubatch", "ctx_checkpoints", "reasoning_budget", mode = "before"
     )(LoadRequest._no_booleans.__func__)
+
+    _reject_degenerate_tensor_split = field_validator("tensor_split")(
+        LoadRequest._reject_degenerate_tensor_split.__func__
+    )
 
 
 class TransformersUpgradeInfo(BaseModel):
@@ -2031,7 +2049,11 @@ def resolve_thinking_onto_enable_thinking(request):
     when both are given. Shared with counting, which must resolve the reasoning preamble exactly as
     the completion does."""
     if request.thinking is not None and request.enable_thinking is None:
-        request.enable_thinking = request.thinking.type == "enabled"
+        # Derived, not an explicit x-unsloth override: out of model_fields_set so route
+        # precedence still ranks it below the nested controls. Also covers an explicit
+        # null, which pydantic records as set.
+        object.__setattr__(request, "enable_thinking", request.thinking.type == "enabled")
+        request.model_fields_set.discard("enable_thinking")
     return request
 
 
@@ -2815,6 +2837,14 @@ class ToolConfirmRequest(BaseModel):
     session_id: Optional[str] = None
     approval_id: Optional[str] = None
     decision: Literal["allow", "deny"] = "deny"
+
+
+class ToolApprovalStatusRequest(BaseModel):
+    """Ask whether one approval is still waiting. Takes the id rather than listing them, so a
+    caller can only ask about an approval it already holds and cannot enumerate anyone else's."""
+
+    session_id: Optional[str] = None
+    approval_id: Optional[str] = None
 
 
 class OpenAIContainerRequest(BaseModel):
@@ -3755,9 +3785,14 @@ class DiffusionLoadRequest(BaseModel):
         "default (also regional torch.compile where eligible), "
         "max (also TF32 + fused QKV).",
     )
-    text_encoder_quant: Optional[Literal["fp8", "fp8_dynamic", "int8", "nvfp4"]] = Field(
+    text_encoder_quant: Optional[
+        Literal["auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"]
+    ] = Field(
         None,
-        description = "Quantise the companion text encoder(s): fp8 (layerwise cast, ~2x smaller, "
+        description = "Quantise the companion text encoder(s). Unset or 'auto' lets the family "
+        "choose (Qwen-Image-2.1 takes its hosted pre-cast fp8 encoder, 8.75 GiB against 16.33 "
+        "dense); 'none'/'off' pins the released bf16 encoder. Explicit: fp8 (layerwise cast, "
+        "~2x smaller, "
         "CUDA cc>=8.9), fp8_dynamic (torchao compute fp8 on the tensor cores, ~2x + faster, "
         "cc>=8.9), int8 (torchao compute int8 with per-family keep-bf16 layers; falls back to "
         "fp8 where no schedule exists; cc>=8.0), or nvfp4 (~4x smaller, Blackwell sm_100+). A "

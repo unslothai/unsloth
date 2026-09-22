@@ -537,7 +537,16 @@ export const it = {
       sourceHint: "I runner dei modelli scrivono i propri log, quindi un caricamento o una generazione non riusciti sono spesso spiegati lì anziché nel log del server.",
       path: "Posizione",
       pathCopy: "Copia il percorso",
-      refreshSection: "Aggiornamento",
+      currentSession: "Attuale",
+      statusLive: "In diretta",
+      statusPaused: "In pausa",
+      statusStale: "Obsoleto",
+      filterPlaceholder: "Filtra righe",
+      lineCount: "{count} righe",
+      filteredLineCount: "{shown} di {total} righe",
+      wrapLines: "Righe a capo",
+      jumpToLatest: "Vai alla fine",
+      noMatches: "Nessuna riga corrisponde al filtro.",
       mode: "Modalità",
       modeLive: "In tempo reale",
       modeInterval: "Ogni 3 secondi",
@@ -1125,7 +1134,7 @@ export const it = {
       custom: {
         chatWidth: {
           label: "Larghezza chat",
-          description: "Imposta la larghezza dei messaggi e del campo di testo. La larghezza piena usa lo spazio tra le barre laterali.",
+          description: "Larghezza dei messaggi e del campo di testo.",
           standard: "Standard",
           wide: "Ampia",
           full: "Larghezza piena",
@@ -1200,7 +1209,6 @@ export const it = {
         },
         contrast: {
           label: "Contrasto",
-          description: "Intensità dei bordi e del testo secondario.",
         },
         reduceMotion: {
           label: "Riduci le animazioni",
@@ -1230,7 +1238,7 @@ export const it = {
       sidebarNav: {
         title: "Navigazione della barra laterale",
         description:
-          "Fissa e riordina le schede della barra laterale. Le schede non fissate vengono raccolte nel menu «Altro»; se ne resta una sola non fissata viene nascosta invece di creare un menu con una voce sola. «Nuova chat» resta sempre al suo posto.",
+          "Fissa e riordina le schede della barra laterale. Quelle non fissate vanno nel menu «Altro».",
         dragToReorder: "Trascina per riordinare",
         pinToSidebar: "Fissa {name} nella barra laterale",
         moreHolds: "Altro ({count})",
@@ -1238,7 +1246,7 @@ export const it = {
       sidebarMenu: {
         title: "Menu della barra laterale",
         description:
-          "Mostra, nascondi e riordina le voci del menu del profilo nella barra laterale. Impostazioni, Aiuto, Esci e Arresta restano fisse.",
+          "Scegli e riordina le scorciatoie del menu del profilo.",
         darkModeToggle: "Interruttore del tema scuro",
         dragToReorder: "Trascina per riordinare",
       },
@@ -1393,6 +1401,61 @@ export const it = {
         copied: "Percorso copiato",
         openError: "Impossibile aprire la cartella",
         copyError: "Impossibile copiare il percorso",
+        caches: {
+          label: "File di cache",
+          description:
+            "{size} nelle cache, di cui {reclaimable} eliminabili subito.",
+          hint: "Download di pacchetti, kernel compilati e cache di trasferimento che Unsloth ricrea quando servono. I modelli scaricati, i progetti, le chat, le impostazioni e il tuo token Hugging Face non vengono mai eliminati qui.",
+          keywords:
+            "cache svuotare pulire eliminare liberare spazio disco temporaneo compilato cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Misurazione delle dimensioni delle cache...",
+          measureFailed: "Impossibile misurare le cache",
+          empty: "Nessun file di cache trovato.",
+          detailsAction: "Dettagli",
+          recheckAction: "Ricontrolla",
+          hideDetailsAction: "Nascondi dettagli",
+          clearAction: "Svuota le cache",
+          clearOneAction: "Svuota",
+          clearingAction: "Svuotamento in corso...",
+          confirmTitle: "Svuotare i file nella cache?",
+          confirmDescription: "Libera circa {size}.",
+          confirmOneTitle: "Svuotare {name}?",
+          safety:
+            "Unsloth ricrea una cache la volta successiva in cui serve. I modelli scaricati, i progetti, le chat, le impostazioni e il tuo token Hugging Face non vengono toccati.",
+          hubCost:
+            "Questa è la cache dei modelli. Svuotandola, quei modelli verranno scaricati di nuovo al prossimo utilizzo.",
+          datasetsCost:
+            "Svuotandola, quei set di dati verranno scaricati di nuovo al prossimo utilizzo.",
+          blocked: "Non svuotata: {reason}",
+          cleared: "Liberati {size}",
+          partial: "Alcuni file di cache non sono stati rimossi",
+          clearFailed: "Impossibile svuotare le cache",
+          names: {
+            uv: "Cache dei pacchetti uv",
+            pip: "Cache dei download pip",
+            npm: "Cache dei pacchetti npm",
+            bun: "Cache dei pacchetti Bun",
+            torchInductor: "Cache di compilazione Torch Inductor",
+            torchExtensions: "Build delle estensioni Torch",
+            triton: "Cache dei kernel Triton",
+            cuda: "Cache dei kernel CUDA",
+            numba: "Cache di compilazione Numba",
+            matplotlib: "Cache dei font Matplotlib",
+            vllm: "Cache di vLLM",
+            unslothCompiled: "Moduli compilati di Unsloth",
+            hfXet: "Cache di trasferimento Hugging Face",
+            hfAssets: "Cache delle risorse Hugging Face",
+            hfDatasets: "Cache dei set di dati Hugging Face",
+            hfHub: "Cache dei modelli Hugging Face",
+          },
+        },
+        lowDisk: {
+          title: "Lo spazio su disco sta per esaurirsi",
+          criticalTitle: "Lo spazio su disco è quasi esaurito",
+          description:
+            "{free} liberi su {total}. Svuotare le cache può liberare spazio.",
+          action: "Controlla le cache",
+        },
       },
       environment: {
         title: "Ambiente",

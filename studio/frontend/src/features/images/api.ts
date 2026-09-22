@@ -93,7 +93,16 @@ export interface DiffusionLoadRequest {
   transformer_quant?: "auto" | "none" | "off" | "int8" | "fp8" | "nvfp4" | "mxfp8";
   // Text-encoder precision (omit to keep the dense bf16 encoder). Refused with a 409 when the host
   // cannot run it, rather than loading dense and reporting nothing.
-  text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
+  // "none"/"off" pin the released bf16 encoder; omitting the field (or "auto") lets the family
+  // choose, which is no longer the same thing.
+  text_encoder_quant?:
+    | "auto"
+    | "none"
+    | "off"
+    | "fp8"
+    | "fp8_dynamic"
+    | "int8"
+    | "nvfp4";
   attention_backend?:
     | "auto"
     | "native"
