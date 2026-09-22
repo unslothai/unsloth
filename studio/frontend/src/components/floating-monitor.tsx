@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 
 import {
@@ -11,6 +12,8 @@ import {
 } from "@/features/settings";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
+import { useChatSettingsWidth } from "@/hooks/use-chat-settings-width";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import {
@@ -18,6 +21,7 @@ import {
   useFloatingPanelZIndex,
 } from "@/lib/floating-panel-order";
 import { cn } from "@/lib/utils";
+import { useRouterState } from "@tanstack/react-router";
 import { CpuIcon, GripVerticalIcon, XIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import {
@@ -28,6 +32,11 @@ import {
   useRef,
   useState,
 } from "react";
+
+import {
+  floatingMonitorConstraintStyle,
+  getFloatingMonitorLayout,
+} from "./floating-monitor-layout";
 
 interface MonitorLayout {
   left: number;
@@ -417,12 +426,16 @@ function formatGiB(value: number): string {
 }
 
 interface FloatingMonitorPanelProps {
+  dockedBesideRunSettings: boolean;
   onClose: () => void;
+  settingsWidth: number;
   systemInfo: ReturnType<typeof useSystemInfo>;
 }
 
 function FloatingMonitorPanel({
+  dockedBesideRunSettings,
   onClose,
+  settingsWidth,
   systemInfo,
 }: FloatingMonitorPanelProps) {
   const t = useT();
@@ -493,8 +506,15 @@ function FloatingMonitorPanel({
   return (
     <div
       ref={setConstraintsElement}
-      className="pointer-events-none fixed inset-4"
-      style={{ zIndex }}
+      className={cn(
+        "pointer-events-none fixed inset-y-4 left-4",
+        dockedBesideRunSettings ? undefined : "right-4",
+      )}
+      style={floatingMonitorConstraintStyle({
+        zIndex,
+        dockedBesideRunSettings,
+        settingsWidth,
+      })}
     >
       <motion.div
         {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
@@ -672,7 +692,19 @@ function FloatingMonitorPanel({
 
 export function FloatingMonitor() {
   const { isOpen, setIsOpen } = useMonitorOverlayStore();
-  const systemInfo = useSystemInfo({ enabled: isOpen, pollMs: 5000 });
+  const settingsPanelOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isMobile = useIsMobile();
+  // The panel's own rendered width: it is user-resizable from 248 to 560 px, so the
+  // docked offset has to come from the same value the panel paints at.
+  const { width: settingsWidth } = useChatSettingsWidth();
+  const { visible, dockedBesideRunSettings } = getFloatingMonitorLayout({
+    isOpen,
+    isMobile,
+    isChatRoute: pathname === "/chat",
+    settingsPanelOpen,
+  });
+  const systemInfo = useSystemInfo({ enabled: visible, pollMs: 5000 });
   const [panelKey, setPanelKey] = useState(0);
   const wasOpenRef = useRef(isOpen);
 
@@ -687,9 +719,11 @@ export function FloatingMonitor() {
 
   return (
     <AnimatePresence>
-      {isOpen && (
+      {visible && (
         <FloatingMonitorPanel
           key={panelKey}
+          dockedBesideRunSettings={dockedBesideRunSettings}
+          settingsWidth={settingsWidth}
           systemInfo={systemInfo}
           onClose={() => setIsOpen(false)}
         />
