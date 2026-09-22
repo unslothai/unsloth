@@ -717,6 +717,7 @@ def test_both_probes_see_the_repair_under_the_real_moe_wrapper(monkeypatch):
 
     def zoo_repair(*args, **kwargs):
         pass
+
     setattr(zoo_repair, "_unsloth_zoo_patched_composite_prefix_renaming", True)
 
     monkeypatch.setattr(conversion_mapping, "get_model_conversion_mapping", zoo_repair)
@@ -725,8 +726,9 @@ def test_both_probes_see_the_repair_under_the_real_moe_wrapper(monkeypatch):
     if live is zoo_repair:
         pytest.skip("the MoE patch declined to install on this transformers")
 
-    assert getattr(live, "__wrapped__", None) is None, \
-        "the MoE wrapper must not publish __wrapped__; see the docstring"
+    assert (
+        getattr(live, "__wrapped__", None) is None
+    ), "the MoE wrapper must not publish __wrapped__; see the docstring"
     if getattr(live, "_unsloth_wrapper_inner", None) is None:
         # An unsloth_zoo predating the link attribute. The repair really is invisible from
         # here, and nothing this side can fix, so this is a skip and not a failure.
@@ -745,8 +747,10 @@ def test_the_chain_walk_is_bounded(monkeypatch):
 
     def a():
         pass
+
     def b():
         pass
+
     a.__wrapped__ = b
     b.__wrapped__ = a
 

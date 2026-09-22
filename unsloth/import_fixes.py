@@ -904,9 +904,8 @@ _ZOO_WRAPPER_INNER_ATTR = "_unsloth_wrapper_inner"
 
 def _next_in_wrapper_chain(function):
     """The callable `function` wraps, by either link, or None at the end of the chain."""
-    return (
-        getattr(function, "__wrapped__", None)
-        or getattr(function, _ZOO_WRAPPER_INNER_ATTR, None)
+    return getattr(function, "__wrapped__", None) or getattr(
+        function, _ZOO_WRAPPER_INNER_ATTR, None
     )
 
 
