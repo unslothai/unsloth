@@ -138,7 +138,13 @@ import {
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
-import { DEFAULT_GEN, defaultsFor, resolutionFor } from "./image-generation-defaults";
+import {
+  DEFAULT_GEN,
+  DEFAULT_RESOLUTION,
+  canvasSeedFor,
+  defaultsFor,
+  resolutionFor,
+} from "./image-generation-defaults";
 import { MAX_DIM, MIN_DIM, restorableSize, snapDim } from "./image-size";
 
 import {
@@ -1208,6 +1214,19 @@ export function ImagesPage({
   const [height, setHeight] = useState(1024);
   const [aspect, setAspect] = useState("1:1");
   const [portrait, setPortrait] = useState(false);
+  // The size the page last applied on its own, so a later seed can tell it from one the user chose.
+  // `canvasNow` mirrors the fields for the load poll, whose closure is fixed when the load starts.
+  const seededCanvas = useRef<{ width: number; height: number }>(DEFAULT_RESOLUTION);
+  const canvasNow = useRef({ width, height });
+  canvasNow.current = { width, height };
+  const seedCanvas = useCallback((size: { width: number; height: number }) => {
+    seededCanvas.current = size;
+    setWidth(size.width);
+    setHeight(size.height);
+    const matched = matchAspect(size.width, size.height);
+    setAspect(matched.key);
+    setPortrait(matched.portrait);
+  }, []);
   // Z-Image-Turbo official defaults: 9 steps (= 8 DiT forwards), guidance 0 (distilled, CFG-free).
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
@@ -2180,6 +2199,16 @@ export function ImagesPage({
           rememberImageModel(lastLoad.current);
           setRememberedModel(lastLoad.current);
         }
+        // A pick's canvas lands here, not at pick time: only the load knows how much of the card
+        // its weights hold. The resident seed effect skips a page-initiated load.
+        if (quantRevert.current && !pickRecipeSuperseded.current?.()) {
+          const size = canvasSeedFor(
+            canvasNow.current,
+            seededCanvas.current,
+            loaded.recommended_canvas,
+          );
+          if (size) seedCanvas(size);
+        }
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
         quantRevert.current?.commitRecipeClaim?.();
@@ -2242,7 +2271,7 @@ export function ImagesPage({
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast]);
+  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, seedCanvas]);
 
   // Put back what a teardown removed when the load it was tearing down is still running: the
   // unload failed, so the poll and toast were stopped for nothing. refreshStatus cannot do
@@ -2372,14 +2401,10 @@ export function ImagesPage({
     // above) and a stored recipe has already returned before it, so a size the user typed is never
     // overwritten by a later status poll, and the backend applies nothing: whatever width and
     // height the request carries is what renders.
-    const size = resolutionFor({ recommendedCanvas: status?.recommended_canvas });
-    setWidth(size.width);
-    setHeight(size.height);
-    const matched = matchAspect(size.width, size.height);
-    setAspect(matched.key);
-    setPortrait(matched.portrait);
+    seedCanvas(resolutionFor({ recommendedCanvas: status?.recommended_canvas }));
   }, [
     imagePresets.storedRecipe,
+    seedCanvas,
     status?.loaded,
     status?.repo_id,
     status?.base_repo,
