@@ -68,8 +68,8 @@ def test_symlink_loop_under_outputs_keeps_4bit(outputs, monkeypatch):
     partner.symlink_to(looped)
     assert worker._resolve_lora_4bit(_mc(str(looped)), True) is True
 
-    # Pin the pre-3.13 spelling on every interpreter, so this stays a negative control
-    # instead of quietly passing on 3.13+ where resolve() no longer raises.
+    # Pin that spelling on every interpreter; on 3.13+ resolve() no longer raises, so
+    # without this the test is vacuous there.
     real_resolve = Path.resolve
 
     def loop_raises(self, *args, **kwargs):

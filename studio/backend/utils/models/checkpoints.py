@@ -284,10 +284,8 @@ def is_full_finetune_output(path: Optional[str]) -> bool:
     if not path:
         return False
     try:
-        # Before 3.13, resolve() reports a symlink loop as RuntimeError rather than
-        # OSError, whatever `strict` is set to, so a looped link under outputs/ would
-        # escape this guard and fault the whole load. Every uncertain answer here is
-        # False, which keeps the historical 4-bit default.
+        # Below 3.13 a symlink loop comes back as RuntimeError, not OSError, whatever
+        # `strict` says, and both callers run this outside any handler.
         Path(path).resolve().relative_to(outputs_root().resolve())
     except (OSError, RuntimeError, ValueError):
         return False
