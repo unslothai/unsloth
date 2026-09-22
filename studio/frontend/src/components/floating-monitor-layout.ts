@@ -11,6 +11,12 @@
 
 /** The resting inset on every edge, `inset-4` at a 16px root font size. */
 export const FLOATING_MONITOR_EDGE_INSET = 16;
+/**
+ * The settings aside's resize handle is `-left-1 w-2`, so half of its target
+ * sits outside the aside. The monitor's layer paints above the aside, and
+ * without this the docked edge swallows that outward half.
+ */
+export const FLOATING_MONITOR_HANDLE_INSET = 4;
 
 /** The monitor's own width, `w-64`. */
 export const FLOATING_MONITOR_WIDTH = 256;
@@ -114,7 +120,9 @@ export function floatingMonitorRightInset({
   dockedBesideRunSettings: boolean;
   settingsWidth: number;
 }): number {
-  return dockedBesideRunSettings ? settingsWidth : FLOATING_MONITOR_EDGE_INSET;
+  return dockedBesideRunSettings
+    ? settingsWidth + FLOATING_MONITOR_HANDLE_INSET
+    : FLOATING_MONITOR_EDGE_INSET;
 }
 
 /**

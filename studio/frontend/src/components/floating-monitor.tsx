@@ -61,6 +61,8 @@ interface DragSession {
   maxTop: number;
   constraintsWidth: number;
   constraintsHeight: number;
+  /** Set by the first move; a press that never moves is not a placement. */
+  moved: boolean;
   /** The committed left/top the drag's transform offsets from. */
   baseLeft: number;
   baseTop: number;
@@ -331,10 +333,6 @@ function useMonitorLayout(
     const monitorBox = monitor.getBoundingClientRect();
     const left = monitorBox.left - constraintsBox.left;
     const top = monitorBox.top - constraintsBox.top;
-    hasDraggedRef.current = true;
-    if (narrowedRef.current) {
-      chosenLeftRef.current = null;
-    }
 
     // Native resize records attempted inline dimensions even when max-width
     // or max-height hides them. Normalize only hidden dimensions so an
@@ -360,6 +358,7 @@ function useMonitorLayout(
       startY: event.clientY,
       left,
       top,
+      moved: false,
       maxLeft: Math.max(0, constraintsBox.width - monitorBox.width),
       maxTop: Math.max(0, constraintsBox.height - monitorBox.height),
       constraintsWidth: constraintsBox.width,
@@ -390,6 +389,14 @@ function useMonitorLayout(
     if (!session || session.pointerId !== event.pointerId) {
       return;
     }
+    // Only real movement is a placement choice; a press alone is not.
+    if (event.clientX !== session.startX || event.clientY !== session.startY) {
+      session.moved = true;
+      hasDraggedRef.current = true;
+      if (narrowedRef.current) {
+        chosenLeftRef.current = null;
+      }
+    }
 
     const left = clamp(
       session.left + event.clientX - session.startX,
@@ -419,11 +426,12 @@ function useMonitorLayout(
       cancelAnimationFrame(dragFrameRef.current);
       dragFrameRef.current = 0;
     }
-    const { left, top, constraintsWidth, constraintsHeight } = session;
+    const { left, top, constraintsWidth, constraintsHeight, moved } = session;
     dragSessionRef.current = null;
-    // A position-only change does not fire the observer, and the next
-    // reconcile may already be narrowed.
-    if (!narrowedRef.current) {
+    // A position-only change does not fire the observer, and the next reconcile
+    // may already be narrowed. A press without a move is not a placement, so it
+    // must leave the saved position alone for the undock restore to replay.
+    if (moved && !narrowedRef.current) {
       chosenLeftRef.current = left;
     }
     // Written to the node as well as to state, in this order, so handing the

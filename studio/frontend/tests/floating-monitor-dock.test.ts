@@ -29,6 +29,7 @@ import test from "node:test";
 
 import {
   FLOATING_MONITOR_EDGE_INSET,
+  FLOATING_MONITOR_HANDLE_INSET,
   FLOATING_MONITOR_WIDTH,
   dockedMonitorFits,
   floatingMonitorConstraintStyle,
@@ -149,11 +150,11 @@ test("the docked constraint clears the panel at every draggable width", () => {
       dockedBesideRunSettings: true,
       settingsWidth,
     });
-    // The container ends exactly where the panel begins: the same inset from
-    // the viewport's right edge.
+    // The container ends at the panel's edge, plus the outward half of its
+    // resize handle, which the monitor's layer would otherwise intercept.
     assert.equal(
       right,
-      settingsWidth,
+      settingsWidth + FLOATING_MONITOR_HANDLE_INSET,
       `the docked inset must follow the ${settingsWidth}px panel`,
     );
     const monitorRight = VIEWPORT_WIDTH - right;
@@ -206,8 +207,9 @@ test("a stored 248-560px panel width reaches the monitor's constraint", async ()
       });
       assert.equal(
         right,
-        settingsWidth,
-        `the ${settingsWidth}px panel must set a ${settingsWidth}px inset`,
+        settingsWidth + FLOATING_MONITOR_HANDLE_INSET,
+        `the ${settingsWidth}px panel must set a ` +
+          `${settingsWidth + FLOATING_MONITOR_HANDLE_INSET}px inset`,
       );
     }
   } finally {
@@ -427,7 +429,26 @@ test("a drag that ends without a reconcile still records the position", () => {
   const finish = source.slice(source.indexOf("function finishDrag"));
   assert.match(
     finish,
-    /if \(!narrowedRef\.current\) \{\s*chosenLeftRef\.current = left;/,
+    /if \(moved && !narrowedRef\.current\) \{\s*chosenLeftRef\.current = left;/,
+  );
+});
+
+test("a press without movement keeps the saved position", () => {
+  // The pointer-down used to clear the saved spot, so a grip press that never
+  // moved discarded it and the undock restore had nothing to put back.
+  const start = source.slice(source.indexOf("function startDrag"));
+  assert.doesNotMatch(
+    start.slice(0, start.indexOf("function paintDrag")),
+    /chosenLeftRef\.current = null/,
+  );
+  const update = source.slice(
+    source.indexOf("function updateDrag"),
+    source.indexOf("function finishDrag"),
+  );
+  assert.match(update, /session\.moved = true;/);
+  assert.match(
+    source,
+    /const \{ left, top, constraintsWidth, constraintsHeight, moved \} = session;/,
   );
 });
 
