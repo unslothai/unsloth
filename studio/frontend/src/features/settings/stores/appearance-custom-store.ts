@@ -675,7 +675,7 @@ const PALETTE_SURFACES: Record<
   { background: string; elevated: string }
 > = {
   light: { background: "#ffffff", elevated: "#ffffff" },
-  dark: { background: "#181818", elevated: "#282828" },
+  dark: { background: "#181818", elevated: "#292929" },
 };
 
 function minimumAccentTextContrast(
