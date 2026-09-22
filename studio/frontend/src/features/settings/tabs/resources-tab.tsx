@@ -38,6 +38,7 @@ import {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
+import { CacheStorageRows } from "../components/cache-storage-rows";
 import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
@@ -880,6 +881,7 @@ export function ResourcesTab() {
             ) : null}
           </div>
         </SettingsRow>
+        <CacheStorageRows />
       </SettingsSection>
 
       <FolderBrowser
