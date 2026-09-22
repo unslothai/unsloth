@@ -2604,8 +2604,9 @@ class FastLlamaModel:
             model_config,
             load_in_4bit = load_in_4bit,
             load_in_8bit = load_in_8bit,
-            # vLLM reads a packed compressed-tensors checkpoint itself; only the transformers 4-bit load re-quantizes it.
-            requantize_packed = not fast_inference,
+            # vLLM reads a packed compressed-tensors checkpoint itself; only the transformers 4-bit load
+            # re-quantizes it. A num_labels load stays in-process even with fast_inference.
+            requantize_packed = not _vllm_will_load_weights(fast_inference, num_labels),
         )
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env
         # was built before remap/disable). gpt-oss only.

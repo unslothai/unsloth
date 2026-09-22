@@ -478,3 +478,70 @@ def test_packed_checkpoint_trains_with_lora(tmp_path):
     grads = [p.grad for n, p in model.named_parameters() if "lora_B" in n]
     assert grads and all(g is not None and torch.isfinite(g).all() for g in grads)
     assert any(g.abs().sum() > 0 for g in grads)
+
+
+@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+def test_many_to_many_expert_op_keeps_its_source_contract():
+    """transformers' ErnieFuseAndSplitTextVisionExperts iterates the converter's
+    source_patterns and requires every one of them in the collected dict. After
+    decompression the packed metadata patterns are gone, so the op must see the
+    patterns it was declared with and the decompressed buckets under them."""
+    from transformers.core_model_loading import ErnieFuseAndSplitTextVisionExperts, WeightConverter
+    from compressed_tensors.compressors import BaseCompressor
+    from compressed_tensors.quantization import QuantizationConfig
+    from compressed_tensors.quantization.utils import calculate_qparams
+    from unsloth.models.compressed_tensors_bnb import _WithOriginalSources, _DecompressPackedWeights
+
+    torch.manual_seed(0)
+    quant = _w4a16(weights = {"num_bits": 4, "group_size": 32, "symmetric": True})
+    ctc = QuantizationConfig.model_validate(quant)
+    scheme = list(ctc.config_groups.values())[0]
+    comp = BaseCompressor.get_value_from_registry("pack-quantized")
+    sources = ["mlp.experts.*.gate_proj.weight", "mlp.experts.*.up_proj.weight"]
+    targets = ["mlp.text_experts.gate_up_proj", "mlp.vision_experts.gate_up_proj"]
+
+    plain, packed = {}, {}
+    for p in sources:
+        plain[p], packed[p + "_packed$"], packed[p + "_scale$"], packed[p + "_shape$"] = [], [], [], []
+        for _ in range(4):  # two text experts then two vision experts
+            w = torch.randn(16, 64)
+            grouped = w.reshape(16, 2, 32)
+            scale, _zp = calculate_qparams(grouped.amin(-1), grouped.amax(-1), scheme.weights)
+            out = comp.compress({"weight": w, "weight_scale": scale.to(torch.bfloat16)}, scheme)
+            plain[p].append(comp.decompress(dict(out), scheme)["weight"].to(torch.bfloat16))
+            packed[p + "_packed$"].append(out["weight_packed"])
+            packed[p + "_scale$"].append(out["weight_scale"])
+            packed[p + "_shape$"].append(out["weight_shape"])
+
+    ernie = ErnieFuseAndSplitTextVisionExperts()
+    want = ernie.convert(dict(plain), source_patterns = sources, target_patterns = targets, config = None)
+
+    # The rebuilt converter: decompression first, then the converter's own op under its contract.
+    rebuilt_sources = [p + "_packed$" for p in sources] + [p + "_scale$" for p in sources] + [p + "_shape$" for p in sources] + [p + "$" for p in sources]
+    ops = [
+        _DecompressPackedWeights(ctc, torch.bfloat16, stacked = True, scheme = scheme),
+        _WithOriginalSources(ernie, sources, sources),
+    ]
+    got = dict(packed)
+    for op in ops:
+        got = op.convert(got, source_patterns = rebuilt_sources, target_patterns = targets, full_layer_name = "model.layers.0", model = None, config = None)
+    assert set(got) == set(targets)
+    for k in targets:
+        assert torch.equal(got[k], want[k]), k
+
+    # Without the adapter the many-to-many op fails on the consumed metadata patterns.
+    got = dict(packed)
+    got = ops[0].convert(got, source_patterns = rebuilt_sources, target_patterns = targets, full_layer_name = "model.layers.0", model = None, config = None)
+    with pytest.raises((ValueError, TypeError)):
+        ernie.convert(got, source_patterns = rebuilt_sources, target_patterns = targets, config = None)
+
+
+def test_classification_load_under_fast_inference_still_requantizes():
+    """fast_inference with num_labels loads through transformers (vLLM has no classification
+    head), so the packed re-quantization must stay armed there."""
+    import inspect
+    from unsloth.models import llama
+    assert llama._vllm_will_load_weights(True, num_labels = 2) is False
+    assert llama._vllm_will_load_weights(False, None) is False
+    source = inspect.getsource(llama.FastLlamaModel.from_pretrained)
+    assert "requantize_packed = not _vllm_will_load_weights(fast_inference, num_labels)" in source

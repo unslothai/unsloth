@@ -418,6 +418,53 @@ class _DecompressPackedWeights:
             return None
 
 
+class _WithOriginalSources:
+    """Run a converter's own op under the source contract it was declared with.
+
+    The decompression step leaves each expert bucket under its `<weight>_packed$`
+    key and the converter's `source_patterns` name the packed metadata. An op
+    that iterates `source_patterns` and requires every one of them present
+    (transformers' ErnieFuseAndSplitTextVisionExperts) then fails on the consumed
+    scale and shape patterns. Here every decompressed bucket is renamed to the
+    plain weight pattern and the op sees the original `source_patterns`, which
+    is exactly what it sees on an unpacked checkpoint.
+    """
+
+    def __init__(self, op, original_sources, weight_sources):
+        self.op = op
+        self.original_sources = list(original_sources)
+        self.weight_sources = list(weight_sources)
+
+    def convert(self, input_dict, source_patterns=None, target_patterns=None, **kwargs):
+        try:
+            from transformers.core_model_loading import MergeModulelist
+        except Exception:  # pragma: no cover
+            MergeModulelist = ()
+        keeps_stack = isinstance(self.op, MergeModulelist) if MergeModulelist else False
+        renamed = {}
+        for key, value in input_dict.items():
+            new_key = key
+            for pattern in self.weight_sources:
+                if key in (pattern + "_packed$", pattern + "$"):
+                    new_key = pattern
+                    # A bucket arrives as one pre-stacked tensor. MergeModulelist takes that as
+                    # is; every other op expects the per-expert list the loader collected.
+                    if isinstance(value, torch.Tensor) and not keeps_stack:
+                        value = list(value.unbind(0))
+                    break
+            renamed[new_key] = value
+        return self.op.convert(
+            renamed, source_patterns=self.original_sources, target_patterns=target_patterns, **kwargs
+        )
+
+    @property
+    def reverse_op(self):
+        return getattr(self.op, "reverse_op", None)
+
+    def __getattr__(self, name):
+        return getattr(self.op, name)
+
+
 _installed = False
 
 
@@ -434,8 +481,9 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
     from transformers.quantizers.quantizer_bnb_4bit import Bnb4BitHfQuantizer
     from transformers.core_model_loading import ConversionOps, WeightConverter
 
-    # Make the op a real ConversionOps so transformers' isinstance checks are happy.
+    # Make the ops real ConversionOps so transformers' isinstance checks are happy.
     op_cls = type("DecompressPackedWeights", (_DecompressPackedWeights, ConversionOps), {})
+    with_sources_cls = type("WithOriginalSources", (_WithOriginalSources, ConversionOps), {})
 
     class UnslothBnb4BitHfQuantizer(Bnb4BitHfQuantizer):
         _unsloth_ct_config = None
@@ -515,10 +563,12 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                             + [p + "$" for p in weight_sources]
                             + other
                         )
+                        original_sources = list(getattr(conv, "_original_source_patterns", conv.source_patterns))
                         conv = WeightConverter(
                             source_patterns=new_sources,
                             target_patterns=conv._original_target_patterns,
-                            operations=[op_cls(ct_config, dtype, stacked=True, scheme=scheme)] + list(conv.operations),
+                            operations=[op_cls(ct_config, dtype, stacked=True, scheme=scheme)]
+                            + [with_sources_cls(op, original_sources, weight_sources) for op in conv.operations],
                         )
                         self._unsloth_keep_storage_dtype(conv._original_target_patterns)
                 updated.append(conv)
