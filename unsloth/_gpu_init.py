@@ -24,6 +24,7 @@ from .import_fixes import (
     fix_message_factory_issue,
     patch_torch_missing_attribute_error,
     check_triton_py_ssize_t_clean,
+    check_transformers_prequantized_vlm_quant_state,
     fix_torch_check_is_size,
     fix_torchao_torch_symbol_skew,
     propagate_torchao_fix_to_subprocesses,
@@ -103,6 +104,10 @@ torchvision_compatibility_check()
 disable_torchaudio_if_cuda_mismatched()
 fix_diffusers_warnings()
 fix_huggingface_hub()
+# Below the torchaudio guard, not up with the other version checks: this is the only check
+# here that IMPORTS transformers rather than reading its metadata, and that is the ordering
+# the guard above exists to prevent.
+check_transformers_prequantized_vlm_quant_state()
 del configure_amdgpu_asic_id_table_path
 del fix_bitsandbytes_rocm_arch_detection
 del disable_broken_causal_conv1d
@@ -115,6 +120,7 @@ del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions
 del check_triton_py_ssize_t_clean
+del check_transformers_prequantized_vlm_quant_state
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub

@@ -226,6 +226,40 @@ def _has_sequence_classification_architecture(config):
     return any(str(arch).endswith("ForSequenceClassification") for arch in architectures)
 
 
+# Most to least specific, so a config mapped under several gets its own family's
+# class. Every name must also be in vision.py's _multimodal_auto_classes(), since
+# the class picked here decides processor selection (asserted by
+# test_every_class_the_resolver_can_return_takes_a_processor).
+_OMNI_AUTO_CLASS_NAMES = (
+    "AutoModelForImageTextToText",
+    "AutoModelForTextToWaveform",
+)
+
+
+def _resolve_omni_auto_model(model_config):
+    """A multimodal auto class that really maps this config, or None.
+
+    Qwen3-Omni names Qwen3OmniMoeForConditionalGeneration so it reads as a VLM,
+    but transformers registers qwen3_omni_moe only under
+    AutoModelForTextToWaveform, and asking a class with no mapping is a hard
+    load failure, not a fallback.
+    """
+    import transformers
+
+    for name in _OMNI_AUTO_CLASS_NAMES:
+        auto_class = getattr(transformers, name, None)
+        if auto_class is None:
+            continue
+        try:
+            if resolve_model_class(auto_class, model_config) is not None:
+                return auto_class
+        except Exception:
+            continue
+    # Falling back to the concrete class the checkpoint names is WRONG: it is in no
+    # auto mapping, so it leaves the processor set and downgrades to AutoTokenizer.
+    return None
+
+
 def _get_user_task_config_attrs(user_config):
     if user_config is None:
         return {}
@@ -1874,6 +1908,10 @@ class FastModel(FastBaseModel):
                     auto_model = AutoModel
                 else:
                     auto_model = AutoModelForVision2Seq
+                    # Only when the image-text class has no mapping, so anything that
+                    # resolves today keeps the class it resolves to now.
+                    if resolve_model_class(auto_model, model_config) is None:
+                        auto_model = _resolve_omni_auto_model(model_config) or auto_model
             else:
                 auto_model = AutoModelForCausalLM
 
