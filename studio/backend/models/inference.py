@@ -56,6 +56,9 @@ class LoadRequest(BaseModel):
 
     model_path: str = Field(..., description = "Model identifier or local path")
     _gguf_companion_roots: tuple[str, ...] = PrivateAttr(default = ())
+    # `()` is both the default and auto-switch's deliberate "do not widen", so only this
+    # marker separates unset from explicitly empty.
+    _gguf_companion_roots_set: bool = PrivateAttr(default = False)
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,
@@ -2046,7 +2049,11 @@ def resolve_thinking_onto_enable_thinking(request):
     when both are given. Shared with counting, which must resolve the reasoning preamble exactly as
     the completion does."""
     if request.thinking is not None and request.enable_thinking is None:
-        request.enable_thinking = request.thinking.type == "enabled"
+        # Derived, not an explicit x-unsloth override: out of model_fields_set so route
+        # precedence still ranks it below the nested controls. Also covers an explicit
+        # null, which pydantic records as set.
+        object.__setattr__(request, "enable_thinking", request.thinking.type == "enabled")
+        request.model_fields_set.discard("enable_thinking")
     return request
 
 

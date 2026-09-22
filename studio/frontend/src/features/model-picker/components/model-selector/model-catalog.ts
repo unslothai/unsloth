@@ -8,7 +8,9 @@
 import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.ts";
 import {
   type GgufFitClass,
+  type GgufVariantSizes,
   classifyGgufFit as classifyGgufFitForDevice,
+  ggufVariantFitSizeBytes,
 } from "../../../../lib/gguf-fit.ts";
 import {
   type HostClass,
@@ -1122,6 +1124,53 @@ export function classifyMediaGgufFit(
  *  the second by offloading to CPU. */
 export function ggufFitRuns(fit: GgufFitClass): boolean {
   return fit !== "oom";
+}
+
+/** Whether a verdict loads with room to spare. `fits` clears the VRAM budget and `ram` the RAM
+ *  one, both of which already hold a reserve back; `marginal` and `partial` run at the edge. */
+export function ggufFitIsComfortable(fit: GgufFitClass): boolean {
+  return fit === "fits" || fit === "ram";
+}
+
+/** What to recommend on a device whose budget is known: the largest quant that runs with room to
+ *  spare, else the largest that runs at all, else the smallest. Quality the machine can actually
+ *  hold, rather than whatever size the repo defaults to.
+ *
+ *  Null when no variant carries a size, since then there is nothing to weigh against the device
+ *  and the caller's repo default is the better guess. */
+export function recommendedQuantForDevice<T extends GgufVariantSizes>(
+  variants: readonly T[],
+  fitOf: (sizeBytes: number) => GgufFitClass,
+): T | null {
+  // Ranked by the weights, since that is the quality on offer and the size the row shows. Judged on
+  // the download footprint, which also covers the companion GGUFs the loader charges for: a vision
+  // projector, or a drafter `auto` promotes to. On `size_bytes` alone this starred quants that go
+  // OOM once the mmproj lands beside them.
+  const fitOfVariant = (variant: T) => fitOf(ggufVariantFitSizeBytes(variant));
+  // A listing with no size metadata reports zero (gguf_variants.py: an OSError stat-ing a local
+  // file, or a manifest an older backend cannot read). Zero prices as the bare context allowance,
+  // so it reads comfortable on any device and would outrank a real quant that only runs at the
+  // edge. Unknown is not comfortable, so it does not compete.
+  const sized = variants.filter((variant) => ggufVariantFitSizeBytes(variant) > 0);
+  if (sized.length === 0) return null;
+  const bySizeDesc = [...sized].sort(
+    (left, right) => right.size_bytes - left.size_bytes,
+  );
+  // Nothing runs, so the pick is whatever is closest to running: the smallest
+  // FOOTPRINT, not the smallest checkpoint. Companions are chosen per
+  // checkpoint (FLUX.2-klein sizes its text encoder that way), so a lighter
+  // quant can drag a heavier dependency along and end up furthest from fitting.
+  // Ties keep the larger checkpoint, since bySizeDesc is ranked by quality.
+  const smallestFootprint = bySizeDesc.reduce((best, variant) =>
+    ggufVariantFitSizeBytes(variant) < ggufVariantFitSizeBytes(best)
+      ? variant
+      : best,
+  );
+  return (
+    bySizeDesc.find((variant) => ggufFitIsComfortable(fitOfVariant(variant))) ??
+    bySizeDesc.find((variant) => fitOfVariant(variant) !== "oom") ??
+    smallestFootprint
+  );
 }
 
 export interface QuantVariant {

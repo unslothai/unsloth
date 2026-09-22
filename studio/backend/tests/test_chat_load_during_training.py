@@ -902,6 +902,58 @@ class TestEffectiveLoadIn4bit(unittest.TestCase):
             cfg = SimpleNamespace(is_lora = True, path = d, base_model = "x")
             self.assertTrue(self.route._effective_load_in_4bit(cfg, True))  # no crash
 
+    def _model_dir(
+        self,
+        root,
+        name,
+        config = None,
+        adapter = None,
+    ):
+        import json
+
+        d = Path(root) / name
+        d.mkdir(parents = True)
+        (d / "config.json").write_text(json.dumps(config or {"model_type": "llama"}))
+        (d / "model.safetensors").write_bytes(b"")
+        if adapter is not None:
+            (d / "adapter_config.json").write_text(json.dumps(adapter))
+        return str(d)
+
+    def _studio_home(self):
+        import os
+        import tempfile
+
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        patcher = patch.dict(os.environ, {"UNSLOTH_STUDIO_HOME": home.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return Path(home.name)
+
+    def test_full_finetune_output_loads_16bit(self):
+        home = self._studio_home()
+        path = self._model_dir(home / "outputs", "unsloth_Qwen3-0.6B_1771227800")
+        cfg = SimpleNamespace(is_lora = False, path = path, base_model = None)
+        self.assertFalse(self.route._effective_load_in_4bit(cfg, True))
+        ckpt = self._model_dir(Path(path), "checkpoint-10")
+        cfg = SimpleNamespace(is_lora = False, path = ckpt, base_model = None)
+        self.assertFalse(self.route._effective_load_in_4bit(cfg, True))
+
+    def test_quantized_or_foreign_models_keep_4bit(self):
+        home = self._studio_home()
+        outputs = home / "outputs"
+        quantized = self._model_dir(
+            outputs, "q", {"quantization_config": {"quant_method": "bitsandbytes"}}
+        )
+        adapter = self._model_dir(outputs, "a", adapter = {})
+        outside = self._model_dir(home / "exports", "merged")
+        for path in (quantized, adapter, outside, "unsloth/Qwen3-0.6B"):
+            cfg = SimpleNamespace(is_lora = False, path = path, base_model = None)
+            self.assertTrue(self.route._effective_load_in_4bit(cfg, True), path)
+        qlora = self._model_dir(outputs, "qlora", adapter = {"unsloth_training_method": "qlora"})
+        cfg = SimpleNamespace(is_lora = True, path = qlora, base_model = "x")
+        self.assertTrue(self.route._effective_load_in_4bit(cfg, True))
+
     def test_native_audio_uses_full_precision_for_admission(self):
         cfg = SimpleNamespace(
             is_lora = False,
