@@ -375,8 +375,7 @@ def resolve_unsloth_device_map(
             _planner_params = {}
         if "config" not in _planner_params:
             return _fallback(
-                planner_config_reason
-                or "this unsloth_zoo cannot plan from a resolved config"
+                planner_config_reason or "this unsloth_zoo cannot plan from a resolved config"
             )
         config_kwargs["config"] = planner_config
 

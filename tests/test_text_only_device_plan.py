@@ -71,7 +71,13 @@ def test_a_planner_that_takes_a_config_plans_the_text_decoder():
     seen = {}
     text_config = object()
 
-    def planner(model_name, *, max_memory = None, config = None, **kwargs):
+    def planner(
+        model_name,
+        *,
+        max_memory = None,
+        config = None,
+        **kwargs,
+    ):
         seen.update(config = config, kwargs = kwargs)
         return _Plan()
 
@@ -92,7 +98,12 @@ def test_an_older_planner_still_declines_with_the_old_reason(capsys):
     """An unsloth_zoo whose planner has no `config` parameter would pass it to AutoConfig
     through **config_kwargs and plan the whole VLM. It must not be called at all."""
 
-    def old_planner(model_name, *, max_memory = None, **config_kwargs):
+    def old_planner(
+        model_name,
+        *,
+        max_memory = None,
+        **config_kwargs,
+    ):
         raise AssertionError("an older planner must not be handed the text config")
 
     ns = _load(old_planner)
@@ -106,7 +117,12 @@ def test_an_older_planner_still_declines_with_the_old_reason(capsys):
 def test_no_planner_config_leaves_the_planner_call_unchanged():
     seen = {}
 
-    def old_planner(model_name, *, max_memory = None, **config_kwargs):
+    def old_planner(
+        model_name,
+        *,
+        max_memory = None,
+        **config_kwargs,
+    ):
         seen.update(config_kwargs)
         return _Plan()
 
@@ -118,7 +134,12 @@ def test_no_planner_config_leaves_the_planner_call_unchanged():
 
 
 def test_a_caller_veto_still_wins_over_the_text_config():
-    def planner(model_name, *, config = None, **kwargs):
+    def planner(
+        model_name,
+        *,
+        config = None,
+        **kwargs,
+    ):
         raise AssertionError("vetoed loads must not plan")
 
     ns = _load(planner)
