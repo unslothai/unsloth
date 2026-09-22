@@ -735,20 +735,38 @@ class TestUpstreamPointerReleasesAreNeverSelectable:
 
     def test_a_newer_pointer_release_is_not_newest(self, monkeypatch):
         releases = [
-            {"tag_name": "v0.4.2", "prerelease": False, "draft": False,
-             "published_at": "2026-09-30T00:00:00Z"},
-            {"tag_name": "b11071", "prerelease": True, "draft": False,
-             "published_at": "2026-09-21T00:00:00Z"},
+            {
+                "tag_name": "v0.4.2",
+                "prerelease": False,
+                "draft": False,
+                "published_at": "2026-09-30T00:00:00Z",
+            },
+            {
+                "tag_name": "b11071",
+                "prerelease": True,
+                "draft": False,
+                "published_at": "2026-09-21T00:00:00Z",
+            },
         ]
         monkeypatch.setattr(MOD, "github_releases", lambda repo, **kw: releases)
         assert MOD._api_newest_release_tag(UPSTREAM) == "b11071"
 
     def test_the_planner_never_considers_a_pointer_release(self, monkeypatch):
         releases = [
-            {"tag_name": "v0.4.2", "prerelease": False, "draft": False,
-             "published_at": "2026-09-30T00:00:00Z", "assets": []},
-            {"tag_name": "b11071", "prerelease": True, "draft": False,
-             "published_at": "2026-09-21T00:00:00Z", "assets": []},
+            {
+                "tag_name": "v0.4.2",
+                "prerelease": False,
+                "draft": False,
+                "published_at": "2026-09-30T00:00:00Z",
+                "assets": [],
+            },
+            {
+                "tag_name": "b11071",
+                "prerelease": True,
+                "draft": False,
+                "published_at": "2026-09-21T00:00:00Z",
+                "assets": [],
+            },
         ]
         monkeypatch.setattr(MOD, "github_releases", lambda repo, **kw: releases)
         monkeypatch.setattr(MOD, "web_release_payload", _boom)

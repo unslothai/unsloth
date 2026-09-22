@@ -1116,7 +1116,11 @@ def _web_release_prerelease_or_default(
 
 
 def web_release_payload(
-    ops: ModuleOps, repo: str, tag: str, *, prerelease_default: bool | None = None
+    ops: ModuleOps,
+    repo: str,
+    tag: str,
+    *,
+    prerelease_default: bool | None = None,
 ) -> dict[str, Any]:
     """An ordinary release payload for <repo>@<tag>, built without api.github.com.
 
