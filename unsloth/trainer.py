@@ -1189,7 +1189,13 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 forward_rejects_packing = not _forward_signature_accepts_packing(
                     getattr(_resolved_class, "forward", None)
                 )
-                _packing_gate_deferred = False
+                # `_packing_gate_deferred` deliberately stays True. A checkpoint can name
+                # several classes in `auto_map`, and the one resolved here is not
+                # guaranteed to be the one TRL ends up building, so a "yes" from the class
+                # is not proof about the instance. Leaving the post-init check armed costs
+                # nothing when this answered correctly -- a correct "no" has already turned
+                # both flags off, which is exactly the condition that check skips on -- and
+                # catches the mismatch when it did not.
         blocked = (
             (data_collator is not None)
             or is_processor

@@ -415,6 +415,42 @@ def test_the_warning_names_the_resolved_class_not_str(monkeypatch, caplog):
     assert "str.forward()" not in caplog.text
 
 
+def test_a_class_that_disagrees_with_the_built_model_is_still_caught(monkeypatch):
+    """Resolving the class is a good guess, not proof about the instance.
+
+    A checkpoint can name several classes in `auto_map`, and the one resolved before
+    `__init__` is not guaranteed to be the one TRL builds. If the resolved class says
+    yes and the real model says no, clearing the deferred flag would disarm the
+    post-init check and hand the user back the first-step TypeError this gate exists
+    to prevent. So the check stays armed: a correct block already turns both flags
+    off, which is the condition it skips on, and it costs nothing there.
+    """
+    from types import SimpleNamespace
+
+    import unsloth.trainer as trainer_module
+
+    class _StubSFTTrainer:
+        def __init__(self, model = None, args = None, **kwargs):
+            # what actually gets built disagrees with what the config advertised
+            self.model = _NoKwargs() if isinstance(model, str) else model
+            self.args = args
+
+    for _name in ("enable_padding_free_metadata", "enable_sample_packing"):
+        monkeypatch.setattr(trainer_module, _name, lambda model, trainer: None)
+    monkeypatch.setattr(
+        trainer_module, "_resolve_string_model_config", lambda *a, **k: _fake_config()
+    )
+    # the optimistic, and wrong, answer
+    monkeypatch.setattr(trainer_module, "_resolve_string_model_class", lambda *a, **k: _TakesKwargs)
+
+    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    trainer_module._patch_sft_trainer_auto_packing(module)
+
+    config = SimpleNamespace(packing = False, padding_free = True, max_length = 512)
+    with pytest.raises(ValueError, match = "packed_seq_lengths"):
+        module.SFTTrainer(model = "some/multi-headed-checkpoint", args = config)
+
+
 def test_a_resolver_that_explodes_falls_back_to_the_backstop(monkeypatch):
     """Resolution is best-effort; a failure must not become the user's problem."""
     from types import SimpleNamespace
