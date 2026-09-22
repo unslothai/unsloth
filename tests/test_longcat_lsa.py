@@ -414,12 +414,34 @@ def test_ngram_ids_follow_the_sglang_kernel(tiny):
     ]
     ids = _tokens(cfg, 2, 15)
     with torch.no_grad():
-        model.model.ngram_embeddings(model.model.embed_tokens, ids)
+        model.model.ngram_embeddings(model.model.embed_tokens(ids), ids)
     for h in handles:
         h.remove()
     ours = torch.stack(seen, -1)
     for b in range(ids.shape[0]):
         assert torch.equal(ours[b], _ref_ngram_ids(cfg, ids[b]))
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+def test_split_model_keeps_the_token_table_where_accelerate_put_it(tiny):
+    # device_map placed embed_tokens and the n-gram embedding on different cards; each module's
+    # accelerate hook moves every argument with a `.to`, so the n-gram module must not be
+    # handed the embed_tokens module itself.
+    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+    path, cfg, sd = tiny
+    model = _load(path).eval().to("cuda")
+    ids = _tokens(cfg, 2, 15).to("cuda")
+    with torch.no_grad():
+        expected = model(input_ids = ids).logits.cpu()
+    model.model.embed_tokens.to("cpu")
+    add_hook_to_module(model.model.embed_tokens, AlignDevicesHook(execution_device = "cpu"))
+    add_hook_to_module(model.model.ngram_embeddings, AlignDevicesHook(execution_device = "cuda"))
+    with torch.no_grad():
+        got = model(input_ids = ids).logits.cpu()
+    assert model.model.embed_tokens.weight.device.type == "cpu"
+    torch.testing.assert_close(got, expected, atol = 1e-4, rtol = 1e-4)
 
 
 def test_cached_decode_matches_full_forward(tiny):

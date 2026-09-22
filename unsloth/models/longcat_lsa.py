@@ -175,8 +175,9 @@ def _classes():
 
     class LongcatNgramEmbedding(nn.Module):
         """The n-gram embedding of LongCat-Flash-Lite (``NgramEmbedding`` in the Lite remote
-        code), with the per-row EOS reset vectorized. The word embedding stays the model's
-        ``embed_tokens`` and is passed in at call time."""
+        code), with the per-row EOS reset vectorized. The model's ``embed_tokens`` output is
+        passed in at call time; passing the module itself would let an accelerate hook on a
+        split model move the whole token table to this module's card."""
 
         def __init__(self, config):
             super().__init__()
@@ -214,7 +215,7 @@ def _classes():
 
         def forward(
             self,
-            word_embeddings,
+            word_embeds,
             input_ids,
             ngram_context = None,
         ):
@@ -222,7 +223,7 @@ def _classes():
             context = input_ids
             if ngram_context is not None:
                 context = torch.cat([ngram_context[..., -(self.n - 1) :], input_ids], dim = -1)
-            x = word_embeddings(input_ids)
+            x = word_embeds
             context = context.long()
             shifted = {i: self._shifted(context, i - 1) for i in range(2, self.n + 1)}
             for i in range(2, self.n + 1):
@@ -299,7 +300,9 @@ def _classes():
                         stacklevel = 2,
                     )
                 context = getattr(past_key_values, "_unsloth_ngram_context", None)
-                inputs_embeds = self.ngram_embeddings(self.embed_tokens, input_ids, context)
+                inputs_embeds = self.ngram_embeddings(
+                    self.embed_tokens(input_ids), input_ids, context
+                )
                 if use_cache is None:
                     use_cache = getattr(self.config, "use_cache", False)
                 if use_cache and past_key_values is None:
