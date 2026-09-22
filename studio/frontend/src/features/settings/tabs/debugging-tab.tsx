@@ -32,7 +32,7 @@ import {
   Alert02Icon,
   ArrowDownDoubleIcon,
   Copy01Icon,
-  Download04Icon,
+  Download01Icon,
   FolderOpenIcon,
   InformationCircleIcon,
   RefreshIcon,
@@ -733,7 +733,7 @@ export function DebuggingTab() {
               disabled={exporting}
               onClick={() => void downloadAllLogs()}
             >
-              <HugeiconsIcon icon={Download04Icon} className="size-3.5" />
+              <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
               {exporting
                 ? t("settings.debugging.downloadingAllLogs")
                 : t("settings.debugging.downloadAllLogs")}
