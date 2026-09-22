@@ -3,15 +3,9 @@
 
 """CPU-only unit tests for Intel XPU training on the two flow-matching trainers (#9524).
 
-An XPU box has no CUDA, so ``device = "cuda" if torch.cuda.is_available() else "cpu"`` put the
-trainer's own tensors on the CPU while the bitsandbytes quantizer -- which checks
-``torch.xpu.is_available()`` BEFORE CUDA when no ``device_map`` is given -- had already placed the
-4-bit transformer on ``xpu:0``. That split is the reported "at least two devices, xpu:0 and cpu".
-
-Every test here fakes the accelerator: CI has no Intel GPU, so these pin the DECISIONS (which
-device, which dtype, which cache gets cleared, what gets recorded), never Intel kernels. The fake
-``torch.xpu`` is a bare namespace carrying ONLY the attributes a case names, so a "this torch does
-not expose that API" case cannot be satisfied by an auto-created mock attribute.
+These pin DECISIONS (device, dtype, which cache is cleared, what is recorded), never Intel kernels:
+CI has no Intel GPU. Keep the fake ``torch.xpu`` a bare namespace -- a MagicMock manufactures
+attributes, so every "this torch lacks that API" case would pass vacuously.
 """
 
 from __future__ import annotations
@@ -33,14 +27,11 @@ from core.training.diffusion_train_common import (
 
 
 def _fake_xpu(**attrs):
-    """A ``torch.xpu`` stand-in exposing exactly ``attrs`` and nothing else."""
     return types.SimpleNamespace(**attrs)
 
 
 @pytest.fixture
 def host(monkeypatch):
-    """Drive ``torch.cuda`` / ``torch.xpu`` availability without touching the real devices."""
-
     def _set(*, cuda: bool, xpu = None):
         monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
         if xpu is None:
@@ -51,16 +42,13 @@ def host(monkeypatch):
     return _set
 
 
-# ── which device the loops run on ────────────────────────────────────────────
 def test_cuda_still_wins_on_a_box_that_has_both(host):
-    """An XPU appearing next to a CUDA GPU must not move an existing run off CUDA."""
     host(cuda = True, xpu = _fake_xpu(is_available = lambda: True))
     assert resolve_train_device() == "cuda"
 
 
 def test_an_xpu_box_resolves_to_xpu_not_cpu(host):
-    """The #9524 fix: no CUDA + a live XPU is an XPU run, so the trainer's tensors land where
-    the bnb quantizer already put the transformer."""
+    """#9524: the bnb quantizer already placed the transformer on xpu:0, so "cpu" here split them."""
     host(cuda = False, xpu = _fake_xpu(is_available = lambda: True))
     assert resolve_train_device() == "xpu"
 
@@ -81,9 +69,8 @@ def test_a_host_without_a_usable_xpu_stays_on_cpu(host, xpu):
 
 
 def test_an_uninitialised_xpu_driver_falls_through_instead_of_killing_the_run(host):
-    """``torch.xpu.is_available()`` raising (driver not initialised) must degrade to CPU, the same
-    way ``dit_accelerator_missing_reason`` guards each probe. An unguarded probe turned a
-    recoverable host into a crashed training job."""
+    """A raising probe must degrade to CPU, as dit_accelerator_missing_reason does: unguarded, an
+    uninitialised driver crashed the run."""
 
     def _boom():
         raise RuntimeError("driver not initialised")
@@ -92,11 +79,9 @@ def test_an_uninitialised_xpu_driver_falls_through_instead_of_killing_the_run(ho
     assert resolve_train_device() == "cpu"
 
 
-# ── bf16: native only, never emulated ────────────────────────────────────────
 def test_an_emulation_only_xpu_is_refused(host):
-    """``torch.xpu.is_bf16_supported()`` defaults to ``including_emulation=True`` and
-    short-circuits to True for EVERY available XPU, so the bare call is not a capability check at
-    all -- the same emulation trap ``native_bf16_supported`` exists to avoid on the CUDA side."""
+    """is_bf16_supported() defaults including_emulation=True and short-circuits, so the bare call
+    answers True for every available XPU: not a capability check."""
     host(
         cuda = False,
         xpu = _fake_xpu(
@@ -120,8 +105,7 @@ def test_a_native_bf16_xpu_is_accepted(host):
 
 
 def test_a_torch_predating_the_emulation_flag_still_answers(host):
-    """``including_emulation`` is recent; on an older torch the no-argument answer is the only one
-    there is, and must not surface as a TypeError."""
+    """On a torch predating including_emulation the no-argument answer is the only one there is."""
     host(cuda = False, xpu = _fake_xpu(is_available = lambda: True, is_bf16_supported = lambda: True))
     assert native_bf16_supported_xpu() is True
 
@@ -139,7 +123,6 @@ def test_an_xpu_without_a_usable_bf16_probe_is_refused(host, probe):
     assert native_bf16_supported_xpu() is False
 
 
-# ── what the trainers actually bind ──────────────────────────────────────────
 def _dit_cfg():
     return DiffusionLoraConfig(
         base_model = "black-forest-labs/FLUX.1-dev",
@@ -161,24 +144,22 @@ def _h3_cfg():
 
 
 class _Cut(Exception):
-    """Stops the run at the first statement after the device decision."""
+    pass
 
 
 def _decide(monkeypatch, module, entry, cfg):
-    """Run the REAL entry point and report the (device, weight_dtype) its frame bound.
+    """The (device, weight_dtype) the REAL entry point bound, read from its live frame.
 
-    Cut at ``_assert_trusted_base_model``, the statement immediately after ``weight_dtype``, so the
-    decision is observed from the live frame rather than from a copy of the rule -- and nothing
-    downstream (model download, latent cache, training) runs.
+    Cut at _assert_trusted_base_model, the statement right after weight_dtype: observes the decision
+    itself rather than a copy of the rule, and nothing downstream (download, cache, training) runs.
     """
 
     def _cut(*_a, **_k):
         raise _Cut()
 
     monkeypatch.setattr(module, "_assert_trusted_base_model", _cut)
-    # torch.manual_seed fans out into every accelerator module (torch.xpu.manual_seed_all ->
-    # torch.xpu._is_in_bad_fork), which a deliberately bare fake does not carry. It runs BEFORE the
-    # decision and cannot influence it.
+    # manual_seed fans out into torch.xpu.manual_seed_all, which the bare fake lacks; it runs
+    # before the decision and cannot influence it.
     monkeypatch.setattr(torch, "manual_seed", lambda *_a, **_k: None)
 
     try:
@@ -229,13 +210,10 @@ def test_both_flow_trainers_refuse_an_emulation_only_xpu(monkeypatch, host, modu
         _decide(monkeypatch, module, entry, cfg)
 
 
-# ── the caches both loops free between phases ────────────────────────────────
 @pytest.mark.parametrize("module", [dit, h3], ids = ["dit", "h3"])
 def test_every_phase_boundary_frees_the_selected_accelerator(module):
-    """Both loops drop the text encoders and the VAE immediately before the multi-GB transformer
-    load. A boundary that clears only the CUDA allocator leaves that memory resident on an XPU box
-    and the transformer load that follows has to fit around it, so the two calls must stay paired.
-    """
+    """Both boundaries free the text encoders and VAE right before the multi-GB transformer load,
+    so a CUDA-only clear leaves that memory resident for it on an XPU box."""
     import inspect
 
     src = inspect.getsource(module)
@@ -245,11 +223,9 @@ def test_every_phase_boundary_frees_the_selected_accelerator(module):
     assert xpu_frees == cuda_frees
 
 
-# ── what the run RECORDS vs what the loop RUNS ───────────────────────────────
 def test_an_xpu_flow_run_records_the_bf16_it_actually_trains_in(host):
-    """``identity_for_config`` stores this, and a resume is refused when it disagrees. The loops
-    bind bf16 on any accelerator, so a rule keyed on CUDA alone would record "no" for a run that
-    trained in bf16."""
+    """identity_for_config stores this and a resume is refused when it disagrees, so a CUDA-only
+    rule would record "no" for a run the loop trained in bf16."""
     cfg = _dit_cfg().normalized()
     host(cuda = False, xpu = _fake_xpu(is_available = lambda: True))
     assert effective_mixed_precision(cfg) == "bf16"

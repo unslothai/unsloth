@@ -1857,11 +1857,8 @@ def run_dit_lora_training(
         return True
 
     device = resolve_train_device()
-    # The flow-matching + 4-bit path is bf16 throughout (fp32 on a CPU-only box, to keep import/unit tests
-    # architecture-agnostic).
-    # Fail fast on pre-Ampere CUDA, gating on NATIVE bf16 (capability major >= 8), since is_bf16_supported() counts
-    # emulation. An XPU device without native bf16 is refused the same way, via the XPU helper that asks for the
-    # native answer explicitly.
+    # bf16 throughout (fp32 on a CPU-only box, to keep import/unit tests architecture-agnostic). Both accelerator
+    # guards gate on NATIVE bf16, since is_bf16_supported() counts emulation on CUDA and on XPU alike.
     if device == "cuda" and not native_bf16_supported():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
