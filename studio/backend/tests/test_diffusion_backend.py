@@ -11233,9 +11233,7 @@ def test_a_pipeline_pick_refuses_an_explicit_scheme_that_did_not_engage(
     assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
 
 
-def test_a_pipeline_pick_quantises_under_whole_module_offload(
-    fake_runtime, tmp_path, monkeypatch
-):
+def test_a_pipeline_pick_quantises_under_whole_module_offload(fake_runtime, tmp_path, monkeypatch):
     """Whole-module offload no longer costs the quantisation.
 
     This asserted the opposite while the loader refused every offload tier, on the grounds that
