@@ -3920,12 +3920,23 @@ class ChatForkActiveGenerationError(RuntimeError):
 _FORK_TITLE_SUFFIX = re.compile(r"^(?P<base>.*?)\s*\((?P<n>\d+)\)\s*$", re.DOTALL)
 
 
-def fork_title_base(title: str, source_is_fork: bool = True) -> str:
-    """The name a fork numbers from.
+def _title_family(conn: sqlite3.Connection, base: str) -> list[tuple[str, str]]:
+    """Every chat named `base` or `base (n)`, as (id, title)."""
+    return [
+        (row["id"], row["title"] or "")
+        for row in conn.execute(
+            "SELECT id, title FROM chat_threads WHERE title = ? OR title LIKE ? ESCAPE '\\'",
+            (base, _like_escape(base) + " (%)"),
+        )
+    ]
 
-    Only a fork's own "(n)" is ours to replace, so forking "Chat (2)" gives "Chat (3)".
-    On an ordinary chat the number is the user's: "Budget (2026)" forks to
-    "Budget (2026) (1)", not to "Budget (1)".
+
+def fork_title_base(title: str, source_is_fork: bool = True) -> str:
+    """The name a fork numbers from, ignoring whether the number is really ours.
+
+    `_fork_base` is what the fork path uses; this is the shape of the rule and the
+    seam the tests pin. Only a fork's own "(n)" is ever replaced, so forking
+    "Chat (2)" gives "Chat (3)" while "Budget (2026)" gives "Budget (2026) (1)".
     """
     if not source_is_fork:
         return title.strip() or title
@@ -3935,15 +3946,27 @@ def fork_title_base(title: str, source_is_fork: bool = True) -> str:
     return base or title.strip()
 
 
+def _fork_base(conn: sqlite3.Connection, src: sqlite3.Row) -> str:
+    """The base for a fork of `src`, taken from the row inside the write lock.
+
+    A "(n)" is only ours when the family it names is really there: the chat this was
+    forked from, or another fork of it. That is what tells a generated "Notes (1)"
+    from a fork the user renamed to "Budget (2026)", which keeps its whole name.
+    """
+    title = (src["title"] or "").strip()
+    stripped = fork_title_base(title, source_is_fork = src["forked_from_thread_id"] is not None)
+    if stripped == title:
+        return title
+    family = [tid for tid, _ in _title_family(conn, stripped) if tid != src["id"]]
+    return stripped if family else title
+
+
 def _next_fork_title(conn: sqlite3.Connection, base: str) -> str:
     """Lowest free `base (n)`, n >= 1. Called inside the fork's write lock, so two
     concurrent forks of one chat cannot pick the same number."""
     taken: set[int] = set()
-    for row in conn.execute(
-        "SELECT title FROM chat_threads WHERE title = ? OR title LIKE ? ESCAPE '\\'",
-        (base, _like_escape(base) + " (%)"),
-    ):
-        match = _FORK_TITLE_SUFFIX.match(row["title"] or "")
+    for _id, title in _title_family(conn, base):
+        match = _FORK_TITLE_SUFFIX.match(title)
         if match and match.group("base").strip() == base:
             taken.add(int(match.group("n")))
     n = 1
@@ -3956,7 +3979,6 @@ def fork_chat_thread(
     source_thread_id: str,
     branch_message_id: Optional[str],
     new_thread_id: str,
-    new_title: str,
     created_at: int,
     id_factory,
 ) -> Optional[dict]:
@@ -4031,13 +4053,9 @@ def fork_chat_thread(
         ancestry.reverse()  # root .. branch msg
         id_map: dict[str, str] = {row["id"]: id_factory() for row in ancestry}
         src_dict = dict(src)
-        # Numbered under the write lock, so two concurrent forks cannot take the same number.
-        title = _next_fork_title(
-            conn,
-            fork_title_base(
-                new_title, source_is_fork = src_dict.get("forked_from_thread_id") is not None
-            ),
-        )
+        # Named from the row this transaction read, under the write lock: a title taken
+        # before it could be renamed by another tab, and the number could already be gone.
+        title = _next_fork_title(conn, _fork_base(conn, src))
         # Anchor for the "Continued from chat" divider. Not derivable later: copies keep the
         # source's timestamps and take fresh ids.
         boundary_message_id = id_map[ancestry[-1]["id"]]

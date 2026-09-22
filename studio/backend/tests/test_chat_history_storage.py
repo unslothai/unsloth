@@ -822,7 +822,6 @@ def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
         source_thread_id = "src",
         branch_message_id = "m3",
         new_thread_id = "fork-1",
-        new_title = "Original",
         created_at = 99,
         id_factory = id_factory,
     )
@@ -858,7 +857,6 @@ def test_fork_preserves_legacy_ancestry(tmp_path, monkeypatch, linked_tip, branc
         source_thread_id = "src",
         branch_message_id = branch_message_id,
         new_thread_id = "fork-1",
-        new_title = "fork",
         created_at = 4,
         id_factory = iter(("copy-1", "copy-2", "copy-3")).__next__,
     )
@@ -878,7 +876,6 @@ def test_fork_chat_thread_preserves_project_id(tmp_path, monkeypatch):
         source_thread_id = "src",
         branch_message_id = "m1",
         new_thread_id = "fork-1",
-        new_title = "Original",
         created_at = 99,
         id_factory = lambda: "new-1",
     )
@@ -929,7 +926,6 @@ def test_fork_chat_thread_detaches_research_run_metadata(tmp_path, monkeypatch):
         source_thread_id = "src",
         branch_message_id = "research-report",
         new_thread_id = "fork-1",
-        new_title = "fork",
         created_at = 3,
         id_factory = iter(("fork-user", "fork-report")).__next__,
     )
@@ -965,7 +961,6 @@ def test_fork_chat_thread_returns_none_for_missing_source(tmp_path, monkeypatch)
         source_thread_id = "nope",
         branch_message_id = "m1",
         new_thread_id = "fork",
-        new_title = "f",
         created_at = 1,
         id_factory = lambda: "x",
     )
@@ -983,7 +978,6 @@ def test_fork_chat_thread_rejects_a_deleted_target_id(tmp_path, monkeypatch):
             source_thread_id = "src",
             branch_message_id = "m1",
             new_thread_id = "fork",
-            new_title = "f",
             created_at = 2,
             id_factory = lambda: "new-1",
         )
@@ -1006,7 +1000,6 @@ def test_count_forks_for_message(tmp_path, monkeypatch):
         source_thread_id = "src",
         branch_message_id = "m1",
         new_thread_id = "f1",
-        new_title = "f1",
         created_at = 2,
         id_factory = id_factory,
     )
@@ -1014,7 +1007,6 @@ def test_count_forks_for_message(tmp_path, monkeypatch):
         source_thread_id = "src",
         branch_message_id = "m1",
         new_thread_id = "f2",
-        new_title = "f2",
         created_at = 3,
         id_factory = id_factory,
     )
@@ -1041,7 +1033,6 @@ def test_fork_counts_for_thread(tmp_path, monkeypatch):
             source_thread_id = "src",
             branch_message_id = branch,
             new_thread_id = new_id,
-            new_title = new_id,
             created_at = 10 + index,
             id_factory = id_factory,
         )
@@ -1413,12 +1404,11 @@ def test_an_ordinary_chat_keeps_its_own_number(title):
     assert studio_db.fork_title_base(title, source_is_fork = False) == title
 
 
-def _fork(source: str, new_id: str, title: str, at: int):
+def _fork(source: str, new_id: str, at: int):
     return studio_db.fork_chat_thread(
         source_thread_id = source,
         branch_message_id = None,
         new_thread_id = new_id,
-        new_title = title,
         created_at = at,
         id_factory = lambda: uuid.uuid4().hex,
     )
@@ -1430,9 +1420,34 @@ def test_fork_of_an_ordinary_chat_keeps_a_numeric_suffix(tmp_path, monkeypatch):
     studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
 
     # The year is the user's, not a fork number, so it survives into the fork's name.
-    assert _fork("src", "f0", "Budget (2026)", 10)["title"] == "Budget (2026) (1)"
+    assert _fork("src", "f0", 10)["title"] == "Budget (2026) (1)"
     # And a fork of that fork still numbers from the same base rather than nesting again.
-    assert _fork("f0", "f1", "Budget (2026) (1)", 11)["title"] == "Budget (2026) (2)"
+    assert _fork("f0", "f1", 11)["title"] == "Budget (2026) (2)"
+
+
+def test_a_renamed_fork_keeps_the_name_the_user_gave_it(tmp_path, monkeypatch):
+    """forked_from_thread_id survives a rename, so it alone cannot say the "(n)" is ours."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("orig"), "title": "Notes"})
+    studio_db.upsert_chat_thread(
+        {**_thread("f"), "title": "Report (2026)", "forkedFromThreadId": "orig"}
+    )
+    studio_db.sync_chat_messages("f", [_msg("m1", None, 1)])
+
+    # No "Report" family to join, so the year is the user's and the whole name is the base.
+    assert _fork("f", "f2", 10)["title"] == "Report (2026) (1)"
+
+
+def test_a_generated_suffix_is_still_replaced(tmp_path, monkeypatch):
+    """The family the number names is really there, so it is ours to take."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("orig"), "title": "Notes"})
+    studio_db.upsert_chat_thread(
+        {**_thread("f"), "title": "Notes (1)", "forkedFromThreadId": "orig"}
+    )
+    studio_db.sync_chat_messages("f", [_msg("m1", None, 1)])
+
+    assert _fork("f", "f2", 10)["title"] == "Notes (2)"
 
 
 def test_fork_titles_number_from_the_original_name(tmp_path, monkeypatch):
@@ -1440,11 +1455,11 @@ def test_fork_titles_number_from_the_original_name(tmp_path, monkeypatch):
     studio_db.upsert_chat_thread({**_thread("src"), "title": "Research notes"})
     studio_db.sync_chat_messages("src", [_msg("m1", None, 1), _msg("m2", "m1", 2)])
 
-    titles = [_fork("src", f"f{i}", "Research notes", 10 + i)["title"] for i in range(3)]
+    titles = [_fork("src", f"f{i}", 10 + i)["title"] for i in range(3)]
     assert titles == ["Research notes (1)", "Research notes (2)", "Research notes (3)"]
 
     # Forking a fork numbers from the same base rather than nesting suffixes.
-    assert _fork("f0", "deep", "Research notes (1)", 20)["title"] == "Research notes (4)"
+    assert _fork("f0", "deep", 20)["title"] == "Research notes (4)"
 
 
 def test_fork_title_fills_the_lowest_free_number(tmp_path, monkeypatch):
@@ -1452,10 +1467,10 @@ def test_fork_title_fills_the_lowest_free_number(tmp_path, monkeypatch):
     studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
     studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
     for i in range(3):
-        _fork("src", f"f{i}", "Notes", 10 + i)
+        _fork("src", f"f{i}", 10 + i)
     studio_db.delete_chat_threads(["f1"])  # frees "Notes (2)"
 
-    assert _fork("src", "f-new", "Notes", 30)["title"] == "Notes (2)"
+    assert _fork("src", "f-new", 30)["title"] == "Notes (2)"
 
 
 def test_fork_title_ignores_other_names_and_archived_state(tmp_path, monkeypatch):
@@ -1469,7 +1484,7 @@ def test_fork_title_ignores_other_names_and_archived_state(tmp_path, monkeypatch
         {**_thread("old"), "title": "Notes (1)", "archived": True}
     )
 
-    assert _fork("src", "f-new", "Notes", 30)["title"] == "Notes (2)"
+    assert _fork("src", "f-new", 30)["title"] == "Notes (2)"
 
 
 def test_fork_records_the_last_inherited_message(tmp_path, monkeypatch):
@@ -1483,7 +1498,6 @@ def test_fork_records_the_last_inherited_message(tmp_path, monkeypatch):
         source_thread_id = "src",
         branch_message_id = "m2",
         new_thread_id = "fork-1",
-        new_title = "Notes",
         created_at = 99,
         id_factory = lambda: uuid.uuid4().hex,
     )

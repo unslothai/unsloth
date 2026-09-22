@@ -1549,3 +1549,43 @@ def test_fork_route_numbers_the_title_and_reports_the_boundary(tmp_path, monkeyp
     # The anchor is this fork's own last inherited message, so the divider lands under it.
     assert forked.thread.forkBoundaryMessageId == forked.messages[-1].id
     assert forked.thread.forkBoundaryMessageId not in {"m1", "m2"}
+
+
+def test_fork_title_comes_from_the_row_not_the_route_s_earlier_read(tmp_path, monkeypatch):
+    """A rename landing between the route's read and the write lock must not name the fork."""
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+
+    studio_db.upsert_chat_thread(
+        {"id": "src", "title": "Renamed", "modelType": "base", "createdAt": 1}
+    )
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            {
+                "id": "m1",
+                "threadId": "src",
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "hi"}],
+                "createdAt": 1,
+            }
+        ],
+    )
+    # What the route saw before the lock: the name as it was, now stale.
+    monkeypatch.setattr(
+        chat_history,
+        "get_chat_thread",
+        lambda _id: {"id": "src", "title": "Stale name", "modelType": "base", "createdAt": 1},
+    )
+
+    response = chat_history.fork_thread(
+        thread_id = "src",
+        payload = chat_history.ChatForkRequest(newThreadId = "fork-1", createdAt = 2),
+        current_subject = "test-user",
+    )
+    assert response.thread.title == "Renamed (1)"
+    assert "Stale" not in response.thread.title

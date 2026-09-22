@@ -1656,15 +1656,11 @@ def fork_thread(
             status_code = 404,
             detail = f"Message {payload.messageId} not found in thread {thread_id}",
         )
-    # Numbered against the other chats inside the fork transaction, which is the only place
-    # the count cannot go stale. This is just the name to number from.
-    base_title = source.get("title") or "New Chat"
     try:
         forked = fork_chat_thread(
             source_thread_id = thread_id,
             branch_message_id = payload.messageId,
             new_thread_id = payload.newThreadId,
-            new_title = base_title,
             created_at = payload.createdAt,
             id_factory = lambda: str(uuid.uuid4()),
         )
