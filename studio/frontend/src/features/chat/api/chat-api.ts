@@ -226,9 +226,12 @@ export async function getApiMonitor(): Promise<ApiMonitorResponse> {
   return parseJsonOrThrow<ApiMonitorResponse>(response);
 }
 
-export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
+export async function getApiMonitorEntry(
+  id: string,
+  includePrompt = true,
+): Promise<ApiMonitorEntry> {
   const response = await authFetch(
-    `/api/inference/monitor/${encodeURIComponent(id)}`,
+    `/api/inference/monitor/${encodeURIComponent(id)}${includePrompt ? "" : "?include_prompt=false"}`,
   );
   return parseJsonOrThrow<ApiMonitorEntry>(response);
 }

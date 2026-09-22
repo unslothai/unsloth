@@ -4,11 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { atDefaultUiScale, readSrc } from "./helpers/kit.ts";
 
-const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
+const APP_SIDEBAR = atDefaultUiScale(readSrc("components/app-sidebar.tsx"));
 
-const INDEX = readSrc("index.css");
+const INDEX = atDefaultUiScale(readSrc("index.css"));
 
 // The pinned top rows run an action rather than open a page, so neither may
 // mark itself active: nav rows paint one pill for both states, and an active
