@@ -1857,36 +1857,31 @@ export function AppSidebar() {
     if (effects.unpinProject && pinnedProjectIdSet.has(effects.unpinProject)) {
       toggleProjectPin(effects.unpinProject);
     }
-    // The sorts the drop was aimed under. A move lands later, so the switch to Manual is only
-    // ours to make if that list is still on the sort it was: a sort the user picked meanwhile is
-    // the newer intent and stands, and a closure reading its own drop-time value would overwrite
-    // it. Unchanged covers Manual too, which a plan only asks for from a sorted list.
-    const sortAtDrop = useSidebarOrganizationStore.getState();
-    const applyOrders = (before?: Record<string, string[]>) => {
+    // `superseded` once the user has picked a sort since the drop: that is the newer intent, so
+    // the drop's switch to Manual is dropped rather than overwriting it.
+    const applyOrders = (
+      before?: Record<string, string[]>,
+      superseded?: boolean,
+    ) => {
       for (const order of effects.orders) {
         setManualOrder(
           order.scope,
           before ? landedOrder(order, before[order.scope]) : order.ids,
         );
       }
-      const sortNow = useSidebarOrganizationStore.getState();
-      if (
-        effects.switchSort === "chats" &&
-        sortNow.chatSort === sortAtDrop.chatSort
-      ) {
+      if (superseded) return;
+      if (effects.switchSort === "chats") {
         setChatSort("manual");
         toast.info(t("shell.organize.switchedToManual"));
       }
-      if (
-        effects.switchSort === "pinned" &&
-        sortNow.pinnedSort === sortAtDrop.pinnedSort
-      ) {
+      if (effects.switchSort === "pinned") {
         setPinnedSort("manual");
         toast.info(t("shell.organize.switchedToManual"));
       }
     };
     const move = effects.moveChat;
     if (!move) {
+      // Nothing to wait for, so nothing can come between the drop and this.
       applyOrders();
       return;
     }
@@ -1900,13 +1895,25 @@ export function AppSidebar() {
     const moves = chatMovesRef.current;
     const previous = moves.get(item.id);
     const generation = (previous?.generation ?? 0) + 1;
+    // Watches for the change itself, not the value before against the value after: a sort picked
+    // and picked back while the move is in flight reads as untouched by value, and it is not.
+    let sortPicked = false;
+    const stopWatchingSort = useSidebarOrganizationStore.subscribe(
+      (now, before) => {
+        sortPicked ||=
+          now.chatSort !== before.chatSort ||
+          now.pinnedSort !== before.pinnedSort;
+      },
+    );
     const chain = (previous?.chain ?? Promise.resolve())
       .then(() => moveChatToProject(item, move.projectId))
       .then((moved) => {
         if (!moved || moves.get(item.id)?.generation !== generation) return;
-        applyOrders(ordersBefore);
+        // Read before applyOrders, whose own switch would otherwise trip the watch.
+        applyOrders(ordersBefore, sortPicked);
         if (unpinAfter) usePinnedChatsStore.getState().unpin(unpinAfter);
-      });
+      })
+      .finally(stopWatchingSort);
     moves.set(item.id, { generation, chain });
   }
 

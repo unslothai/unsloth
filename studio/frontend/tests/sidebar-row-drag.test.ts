@@ -875,7 +875,12 @@ test("a chat dropped again before its move lands keeps only the latest drop", ()
   );
   assert.match(
     APP_SIDEBAR,
-    /const generation = \(previous\?\.generation \?\? 0\) \+ 1;\n\s*const chain = \(previous\?\.chain \?\? Promise\.resolve\(\)\)\n\s*\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)/,
+    /const generation = \(previous\?\.generation \?\? 0\) \+ 1;/,
+  );
+  // This drop's work is queued behind the one before it, never alongside.
+  assert.match(
+    APP_SIDEBAR,
+    /const chain = \(previous\?\.chain \?\? Promise\.resolve\(\)\)\n\s*\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)/,
   );
   assert.match(APP_SIDEBAR, /moves\.set\(item\.id, \{ generation, chain \}\);/);
 });
@@ -1011,11 +1016,11 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
   );
   assert.match(
     APP_SIDEBAR,
-    /const move = effects\.moveChat;\n\s*if \(!move\) \{\n\s*applyOrders\(\);\n\s*return;\n\s*\}/,
+    /const move = effects\.moveChat;\n\s*if \(!move\) \{\n(?:\s*\/\/[^\n]*\n)*\s*applyOrders\(\);\n\s*return;\n\s*\}/,
   );
   assert.match(
     APP_SIDEBAR,
-    /\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)\n\s*\.then\(\(moved\) => \{\n\s*if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;\n\s*applyOrders\(ordersBefore\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
+    /\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)\n\s*\.then\(\(moved\) => \{\n\s*if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;\n(?:\s*\/\/[^\n]*\n)*\s*applyOrders\(ordersBefore, sortPicked\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
   );
   // And nothing else in commitDrop writes an order on its own.
   const commit = APP_SIDEBAR.slice(
@@ -1051,27 +1056,25 @@ test("a sort picked while a move is in flight is not overwritten", () => {
     APP_SIDEBAR.indexOf("function commitDrop("),
     APP_SIDEBAR.indexOf("function dropCueClass("),
   );
-  // Both ends read the store, so neither is the stale render value.
+  // The change itself is watched. A value read at the drop and again at the end cannot tell a
+  // sort picked and picked back from one never touched, and that is a newer intent either way.
   assert.match(
     commit,
-    /const sortAtDrop = useSidebarOrganizationStore\.getState\(\);/,
+    /const stopWatchingSort = useSidebarOrganizationStore\.subscribe\(\n\s*\(now, before\) => \{\n\s*sortPicked \|\|=\n\s*now\.chatSort !== before\.chatSort \|\|\n\s*now\.pinnedSort !== before\.pinnedSort;/,
   );
+  // Only the path that waits. Nothing can come between a drop and a switch applied in the turn.
   assert.match(
     commit,
-    /const sortNow = useSidebarOrganizationStore\.getState\(\);/,
+    /if \(!move\) \{\n(?:\s*\/\/[^\n]*\n)*\s*applyOrders\(\);\n\s*return;\n\s*\}/,
   );
-  // Unchanged since the drop, not merely non-Manual: the user's newer pick stands either way.
-  assert.match(
-    commit,
-    /effects\.switchSort === "chats" &&\n\s*sortNow\.chatSort === sortAtDrop\.chatSort/,
-  );
-  assert.match(
-    commit,
-    /effects\.switchSort === "pinned" &&\n\s*sortNow\.pinnedSort === sortAtDrop\.pinnedSort/,
-  );
+  // Read before applyOrders, whose own setChatSort would otherwise trip the watch it reads.
+  assert.match(commit, /applyOrders\(ordersBefore, sortPicked\);/);
+  // Released on every ending, including a move that failed or was superseded.
+  assert.match(commit, /\.finally\(stopWatchingSort\);/);
+  // And the switch no longer second-guesses the plan by re-testing the sort's value.
   assert.ok(
-    !/chatSort !== "manual"|pinnedSort !== "manual"/.test(commit),
-    "the switch still tests the render's own sort",
+    !/chatSort !== "manual"|pinnedSort !== "manual"|=== sortAtDrop\./.test(commit),
+    "the switch still tests a sort value",
   );
 });
 
