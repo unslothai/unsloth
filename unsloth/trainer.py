@@ -599,10 +599,15 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
     roles = getattr(optimizer, "_unsloth_group_roles", None)
     if roles is None:
         return scheduler
-    original = scheduler.load_state_dict
+    base = type(scheduler)
+    if getattr(base, "_unsloth_legacy_resume", False):
+        return scheduler
 
-    @wraps(original)
-    def load_state_dict(state_dict):
+    # Overridden on a per-instance subclass, NOT by assigning to the instance: a scheduler's
+    # state_dict is its __dict__ minus the optimizer, so an instance attribute would put this
+    # closure into every checkpoint and torch.save cannot pickle it, failing the first save
+    # even when nothing is being resumed.
+    def load_state_dict(self, state_dict):
         state_dict = dict(state_dict)
         # min_lrs is reduce_lr_on_plateau's per-group floor; left at two entries it
         # replaces a correctly sized list and the next reduction indexes past its end.
@@ -616,9 +621,13 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
             if isinstance(saved, list) and len(saved) == len(_LEGACY_ROLE_ORDER):
                 by_role = dict(zip(_LEGACY_ROLE_ORDER, saved))
                 state_dict[key] = [by_role[role] for role in roles]
-        return original(state_dict)
+        return base.load_state_dict(self, state_dict)
 
-    scheduler.load_state_dict = load_state_dict
+    scheduler.__class__ = type(
+        base.__name__,
+        (base,),
+        {"load_state_dict": load_state_dict, "_unsloth_legacy_resume": True},
+    )
     return scheduler
 
 

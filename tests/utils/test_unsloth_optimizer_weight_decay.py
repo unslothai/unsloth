@@ -390,3 +390,25 @@ def test_scheduler_state_of_equal_length_is_remapped_by_role_not_position():
     )
     scheduler.load_state_dict(saved)
     assert scheduler.base_lrs == [2e-4, 2e-4], scheduler.base_lrs
+
+
+def test_the_scheduler_hook_stays_out_of_the_checkpoint():
+    # A scheduler's state_dict is its __dict__ minus the optimizer, so hooking by
+    # instance attribute puts an unpicklable closure into every checkpoint and the
+    # FIRST save fails, resume or no resume.
+    torch = pytest.importorskip("torch")
+    nn = torch.nn
+    import io
+    from torch.optim.lr_scheduler import LambdaLR
+    from unsloth.trainer import _install_legacy_scheduler_resume
+
+    model = _model(torch, nn)
+    optimizer = _optimizer(torch, model, 0.1)
+    scheduler = _install_legacy_scheduler_resume(LambdaLR(optimizer, lambda step: 1.0), optimizer)
+
+    state = scheduler.state_dict()
+    assert not [key for key, value in state.items() if callable(value)], state.keys()
+    torch.save(state, io.BytesIO())  # PicklingError if the hook leaked into the state
+    torch.save(optimizer.state_dict(), io.BytesIO())
+    # and it is still an ordinary scheduler to everyone else
+    assert isinstance(scheduler, LambdaLR)
