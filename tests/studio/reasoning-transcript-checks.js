@@ -130,5 +130,22 @@ async (page) => {
   await page.screenshot({ path: ".playwright-cli/reasoning-inline-mobile-dark.png" });
   await page.evaluate(() => document.documentElement.classList.remove("dark"));
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  return { passed: true, checks: ["bounded saved trace", "no pagination chrome", "canonical copy", "collapse/reopen", "live collapse/reopen", "threshold anchor", "streaming anchor", "resize anchor", "long prompt reflow", "selection", "resume following", "narrow code", "light/dark"] };
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.evaluate(() => window.__reasoning.seed({ text:
+    "Earlier paragraph.\n\n".repeat(1000) + "[Link][ref]\n\n> [ref]: https://example.org",
+  }));
+  await page.waitForTimeout(500);
+  check(await page.getByRole("link", { name: "Link", exact: true }).getAttribute("href") === "https://example.org/", "fragmented reference lost its document definition");
+  for (const marker of ["1. ", "- Parent\n  1. ", "> 1. "]) {
+    await page.evaluate((marker) => window.__reasoning.seed({ text: marker + "Long item ".repeat(3000) + "\n2. Second item" }), marker);
+    await page.waitForTimeout(500);
+    const continuation = page.locator("li[data-reasoning-list-continuation]").last();
+    check(await continuation.count() === 1, "long list item lost its continuation container");
+    check(await continuation.evaluate((node) => getComputedStyle(node).listStyleType) === "none", "continuation repeated its marker");
+    const sibling = page.locator("li").filter({ hasText: /^Second item$/ }).last();
+    check(await sibling.count() === 1, "continuation swallowed a genuine sibling item");
+    check(await sibling.evaluate((node) => getComputedStyle(node).listStyleType) !== "none", "real sibling lost its marker");
+  }
+  await page.screenshot({ path: ".playwright-cli/reasoning-review-formatting.png" });
+  return { passed: true, checks: ["bounded saved trace", "no pagination chrome", "canonical copy", "collapse/reopen", "live collapse/reopen", "threshold anchor", "streaming anchor", "resize anchor", "long prompt reflow", "selection", "resume following", "narrow code", "light/dark", "document reference links", "list continuation markers"] };
 }

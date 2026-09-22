@@ -7,6 +7,7 @@ import { mathFromMarkdown } from "mdast-util-math";
 import { gfm } from "micromark-extension-gfm";
 import { math } from "micromark-extension-math";
 import remend from "remend";
+import type { Definition, RootContent } from "mdast";
 import { markdownBlockFallback } from "./markdown-block-fallback.ts";
 
 export const REASONING_TRANSCRIPT_THRESHOLD = 16_384;
@@ -22,6 +23,8 @@ export type ReasoningFragment = {
   end: number;
   text: string;
   renderText?: string;
+  /** Synthetic list containers continue an item without repeating its marker. */
+  listContinuationDepth?: number;
   /** Continuations have no paragraph gap or repeated code header. */
   first: boolean;
   last: boolean;
@@ -38,6 +41,7 @@ type Block = {
   text: string;
   continued: boolean;
   prefix?: string;
+  listContinuationDepth?: number;
 };
 type Fence = { marker: string; scan: number };
 
@@ -69,9 +73,46 @@ export function findReasoningAnchor(
 function continuationPrefix(
   text: string,
   nodes: readonly MarkdownNode[],
-): string {
-  let last = nodes.at(-1);
-  while (last?.children?.length) last = last.children.at(-1);
+  cut: number,
+): { prefix: string; listDepth: number } {
+  const atCut = (siblings: readonly MarkdownNode[]) => {
+    if (siblings.some((node) => node.position?.start.offset === cut))
+      return undefined;
+    return siblings.find(
+      (node, i) =>
+        (node.position?.start.offset ?? 0) < cut &&
+        ((node.position?.end.offset ?? 0) >= cut ||
+          (i === siblings.length - 1 &&
+            (node.type === "code" || node.type === "blockquote") &&
+            !text.slice(node.position?.end.offset, cut).trim())),
+    );
+  };
+  let last = atCut(nodes);
+  const containers: { marker: string; list: boolean }[] = [];
+  while (last) {
+    if (last.type === "listItem") {
+      const start = last.position?.start.offset ?? 0;
+      const marker = /^ {0,3}(?:[-+*]|\d+[.)])[\t ]+/.exec(text.slice(start));
+      if (marker) containers.push({ marker: marker[0], list: true });
+    }
+    if (last.type === "blockquote")
+      containers.push({ marker: "> ", list: false });
+    const child = last.children && atCut(last.children);
+    if (!child) break;
+    last = child;
+  }
+  let indent = "";
+  let listPrefix = "";
+  for (const [i, { marker, list }] of containers.entries()) {
+    listPrefix += marker;
+    indent += list ? " ".repeat(marker.length) : marker;
+    if (
+      list &&
+      (containers.slice(i + 1).some((item) => item.list) ||
+        last?.type === "list")
+    )
+      listPrefix += "\n" + indent;
+  }
   if (last?.type === "code") {
     const start = last.position?.start.offset ?? 0;
     const lineStart = text.lastIndexOf("\n", start - 1) + 1;
@@ -81,7 +122,7 @@ function continuationPrefix(
       opener,
     );
     const close = /^[\t >]*(`{3,}|~{3,})[\t ]*$/.exec(
-      text.trimEnd().split("\n").at(-1) ?? "",
+      text.slice(0, cut).trimEnd().split("\n").at(-1) ?? "",
     );
     if (
       match &&
@@ -91,17 +132,47 @@ function continuationPrefix(
         close[1].length >= match[2].length
       )
     )
-      return `${opener}\n`;
+      return { prefix: `${opener}\n`, listDepth: 0 };
   }
-  const trimmed = text.trimEnd();
+  const trimmed = text.slice(0, cut).trimEnd();
   const repaired = remend(trimmed);
   const suffix = repaired.startsWith(trimmed)
     ? repaired.slice(trimmed.length)
     : "";
-  return suffix && /^[*_`]+$/.test(suffix)
-    ? [...suffix].reverse().join("")
-    : "";
+  const inlinePrefix =
+    suffix && /^[*_`]+$/.test(suffix) ? [...suffix].reverse().join("") : "";
+  return {
+    prefix: listPrefix + inlinePrefix,
+    listDepth: containers.filter((item) => item.list).length,
+  };
 }
+
+function* referenceDefinitions(
+  nodes: readonly RootContent[],
+): Generator<Definition> {
+  for (const node of nodes) {
+    if (node.type === "definition") yield node;
+    else if ("children" in node) yield* referenceDefinitions(node.children);
+  }
+}
+
+function definitionSource(node: Definition): string {
+  // Serialize without the quote/list container: definitions are document-scoped.
+  const escape = (value: string) =>
+    value.replace(/&/g, "&amp;").replace(/[\\"]/g, "\\$&");
+  const url = escape(
+    node.url.replace(/[<>\s]/g, (character) => encodeURIComponent(character)),
+  );
+  const title = node.title == null ? "" : ` "${escape(node.title)}"`;
+  return `[${node.label ?? node.identifier}]: <${url}>${title}`;
+}
+
+const normalizeReference = (label: string): string =>
+  label
+    .replace(/[\t\n\r ]+/g, " ")
+    .trim()
+    .toLowerCase()
+    .toUpperCase();
 
 function fenceAt(source: string, start: number): Fence | null {
   const newline = source.indexOf("\n", start);
@@ -162,6 +233,9 @@ class DocumentIndex {
   private fence: Fence | null = null;
   private continued = false;
   private prefix = "";
+  private listContinuationDepth = 0;
+  definitions = new Map<string, { start: number; source: string }>();
+  definitionsRevision = 0;
   generation = 0;
 
   update(source: string): void {
@@ -172,7 +246,15 @@ class DocumentIndex {
       this.fence = null;
       this.continued = false;
       this.prefix = "";
+      this.listContinuationDepth = 0;
+      this.definitions.clear();
+      this.definitionsRevision += 1;
       this.generation += 1;
+    }
+    // Only the unfinished tail can change a previously seen definition.
+    const previousDefinitions = new Map(this.definitions);
+    for (const [key, definition] of this.definitions) {
+      if (definition.start >= this.offset) this.definitions.delete(key);
     }
     this.source = source;
     const pending: Block[] = [];
@@ -208,6 +290,17 @@ class DocumentIndex {
         extensions: [gfm(), math({ singleDollarTextMath: true })],
         mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()],
       }).children;
+      for (const node of referenceDefinitions(nodes)) {
+        const start =
+          this.offset + node.position!.start.offset! - this.prefix.length;
+        const key = normalizeReference(node.identifier);
+        const previous = this.definitions.get(key);
+        // CommonMark uses the first definition; only its still-streaming source can change.
+        if (previous && previous.start !== start) continue;
+        const definition = definitionSource(node);
+        if (previous?.source === definition) continue;
+        this.definitions.set(key, { start, source: definition });
+      }
       // Leave the last node editable (Setext headings, list continuations, open fences).
       const lastStart = Math.max(
         0,
@@ -221,6 +314,7 @@ class DocumentIndex {
             text: tail.slice(0, lastStart),
             continued: this.continued,
             prefix: this.prefix,
+            listContinuationDepth: this.listContinuationDepth,
           });
         }
         for (let n = 0; n < nodes.length - 1; n += 1) {
@@ -241,11 +335,13 @@ class DocumentIndex {
             text: tail.slice(start, stop),
             continued: n === 0 && this.continued,
             prefix: n === 0 ? this.prefix : "",
+            listContinuationDepth: n === 0 ? this.listContinuationDepth : 0,
           });
         }
         this.offset += lastStart;
         this.continued = false;
         this.prefix = "";
+        this.listContinuationDepth = 0;
         continue;
       }
       if (end < source.length) {
@@ -261,11 +357,15 @@ class DocumentIndex {
           text: tail.slice(0, cut),
           continued: this.continued,
           prefix: this.prefix,
+          listContinuationDepth: this.listContinuationDepth,
         });
-        this.prefix = continuationPrefix(
-          this.prefix + tail.slice(0, cut),
+        const context = continuationPrefix(
+          parsedText,
           nodes,
+          this.prefix.length + cut,
         );
+        this.prefix = context.prefix;
+        this.listContinuationDepth = context.listDepth;
         this.offset += cut;
         this.continued = true;
         continue;
@@ -276,10 +376,19 @@ class DocumentIndex {
         text: tail,
         continued: this.continued,
         prefix: this.prefix,
+        listContinuationDepth: this.listContinuationDepth,
       });
       break;
     }
     this.blocks = [...this.committed, ...pending];
+    if (
+      previousDefinitions.size !== this.definitions.size ||
+      [...this.definitions].some(
+        ([key, definition]) =>
+          previousDefinitions.get(key)?.source !== definition.source,
+      )
+    )
+      this.definitionsRevision += 1;
   }
 }
 
@@ -301,6 +410,7 @@ function fragmentsOf(
         end: block.end,
         text: block.text,
         renderText: block.prefix ? block.prefix + block.text : undefined,
+        listContinuationDepth: block.listContinuationDepth,
         first: !block.continued,
         last: true,
       },
@@ -355,7 +465,14 @@ function fragmentsOf(
 /** Stored Markdown documents never share fence or paragraph state. */
 export class ReasoningTranscriptIndex {
   private documents: DocumentIndex[] = [];
-  private fragments = new WeakMap<Block, ReasoningFragment[]>();
+  private fragments = new WeakMap<
+    Block,
+    {
+      revision: number;
+      base: ReasoningFragment[];
+      rows: ReasoningFragment[];
+    }
+  >();
 
   update(sources: readonly string[]): ReasoningFragment[] {
     this.documents.length = sources.length;
@@ -363,12 +480,40 @@ export class ReasoningTranscriptIndex {
       const index = (this.documents[document] ??= new DocumentIndex());
       index.update(source);
       return index.blocks.flatMap((block) => {
-        let fragments = this.fragments.get(block);
-        if (!fragments) {
-          fragments = fragmentsOf(block, document, index.generation);
-          this.fragments.set(block, fragments);
+        let cached = this.fragments.get(block);
+        if (!cached || cached.revision !== index.definitionsRevision) {
+          const base =
+            cached?.base ?? fragmentsOf(block, document, index.generation);
+          const rows = base.map((row) => ({ ...row }));
+          if (index.definitions.size) {
+            for (const row of rows) {
+              if (row.code) continue;
+              const rendered = row.renderText ?? row.text;
+              const used = new Set<string>();
+              for (const match of rendered.matchAll(
+                /\[((?:\\.|[^\]\\]){1,999})\]/g,
+              )) {
+                const definition = index.definitions.get(
+                  normalizeReference(match[1]),
+                );
+                if (definition) used.add(definition.source);
+              }
+              if (used.size)
+                row.renderText = [...used].join("\n\n") + "\n\n" + rendered;
+            }
+          }
+          // New definitions only invalidate consumers; ordinary prose and code keep
+          // their memoized row identity even when a distant reference is completed.
+          if (cached) {
+            for (let i = 0; i < rows.length; i += 1) {
+              if (rows[i].renderText === cached.rows[i]?.renderText)
+                rows[i] = cached.rows[i];
+            }
+          }
+          cached = { revision: index.definitionsRevision, base, rows };
+          this.fragments.set(block, cached);
         }
-        return fragments;
+        return cached.rows;
       });
     });
   }

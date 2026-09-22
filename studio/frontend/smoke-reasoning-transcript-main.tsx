@@ -51,6 +51,7 @@ type Options = {
   chunk?: number;
   gap?: number;
   userPrompt?: string;
+  text?: string;
 };
 let source = "";
 let config: Required<Options> = {
@@ -59,6 +60,7 @@ let config: Required<Options> = {
   chunk: 4096,
   gap: 16,
   userPrompt: "Create a Flappy Bird game in HTML.",
+  text: "",
 };
 let started = 0;
 let finished = 0;
@@ -123,9 +125,10 @@ function Api() {
           chunk: 4096,
           gap: 16,
           userPrompt: "Create a Flappy Bird game in HTML.",
+          text: "",
           ...options,
         };
-        source = fixture(config.size, config.kind);
+        source = config.text || fixture(config.size, config.kind);
         started = 0;
         finished = 0;
         frames = [];
@@ -136,7 +139,9 @@ function Api() {
         });
       },
       seed(options: Options = {}) {
-        source = fixture(options.size ?? 100000, options.kind ?? "mixed");
+        source =
+          options.text ??
+          fixture(options.size ?? 100000, options.kind ?? "mixed");
         aui.thread().import(
           ExportedMessageRepository.fromArray([
             {
@@ -145,7 +150,8 @@ function Api() {
               content: [
                 {
                   type: "text",
-                  text: options.userPrompt ?? "Create a Flappy Bird game in HTML.",
+                  text:
+                    options.userPrompt ?? "Create a Flappy Bird game in HTML.",
                 },
               ],
             },

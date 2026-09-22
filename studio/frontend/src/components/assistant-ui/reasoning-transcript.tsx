@@ -191,8 +191,37 @@ const Fragment = memo(function Fragment({
   messageHasRenderableRenderHtmlTool,
   streaming,
 }: Omit<Props, "documents"> & { fragment: ReasoningFragment }) {
+  const root = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    // Continuation containers preserve indentation/numbering but must not paint
+    // another bullet for the same item. Later, real siblings retain their markers.
+    const items: HTMLElement[] = [];
+    let container: Element | null | undefined = root.current?.firstElementChild;
+    for (
+      let depth = 0;
+      depth < (fragment.listContinuationDepth ?? 0);
+      depth += 1
+    ) {
+      while (
+        container?.firstElementChild &&
+        ["DIV", "BLOCKQUOTE"].includes(container.firstElementChild.tagName)
+      )
+        container = container.firstElementChild;
+      const item: HTMLElement | null | undefined = container?.querySelector(
+        ":scope > :is(ol, ul):first-child > li:first-child",
+      );
+      if (!item) break;
+      item.dataset.reasoningListContinuation = "";
+      items.push(item);
+      container = item;
+    }
+    return () => {
+      for (const item of items) delete item.dataset.reasoningListContinuation;
+    };
+  }, [fragment]);
   return (
     <div
+      ref={root}
       className={cn("aui-reasoning-prose-fragment", fragment.first && "pt-4")}
     >
       <MarkdownTextSource

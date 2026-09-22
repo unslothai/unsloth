@@ -2848,6 +2848,9 @@ html[data-chat-font] .aui-root {
 	.aui-reasoning-prose-fragment > div > :first-child {
 		margin-top: 0;
 	}
+	li[data-reasoning-list-continuation] {
+		list-style-type: none;
+	}
 	[data-reasoning-fragment][data-index="0"] > .aui-reasoning-prose-fragment {
 		padding-top: 0;
 	}
