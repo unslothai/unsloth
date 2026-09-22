@@ -166,3 +166,48 @@ def test_the_blocker_names_itself_in_the_warning():
     )
     # and the predicate is evaluated once, not twice
     assert source.count("_forward_accepts_packing_kwargs(model)") == 1
+
+
+def test_a_string_model_is_rechecked_once_trl_has_built_it(monkeypatch):
+    """The gate fails open on a string, so the real check has to happen after init.
+
+    `enable_padding_free_metadata` is the only thing that injects
+    `packed_seq_lengths`, so skipping it for a materialized model whose forward
+    cannot take the argument is what prevents the TypeError. Driven through the
+    real wrapper with a stub `SFTTrainer.__init__`, so nothing is downloaded.
+    """
+    from types import SimpleNamespace
+
+    import unsloth.trainer as trainer_module
+
+    built = _NoKwargs()
+
+    class _StubSFTTrainer:
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            **kwargs,
+        ):
+            # What TRL does with a string: materialize it, then expose it as self.model.
+            self.model = built if isinstance(model, str) else model
+            self.args = args
+
+    injected = []
+    monkeypatch.setattr(
+        trainer_module,
+        "enable_padding_free_metadata",
+        lambda model, trainer: injected.append(model),
+    )
+    # No hub access: the config is irrelevant to the signature question.
+    monkeypatch.setattr(trainer_module, "_resolve_string_model_config", lambda *a, **k: None)
+
+    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    trainer_module._patch_sft_trainer_auto_packing(module)
+
+    config = SimpleNamespace(packing = False, padding_free = True, max_length = 512)
+    instance = module.SFTTrainer(model = "microsoft/Phi-4-reasoning-vision-15B", args = config)
+
+    assert injected == [], "padding-free metadata must not be installed on this forward"
+    assert instance.args.padding_free is False
+    assert config.padding_free is False
