@@ -400,3 +400,41 @@ def test_a_trainable_fp8_parameter_stays_trainable_after_dequantization():
     assert model.experts.gate_up_proj.dtype == torch.bfloat16
     assert model.experts.gate_up_proj.requires_grad is True
     assert model.experts.down_proj.requires_grad is False
+
+
+def test_a_transposed_block_grid_is_turned_around_by_the_configured_block_size():
+    """Both orientations of a (2, 1) grid tile a [4, 2] weight, so the shape alone cannot tell
+    them apart; the configured block size (2, 2) says the canonical grid is (2, 1)."""
+    from unsloth.models.loader_utils import _fp8_scale_grid_dequant, _orient_block_scale
+
+    raw = (torch.arange(8, dtype = torch.float32).reshape(4, 2) + 1).to(_FP8_DTYPES[0])
+    scale = torch.tensor([[2.0], [4.0]])          # canonical (2, 1): rows blocks x col blocks
+    expected = _fp8_scale_grid_dequant(raw, scale, torch.float32, block_size = (2, 2))
+    stored_transposed = scale.t().contiguous()    # (1, 2)
+    assert torch.equal(_orient_block_scale(stored_transposed, 4, 2, (2, 2)), scale)
+    out = _fp8_scale_grid_dequant(raw, stored_transposed, torch.float32, block_size = (2, 2))
+    assert torch.equal(out, expected)
+    # without a block size the shape is taken as stored
+    assert not torch.equal(_fp8_scale_grid_dequant(raw, stored_transposed, torch.float32), expected)
+
+
+def test_generic_out_of_memory_runtime_errors_defer_to_the_cpu(monkeypatch):
+    """Some backends raise a plain RuntimeError with "out of memory" in the text."""
+    from unsloth.models import loader_utils
+
+    model, tensors, expected = _build()
+    calls = {"n": 0}
+    original = loader_utils._fp8_scale_grid_dequant
+
+    def flaky(quantized, scale, dtype, block_size = None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("HIP out of memory. Tried to allocate 2 GiB")
+        return original(quantized, scale, dtype, block_size = block_size)
+
+    monkeypatch.setattr(loader_utils, "_fp8_scale_grid_dequant", flaky)
+    with tempfile.TemporaryDirectory() as d:
+        _write_checkpoint(d, tensors)
+        done, skipped = _dequantize_leftover_fp8_params(model, d, torch.bfloat16)
+    assert done == 2
+    assert model.experts.gate_up_proj.dtype == torch.bfloat16

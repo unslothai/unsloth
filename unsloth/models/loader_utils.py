@@ -1420,7 +1420,29 @@ def _empty_device_cache(device):
         pass
 
 
-def _fp8_scale_grid_dequant(quantized, scale, out_dtype):
+def _orient_block_scale(scale, rows, cols, block_size):
+    """A block grid may be stored transposed, `(in_blocks, out_blocks)` instead of
+    `(out_blocks, in_blocks)`. When both orientations tile the weight the shape alone cannot
+    tell them apart, so the configured block size decides: the grid whose shape is
+    `(rows / bm, cols / bn)` is canonical, its transpose is turned around."""
+    if block_size is None or scale.ndim < 2:
+        return scale
+    try:
+        bm, bn = int(block_size[0]), int(block_size[1])
+    except Exception:
+        return scale
+    if bm <= 0 or bn <= 0 or rows % bm or cols % bn:
+        return scale
+    canonical = (rows // bm, cols // bn)
+    grid = tuple(scale.shape[-2:])
+    if grid == canonical:
+        return scale
+    if grid == canonical[::-1] and canonical[0] != canonical[1]:
+        return scale.transpose(-1, -2).contiguous()
+    return scale
+
+
+def _fp8_scale_grid_dequant(quantized, scale, out_dtype, block_size = None):
     """Apply an fp8 checkpoint scale of any layout to one 2-D or 3-D quantized tensor: per-tensor `()` / `(1,)` / `(1, 1)`, per-expert `(E,)` / `(E, 1, 1)`, a block grid `(p, q)` or `(E, p, q)` with the block size implied by the weight shape (how transformers' own dequantize derives it). Returns None when the grid does not tile the weight, so the caller skips it instead of applying a wrong scale."""
     # MXFP8 checkpoints ship E8M0 exponents in a `torch.uint8` container: the scale is
     # `2 ** (byte - 127)`, not the byte. Casting the raw byte applies a scale up to 2**128 too
@@ -1446,6 +1468,7 @@ def _fp8_scale_grid_dequant(quantized, scale, out_dtype):
             else:
                 return None
         rows, cols = q_shape
+        scale = _orient_block_scale(scale, rows, cols, block_size)
         p, q = scale.shape
         if rows % p or cols % q:
             return None
@@ -1460,6 +1483,7 @@ def _fp8_scale_grid_dequant(quantized, scale, out_dtype):
             scale = scale.view(E, 1, 1)
         if scale.ndim != 3 or scale.shape[0] != E:
             return None
+        scale = _orient_block_scale(scale, rows, cols, block_size)
         p, q = scale.shape[1], scale.shape[2]
         if rows % p or cols % q:
             return None
@@ -1519,6 +1543,17 @@ def _dequantize_leftover_fp8_params(
             for name, param in model.named_parameters()
             if param.dtype in _FP8_DTYPES and param.ndim in (2, 3)
         ]
+        # The configured block size decides the orientation of a block-scale grid that would
+        # tile the weight either way (see _orient_block_scale).
+        block_size = None
+        try:
+            _qc = getattr(getattr(model, "config", None), "quantization_config", None)
+            _bs = _qc.get("weight_block_size") if isinstance(_qc, dict) else getattr(_qc, "weight_block_size", None)
+            if _bs is not None and len(_bs) == 2:
+                block_size = (int(_bs[0]), int(_bs[1]))
+        except Exception:
+            block_size = None
+        _grid_kwargs = {"block_size": block_size} if block_size is not None else {}
         if not leftover:
             return (0, 0)
         weight_map = _load_fp8_weight_map(
@@ -1585,10 +1620,10 @@ def _dequantize_leftover_fp8_params(
             return shard_cache[shard].get_tensor(scale_key).to(device)
 
         def _is_oom(error):
-            return (
-                isinstance(error, torch.OutOfMemoryError)
-                if hasattr(torch, "OutOfMemoryError")
-                else (isinstance(error, RuntimeError) and "out of memory" in str(error).lower())
+            # Both forms: torch's own class where it exists, and the plain RuntimeError some
+            # HIP, XPU, WSL and wrapped CUDA paths raise with "out of memory" in the text.
+            return (hasattr(torch, "OutOfMemoryError") and isinstance(error, torch.OutOfMemoryError)) or (
+                isinstance(error, RuntimeError) and "out of memory" in str(error).lower()
             )
 
         # Pass 1: dequantize on the parameter's own device. The device map was planned for the 16bit size, so a card that is full to its plan while its stacks are still fp8 has room for the result but not for the transient; such a stack is parked on the CPU (which frees its fp8 bytes) and finished in pass 2 once the rest of the card is at its final size.
@@ -1619,7 +1654,7 @@ def _dequantize_leftover_fp8_params(
             try:
                 scale = _scale_for(weight_key, param.device)
                 with torch.no_grad():
-                    out = _fp8_scale_grid_dequant(param.data, scale, dtype)
+                    out = _fp8_scale_grid_dequant(param.data, scale, dtype, **_grid_kwargs)
                 if out is None:
                     failed += 1
                     last_error = f"{weight_key}: scale {tuple(scale.shape)} does not tile {tuple(param.shape)}"
@@ -1647,7 +1682,7 @@ def _dequantize_leftover_fp8_params(
                 trainable = bool(getattr(param, "requires_grad", False))
                 scale = _scale_for(weight_key, "cpu")
                 with torch.no_grad():
-                    out = _fp8_scale_grid_dequant(param.data, scale, dtype)
+                    out = _fp8_scale_grid_dequant(param.data, scale, dtype, **_grid_kwargs)
                 if out is None:
                     failed += 1
                     last_error = f"{weight_key}: scale {tuple(scale.shape)} does not tile {tuple(param.shape)}"
