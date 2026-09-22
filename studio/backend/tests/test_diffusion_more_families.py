@@ -14,8 +14,11 @@ from core.inference.diffusion_families import (
     default_generation_params,
     detect_family,
     excluded_model_reason,
+    family_sd_cpp_supported,
+    sd_cpp_companion_only_repo_ids,
     sd_cpp_text_encoders_for,
 )
+from core.inference.sd_cpp_args import text_encoder_flags_for_family
 from core.inference.diffusion_lora import _CURATED, list_loras
 
 
@@ -663,6 +666,70 @@ def test_every_image_family_base_repo_is_loadable():
     assert (
         not unreachable
     ), f"these families declare a base repo that validate_load_request refuses: {unreachable}"
+
+
+def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encoder():
+    """The no-GPU route for unsloth/Qwen-Image-2.1-GGUF.
+
+    Every assertion here is a way the route was observed to fail quietly rather than loudly:
+    a family without both sd.cpp assets silently falls back to diffusers, the qwen-image VAE
+    decodes 2.1 latents to noise instead of erroring, and a fixed flow shift overrides the
+    resolution-dependent schedule upstream picks for this architecture.
+    """
+    fam = detect_family("unsloth/Qwen-Image-2.1-GGUF")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    assert family_sd_cpp_supported(fam)
+
+    assert fam.sd_cpp_vae == (
+        "unsloth/Qwen-Image-2.1-FP8",
+        "vae/qwen_image_2.1_vae_bf16.safetensors",
+    )
+    # Not the qwen-image VAE: a different class for a different latent space, which decodes to
+    # noise rather than raising if it is ever substituted here.
+    assert "2.1" in fam.sd_cpp_vae[1]
+
+    encoders = sd_cpp_text_encoders_for(fam, "unsloth/Qwen-Image-2.1-GGUF", None)
+    assert len(encoders) == 1
+    repo, filename, kind = encoders[0]
+    assert repo == "unsloth/Qwen3-VL-8B-Instruct-GGUF"
+    assert filename == "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
+    assert kind == "llm"
+    assert text_encoder_flags_for_family(fam.name) == ("--llm",)
+
+    assert fam.sd_cpp_sampling_method == "euler"
+    assert fam.sd_cpp_flow_shift is None
+
+    # The encoder repo is fetch-only and must not be offered as a loadable model. The VAE repo is
+    # the base itself, so it must NOT be classified that way.
+    companions = sd_cpp_companion_only_repo_ids()
+    assert "unsloth/qwen3-vl-8b-instruct-gguf" in companions
+    # The VAE ships inside a repo that is itself loadable, so it must NOT be classified fetch-only.
+    # Putting it in the GGUF repo instead WOULD be: that repo appears in no family field, so
+    # companions-minus-loadable would mark the home of every denoiser as a companion and hide it.
+    assert "unsloth/qwen-image-2.1-fp8" not in companions
+    assert "qwen/qwen-image-2.1" not in companions
+
+
+def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
+    """The route is only real if the binary the installer pins understands the architecture.
+
+    The tag STRING cannot answer this: every mirror build resolves to the same master-813 base, so
+    the August build and the current one are indistinguishable by name. What is asserted here is the
+    pin itself, against the release verified to render this family (26.9s at 1024 on one B200,
+    Q4_K_M denoiser, bf16 VAE, Q4_K_M Qwen3-VL encoder). Bump both together or not at all.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "install_sd_cpp_prebuilt.py"
+    spec = importlib.util.spec_from_file_location("install_sd_cpp_prebuilt_pin", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.DEFAULT_TAG == "master-813-bfbef5b-u1d02858", (
+        "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1; "
+        f"{module.DEFAULT_TAG} is not"
+    )
 
 
 def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade():

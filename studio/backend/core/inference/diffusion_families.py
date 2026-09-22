@@ -139,6 +139,17 @@ class DiffusionFamily:
     # sd-cli defaults.
     sd_cpp_sampling_method: Optional[str] = None
     sd_cpp_flow_shift: Optional[float] = None
+    # A literal this family's ARCHITECTURE puts in an sd.cpp build that can run it. Set it for a
+    # family whose support landed upstream after builds were already in the wild: the asset mapping
+    # above says what to hand sd-cli, not whether the sd-cli on this disk understands the model, and
+    # a binary installed before the support existed is reused as-is (nothing upgrades a runnable
+    # build of the right accelerator). Without a gate that is a load that reports ready and dies on
+    # the first generation, where falling back to diffusers is both possible and correct.
+    #
+    # Matched against the binary's BYTES rather than the install record's tag: every mirror release
+    # carries the upstream base in its tag name whatever tree was built, so the tag cannot answer
+    # this, and a custom SD_CLI_PATH build has no record at all.
+    sd_cpp_arch_marker: Optional[str] = None
     # True when Unsloth can TRAIN a LoRA on this family; the training-start path refuses a non-trainable family up
     # front.
     trainable: bool = False
@@ -375,6 +386,48 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # capability ships dark.
         reference = True,
         aliases = ("qwen_image_21", "qwenimage21", "qwen-image-21"),
+        # Built by us from Qwen/Qwen-Image-2.1 itself: the same 238 tensors under upstream's own
+        # names, cast fp32 -> bf16 and written as one file, because sd-cli takes --vae as a single
+        # file rather than a diffusers subfolder. That is 0.63 GiB against upstream's 1.26 GiB of
+        # fp32, and a fixed-seed 1024 render through it is PIXEL-identical to one made with the
+        # fp32 original. No third-party repack is in the chain; the file is nonetheless
+        # value-identical to Comfy-Org's bf16 repack, all 238 tensors, so either works.
+        #
+        # It lives beside the pre-cast text encoder in the FP8 repo rather than in a companion repo
+        # of its own, and NOT in the GGUF repo: sd_cpp_companion_only_repo_ids() is companions
+        # minus loadable, and the GGUF repo appears in no family field, so pointing here at it
+        # would classify the repo that holds every denoiser as fetch-only and hide it from the
+        # catalog. The FP8 repo is in prequant_repos, so it is subtracted and stays loadable.
+        # FP8 and INT8 picks do not use this file at all; they take the VAE from the base repo
+        # through diffusers, as every prequant family does.
+        #
+        # 2.1 has its own VAE class, so the qwen-image or Wan 2.2 file decodes to noise here
+        # rather than failing.
+        sd_cpp_vae = ("unsloth/Qwen-Image-2.1-FP8", "vae/qwen_image_2.1_vae_bf16.safetensors"),
+        # Qwen3-VL 8B, not Qwen2.5-VL, and supplied through --llm rather than --qwen2vl: the
+        # qwen2vl flag carries Qwen2-VL's vision preprocessing, which this encoder does not want.
+        # Q4_K_M keeps the CPU RAM win the no-GPU route exists for (bf16 is 16.4 GB, this is 4.7).
+        # Text to image only, which is all this family exposes (edit is False, and there are no
+        # img2img / inpaint pipelines). Upstream's docs/qwen_image_2.1.md requires a separate
+        # mmproj through --llm_vision before a GGUF encoder can do image editing; turning editing
+        # on here without adding it would load an encoder that logs "vision disabled" and carry on.
+        sd_cpp_text_encoders = (
+            (
+                "unsloth/Qwen3-VL-8B-Instruct-GGUF",
+                "Qwen3-VL-8B-Instruct-Q4_K_M.gguf",
+                "llm",
+            ),
+        ),
+        sd_cpp_sampling_method = "euler",
+        # No flow shift on purpose. Qwen-Image pins 3.0, but upstream sd.cpp selects a
+        # resolution-dependent schedule for qwen_image_2_1 itself, and passing a fixed shift
+        # overrides that silently: the render still succeeds and is simply worse off-square.
+        #
+        # Support landed upstream on 2026-09-20, long after builds shipped, so the gate matters
+        # here more than anywhere: measured across six builds on this host, only the pinned
+        # release (both sd-cli and sd-server, CPU and CUDA) carries this literal, and the five
+        # older ones, including the previous pin, do not.
+        sd_cpp_arch_marker = "qwen_image_2_1",
     ),
     DiffusionFamily(
         name = "z-image",
@@ -1465,7 +1518,11 @@ def family_gguf_loadable(fam: DiffusionFamily) -> bool:
 
 def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
     """True when the family has the single-file VAE + text-encoder mapping sd.cpp needs; without it
-    the no-GPU route falls back to diffusers."""
+    the no-GPU route falls back to diffusers.
+
+    Says nothing about the sd.cpp build on this disk. A family that also declares
+    ``sd_cpp_arch_marker`` needs ``sd_cpp_binary_runs_family`` on top of this before the native
+    route is really available."""
     return bool(fam.sd_cpp_vae and fam.sd_cpp_text_encoders)
 
 
