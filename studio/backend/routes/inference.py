@@ -39203,6 +39203,13 @@ async def generate_diffusion_image(
         except DiffusionModelReplacedError as exc:
             if attempt > 0:
                 raise HTTPException(status_code = 409, detail = str(exc))
+            # Retried, so this request has NOT failed. The engine published the reason on
+            # both channels before raising, and an unscoped poll has no attempt id to be
+            # marked live by, so a page opened during the retry read a terminal failure for
+            # a run that is about to start again. Dropped on both, the keyed one included,
+            # since the next lap records its own outcome.
+            _clear_unscoped_generate_failure(backend)
+            clear_generate_failure(request.attempt_id)
             continue
         except RuntimeError as exc:
             # Match these two EXACT client-state messages (409); other RuntimeErrors are failures.
