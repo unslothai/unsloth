@@ -31,21 +31,14 @@ test("row forks retain the visible branch across settings settlement", async () 
       exports: {} as { forkChatRow: (item: { id: string }) => Promise<unknown> },
       crypto,
       ...liveThreadHead,
-      require: (specifier: string) => {
-        if (specifier === "../api/chat-api") return {
-          forkChatThread: async (id: string, args: { messageId?: string }) => {
-            calls.push("fork");
-            assert.equal(id, "source");
-            assert.equal(args.messageId, open ? "older-reply" : undefined);
-          },
-        };
-        if (specifier === "../stores/chat-runtime-store") return {
-          settleThreadScopedSettingsForCopy: async () => {
-            calls.push("settings");
-            visible = false;
-          },
-        };
-        throw new Error(`Unexpected module: ${specifier}`);
+      forkChatThread: async (id: string, args: { messageId?: string }) => {
+        calls.push("fork");
+        assert.equal(id, "source");
+        assert.equal(args.messageId, open ? "older-reply" : undefined);
+      },
+      settleThreadScopedSettingsForCopy: async () => {
+        calls.push("settings");
+        visible = false;
       },
     };
     try {

@@ -13,6 +13,8 @@ import {
 } from "../utils/conversation-markdown";
 import { allRecordedSandboxSessionIds } from "../utils/recorded-sandbox-session";
 import { liveThreadBranch } from "../utils/live-thread-head";
+import { forkChatThread } from "../api/chat-api";
+import { settleThreadScopedSettingsForCopy } from "../stores/chat-runtime-store";
 import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
 import { listStoredChatMessages } from "../utils/chat-history-storage";
 
@@ -79,10 +81,6 @@ export function canForkChatRow(item: SidebarItem): boolean {
  */
 export async function forkChatRow(item: SidebarItem) {
   const messageId = liveThreadBranch(item.id)?.at(-1);
-  const { forkChatThread } = await import("../api/chat-api");
-  const { settleThreadScopedSettingsForCopy } = await import(
-    "../stores/chat-runtime-store"
-  );
   await settleThreadScopedSettingsForCopy(item.id);
   try {
     // closed chats use the transaction-selected tip; open chats keep the branch visible at invocation.
