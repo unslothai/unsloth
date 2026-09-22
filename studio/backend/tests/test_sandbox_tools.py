@@ -854,6 +854,16 @@ class TestNetworkTargetResolution:
                 f"httpx.AsyncHTTPTransport(proxy='http://{_H}')}})",
                 id = "httpx_mounted_transport_proxy",
             ),
+            pytest.param(
+                "import requests\nclass A:\n    def fetch(self, session):\n"
+                f"        session.get('http://{_H}/')\nA().fetch(requests.Session())",
+                id = "client_passed_to_a_method",
+            ),
+            pytest.param(
+                "import requests\nclass A:\n    @staticmethod\n    def fetch(session):\n"
+                f"        session.get('http://{_H}/')\nA.fetch(requests.Session())",
+                id = "client_passed_to_a_static_method",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):

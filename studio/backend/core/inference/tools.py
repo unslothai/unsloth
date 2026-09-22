@@ -17304,20 +17304,32 @@ def _check_signal_escape_patterns(code: str):
             # Function name -> its local definitions, and every (parameter, argument) a call to
             # one passes, so `fetch(requests.Session())` makes `s` in `def fetch(s)` a session.
             self.local_functions: "dict[str, list[ast.AST]]" = {}
+            # Method name -> (definition, parameters the receiver fills: 1, or 0 for a static).
+            self.local_methods: "dict[str, list[tuple[ast.AST, int]]]" = {}
             if network_possible:
                 for fn in nodes:
                     if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         self.local_functions.setdefault(fn.name, []).append(fn)
+                    elif isinstance(fn, ast.ClassDef):
+                        for m in fn.body:
+                            if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                skip = 1 if id(m) in self.method_self else 0
+                                self.local_methods.setdefault(m.name, []).append((m, skip))
             self.call_bindings: "list[tuple]" = []
 
         def _bind_call_arguments(self, node) -> None:
             """Record the arguments of a call to a function defined in this file."""
-            if not isinstance(node.func, ast.Name):
+            if isinstance(node.func, ast.Name):
+                targets = [(fn, 0) for fn in self.local_functions.get(node.func.id, ())]
+            elif isinstance(node.func, ast.Attribute):
+                # `obj.fetch(session)`: the receiver fills `self`, so arguments start one later.
+                targets = self.local_methods.get(node.func.attr, [])
+            else:
                 return
             at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
             context = (tuple(self.scope_stack), tuple(self.self_names))
-            for fn in self.local_functions.get(node.func.id, ()):
-                positional = fn.args.posonlyargs + fn.args.args
+            for fn, skip in targets:
+                positional = (fn.args.posonlyargs + fn.args.args)[skip:]
                 pairs = []
                 for param, arg in zip(positional, node.args):
                     if isinstance(arg, ast.Starred):
