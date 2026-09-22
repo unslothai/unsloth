@@ -215,17 +215,10 @@ export const ja = {
       priority: "優先度",
       lastUpdated: "最終更新",
       manualOrder: "手動で並べ替え",
-      priorityHint: "実行中・未読が先頭",
-      lastUpdatedHint: "新しい順",
-      manualOrderHint: "行をドラッグして並べ替えます",
       switchedToManual: "手動の並び順に切り替えました。行をドラッグして並べ替えます",
       organizeChats: "チャットを整理",
       organizeProjects: "プロジェクトを整理",
       sortPinnedChats: "ピン留めチャットを並べ替え",
-      dragDrop: "ドラッグ＆ドロップ",
-      dragHints: "ドラッグ中にヒントを表示",
-      reorderSwitchesSort: "並べ替えると手動順序に切り替える",
-      dragOpensFolders: "ポインターの下のフォルダーを開く",
       moveUp: "上へ移動",
       moveDown: "下へ移動",
     },
@@ -578,7 +571,16 @@ export const ja = {
       sourceHint: "モデルランナーはそれぞれ独自のログを書き出すため、読み込みや生成の失敗の理由は、サーバーログではなくそちらに記録されていることがよくあります。",
       path: "場所",
       pathCopy: "パスをコピー",
-      refreshSection: "更新",
+      currentSession: "現在",
+      statusLive: "ライブ",
+      statusPaused: "一時停止",
+      statusStale: "古い",
+      filterPlaceholder: "行を絞り込む",
+      lineCount: "{count} 行",
+      filteredLineCount: "{total} 行中 {shown} 行",
+      wrapLines: "行を折り返す",
+      jumpToLatest: "最新へ移動",
+      noMatches: "フィルターに一致する行はありません。",
       mode: "モード",
       modeLive: "ライブ",
       modeInterval: "3 秒ごと",
@@ -887,6 +889,16 @@ export const ja = {
         revoked: "すべてのプレビューリンクを失効させました",
         revokeError: "プレビューリンクを失効させることができませんでした",
       },
+      managedProviderUrls: {
+        sectionTitle: "管理対象アカウント",
+        enableLabel: "ローカルおよびネットワーク接続",
+        enableDescription:
+          "管理対象アカウントが、このコンピューターや LAN 上の Ollama や llama.cpp サーバーなど、ローカルまたはネットワークのアドレスに接続を向けられるようにします。既定ではオフです。オンにすると、これらのアカウントがお使いのコンピューターやネットワークで動作しているサービスに到達できるようになるためです。",
+        lockedByEnvironment:
+          "このサーバーの UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 によって決まります。すべてのアカウントでプライベートアドレスが拒否されます。",
+        loadError: "管理対象アカウントの接続設定を読み込めませんでした。",
+        saveError: "管理対象アカウントの接続設定を保存できませんでした。",
+      },
       notifications: {
         sectionTitle: "通知",
         showLlamaUpdates: "llama.cpp のアップデート通知",
@@ -1114,7 +1126,7 @@ export const ja = {
       custom: {
         chatWidth: {
           label: "チャットの幅",
-          description: "メッセージと入力欄の幅を設定します。全幅ではサイドバーの間のスペースを使います。",
+          description: "メッセージと入力欄の幅です。",
           standard: "標準",
           wide: "広い",
           full: "全幅",
@@ -1185,7 +1197,6 @@ export const ja = {
         },
         contrast: {
           label: "コントラスト",
-          description: "枠線と補助テキストの強さ。",
         },
         reduceMotion: {
           label: "モーションを減らす",
@@ -1214,7 +1225,7 @@ export const ja = {
       sidebarNav: {
         title: "サイドバーナビゲーション",
         description:
-          "サイドバーのタブを固定したり並べ替えたりします。固定していないタブは「その他」メニューにまとめられます。固定していないタブが 1 つだけの場合は、項目が 1 つのメニューを作らずにそのタブを非表示にします。「新規チャット」は固定されたままです。",
+          "サイドバーのタブを固定して並べ替えます。固定していないタブは「その他」メニューに入ります。",
         dragToReorder: "ドラッグして並べ替え",
         pinToSidebar: "{name} をサイドバーに固定",
         moreHolds: "その他 ({count})",
@@ -1222,7 +1233,7 @@ export const ja = {
       sidebarMenu: {
         title: "サイドバーメニュー",
         description:
-          "サイドバーのプロフィールメニュー項目の表示と並び順を変更します。設定、ヘルプ、ログアウト、シャットダウンは固定です。",
+          "プロフィールメニューのショートカットを選んで並べ替えます。",
         darkModeToggle: "ダークモード切り替え",
         dragToReorder: "ドラッグして並べ替え",
       },
@@ -1364,6 +1375,61 @@ export const ja = {
         copied: "パスをコピーしました",
         openError: "フォルダを開けませんでした",
         copyError: "パスをコピーできませんでした",
+        caches: {
+          label: "キャッシュファイル",
+          description:
+            "キャッシュの合計は{size}で、そのうち{reclaimable}を今すぐ削除できます。",
+          hint: "パッケージのダウンロード、コンパイル済みカーネル、転送キャッシュなど、必要になったときにUnslothが再作成するものです。ダウンロード済みのモデル、プロジェクト、チャット、設定、Hugging Faceトークンがここで削除されることはありません。",
+          keywords:
+            "キャッシュ 削除 消去 クリア 掃除 空き容量 ディスク 一時 コンパイル cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "キャッシュサイズを計測しています...",
+          measureFailed: "キャッシュを計測できませんでした",
+          empty: "キャッシュファイルは見つかりませんでした。",
+          detailsAction: "詳細",
+          recheckAction: "再確認",
+          hideDetailsAction: "詳細を隠す",
+          clearAction: "キャッシュを削除",
+          clearOneAction: "削除",
+          clearingAction: "削除しています...",
+          confirmTitle: "キャッシュファイルを削除しますか?",
+          confirmDescription: "約{size}の空き容量ができます。",
+          confirmOneTitle: "{name}を削除しますか?",
+          safety:
+            "Unslothは次に必要になったときにキャッシュを再作成します。ダウンロード済みのモデル、プロジェクト、チャット、設定、Hugging Faceトークンは変更されません。",
+          hubCost:
+            "これはモデルキャッシュです。削除すると、次に使うときにそれらのモデルを再ダウンロードします。",
+          datasetsCost:
+            "削除すると、次に使うときにそれらのデータセットを再ダウンロードします。",
+          blocked: "削除されませんでした: {reason}",
+          cleared: "{size}を削除しました",
+          partial: "一部のキャッシュファイルを削除できませんでした",
+          clearFailed: "キャッシュを削除できませんでした",
+          names: {
+            uv: "uvパッケージキャッシュ",
+            pip: "pipダウンロードキャッシュ",
+            npm: "npmパッケージキャッシュ",
+            bun: "Bunパッケージキャッシュ",
+            torchInductor: "Torch Inductorコンパイルキャッシュ",
+            torchExtensions: "Torch拡張機能のビルド",
+            triton: "Tritonカーネルキャッシュ",
+            cuda: "CUDAカーネルキャッシュ",
+            numba: "Numbaコンパイルキャッシュ",
+            matplotlib: "Matplotlibフォントキャッシュ",
+            vllm: "vLLMキャッシュ",
+            unslothCompiled: "Unslothのコンパイル済みモジュール",
+            hfXet: "Hugging Face転送キャッシュ",
+            hfAssets: "Hugging Faceアセットキャッシュ",
+            hfDatasets: "Hugging Faceデータセットキャッシュ",
+            hfHub: "Hugging Faceモデルキャッシュ",
+          },
+        },
+        lowDisk: {
+          title: "ディスクの空き容量が少なくなっています",
+          criticalTitle: "ディスクの空き容量が非常に少なくなっています",
+          description:
+            "{total}中{free}が空きです。キャッシュを削除すると空き容量を増やせます。",
+          action: "キャッシュを確認",
+        },
         futureDownloads: "新規ダウンロードのみ",
         environmentManaged: "環境変数 {variable} で管理されています。",
         locationFree: "{free} 空き",
@@ -1520,10 +1586,6 @@ export const ja = {
         "{count}文字以上の貼り付けテキストは .txt 添付ファイルになります。短いテキストは入力欄に残ります。",
       pastedTextOffDescription:
         "長さに関係なく、貼り付けたテキストはすべて入力欄に残ります。",
-      compactionDescriptionInherit: "サーバーのコンテキストポリシーに従います。",
-      compactionDescriptionCheckpoint: "最新のやり取りと、収まる範囲の継続的な指示を保持し、残りは検索できるようアーカイブします。",
-      compactionDescriptionRolling:
-        "古いターンをアーカイブし、最近の履歴と選択した余裕分の空きを確保します。",
       projectsSection: "プロジェクトセクションを表示",
       projectsSectionDescription:
         "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
@@ -1570,21 +1632,19 @@ export const ja = {
       autoCompact: "長いチャットを自動圧縮",
       autoCompactDescription:
         "チャットの文脈が満杯になると、古いターンは検索可能なアーカイブに移ります。",
-      compactionStyle: "コンテキストが満杯になったとき",
-      compactionStyleDescription:
-        "サーバー既定値を使うと UNSLOTH_CONTEXT_POLICY が維持されます。会話をリセットすると最新ターンと、収まる範囲の継続指示が残ります。スライディングウィンドウは古いターンを削除し、より多くの最近の履歴を残せます。",
-      compactionStyleInherit: "サーバー既定値を使用",
-      compactionStyleCheckpoint: "会話をリセット",
-      compactionStyleRollingDefault: "古いターンをアーカイブ（約 25% の追加余裕）",
-      compactionStyleRolling10: "古いターンをアーカイブ（約 10% の追加余裕）",
-      compactionStyleRolling5: "古いターンをアーカイブ（約 5% の追加余裕）",
-      compactionStyleRollingNone: "古いターンをアーカイブ（追加の切り詰めなし）",
       autoCompactKeywords:
         "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 アーカイブ 検索 取得 compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "折りたたむ",
+        auto: "実行中は展開",
+        expanded: "常に展開",
+      },
+      visibilityKeywords:
+        "折りたたむ 展開 開く 閉じる 思考 推論 ツール呼び出し ツールの動作 グループ ストリーミング",
       thinking: {
-        collapseByDefault: "思考をデフォルトで折りたたむ",
-        collapseByDefaultDescription:
-          "モデルの思考中も自動で展開せず、折りたたんだままにします。読みたいときはブロックを展開してください。",
+        visibility: "思考",
+        visibilityDescription:
+          "思考の開き方。個々のブロックは手動で展開・折りたたみできます。",
       },
       currentDate: {
         label: "今日の日付をモデルに伝える",
@@ -1594,12 +1654,14 @@ export const ja = {
         saveError: "現在の日付の設定を更新できませんでした",
       },
       tools: {
-        collapseByDefault: "ツールの動作をデフォルトで折りたたむ",
-        collapseByDefaultDescription:
-          "ツールの実行中は入力と出力を折りたたんだままにします。確認するにはツール行を展開してください。",
-        foldIntoThinking: "ツール呼び出しを思考に折りたたむ",
+        visibility: "ツール呼び出し",
+        visibilityDescription:
+          "ツールの動作の開き方。個々の呼び出しは手動で展開・折りたたみできます。",
+        foldIntoThinking: "ツール呼び出しを思考にまとめる",
         foldIntoThinkingDescription:
-          "思考ブロックを開くまで、そのターンのツール呼び出しを隠します。",
+          "そのターンのツール呼び出しを独立した行ではなく思考ブロック内に表示します。",
+        foldIntoThinkingBlocked:
+          "ツール呼び出しが「常に展開」の間は使えません。その設定では独立した行に表示されます。",
       },
       webSearch: {
         title: "ウェブ検索",

@@ -2436,10 +2436,22 @@ def patch_enable_input_require_grads():
             ):
                 continue
 
+            getter = module.get_input_embeddings
             try:
-                input_embeddings = module.get_input_embeddings()
+                inspect.signature(getter).bind()
+            except TypeError:
+                # Remote code may declare get_input_embeddings(self, input_ids)
+                # (stepfun-ai/Step-3.7-Flash). Asked by binding, not by calling: a
+                # TypeError from INSIDE a working getter must propagate, not cost the
+                # module its input-gradient hook.
+                continue
+            except (ValueError, AttributeError):
+                pass  # no introspectable signature; undecidable, so just call it
+
+            try:
+                input_embeddings = getter()
             except NotImplementedError:
-                # Vision models may not implement get_input_embeddings (GLM V4.6 skips only self.visual).
+                # transformers 5 gives every PreTrainedModel a base impl that raises.
                 continue
 
             if input_embeddings is None:

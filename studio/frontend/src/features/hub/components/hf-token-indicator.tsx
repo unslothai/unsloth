@@ -61,7 +61,7 @@ export function HfTokenIndicator({
                   "inline-flex size-6 items-center justify-center rounded-full transition-colors",
                   hasToken
                     ? "bg-verified/15 text-verified"
-                    : "bg-foreground/[0.07] text-muted-foreground dark:bg-white/[0.07]",
+                    : "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.07*var(--contrast-wash-gain,1)))]",
                 )}
               >
                 <HugeiconsIcon
@@ -111,7 +111,7 @@ export function HfTokenIndicator({
           aria-label={ariaLabel}
           className={cn(
             // Solid circle reads optically larger than the flat HTTP/Xet box, so keep it 22px.
-            "inline-flex h-[22px] w-[22px] items-center justify-center rounded-full text-ui-11p5 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "inline-flex h-[calc(22px*var(--ui-space-scale,1))] w-[calc(22px*var(--ui-space-scale,1))] items-center justify-center rounded-full text-ui-11p5 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             hasToken
               ? "hub-tag-soft text-muted-foreground hover:text-foreground/80"
               : "bg-destructive text-destructive-foreground hover:bg-destructive/90",

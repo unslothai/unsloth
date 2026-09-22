@@ -4591,6 +4591,7 @@ def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
 @router.get("/download-progress")
 async def get_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
+    mlx_load: bool = Query(False),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
@@ -4599,7 +4600,9 @@ async def get_download_progress(
     the cache directory it measured, so it takes the caller class like its ``/api/hub`` twin."""
     from hub.services.models import downloads
     return redact_host_paths(
-        await downloads.get_download_progress_response(repo_id, hf_token = hf_token),
+        await downloads.get_download_progress_response(
+            repo_id, hf_token = hf_token, mlx_load = mlx_load
+        ),
         via_api_key = via_api_key,
     )
 

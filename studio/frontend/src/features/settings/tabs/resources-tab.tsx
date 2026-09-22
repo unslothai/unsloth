@@ -32,12 +32,14 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type HuggingFaceCacheSettings,
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { CacheStorageRows } from "../components/cache-storage-rows";
 import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
@@ -134,7 +136,7 @@ function MetricTile({
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
-    <div className="flex min-w-0 flex-col gap-2.5 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-white/[0.06]">
+    <div className="flex min-w-0 flex-col gap-2.5 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
       <div className="flex items-center justify-between gap-3">
         <span className="truncate text-ui-11 font-semibold uppercase tracking-[0.08em] text-muted-foreground">
           {label}
@@ -171,7 +173,7 @@ function MetricTile({
         <Progress
           value={percentKnown ? safePercent : 0}
           aria-label={label}
-          className="h-1.5 rounded-full bg-muted dark:bg-black/40"
+          className="h-1.5 rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]"
           indicatorClassName={usageIndicatorClass(safePercent)}
         />
       )}
@@ -251,6 +253,12 @@ export function ResourcesTab() {
   const systemInfo = useSystemInfo({
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
+  const storageSectionRef = useRef<HTMLElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore(
+    (s) => s.consumeScrollTarget,
+  );
+  const openDialog = useSettingsDialogStore((s) => s.openDialog);
   const [hfCache, setHfCache] = useState<HuggingFaceCacheSettings | null>(null);
   const [hfCacheLoaded, setHfCacheLoaded] = useState(false);
   const [cacheBrowserOpen, setCacheBrowserOpen] = useState(false);
@@ -286,6 +294,19 @@ export function ResourcesTab() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (scrollTarget !== "resources-caches") return;
+    const frame = window.requestAnimationFrame(() => {
+      storageSectionRef.current?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
+      consumeScrollTarget("resources-caches");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
+
 
   const metrics = useMemo(() => {
     const devices = displayedGpu?.devices ?? [];
@@ -770,7 +791,7 @@ export function ResourcesTab() {
                     <Progress
                       value={safePercent}
                       aria-label={device.name ?? "GPU"}
-                      className="h-1.5 w-full rounded-full bg-muted dark:bg-black/40"
+                      className="h-1.5 w-full rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]"
                       indicatorClassName={usageIndicatorClass(safePercent)}
                     />
                   </div>
@@ -797,7 +818,10 @@ export function ResourcesTab() {
 
       <ModelMemorySection />
 
-      <SettingsSection title={t("settings.resources.storage.title")}>
+      <SettingsSection
+        ref={storageSectionRef}
+        title={t("settings.resources.storage.title")}
+      >
         <InfoRow
           label={t("settings.resources.storage.systemDisk")}
           value={t("settings.resources.storage.diskUsage", {
@@ -880,6 +904,7 @@ export function ResourcesTab() {
             ) : null}
           </div>
         </SettingsRow>
+        <CacheStorageRows />
       </SettingsSection>
 
       <FolderBrowser
