@@ -25,6 +25,23 @@ from unsloth.import_fixes import (  # noqa: E402
 SIGLIP2 = "transformers.models.siglip2.image_processing_siglip2"
 
 
+def _import_or_skip(name):
+    """Import a target module, or skip when this host cannot have it at all.
+
+    transformers 5 made `image_processing_siglip2` import torchvision at module
+    top level, so on a transformers 5 host without torchvision every test that
+    touches it raised `ModuleNotFoundError` out of a fixture: measured on a
+    torchvision-free transformers 5.17.0 venv, 25 of 38 tests ERRORED and not
+    one of those errors said anything about this fix. Production already treats
+    that as "nothing to patch here" -- `_install_legacy_image_reexports`
+    catches the import and returns False -- so the tests must agree with it.
+    """
+    try:
+        return importlib.import_module(name)
+    except ImportError as exception:
+        pytest.skip(f"{name} cannot be imported on this host ({exception})")
+
+
 def _fresh_module(name):
     """A module with our patch fully removed, so a test sees the upstream state.
 
@@ -32,7 +49,7 @@ def _fresh_module(name):
     with ``setattr``, so a later probe would see the names still present and
     the test would skip itself into passing.
     """
-    importlib.import_module(name)
+    _import_or_skip(name)
     _remove_legacy_image_reexports(name)
     return importlib.import_module(name)
 
@@ -128,7 +145,7 @@ def test_fix_can_be_undone(siglip2_module):
 def test_every_target_module_is_real():
     """A typo in the module list would make the fix quietly do nothing."""
     for name in _IMAGE_PROCESSING_MODULES:
-        importlib.import_module(name)
+        _import_or_skip(name)
 
 
 def test_import_unsloth_does_not_pull_in_the_image_stack():
@@ -445,7 +462,7 @@ def remote_processor_class():
     Only the module string is faked, so everything the classifier and probe read
     is genuine.
     """
-    siglip2 = importlib.import_module(SIGLIP2)
+    siglip2 = _import_or_skip(SIGLIP2)
     base = siglip2.Siglip2ImageProcessor
 
     cls = type("ProbeImageProcessorNoUpscale", (base,), {})
