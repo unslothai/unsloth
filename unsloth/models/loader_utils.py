@@ -19,6 +19,7 @@ import tempfile
 import contextlib
 import threading as _threading
 import functools
+import inspect
 from typing import Union
 from .mapper import (
     INT_TO_FLOAT_MAPPER,
@@ -312,6 +313,8 @@ def resolve_unsloth_device_map(
     full_finetuning = False,
     planner_kwargs = None,
     skip_reason = None,
+    planner_config = None,
+    planner_config_reason = None,
     **config_kwargs,
 ):
     """Plan a head-aware multi-GPU map for `device_map = "unsloth"`, else return as-is. Opt-in only, so nothing an existing caller passes changes meaning, and the plan is built on the meta device: no GPU memory, no weight download. Falls back to "sequential" wherever a plan cannot apply, since a model that loads the old way beats one that refuses to load at all; `DeviceMapInfeasible` is the exception, raised rather than spilling a bitsandbytes model to CPU, and swallowing it would hand the user an OOM instead of a diagnosis. `skip_reason` is the caller's veto, for when only the caller can tell the planner would describe a different model than the load builds."""
@@ -363,6 +366,19 @@ def resolve_unsloth_device_map(
         from unsloth_zoo.device_map_planner import plan_device_map_for_pretrained
     except Exception as error:
         return _fallback(f"the planner is unavailable ({error})")
+
+    # `planner_config` is the config the load really builds when the repo's own does not describe it (text_only). Only a planner that names `config` takes it: an older one would hand it to AutoConfig through **config_kwargs and plan the repo's model after all, so decline with the caller's reason instead.
+    if planner_config is not None:
+        try:
+            _planner_params = inspect.signature(plan_device_map_for_pretrained).parameters
+        except (TypeError, ValueError):
+            _planner_params = {}
+        if "config" not in _planner_params:
+            return _fallback(
+                planner_config_reason
+                or "this unsloth_zoo cannot plan from a resolved config"
+            )
+        config_kwargs["config"] = planner_config
 
     # Free, not total: this process's context and anything else resident make total an overcommit. Guarded, because a card can still refuse mid-probe.
     try:

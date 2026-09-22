@@ -197,11 +197,13 @@ def test_a_caller_that_vetoes_planning_is_obeyed():
 
 def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
     """`text_only = True` loads a VLM's standalone decoder, so Gemma 3 builds
-    Gemma3ForCausalLM (`model.layers.0`). The planner only gets `model_name`, rebuilds the
+    Gemma3ForCausalLM (`model.layers.0`). Given only `model_name`, the planner rebuilds the
     repo's multimodal config and plans Gemma3ForConditionalGeneration
     (`model.language_model.layers.0`, plus a vision tower this load never creates). Not one
     decoder weight matches a key of that map, and transformers raises
-    "model.embed_tokens.weight doesn't have any device set" for the first of them.
+    "model.embed_tokens.weight doesn't have any device set" for the first of them. So the
+    planner is handed the text config the load uses (and an older one that cannot take it
+    declines; see test_text_only_device_plan.py).
     """
     models = os.path.join(HERE, "unsloth", "models")
 
@@ -231,9 +233,11 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
                 assignments[target.id] = assignments.get(target.id, "") + ast.unparse(node.value)
     for call in _resolve_calls(vision):
         passed = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
-        assert "skip_reason" in passed, f"vision.py:{call.lineno} plans a text-only decoder"
+        assert "planner_config" in passed, f"vision.py:{call.lineno} plans the full VLM"
+        planned = passed["planner_config"] + assignments.get(passed["planner_config"], "")
+        assert "text_only_decoder" in planned, f"vision.py:{call.lineno}"
+        assert "skip_reason" in passed, f"vision.py:{call.lineno}"
         source = passed["skip_reason"] + assignments.get(passed["skip_reason"], "")
-        assert "text_only_decoder" in source, f"vision.py:{call.lineno}"
         # The other way the load can diverge from the plan; see the task-head test.
         assert "planner_class_mismatch_reason" in source, f"vision.py:{call.lineno}"
 

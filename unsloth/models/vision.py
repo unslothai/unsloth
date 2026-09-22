@@ -1498,12 +1498,9 @@ class FastBaseModel:
             load_in_8bit = False
             load_in_16bit = False
 
-        # text_only loads the decoder alone, but the planner gets only model_name and rebuilds the whole VLM: it budgets a vision tower this load never creates and names model.language_model.layers.0 where the standalone decoder has model.layers.0.
-        _planner_skip_reason = (
-            "text_only loads a decoder the repo config does not describe"
-            if text_only_decoder
-            else None
-        )
+        # text_only loads the decoder alone, but the planner rebuilds from model_name the whole VLM: it budgets a vision tower this load never creates and names model.language_model.layers.0 where the standalone decoder has model.layers.0. So hand it the text config the load uses; an unsloth_zoo that cannot take one declines with the reason below (and "sequential" then fills GPU 0 with no room for the FP8 / expert-merge load transients).
+        _planner_skip_reason = None
+        _planner_config = auto_config if text_only_decoder else None
         # Same failure from the other direction: num_labels (or an explicit auto_model) loads a task head whose `score` replaces the planned lm_head, and dispatch refuses a map with no score.weight.
         if _planner_skip_reason is None:
             _planner_skip_reason = planner_class_mismatch_reason(
@@ -1534,6 +1531,8 @@ class FastBaseModel:
             full_finetuning = full_finetuning,
             planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
             skip_reason = _planner_skip_reason,
+            planner_config = _planner_config,
+            planner_config_reason = "text_only loads a decoder the repo config does not describe",
             **planner_config_overrides(kwargs),
             token = token,
             trust_remote_code = trust_remote_code,
