@@ -565,9 +565,9 @@ def test_transcode_to_file_leaves_no_temp_file_when_the_encode_fails(monkeypatch
     # would prove nothing about the cleanup this test is named for.
     assert written, "the export never created its temp file, so the check below is vacuous"
     assert not written[0].exists(), f"{written[0].name} survived the failed encode"
-    assert list(exports.iterdir()) == [], (
-        f"the failed export left {[p.name for p in exports.iterdir()]} behind"
-    )
+    assert (
+        list(exports.iterdir()) == []
+    ), f"the failed export left {[p.name for p in exports.iterdir()]} behind"
 
 
 def test_gif_export_bounds_frames_and_edge(monkeypatch):
