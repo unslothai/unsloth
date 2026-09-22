@@ -11,6 +11,7 @@ import secrets
 import sqlite3
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Any, Iterable, Union
 
@@ -34,6 +35,27 @@ _schema_lock = threading.Lock()
 # turn per attached tab. Keyed by the acting account: that is what selects the database, and unlike
 # resolving the path it costs nothing (see _connect).
 _pool = threading.local()
+
+
+class _PoolEntry:
+    """One thread's cached connection. A real object rather than a dict so it can be weak-referenced
+    and so its finalizer can close the connection when the owning thread goes away."""
+
+    __slots__ = ("key", "conn", "busy", "schema_ready", "generation", "_closer", "__weakref__")
+
+    def __init__(self, key: str, conn: sqlite3.Connection, schema_ready: Any, generation: int):
+        self.key = key
+        self.conn = conn
+        self.busy = True
+        self.schema_ready = schema_ready
+        self.generation = generation
+        # Runs when the last reference goes, which for a short-lived thread is when its thread-local
+        # storage is torn down.
+        self._closer = weakref.finalize(self, _close_quietly, conn)
+
+    def release(self) -> None:
+        """Close now, and disarm the finalizer so it cannot close it a second time."""
+        self._closer()
 
 
 class _Borrowed:
@@ -65,9 +87,9 @@ class _Borrowed:
         park = False
         with _pool_lock:
             entry = getattr(_pool, "entry", None)
-            if entry is not None and entry["conn"] is self._conn:
-                if entry["generation"] == _pool_generation:
-                    entry["busy"] = False
+            if entry is not None and entry.conn is self._conn:
+                if entry.generation == _pool_generation:
+                    entry.busy = False
                     park = True
                 else:
                     # Invalidated while this borrow was out: releasing the file is what matters now.
@@ -83,19 +105,45 @@ class _Borrowed:
         setattr(self._conn, name, value)
 
 
-#: Every pooled entry, so a thread retiring an account can close handles it does not own. Idle ones
-#: are closed on the spot; one in use is left to its borrower, which closes rather than parks it
-#: because the generation moved. Account retirement renames the account directory, and Windows
-#: refuses that while any file under it is open, so "release it eventually" is not good enough.
-_pool_registry: list[dict[str, Any]] = []
+#: Pooled entries, held WEAKLY. The sweeper runs each reconcile on a fresh daemon thread
+#: (core/inference/chat_generation_runs.py::_sweep_in_daemon_thread, every 60s per account), so a
+#: strong registry would retain one entry and one open sqlite handle per sweep, forever, and
+#: exhaust the process file descriptor limit. A weak ref lets the dead thread's entry go, and the
+#: finalizer below closes its connection when it does.
+#:
+#: The registry exists at all so that a thread retiring an account can close handles it does not
+#: own: retirement renames the account directory and Windows refuses that while any file under it
+#: is open, so "released eventually" is not good enough. Idle entries are closed on the spot; one
+#: in use is left to its borrower, which closes rather than parks it because the generation moved.
+_pool_registry: list[weakref.ref[_PoolEntry]] = []
 _pool_generation = 0
 _pool_lock = threading.Lock()
 
 
-def _unregister_locked(entry: dict[str, Any]) -> None:
+def _close_quietly(conn: sqlite3.Connection) -> None:
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def _live_entries_locked() -> list[_PoolEntry]:
+    """Every entry still alive, dropping refs whose thread has gone. Caller holds ``_pool_lock``."""
+    live: list[_PoolEntry] = []
+    surviving: list[weakref.ref[_PoolEntry]] = []
+    for ref in _pool_registry:
+        entry = ref()
+        if entry is not None:
+            live.append(entry)
+            surviving.append(ref)
+    _pool_registry[:] = surviving
+    return live
+
+
+def _unregister_locked(entry: _PoolEntry) -> None:
     """Drop ``entry`` from the registry. Caller holds ``_pool_lock``."""
-    for index, known in enumerate(_pool_registry):
-        if known is entry:
+    for index, ref in enumerate(_pool_registry):
+        if ref() is entry:
             del _pool_registry[index]
             break
 
@@ -108,10 +156,7 @@ def _discard_pooled() -> None:
     _pool.entry = None
     with _pool_lock:
         _unregister_locked(entry)
-    try:
-        entry["conn"].close()
-    except Exception:
-        pass
+    entry.release()
 
 
 def _discard_all_pooled() -> None:
@@ -125,15 +170,12 @@ def _discard_all_pooled() -> None:
     global _pool_generation
     with _pool_lock:
         _pool_generation += 1
-        entries = tuple(_pool_registry)
+        entries = _live_entries_locked()
         _pool_registry.clear()
     for entry in entries:
-        if entry["busy"]:
+        if entry.busy:
             continue
-        try:
-            entry["conn"].close()
-        except Exception:
-            pass
+        entry.release()
 
 
 def reset_connection_pool_for_tests() -> None:
@@ -191,18 +233,18 @@ def _connect() -> sqlite3.Connection:
     with _pool_lock:
         generation_before = _pool_generation
         entry = getattr(_pool, "entry", None)
-        if entry is not None and entry["generation"] != _pool_generation:
+        if entry is not None and entry.generation != _pool_generation:
             # Invalidated while this thread was elsewhere; _discard_all_pooled already closed it.
             _pool.entry = None
             entry = None
-        if entry is not None and not entry["busy"]:
-            if entry["key"] == key and entry["schema_ready"] is _schema_ready:
-                entry["busy"] = True
-                reuse = entry["conn"]
+        if entry is not None and not entry.busy:
+            if entry.key == key and entry.schema_ready is _schema_ready:
+                entry.busy = True
+                reuse = entry.conn
             else:
                 # A different account, or a home that moved beneath this one. Either way the cached
                 # handle points at a database this caller must not be given.
-                superseded = entry["conn"]
+                superseded = entry.conn
                 _unregister_locked(entry)
                 _pool.entry = None
             entry = None if reuse is None else entry
@@ -230,15 +272,9 @@ def _connect() -> sqlite3.Connection:
             # the account roots immediately after invalidating: on Windows an open handle there
             # fails the rename, which the uncached path never did because it always closed.
             if _pool_generation == generation_before:
-                entry = {
-                    "key": key,
-                    "conn": conn,
-                    "busy": True,
-                    "schema_ready": _schema_ready,
-                    "generation": generation_before,
-                }
+                entry = _PoolEntry(key, conn, _schema_ready, generation_before)
                 _pool.entry = entry
-                _pool_registry.append(entry)
+                _pool_registry.append(weakref.ref(entry))
                 return _Borrowed(conn, key)
     return conn
 

@@ -8,6 +8,7 @@ database. These are the properties that make that safe to do; each fails if the 
 ``chat_generation_runs_db._connect`` is removed or mis-keyed.
 """
 
+import gc
 import sqlite3
 import threading
 
@@ -197,10 +198,42 @@ def test_append_events_still_persists_through_a_reused_connection():
     assert len(runs_db.list_events("r", 0)) >= 15
 
 
-def test_an_idle_connection_on_another_thread_is_closed_by_a_global_discard():
+def test_an_idle_connection_on_another_LIVE_thread_is_closed_by_a_global_discard():
     """Account retirement renames the account directory from a request thread, while the SSE loop
     parks its connections on a 32 thread pool of its own. Windows refuses the rename while any file
-    underneath is open, so leaving those for their owners to close eventually is not enough."""
+    underneath is open, so an idle handle on a worker that is still alive has to be closed from
+    here. The worker is held alive deliberately: a thread that exits releases its own entry."""
+    parked = {}
+    parked_ready = threading.Event()
+    may_exit = threading.Event()
+
+    def park():
+        conn = runs_db._connect()
+        parked["conn"] = conn._conn
+        conn.close()
+        parked_ready.set()
+        may_exit.wait(timeout = 30)
+
+    worker = threading.Thread(target = park)
+    worker.start()
+    try:
+        assert parked_ready.wait(timeout = 30)
+        assert parked["conn"].execute("SELECT 1").fetchone()[0] == 1
+
+        runs_db._discard_all_pooled()
+        with pytest.raises(sqlite3.ProgrammingError):
+            parked["conn"].execute("SELECT 1")
+    finally:
+        may_exit.set()
+        worker.join(timeout = 30)
+
+
+def test_a_short_lived_threads_connection_is_released_when_it_exits():
+    """The lease sweeper reconciles each account on a FRESH daemon thread every 60 seconds
+    (_sweep_in_daemon_thread). Its pooled entry can never be borrowed again once that thread is
+    gone, so holding it strongly would leak one sqlite handle per sweep until the process runs out
+    of file descriptors. The registry is weak, and the entry closes its connection when collected.
+    """
     parked = {}
 
     def park():
@@ -210,12 +243,15 @@ def test_an_idle_connection_on_another_thread_is_closed_by_a_global_discard():
 
     worker = threading.Thread(target = park)
     worker.start()
-    worker.join()
-    assert parked["conn"].execute("SELECT 1").fetchone()[0] == 1
+    worker.join(timeout = 30)
 
-    runs_db._discard_all_pooled()
+    gc.collect()
     with pytest.raises(sqlite3.ProgrammingError):
         parked["conn"].execute("SELECT 1")
+
+    with runs_db._pool_lock:
+        alive = [ref for ref in runs_db._pool_registry if ref() is not None]
+    assert alive == [], "a dead thread must leave nothing behind in the registry"
 
 
 def test_closing_the_keeper_drops_the_pool_even_when_there_was_no_keeper():
@@ -259,7 +295,7 @@ def test_borrowing_races_a_global_discard_without_handing_out_a_closed_handle():
     primed.close()
 
     entry = runs_db._pool.entry
-    assert entry is not None and not entry["busy"], "an idle pooled entry is the precondition"
+    assert entry is not None and not entry.busy, "an idle pooled entry is the precondition"
 
     invalidated = threading.Event()
 
@@ -279,7 +315,7 @@ def test_borrowing_races_a_global_discard_without_handing_out_a_closed_handle():
         def __hash__(self):
             return str.__hash__(self)
 
-    entry["key"] = _KeyProbe(entry["key"])
+    entry.key = _KeyProbe(entry.key)
 
     borrowed = runs_db._connect()
     try:
