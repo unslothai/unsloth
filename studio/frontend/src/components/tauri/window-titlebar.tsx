@@ -216,11 +216,12 @@ export function WindowTitlebar({
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
 
-  // The cluster in this slot scales with the UI font size, so the slot does
-  // too; otherwise the drag region behind it swallows the last button.
+  // The buttons in this slot are fixed but their padding and gaps scale, so
+  // the slot grows with them and never shrinks under the three 30px buttons.
+  // The drag region starts where it ends.
   const titlebarNavigationWidth =
     showSidebarSurface && !pinned
-      ? "calc(7rem * var(--ui-space-scale, 1))"
+      ? "max(7rem, calc(7rem * var(--ui-space-scale, 1)))"
       : sidebarWidth;
   const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
 

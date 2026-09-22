@@ -126,7 +126,12 @@ test("the titlebar reserves room for its controls, which stay in the band", () =
   assert.match(titlebar, /inline-flex h-\[26px\] w-\[26px\] shrink-0/);
   // The padding and gaps around them still scale, so the drag region has to
   // start further out or it covers the last button.
-  assert.match(titlebar, /calc\(7rem \* var\(--ui-space-scale, 1\)\)/);
+  // max(), because the buttons are fixed: the slot may grow with the padding
+  // around them but must never fall under their own width.
+  assert.match(
+    titlebar,
+    /max\(7rem, calc\(7rem \* var\(--ui-space-scale, 1\)\)\)/,
+  );
 });
 
 test("the composer's one-row clamp is one row at any size", () => {
