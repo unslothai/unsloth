@@ -32,6 +32,8 @@ import torch
 __all__ = ["restore_remote_code_non_persistent_buffers"]
 
 _SCALAR_TYPES = (bool, int, float, str, type(None))
+# Arguments that only choose where or in what dtype buffers are built, not their values.
+_PLACEMENT_ARGUMENTS = ("device", "dtype")
 
 
 def _transformers_builds_on_meta():
@@ -62,8 +64,12 @@ def _constructor_kwargs(module, model_config):
             value = module.__dict__.get("config", None) or model_config
         elif name in module.__dict__:
             value = module.__dict__[name]
-        else:
+        elif name in _PLACEMENT_ARGUMENTS:
             value = parameter.default
+        else:
+            # An argument the module did not keep may have had a non-default value; guessing
+            # the default could rebuild plausible but wrong buffers, so skip the module.
+            return None
         if value is inspect.Parameter.empty:
             return None
         if isinstance(value, (torch.Tensor, torch.nn.Module)):

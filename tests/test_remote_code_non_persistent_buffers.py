@@ -193,6 +193,24 @@ def test_native_modules_and_unrecoverable_constructors_are_left_alone():
     assert helper._constructor_kwargs(module, None) is None
     assert helper.restore_remote_code_non_persistent_buffers(module) == 0
 
+    class KeepsOnlyStride(nn.Module):
+        def __init__(
+            self,
+            ratio = 2,
+            device = None,
+        ):
+            super().__init__()
+            self.stride = ratio  # `ratio` itself is not kept under its own name
+            self.register_buffer("b", torch.full((2,), float(ratio)), persistent = False)
+
+    KeepsOnlyStride.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    module = KeepsOnlyStride(ratio = 4)
+    module.b.zero_()
+    # A non-default `ratio` cannot be told from the default, so nothing is rebuilt.
+    assert helper._constructor_kwargs(module, None) is None
+    assert helper.restore_remote_code_non_persistent_buffers(module) == 0
+    assert module.b.eq(0).all()
+
 
 def test_loaders_restore_right_after_from_pretrained():
     for relative, calls in (("unsloth/models/vision.py", 1), ("unsloth/models/llama.py", 2)):
