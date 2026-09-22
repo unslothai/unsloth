@@ -1111,6 +1111,41 @@ def resolve_model_class(auto_model, config):
     return result[0] if isinstance(result, (list, tuple)) else result
 
 
+def resolve_remote_code_model_class(
+    auto_model,
+    config,
+    model_name,
+    trust_remote_code = False,
+    **hub_kwargs,
+):
+    """(True, class) when `auto_model.from_pretrained` will build the repo's own remote-code class rather than a transformers one, (True, None) when it will but the class cannot be fetched here, (False, None) when the load takes the class `resolve_model_class` reports.
+
+    `resolve_model_class` matches a config by class NAME, so a remote `AfmoeConfig` finds transformers' native `AfmoeForCausalLM` although the load builds the repo's `modeling_afmoe.AfmoeForCausalLM`. Reading attention support off the native class then asks the remote one for flash_attention_2, which it refuses (Trinity-Large). Mirrors the choice in transformers' `_BaseAutoModelClass.from_pretrained`."""
+    if not trust_remote_code or config is None or model_name is None:
+        return False, None
+    auto_map = getattr(config, "auto_map", None)
+    auto_name = getattr(auto_model, "__name__", None)
+    if not isinstance(auto_map, dict) or auto_name not in auto_map:
+        return False, None
+    # A class registered by hand, or by an earlier load of this repo, wins over the auto_map.
+    local_class = resolve_model_class(auto_model, config)
+    if local_class is not None and not (getattr(local_class, "__module__", "") or "").startswith(
+        "transformers."
+    ):
+        return False, None
+    class_ref = auto_map[auto_name]
+    if isinstance(class_ref, (list, tuple)):
+        class_ref = class_ref[0]
+    if not isinstance(class_ref, str):
+        return True, None
+    try:
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+        hub_kwargs = {k: v for k, v in hub_kwargs.items() if v is not None}
+        return True, get_class_from_dynamic_module(class_ref, model_name, **hub_kwargs)
+    except Exception:
+        return True, None
+
+
 def _is_family_text_decoder(parent_model_type, text_model_type):
     # True only for the family's own text variant (gemma3 -> gemma3_text); a generic reused decoder (llava -> llama) would load random weights, so keep the full model.
     return bool(parent_model_type) and str(text_model_type).startswith(parent_model_type)
@@ -1190,6 +1225,78 @@ def _get_text_only_key_mapping(parent_config, text_config):
     }
 
 
+# text model_type -> the VLM model_type whose checkpoint a text-only load remaps onto the decoder.
+_TEXT_ONLY_PARENT_MODEL_TYPES = {}
+_TEXT_ONLY_PREFIX_RENAME = r"^language_model\.model\."
+
+
+def _parent_conversions_for_text_only(parent_model_type):
+    """The VLM's checkpoint conversions a decoder-only load still needs.
+
+    transformers looks conversions up by the loaded model's own type, so a decoder built from a VLM checkpoint gets none of the VLM's: MiniMax-M3's `block_sparse_moe` -> `mlp` rename, its per-expert w1/w3 merge and its indexer renames were dropped, leaving every MoE layer randomly initialised. Renames anchored at the start of a key move the VLM's top-level prefixes and are what the text-only key_mapping replaces, so they are left out; everything else is kept, and a transform matching no text key does nothing."""
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import WeightRenaming
+    except Exception:
+        return []
+    kept = []
+    for transform in get_checkpoint_conversion_mapping(parent_model_type) or []:
+        sources = transform.source_patterns
+        if not isinstance(sources, (list, tuple)):
+            sources = [sources]
+        if isinstance(transform, WeightRenaming) and all(str(s).startswith("^") for s in sources):
+            continue
+        kept.append(transform)
+    return kept
+
+
+def _install_text_only_conversion_carry():
+    """Wrap the conversion lookup `from_pretrained` uses so a text-only load of a VLM checkpoint also gets the VLM's conversions (see `_parent_conversions_for_text_only`). Only loads carrying Unsloth's text-only key_mapping, for a decoder type with no conversions of its own, are touched."""
+    try:
+        import transformers.conversion_mapping as conversion_mapping
+        import transformers.modeling_utils as modeling_utils
+        lookup = conversion_mapping.get_checkpoint_conversion_mapping
+    except Exception:
+        return
+    original = getattr(modeling_utils, "get_model_conversion_mapping", None)
+    if original is None or getattr(original, "_unsloth_text_only_carry", False):
+        return
+
+    @functools.wraps(original)
+    def get_model_conversion_mapping(
+        model,
+        key_mapping = None,
+        *args,
+        **kwargs,
+    ):
+        text_model_type = getattr(getattr(model, "config", None), "model_type", None)
+        parent_model_type = _TEXT_ONLY_PARENT_MODEL_TYPES.get(text_model_type)
+        if (
+            parent_model_type is None
+            or not key_mapping
+            or _TEXT_ONLY_PREFIX_RENAME not in key_mapping
+            or lookup(type(model).__name__) is not None
+            or lookup(text_model_type) is not None
+        ):
+            return original(model, key_mapping, *args, **kwargs)
+        extra = _parent_conversions_for_text_only(parent_model_type)
+
+        # For this one call the decoder type has the VLM's conversions, as if transformers had registered them: same place in the list, and the quantizer then rewrites them with the rest (FP8 dequantize before an expert merge).
+        def lookup_with_parent(model_type):
+            if model_type == text_model_type:
+                return copy.deepcopy(extra)
+            return lookup(model_type)
+
+        conversion_mapping.get_checkpoint_conversion_mapping = lookup_with_parent
+        try:
+            return original(model, key_mapping, *args, **kwargs)
+        finally:
+            conversion_mapping.get_checkpoint_conversion_mapping = lookup
+
+    get_model_conversion_mapping._unsloth_text_only_carry = True
+    modeling_utils.get_model_conversion_mapping = get_model_conversion_mapping
+
+
 def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
     # Add the text-only key_mapping to from_pretrained kwargs, under any user mapping.
     mapping = _get_text_only_key_mapping(parent_config, text_config)
@@ -1197,6 +1304,15 @@ def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
         return
     user_mapping = kwargs.get("key_mapping", None)
     kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
+    parent_model_type = getattr(parent_config, "model_type", None)
+    text_model_type = getattr(text_config, "model_type", None)
+    if (
+        parent_model_type
+        and text_model_type
+        and _parent_conversions_for_text_only(parent_model_type)
+    ):
+        _TEXT_ONLY_PARENT_MODEL_TYPES[text_model_type] = parent_model_type
+        _install_text_only_conversion_carry()
 
 
 def resolve_attention_implementation(

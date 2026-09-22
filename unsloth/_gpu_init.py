@@ -248,6 +248,8 @@ from .import_fixes import (
     fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
     fix_transformers_rope_scaling_drops_theta,
+    fix_transformers5_remote_code_legacy_defaults,
+    fix_transformers_config_only_remote_code,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
@@ -306,6 +308,12 @@ del check_transformers_prequantized_vlm_quant_state
 # RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
+# Measured no-op unless this transformers dropped the 4.x config token ids or the "default" RoPE
+# entry that remote code written for 4.x reads. Touches only classes out of transformers_modules.
+fix_transformers5_remote_code_legacy_defaults()
+# No-op unless a repo ships only a config class for an architecture transformers builds natively
+# and that config leaves the native model's sub-configs unparsed (MiniMax-M3).
+fix_transformers_config_only_remote_code()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
 # BEFORE models/_utils.py imports xformers.ops.

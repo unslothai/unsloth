@@ -1622,6 +1622,392 @@ def fix_transformers_rope_scaling_drops_theta():
 
 
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
+# Attributes transformers 4.x `PretrainedConfig.__init__` set on every config, None unless the
+# checkpoint said otherwise. transformers 5 moved them onto the model configs that use them,
+# so remote code written against 4.x (`self.padding_idx = config.pad_token_id`) raises.
+_LEGACY_CONFIG_TOKEN_ATTRIBUTES = (
+    "pad_token_id",
+    "bos_token_id",
+    "eos_token_id",
+    "sep_token_id",
+    "decoder_start_token_id",
+)
+_REMOTE_CODE_LEGACY_FLAG = "_unsloth_remote_code_legacy_defaults"
+
+
+def _legacy_config_attributes_missing_from_base():
+    """The legacy token attributes this transformers' base config no longer provides. Measured on
+    an instance rather than read off a version: empty on 4.x, where the base still sets them."""
+    try:
+        from transformers import PretrainedConfig
+        base = PretrainedConfig()
+    except Exception:
+        return ()
+    missing = []
+    for name in _LEGACY_CONFIG_TOKEN_ATTRIBUTES:
+        try:
+            getattr(base, name)
+        except AttributeError:
+            missing.append(name)
+        except Exception:
+            pass
+    return tuple(missing)
+
+
+def _compute_legacy_default_rope_parameters(
+    config = None,
+    device = None,
+    seq_len = None,
+    **kwargs,
+):
+    """transformers 4.x `_compute_default_rope_parameters`: plain, unscaled RoPE. transformers 5
+    dropped "default" from `ROPE_INIT_FUNCTIONS` and gives every native model its own
+    `compute_default_rope_parameters`, which remote code written for 4.x does not have."""
+    import torch
+
+    base = getattr(config, "rope_theta", None)
+    if base is None:
+        parameters = getattr(config, "rope_parameters", None)
+        if isinstance(parameters, dict):
+            base = parameters.get("rope_theta")
+    if base is None:
+        base = 10000.0
+    partial_rotary_factor = getattr(config, "partial_rotary_factor", None) or 1.0
+    head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
+    dim = int(head_dim * partial_rotary_factor)
+    inv_freq = 1.0 / (
+        base
+        ** (torch.arange(0, dim, 2, dtype = torch.int64).to(device = device, dtype = torch.float) / dim)
+    )
+    return inv_freq, 1.0
+
+
+class _RopeInitFunctionsWithDefault(dict):
+    """A remote-code module's view of transformers' `ROPE_INIT_FUNCTIONS` that still answers
+    "default". Reads go to the live registry, so a rope type registered later (or an Unsloth
+    patch of one) is seen too. Nothing is added to transformers' own dict, whose spread into
+    `_init_weights` would otherwise override every native model's own default."""
+
+    def __init__(self, live):
+        super().__init__()
+        self._live = live
+
+    def __getitem__(self, key):
+        try:
+            return self._live[key]
+        except KeyError:
+            if key == "default":
+                return _compute_legacy_default_rope_parameters
+            raise
+
+    def get(
+        self,
+        key,
+        default = None,
+    ):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def __contains__(self, key):
+        return key == "default" or key in self._live
+
+    def __setitem__(self, key, value):
+        self._live[key] = value
+
+    def __iter__(self):
+        return iter(self._live)
+
+    def __len__(self):
+        return len(self._live)
+
+    def keys(self):
+        return self._live.keys()
+
+    def items(self):
+        return self._live.items()
+
+    def values(self):
+        return self._live.values()
+
+
+# Keywords transformers 4.x mask builders took that 5 renamed or dropped, as (old, new) with new
+# None for a dropped one. 5 derives positions from `past_key_values`, so `cache_position` goes.
+_MASKING_LEGACY_KEYWORDS = (("input_embeds", "inputs_embeds"), ("cache_position", None))
+
+
+def _masking_legacy_keyword_changes():
+    """The `_MASKING_LEGACY_KEYWORDS` entries this transformers really changed. Read off
+    `_preprocess_mask_arguments`, which every builder calls and nothing wraps, since the public
+    builders may already be wrapped (by unsloth_zoo, for one) by the time this runs."""
+    try:
+        from transformers import masking_utils
+        parameters = inspect.signature(masking_utils._preprocess_mask_arguments).parameters
+    except Exception:
+        return ()
+    return tuple(
+        (old, new)
+        for old, new in _MASKING_LEGACY_KEYWORDS
+        if old not in parameters and (new is None or new in parameters)
+    )
+
+
+def _accept_legacy_mask_keywords(function, changes):
+    """`function`, also taking the transformers 4.x mask-builder keywords in `changes`."""
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        for old, new in changes:
+            if old not in kwargs:
+                continue
+            value = kwargs.pop(old)
+            if new is not None and new not in kwargs:
+                kwargs[new] = value
+        return function(*args, **kwargs)
+
+    wrapper._unsloth_legacy_mask_keywords = True
+    return wrapper
+
+
+def _patch_remote_code_module(
+    module,
+    missing_attributes,
+    restore_default_rope,
+    mask_keyword_changes = (),
+):
+    """Restore the 4.x defaults one remote-code module relies on. Class attributes, not instance
+    ones, so a value the checkpoint sets still wins and nothing new reaches a saved config.json."""
+    if module is None or getattr(module, _REMOTE_CODE_LEGACY_FLAG, False):
+        return
+    namespace = getattr(module, "__dict__", {})
+    module_name = getattr(module, "__name__", None)
+    if restore_default_rope:
+        rope = namespace.get("ROPE_INIT_FUNCTIONS")
+        if (
+            isinstance(rope, dict)
+            and not isinstance(rope, _RopeInitFunctionsWithDefault)
+            and "default" not in rope
+        ):
+            module.ROPE_INIT_FUNCTIONS = _RopeInitFunctionsWithDefault(rope)
+    # transformers 5 renamed or dropped mask-builder keywords 4.x remote code still passes.
+    if mask_keyword_changes:
+        from transformers import masking_utils
+        for name, value in list(namespace.items()):
+            if (
+                callable(value)
+                and name.startswith("create_")
+                and not getattr(value, "_unsloth_legacy_mask_keywords", False)
+                and (
+                    value is getattr(masking_utils, name, None)
+                    or getattr(value, "__module__", None) == masking_utils.__name__
+                )
+            ):
+                setattr(module, name, _accept_legacy_mask_keywords(value, mask_keyword_changes))
+    config_base = module_base = None
+    if missing_attributes:
+        from transformers import PretrainedConfig as config_base
+    if restore_default_rope:
+        from torch.nn import Module as module_base
+    for value in list(namespace.values()):
+        if not isinstance(value, type) or value.__module__ != module_name:
+            continue
+        if config_base is not None and issubclass(value, config_base):
+            for name in missing_attributes:
+                if not any(name in klass.__dict__ for klass in value.__mro__):
+                    setattr(value, name, None)
+        # transformers 5 `_init_weights` recomputes a rotary buffer with the module's own
+        # `compute_default_rope_parameters` when its rope_type is "default", and calls None when
+        # a 4.x rotary class has none.
+        elif (
+            module_base is not None
+            and issubclass(value, module_base)
+            and "RotaryEmbedding" in value.__name__
+            and not hasattr(value, "compute_default_rope_parameters")
+        ):
+            value.compute_default_rope_parameters = staticmethod(
+                _compute_legacy_default_rope_parameters
+            )
+    try:
+        setattr(module, _REMOTE_CODE_LEGACY_FLAG, True)
+    except Exception:
+        pass
+
+
+def _patch_remote_code_package(
+    module_name,
+    missing_attributes,
+    restore_default_rope,
+    mask_keyword_changes = (),
+):
+    """Every loaded module of the remote-code snapshot `module_name` belongs to: the modeling file
+    imports its configuration (and helpers) relatively, so they arrive together."""
+    if not module_name.startswith("transformers_modules."):
+        return
+    package = module_name.rpartition(".")[0]
+    for name, module in list(sys.modules.items()):
+        if name == package or name.startswith(package + "."):
+            _patch_remote_code_module(
+                module, missing_attributes, restore_default_rope, mask_keyword_changes
+            )
+
+
+def fix_transformers5_remote_code_legacy_defaults():
+    """Let remote code written for transformers 4.x build on transformers 5.
+
+    Two things 4.x provided and 5 removed, both hit by `arcee-ai/Trinity-Large-Thinking`'s
+    `modeling_afmoe.py` (and any repo generated from the 4.x templates):
+
+    * `config.pad_token_id` (and the other token ids) defaulted to None on every config. 5
+      raises `AttributeError: 'AfmoeConfig' object has no attribute 'pad_token_id'`.
+    * `ROPE_INIT_FUNCTIONS["default"]`, which the 4.x rotary template indexes for any config
+      without rope scaling. 5 raises `KeyError: 'default'`.
+
+    Installed on `transformers.dynamic_module_utils.get_class_in_module`, which every remote
+    config, model and processor class comes through, so only code out of
+    `transformers_modules` is touched and native models keep 5.x's behaviour exactly. A no-op
+    wherever the base config still has the token ids and the registry still has "default".
+    """
+    try:
+        import transformers.dynamic_module_utils as dynamic_module_utils
+        from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping remote-code legacy defaults ({e})")
+        return
+    missing_attributes = _legacy_config_attributes_missing_from_base()
+    restore_default_rope = "default" not in ROPE_INIT_FUNCTIONS
+    mask_keyword_changes = _masking_legacy_keyword_changes()
+    if not (missing_attributes or restore_default_rope or mask_keyword_changes):
+        return
+    original = getattr(dynamic_module_utils, "get_class_in_module", None)
+    if original is None or getattr(original, _REMOTE_CODE_LEGACY_FLAG, False):
+        return
+
+    @functools.wraps(original)
+    def get_class_in_module(*args, **kwargs):
+        cls = original(*args, **kwargs)
+        try:
+            _patch_remote_code_package(
+                getattr(cls, "__module__", "") or "",
+                missing_attributes,
+                restore_default_rope,
+                mask_keyword_changes,
+            )
+        except Exception as e:
+            logger.info(f"Unsloth: remote-code legacy defaults skipped ({e})")
+        return cls
+
+    setattr(get_class_in_module, _REMOTE_CODE_LEGACY_FLAG, True)
+    dynamic_module_utils.get_class_in_module = get_class_in_module
+    # Remote code already imported before unsloth.
+    for name, module in list(sys.modules.items()):
+        if name.startswith("transformers_modules."):
+            try:
+                _patch_remote_code_module(
+                    module, missing_attributes, restore_default_rope, mask_keyword_changes
+                )
+            except Exception:
+                pass
+
+
+_CONFIG_ONLY_REMOTE_CODE_FLAG = "_unsloth_config_only_remote_code"
+_CONFIG_ONLY_REMOTE_CODE_WARNED = set()
+
+
+def _remote_config_breaks_native_model(config):
+    """True when `config` is a repo's own config class that transformers will pair with a NATIVE
+    model class it cannot describe.
+
+    `MiniMaxAI/MiniMax-M3` ships only `configuration_minimax_m3_vl.py` (for converters that know
+    the class name) and no modeling code, so with `trust_remote_code=True` transformers builds
+    its own `MiniMaxM3VLForConditionalGeneration` around the repo's config, whose
+    `vision_config` stays a generic `PretrainedConfig`, and the vision tower raises on
+    `temporal_patch_size`. Only that shape qualifies: remote config, no remote model class for
+    ANY auto class, the model type registered natively, the remote class not derived from the
+    native one, and a sub-config the native class expects left as a bare `PretrainedConfig`. A
+    remote config that describes the native model well enough keeps loading exactly as today."""
+    config_class = type(config)
+    if not (getattr(config_class, "__module__", "") or "").startswith("transformers_modules"):
+        return False
+    auto_map = getattr(config, "auto_map", None)
+    if not isinstance(auto_map, dict) or "AutoConfig" not in auto_map:
+        return False
+    if any(str(key).startswith("AutoModel") for key in auto_map):
+        return False
+    from transformers import PretrainedConfig
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+    model_type = getattr(config, "model_type", None)
+    if not model_type or model_type not in CONFIG_MAPPING:
+        return False
+    native_class = CONFIG_MAPPING[model_type]
+    if issubclass(config_class, native_class):
+        return False
+    for key in getattr(native_class, "sub_configs", None) or {}:
+        try:
+            sub_config = getattr(config, key, None)
+        except Exception:
+            continue
+        if sub_config is not None and type(sub_config) is PretrainedConfig:
+            return True
+    return False
+
+
+def fix_transformers_config_only_remote_code():
+    """Load the native config when a repo's config-only remote code would break the native model.
+
+    See `_remote_config_breaks_native_model`. `AutoConfig.from_pretrained` returns the native
+    config instead (with `trust_remote_code=False`, which transformers accepts because the
+    model type is registered), so every caller in the process, the device-map planner included,
+    gets the config the model class is built for. Anything else returns the original result."""
+    try:
+        from transformers import AutoConfig
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping config-only remote code fix ({e})")
+        return
+    original = AutoConfig.__dict__.get("from_pretrained")
+    original_func = getattr(original, "__func__", None)
+    if original_func is None or getattr(original_func, _CONFIG_ONLY_REMOTE_CODE_FLAG, False):
+        return
+
+    @functools.wraps(original_func)
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        result = original_func(cls, pretrained_model_name_or_path, *args, **kwargs)
+        if not kwargs.get("trust_remote_code"):
+            return result
+        config = result[0] if isinstance(result, tuple) else result
+        try:
+            breaks = _remote_config_breaks_native_model(config)
+        except Exception:
+            breaks = False
+        if not breaks:
+            return result
+        try:
+            native = original_func(
+                cls, pretrained_model_name_or_path, *args, **{**kwargs, "trust_remote_code": False}
+            )
+        except Exception as e:
+            logger.info(f"Unsloth: Native config reload failed, keeping the remote one ({e})")
+            return result
+        model_type = getattr(config, "model_type", None)
+        if model_type not in _CONFIG_ONLY_REMOTE_CODE_WARNED:
+            _CONFIG_ONLY_REMOTE_CODE_WARNED.add(model_type)
+            native_config = native[0] if isinstance(native, tuple) else native
+            print(
+                f"Unsloth: `{pretrained_model_name_or_path}` ships only a config class for "
+                f"`{model_type}`, and transformers builds its own model for it. Using "
+                f"transformers' `{type(native_config).__name__}`, since the repo's config "
+                f"leaves sub-configs that model reads unparsed."
+            )
+        return native
+
+    setattr(from_pretrained, _CONFIG_ONLY_REMOTE_CODE_FLAG, True)
+    try:
+        AutoConfig.from_pretrained = classmethod(from_pretrained)
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching AutoConfig.from_pretrained ({e})")
+
+
 def fix_vllm_aimv2_issue():
     spec = importlib.util.find_spec("vllm")
     if spec is None:

@@ -73,6 +73,7 @@ from ._utils import (
     importlib_version,
     _prepare_model_for_qat,
     resolve_model_class,
+    resolve_remote_code_model_class,
     resolve_attention_implementation,
     _get_text_only_config,
     _is_family_text_decoder,
@@ -1457,6 +1458,16 @@ class FastBaseModel:
                 local_files_only = local_files_only,
                 revision = _revision,
             )
+        # Attention support is read off the class the load really builds: a remote-code repo shadowing a native architecture name builds its own class, whose flags can differ.
+        _builds_remote_class, _remote_class = resolve_remote_code_model_class(
+            auto_model,
+            auto_config,
+            model_name,
+            trust_remote_code = trust_remote_code,
+            token = token,
+            revision = _revision,
+            local_files_only = local_files_only,
+        )
         model_class = resolve_model_class(auto_model, auto_config)
         # Forced float32 loads in bfloat16 then casts to float16. Resolved here, not at the load, because attention resolution and the device-map planner both size the same dtype.
         torch_dtype = dtype
@@ -1465,10 +1476,14 @@ class FastBaseModel:
         # What attention actually runs in, not the load dtype: the UNSLOTH_FORCE_CUSTOM_DTYPE families (csm, falcon_h1, nemotron_h) load float32 for Mamba precision then cast projections back to correct_dtype, so flash stays.
         attn_dtype = correct_dtype if correct_dtype is not None else torch_dtype
         attn_impl = resolve_attention_implementation(
-            model_class,
+            _remote_class if _builds_remote_class else model_class,
             auto_config,
             requested_attn_implementation = kwargs.get("attn_implementation", None),
-            supports_sdpa = supports_sdpa,
+            supports_sdpa = (
+                bool(supports_sdpa) and bool(getattr(_remote_class, "_supports_sdpa", False))
+                if _builds_remote_class
+                else supports_sdpa
+            ),
             dtype = attn_dtype,
         )
 
