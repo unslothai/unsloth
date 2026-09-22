@@ -863,7 +863,7 @@ test("alt and an arrow reorder a row without a pointer", async () => {
     APP_SIDEBAR,
     /orderedIds: order\.orderedIds,\n\s*sort: order\.sort,\n\s*\}\)\}/,
   );
-  assert.match(APP_SIDEBAR, /order\.orderedIds,\n\s*order\.sort,\n\s*\)\}/);
+  assert.match(APP_SIDEBAR, /order\.orderedIds,\n\s*order\.sort,\n\s*P,\n\s*\)\}/);
   assert.match(
     APP_SIDEBAR,
     /selectionIds: pinnedProjectRowIds,\n\s*section: "pinned",\n\s*sort: \{ value: pinnedSort, set: setPinnedSort \},/,
