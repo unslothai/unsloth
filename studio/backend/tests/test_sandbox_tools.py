@@ -797,6 +797,17 @@ class TestNetworkTargetResolution:
                 f"import asyncssh\nasyncssh.create_connection(None, '{_H}')",
                 id = "asyncssh_create_connection",
             ),
+            pytest.param(
+                f"from httpx._api import get\nget('http://{_H}/')", id = "httpx_defining_module"
+            ),
+            pytest.param(
+                f"from httpx._client import Client\nClient().get('http://{_H}/')",
+                id = "httpx_client_defining_module",
+            ),
+            pytest.param(
+                f"import httpx._client as hc\nhc.Client().get('http://{_H}/')",
+                id = "httpx_client_module_alias",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -888,6 +899,7 @@ class TestNetworkTargetResolution:
             "s.get('https://pypi.org/')",
             "import httpx\nc = httpx.Client()\nc.proxies = {'https': 'http://203.0.113.5'}\n"
             "c.get('https://pypi.org/')",
+            "from requests.utils import quote\nquote('http://203.0.113.5/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):

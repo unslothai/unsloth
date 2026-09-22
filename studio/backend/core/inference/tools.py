@@ -17132,6 +17132,18 @@ def _check_signal_escape_patterns(code: str):
             return ast.Attribute(value = node.args[0], attr = node.args[1].value, ctx = ast.Load())
         return None
 
+    def _reexported(fq: str) -> "str | None":
+        """The top-level name a network package re-exports for a name in one of its submodules:
+        `httpx._api.get` is `httpx.get`, `httpx._client.Client` is `httpx.Client`. Only names the
+        table lists count, so `urllib3.util.parse_url` stays an unlisted helper."""
+        parts = fq.split(".")
+        if len(parts) < 3 or parts[0] not in _NETWORK_ROOTS:
+            return None
+        if not all(p[:1].islower() or p[:1] == "_" for p in parts[1:-1]):
+            return None  # a class in the path makes this a method, not a module attribute
+        top = f"{parts[0]}.{parts[-1]}"
+        return top if top in _NETWORK_DESTINATION_ARG or top in _CLIENT_CLASSES else None
+
     def _paired(target, value):
         """The `(target, value)` pairs an assignment binds, matching a tuple target to a tuple value
         element by element, around a starred target. A shape that cannot be matched binds nothing
@@ -17494,7 +17506,9 @@ def _check_signal_escape_patterns(code: str):
                 return
             registered: set[str] = set()
             for alias in node.names:
-                if alias.asname and alias.name in _NETWORK_MODULES:
+                if alias.asname and (
+                    alias.name in _NETWORK_MODULES or alias.name.partition(".")[0] in _NETWORK_ROOTS
+                ):
                     self.module_aliases.setdefault(alias.asname, set()).add(alias.name)
                     self._register_alias(alias.asname, node)
                     registered.add(alias.asname)
@@ -17535,8 +17549,8 @@ def _check_signal_escape_patterns(code: str):
                     self.module_aliases.setdefault(bound, set()).add(fq)
                     self._register_alias(bound, node)
                     registered.add(bound)
-                elif module in _NETWORK_MODULES:
-                    # from urllib.request import urlopen
+                elif module in _NETWORK_MODULES or _reexported(fq):
+                    # from urllib.request import urlopen, from httpx._api import get
                     self.func_aliases.setdefault(bound, set()).add(fq)
                     self._register_alias(bound, node)
                     registered.add(bound)
@@ -17783,7 +17797,16 @@ def _check_signal_escape_patterns(code: str):
                 # local API, and offering `requests.get` as a candidate refused it as egress.
                 if not self._is_shadowed(parts[0], at):
                     for module in sorted(self.module_aliases[parts[0]]):
-                        candidates.append(".".join(module.split(".") + parts[1:]))
+                        fq = ".".join(module.split(".") + parts[1:])
+                        # A submodule outside `_NETWORK_MODULES` contributes only what its
+                        # package re-exports, so `import urllib3.util as u` keeps `u.parse_url`
+                        # an unlisted helper.
+                        if module not in _NETWORK_MODULES and not any(
+                            m.startswith(f"{module}.") for m in _NETWORK_MODULES
+                        ):
+                            fq = _reexported(fq)
+                        if fq is not None:
+                            candidates.append(fq)
             elif len(parts) == 1 and parts[0] in self.func_aliases:
                 if not self._is_shadowed(parts[0], at):
                     candidates.extend(sorted(self.func_aliases[parts[0]]))
@@ -17816,6 +17839,10 @@ def _check_signal_escape_patterns(code: str):
                         fq in _NETWORK_DESTINATION_ARG or fq in _UPLOAD_HTTP_METHODS
                     ) and fq not in candidates:
                         candidates.append(fq)
+            for fq in list(candidates):
+                top = _reexported(fq)
+                if top is not None and top not in candidates:
+                    candidates.append(top)
             return candidates
 
         def _unwrapped_url_arg(self, node: ast.AST) -> ast.AST:
