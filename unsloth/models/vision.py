@@ -1778,7 +1778,7 @@ class FastBaseModel:
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
                 )
-                # A 16bit load asked transformers to dequantize an fp8 checkpoint; finish whatever it left in fp8 (expert stacks of a static per-tensor checkpoint).
+                # Finish fp8 tensors transformers left quantized on a 16bit load.
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
                     _dequantize_leftover_fp8_params(
                         model,

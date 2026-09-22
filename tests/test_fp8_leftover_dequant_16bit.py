@@ -12,15 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Finishing a 16bit load of a static per-tensor fp8 checkpoint.
-
-transformers' `dequantize = True` folds `weight_scale_inv` into every `nn.Linear` weight it has
-a converter for, but MoE expert stacks stored as `experts.gate_up_proj` with a sibling
-`experts.gate_up_proj_scale_inv` (Mistral-Small-4-119B) match no converter: the raw fp8 values
-land in the plain module and the scale is dropped. `_dequantize_leftover_fp8_params` reads the
-checkpoint scale back and replaces the parameter with its 16bit dequantization. Offline, CPU,
-synthetic checkpoints.
-"""
+"""`_dequantize_leftover_fp8_params` on fp8 tensors transformers leaves quantized on a 16bit
+load (e.g. `experts.gate_up_proj` stacks). Offline, CPU, synthetic checkpoints."""
 
 import json
 import os
@@ -62,7 +55,7 @@ class _Experts(nn.Module):
 
 
 class _Model(nn.Module):
-    """Mirrors the live tree of a Mistral-Small-4 16bit load: dense linears already dequantized by transformers, expert stacks left as raw fp8 in a plain module."""
+    """Dense linears already dequantized, expert stacks left as raw fp8 in a plain module."""
 
     def __init__(
         self,
@@ -153,7 +146,7 @@ def test_no_fp8_params_is_a_noop_without_reading_the_checkpoint():
 
 
 def test_vlm_key_remap_resolves_language_model_prefix():
-    """Checkpoint keys `language_model.model.layers...` map onto a live `model.language_model.layers...` tree."""
+    """VLM checkpoint keys map onto the live `model.language_model` tree."""
 
     class _Inner(nn.Module):
         def __init__(self):
@@ -231,12 +224,10 @@ def test_scale_grid_that_does_not_tile_is_refused():
     )
 
 
-# has_real_cuda(), not torch.cuda.is_available(): tests/_zoo_aggressive_cuda_spoof.py
-# patches the torch probe to True process-wide, so this would un-skip on a CPU-only box
-# whenever it shares a pytest session with tests/version_compat or tests/vllm_compat.
+# has_real_cuda(): another test spoofs torch.cuda.is_available() process-wide.
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_out_of_memory_on_the_device_is_finished_through_the_cpu(monkeypatch):
-    """A card full to its 16bit plan has no room for the dequant transient: the stack is parked on the CPU, dequantized there and moved back."""
+    """On OOM the stack is parked on the CPU, dequantized there and moved back."""
     from unsloth.models import loader_utils
 
     model, tensors, expected = _build()
@@ -263,9 +254,7 @@ def test_out_of_memory_on_the_device_is_finished_through_the_cpu(monkeypatch):
 
 
 def test_standard_weight_and_weight_scale_inv_pair_is_dequantized():
-    """`layer.weight_scale_inv` belongs to `layer.weight`. Stripping the whole suffix left
-    `layer`, which the target lookup read as a parameter of the parent, so a raw fp8
-    `.weight` with the standard scale name was never dequantized."""
+    """`layer.weight_scale_inv` belongs to `layer.weight`."""
     model, tensors, expected = _build()
     q_w = tensors["q_proj.weight"]
     s_w = tensors["q_proj.weight_scale_inv"]
@@ -280,10 +269,7 @@ def test_standard_weight_and_weight_scale_inv_pair_is_dequantized():
 
 
 def test_no_reference_to_the_fp8_parameter_survives_into_the_cpu_pass(monkeypatch):
-    """The OOM fallback parks a stack on the CPU to free its device bytes. The pass kept the
-    original Parameter alive in two bookkeeping lists, so nothing was freed and the move back
-    could OOM again. Simulated on the CPU: the first attempt raises, the CPU pass must find
-    the original Parameter already collected."""
+    """The OOM fallback must free the original Parameter before the CPU pass."""
     import gc
     import weakref
     from unsloth.models import loader_utils
@@ -312,9 +298,7 @@ def test_no_reference_to_the_fp8_parameter_survives_into_the_cpu_pass(monkeypatc
 
 
 def test_disk_offloaded_leftover_is_refused_with_an_instruction():
-    """A leftover fp8 tensor on the meta device is disk-offloaded: its hook would restore raw
-    fp8 bytes at forward time and the checkpoint scale is gone, so the load must stop here
-    instead of failing later inside torch._grouped_mm."""
+    """A disk-offloaded (meta) leftover cannot be dequantized, so the load stops here."""
     model, tensors, expected = _build()
     model.experts.gate_up_proj = nn.Parameter(
         torch.empty_like(model.experts.gate_up_proj, device = "meta"), requires_grad = False
@@ -345,9 +329,7 @@ def test_activation_scale_survives_on_a_module_that_kept_its_fp8_weight():
 
 
 def test_per_tensor_scale_on_a_3d_stack_is_chunked(monkeypatch):
-    """A static per-tensor checkpoint is the case this code exists for, and it is 3-D. The
-    per-tensor fast path materialised the whole stack in fp32 (8x its fp8 bytes) before the
-    chunk budget could apply; only the block-grid branch was ever chunked."""
+    """A per-tensor scale on a 3-D stack must not materialise the whole stack in fp32."""
     from unsloth.models import loader_utils
 
     E, M, N = 8, 32, 32
@@ -368,14 +350,13 @@ def test_per_tensor_scale_on_a_3d_stack_is_chunked(monkeypatch):
     monkeypatch.undo()
     assert torch.equal(out, (q.float() * 0.25).to(torch.bfloat16))
     assert seen, "no fp32 cast observed"
-    # Never the whole stack at once: that is the transient the OOM fallback exists to dodge.
+    # Never the whole stack at once.
     assert max(seen) == 2, (seen, E)
 
 
 def test_activation_scale_cleanup_is_per_attribute():
-    """gate_up_proj is converted while down_proj keeps its own scale in the same module: only
-    gate_up_proj's activation scale goes, down_proj's stays for the fp8 forward, and the
-    module-level input scale stays while anything in the module is still fp8."""
+    """Only the converted attribute's activation scale goes; the module-level one stays while
+    anything in the module is still fp8."""
     model, tensors, expected = _build()
     model.experts.down_proj_scale_inv = nn.Parameter(
         tensors["experts.down_proj_scale_inv"], requires_grad = False
@@ -394,8 +375,7 @@ def test_activation_scale_cleanup_is_per_attribute():
 
 
 def test_a_trainable_fp8_parameter_stays_trainable_after_dequantization():
-    """full_finetuning = True loads its parameters trainable; the 16bit replacement must not
-    freeze them, or the experts silently sit out the fine-tune."""
+    """The 16bit replacement keeps requires_grad (full_finetuning)."""
     model, tensors, expected = _build()
     model.experts.gate_up_proj.requires_grad_(True)
     with tempfile.TemporaryDirectory() as d:
@@ -407,8 +387,7 @@ def test_a_trainable_fp8_parameter_stays_trainable_after_dequantization():
 
 
 def test_a_transposed_block_grid_is_turned_around_by_the_configured_block_size():
-    """Both orientations of a (2, 1) grid tile a [4, 2] weight, so the shape alone cannot tell
-    them apart; the configured block size (2, 2) says the canonical grid is (2, 1)."""
+    """Both orientations of a (2, 1) grid tile a [4, 2] weight; the block size decides."""
     from unsloth.models.loader_utils import _fp8_scale_grid_dequant, _orient_block_scale
 
     raw = (torch.arange(8, dtype = torch.float32).reshape(4, 2) + 1).to(_FP8_DTYPES[0])
