@@ -2041,6 +2041,7 @@ export const fr = {
         notDownloaded: "Non téléchargé · {size}",
         downloading: "Téléchargement…",
         downloaded: "Téléchargé · chargé à la première requête",
+        installing: "Installation…",
         loading: "Chargement…",
         loadedOn: "Chargé sur {device}",
         download: "Télécharger",

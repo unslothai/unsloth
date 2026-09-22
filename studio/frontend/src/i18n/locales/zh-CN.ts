@@ -1946,6 +1946,7 @@ export const zhCN = {
         notDownloaded: "未下载 · {size}",
         downloading: "正在下载…",
         downloaded: "已下载 · 首次请求时加载",
+        installing: "正在安装…",
         loading: "正在加载…",
         loadedOn: "已加载到 {device}",
         download: "下载",

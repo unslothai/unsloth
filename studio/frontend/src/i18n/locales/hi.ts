@@ -2002,6 +2002,7 @@ export const hi = {
         notDownloaded: "डाउनलोड नहीं हुआ · {size}",
         downloading: "डाउनलोड हो रहा है…",
         downloaded: "डाउनलोड हो गया · पहले अनुरोध पर लोड होगा",
+        installing: "इंस्टॉल हो रहा है…",
         loading: "लोड हो रहा है…",
         loadedOn: "{device} पर लोड हुआ",
         download: "डाउनलोड करें",

@@ -1989,6 +1989,7 @@ export const ko = {
         notDownloaded: "다운로드 안 됨 · {size}",
         downloading: "다운로드 중…",
         downloaded: "다운로드됨 · 첫 요청 때 로드",
+        installing: "설치 중…",
         loading: "로드 중…",
         loadedOn: "{device}에 로드됨",
         download: "다운로드",

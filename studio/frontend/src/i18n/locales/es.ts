@@ -2031,6 +2031,7 @@ export const es = {
         notDownloaded: "No descargado · {size}",
         downloading: "Descargando…",
         downloaded: "Descargado · se carga con la primera solicitud",
+        installing: "Instalando…",
         loading: "Cargando…",
         loadedOn: "Cargado en {device}",
         download: "Descargar",

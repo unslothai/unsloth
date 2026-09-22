@@ -23,10 +23,8 @@ RUN_WAIT_S = 30.0
 MAX_PENDING = 8
 FAILURE_BACKOFF_S = 60.0
 _REQUIRED_DIRS = ("encoder", "tokenizer")
-MISSING_PACKAGE = (
-    "Studio's Python environment is missing the laya package. "
-    "Install it with: pip install --no-deps laya==0.3.5"
-)
+LAYA_REQUIREMENT = "laya==0.3.5"
+INSTALL_TIMEOUT_S = 300
 
 _state_lock = threading.Lock()
 _run_lock = threading.Lock()
@@ -37,6 +35,9 @@ _device_name: str | None = None
 _loader: threading.Thread | None = None
 _loading: Checkpoint | None = None
 _failure: tuple[Checkpoint, str, float] | None = None
+_install_lock = threading.Lock()
+_installer: threading.Thread | None = None
+_install_failure: tuple[str, float] | None = None
 
 
 class Unavailable(Exception):
@@ -124,6 +125,90 @@ def package_available() -> bool:
     return importlib.util.find_spec("laya") is not None
 
 
+def _install_command() -> list[str]:
+    import sys
+
+    from utils.mlx_repair import _uv_executable
+
+    # No deps: laya only needs torch, transformers, safetensors, huggingface_hub and numpy, which Studio pins,
+    # so the install can never move them.
+    uv = _uv_executable()
+    if uv:
+        return [uv, "pip", "install", "--python", sys.executable, "--no-deps", LAYA_REQUIREMENT]
+    return [sys.executable, "-m", "pip", "install", "--no-deps", LAYA_REQUIREMENT]
+
+
+def ensure_package() -> None:
+    global _install_failure
+    if package_available():
+        return
+    with _install_lock:
+        if package_available():
+            return
+        if _install_failure and time.monotonic() < _install_failure[1]:
+            raise RuntimeError(_install_failure[0])
+        import importlib
+        import os
+        import subprocess
+
+        from utils.mlx_repair import _MLX_ENV_ALLOWLIST, _venv_root
+
+        # The same allowlisted environment as the MLX self-heal, so the unattended install cannot be steered by secrets
+        # or package-source variables in the Studio process.
+        env = {key: os.environ[key] for key in _MLX_ENV_ALLOWLIST if key in os.environ}
+        if (venv_root := _venv_root()) is not None:
+            env["VIRTUAL_ENV"] = venv_root
+        logger.info("Installing %s for the Decision API", LAYA_REQUIREMENT)
+        try:
+            result = subprocess.run(
+                _install_command(),
+                env = env,
+                capture_output = True,
+                text = True,
+                timeout = INSTALL_TIMEOUT_S,
+            )
+            detail = ((result.stderr or result.stdout).strip().splitlines() or [""])[-1]
+            ok = result.returncode == 0
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            detail, ok = type(exc).__name__, False
+        importlib.invalidate_caches()
+        if ok and package_available():
+            _install_failure = None
+            return
+        message = (
+            f"Could not install {LAYA_REQUIREMENT}. Check the internet connection. {detail}".strip()
+        )
+        logger.warning("Decision API install failed: %s", message)
+        _install_failure = (message, time.monotonic() + FAILURE_BACKOFF_S)
+        raise RuntimeError(message)
+
+
+def install_in_background() -> None:
+    global _installer
+    if package_available():
+        return
+    with _state_lock:
+        if _installer is not None and _installer.is_alive():
+            return
+        if _install_failure and time.monotonic() < _install_failure[1]:
+            return
+        _installer = threading.Thread(
+            target = _install_quietly, name = "systemone-install", daemon = True
+        )
+        _installer.start()
+
+
+def _install_quietly() -> None:
+    try:
+        ensure_package()
+    except RuntimeError:
+        pass
+
+
+def installing() -> bool:
+    return _install_lock.locked() or (_installer is not None and _installer.is_alive())
+
+
 def is_cached(checkpoint: Checkpoint) -> bool:
     try:
         root = _checkpoint_dir(checkpoint, local_only = True)
@@ -201,11 +286,12 @@ def _load(checkpoint: Checkpoint) -> None:
     global _agent, _loaded, _device_name, _loading, _failure
     started = time.monotonic()
     try:
+        ensure_package()
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
         message = (
-            MISSING_PACKAGE
-            if isinstance(exc, ImportError)
+            str(exc)
+            if isinstance(exc, RuntimeError) and _install_failure
             else f"Could not load {checkpoint.name}: {type(exc).__name__}: {exc}"
         )
         logger.warning("System One load failed: %s", message)
@@ -355,18 +441,21 @@ def status() -> dict[str, Any]:
             "loaded_model": _loaded.name if _loaded else None,
             "device": _device_name,
             "loading_model": _loading.name if _loading else None,
-            "error": _failure[1] if _failure else None,
+            "installing": installing(),
+            "error": _failure[1]
+            if _failure
+            else (_install_failure[0] if _install_failure else None),
         }
 
 
 def unload() -> bool:
-    global _agent, _loaded, _device_name, _failure
+    global _agent, _loaded, _device_name, _failure, _install_failure
     with _state_lock:
         if _loader is not None and _loader.is_alive():
             raise Unavailable(409, "model_loading", "Wait for the load to finish before unloading")
     with _run_lock:
         was_loaded = _agent is not None
         _agent = _loaded = _device_name = None
-        _failure = None
+        _failure = _install_failure = None
     gc.collect()
     return was_loaded

@@ -2040,6 +2040,7 @@ export const de = {
         notDownloaded: "Nicht heruntergeladen · {size}",
         downloading: "Wird heruntergeladen…",
         downloaded: "Heruntergeladen · wird bei der ersten Anfrage geladen",
+        installing: "Wird installiert…",
         loading: "Wird geladen…",
         loadedOn: "Geladen auf {device}",
         download: "Herunterladen",

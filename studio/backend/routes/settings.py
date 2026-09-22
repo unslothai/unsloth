@@ -635,6 +635,7 @@ class SystemOneSettingsResponse(BaseModel):
     loaded_model: Optional[str] = None
     loaded_device: Optional[str] = None
     loading_model: Optional[str] = None
+    installing: bool = False
     error: Optional[str] = None
 
 
@@ -1333,11 +1334,11 @@ def update_helper_precache(
 def _systemone_response() -> SystemOneSettingsResponse:
     from core.systemone import catalog, laya_runtime
 
-    runtime = laya_runtime.status()
     enabled = systemone_settings.get_enabled()
-    error = runtime["error"]
-    if error is None and enabled and not laya_runtime.package_available():
-        error = laya_runtime.MISSING_PACKAGE
+    if enabled:
+        # Covers an installation turned on before the package existed; a no-op once it is installed.
+        laya_runtime.install_in_background()
+    runtime = laya_runtime.status()
     return SystemOneSettingsResponse(
         enabled = enabled,
         enabled_locked = systemone_settings.enabled_locked(),
@@ -1355,7 +1356,8 @@ def _systemone_response() -> SystemOneSettingsResponse:
         loaded_model = runtime["loaded_model"],
         loaded_device = runtime["device"],
         loading_model = runtime["loading_model"],
-        error = error,
+        installing = runtime["installing"],
+        error = runtime["error"],
     )
 
 

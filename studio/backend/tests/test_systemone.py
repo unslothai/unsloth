@@ -88,6 +88,8 @@ def runtime(monkeypatch):
         ("_loader", None),
         ("_loading", None),
         ("_failure", None),
+        ("_installer", None),
+        ("_install_failure", None),
     ):
         monkeypatch.setattr(laya_runtime, name, value)
     for name in (
@@ -245,21 +247,80 @@ def test_failed_load_backs_off_and_reports_why(client, monkeypatch):
     assert attempts == ["laya-multilingual"]
 
 
-def test_missing_package_points_at_studio_update(client, monkeypatch):
-    def missing(checkpoint):
-        raise ImportError("No module named 'laya'")
+class FakePip:
+    def __init__(
+        self,
+        monkeypatch,
+        returncode = 0,
+        stderr = "",
+        release = None,
+    ):
+        import subprocess
 
-    monkeypatch.setattr(laya_runtime, "_load_checkpoint", missing)
+        self.calls = []
+        self.installed = False
+        self.returncode, self.stderr, self.release = returncode, stderr, release
+        monkeypatch.setattr(laya_runtime, "package_available", lambda: self.installed)
+        monkeypatch.setattr(subprocess, "run", self.run)
+
+    def run(self, cmd, **kwargs):
+        self.calls.append((cmd, kwargs))
+        if self.release is not None:
+            self.release.wait(5)
+        self.installed = self.returncode == 0
+        return SimpleNamespace(returncode = self.returncode, stdout = "", stderr = self.stderr)
+
+
+def test_missing_package_is_installed_automatically(client, monkeypatch, runtime):
+    monkeypatch.setenv("UNSLOTH_TEST_SECRET", "do-not-forward")
+    pip = FakePip(monkeypatch)
     response = _post(client)
-    assert response.status_code == 503
-    assert "pip install --no-deps laya==0.3.5" in response.json()["detail"]["message"]
+    assert response.status_code == 200, response.text
+    [(cmd, kwargs)] = pip.calls
+    assert cmd[-2:] == ["--no-deps", laya_runtime.LAYA_REQUIREMENT]
+    assert "UNSLOTH_TEST_SECRET" not in kwargs["env"]
+    assert runtime == ["laya-multilingual"]
 
 
-def test_settings_warn_about_the_missing_package_before_any_request(client, monkeypatch):
-    monkeypatch.setattr(laya_runtime, "package_available", lambda: False)
-    assert client.get("/api/settings/systemone").json()["error"] == laya_runtime.MISSING_PACKAGE
+def test_failed_install_says_why_and_backs_off(client, monkeypatch, runtime):
+    pip = FakePip(monkeypatch, returncode = 1, stderr = "error: Failed to fetch laya\n")
+    first = _post(client)
+    assert first.status_code == 503
+    message = first.json()["detail"]["message"]
+    assert "Could not install laya==0.3.5" in message and "Failed to fetch laya" in message
+    assert _post(client).status_code == 503
+    assert len(pip.calls) == 1
+    assert runtime == []
+    assert client.get("/api/settings/systemone").json()["error"] == message
+
+
+def test_turning_it_back_on_retries_a_failed_install(client, monkeypatch):
+    pip = FakePip(monkeypatch, returncode = 1, stderr = "offline")
+    assert _post(client).status_code == 503
+    client.put("/api/settings/systemone", json = {"enabled": False})
+    pip.returncode = 0
+    client.put("/api/settings/systemone", json = {"enabled": True})
+    laya_runtime._installer.join(5)
+    assert pip.installed is True
+    assert _post(client).status_code == 200
+
+
+def test_settings_install_in_the_background_and_say_so(client, monkeypatch):
+    release = threading.Event()
+    pip = FakePip(monkeypatch, release = release)
+    assert client.get("/api/settings/systemone").json()["installing"] is True
+    release.set()
+    laya_runtime._installer.join(5)
+    body = client.get("/api/settings/systemone").json()
+    assert body["installing"] is False and body["error"] is None
+    assert len(pip.calls) == 1
+
+
+def test_nothing_installs_while_it_is_off(client, monkeypatch):
     monkeypatch.setattr(systemone_settings, "_owner_setting", {}.get)
-    assert client.get("/api/settings/systemone").json()["error"] is None
+    pip = FakePip(monkeypatch)
+    assert client.get("/api/settings/systemone").json()["installing"] is False
+    assert pip.calls == []
 
 
 def test_slow_load_answers_retry_after_instead_of_hanging(client, monkeypatch):

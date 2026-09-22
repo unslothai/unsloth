@@ -1996,6 +1996,7 @@ export const ar = {
         notDownloaded: "غير مُنزَّل · {size}",
         downloading: "جارٍ التنزيل…",
         downloaded: "مُنزَّل · يُحمَّل عند أول طلب",
+        installing: "جارٍ التثبيت…",
         loading: "جارٍ التحميل…",
         loadedOn: "مُحمَّل على {device}",
         download: "تنزيل",

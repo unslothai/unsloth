@@ -1966,6 +1966,7 @@ export const ja = {
         notDownloaded: "未ダウンロード · {size}",
         downloading: "ダウンロード中…",
         downloaded: "ダウンロード済み · 最初のリクエストで読み込み",
+        installing: "インストール中…",
         loading: "読み込み中…",
         loadedOn: "{device} に読み込み済み",
         download: "ダウンロード",

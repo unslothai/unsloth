@@ -24,6 +24,7 @@ export type SystemOneSettings = {
   loadedModel: string | null;
   loadedDevice: string | null;
   loadingModel: string | null;
+  installing: boolean;
   error: string | null;
 };
 
@@ -55,6 +56,7 @@ type ApiSystemOneSettings = {
   loaded_device: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   loading_model: string | null;
+  installing: boolean;
   error: string | null;
 };
 
@@ -86,6 +88,7 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
     loadedModel: settings.loaded_model,
     loadedDevice: settings.loaded_device,
     loadingModel: settings.loading_model,
+    installing: settings.installing,
     error: settings.error,
   };
 }

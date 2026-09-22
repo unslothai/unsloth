@@ -2009,6 +2009,7 @@ export const ru = {
         notDownloaded: "Не скачана · {size}",
         downloading: "Скачивание…",
         downloaded: "Скачана · загрузится при первом запросе",
+        installing: "Установка…",
         loading: "Загрузка…",
         loadedOn: "Загружена на {device}",
         download: "Скачать",

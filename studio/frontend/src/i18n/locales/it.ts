@@ -2006,6 +2006,7 @@ export const it = {
         notDownloaded: "Non scaricato · {size}",
         downloading: "Download in corso…",
         downloaded: "Scaricato · si carica alla prima richiesta",
+        installing: "Installazione…",
         loading: "Caricamento…",
         loadedOn: "Caricato su {device}",
         download: "Scarica",

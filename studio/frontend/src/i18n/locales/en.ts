@@ -1987,6 +1987,7 @@ export const en = {
         notDownloaded: "Not downloaded · {size}",
         downloading: "Downloading…",
         downloaded: "Downloaded · loads on first request",
+        installing: "Installing…",
         loading: "Loading…",
         loadedOn: "Loaded on {device}",
         download: "Download",

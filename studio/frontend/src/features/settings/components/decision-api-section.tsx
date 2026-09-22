@@ -197,6 +197,9 @@ export function DecisionApiSection(): ReactElement | null {
   if (settings.error) {
     tone = "error";
     status = settings.error;
+  } else if (settings.installing) {
+    tone = "pending";
+    status = t("settings.apiKeys.decisionApi.installing");
   } else if (downloading) {
     tone = "pending";
     status = t("settings.apiKeys.decisionApi.downloading");

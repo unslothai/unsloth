@@ -2012,6 +2012,7 @@ export const ptBR = {
         notDownloaded: "Não baixado · {size}",
         downloading: "Baixando…",
         downloaded: "Baixado · carrega na primeira solicitação",
+        installing: "Instalando…",
         loading: "Carregando…",
         loadedOn: "Carregado em {device}",
         download: "Baixar",
