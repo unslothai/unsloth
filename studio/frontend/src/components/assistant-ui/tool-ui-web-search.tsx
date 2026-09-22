@@ -188,6 +188,25 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
         icon={GlobeIcon}
       />
       <ToolFallbackContent>
+        {/* A url call parks on Allow/Deny before it has a result, and the path, query or
+            fragment the decision turns on is invisible in the trigger's hostname. Inert text:
+            the argument is untrusted, and the finished card already links the url. */}
+        {isRunning && url ? (
+          <div
+            data-slot="tool-web-fetch-url"
+            className="flex min-w-0 items-start gap-2 text-xs"
+          >
+            <span className="shrink-0 font-medium text-muted-foreground">
+              URL:
+            </span>
+            <code
+              dir="ltr"
+              className="min-w-0 break-all text-foreground/85 [unicode-bidi:plaintext]"
+            >
+              {url}
+            </code>
+          </div>
+        ) : null}
         {isRunning ? (
           <div className="flex items-center text-sm text-muted-foreground">
             <span>
