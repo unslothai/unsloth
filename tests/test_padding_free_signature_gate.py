@@ -363,6 +363,68 @@ def test_the_remote_code_grant_is_read_by_membership(init_kwargs, top_level, may
     assert bool(called) is may_execute
 
 
+def test_the_same_auth_keys_reach_both_fetches():
+    """The config fetch and the class fetch must authenticate identically.
+
+    `_resolve_string_model_config` forwards `use_auth_token` among the rest, and
+    transformers still honours it as a deprecated alias for `token` across the
+    supported range. Dropping it here would authenticate the config and not the
+    modeling file, so a private remote-code checkpoint would fail to resolve and the
+    post-init backstop would raise at a user who had configured nothing.
+    Asserted against the sibling's own key list rather than a copy of it, so the two
+    cannot drift apart silently.
+    """
+    import inspect as _inspect
+    from types import SimpleNamespace
+
+    from unsloth import trainer as trainer_module
+    from unsloth.trainer import _resolve_string_model_class
+
+    sibling = _inspect.getsource(trainer_module._resolve_string_model_config)
+    resolver = _inspect.getsource(_resolve_string_model_class)
+    # trust_remote_code is the grant and is handled separately; every other key the
+    # config fetch forwards must also be forwarded here
+    for key in ("revision", "subfolder", "token", "use_auth_token", "cache_dir", "code_revision"):
+        assert f'"{key}"' in sibling, f"{key} is not forwarded by the config fetch"
+        assert f'"{key}"' in resolver, f"{key} is not forwarded by the class fetch"
+
+    captured = {}
+
+    class _RemoteOnlyConfig:
+        model_type = "not-a-real-model-type"
+        architectures = ["NoSuchClassInTransformers"]
+        auto_map = {"AutoModelForCausalLM": "payload.Model"}
+
+    import transformers.dynamic_module_utils as dmu
+
+    original = dmu.get_class_from_dynamic_module
+
+    def _capture(*args, **kwargs):
+        captured.update(kwargs)
+        return _NoKwargs
+
+    dmu.get_class_from_dynamic_module = _capture
+    try:
+        _resolve_string_model_class(
+            "private/repo",
+            _RemoteOnlyConfig(),
+            SimpleNamespace(
+                model_init_kwargs = {
+                    "trust_remote_code": True,
+                    "use_auth_token": "hf_legacy",
+                    "revision": "abc123",
+                }
+            ),
+        )
+    finally:
+        dmu.get_class_from_dynamic_module = original
+
+    assert captured.get("use_auth_token") == "hf_legacy"
+    assert captured.get("revision") == "abc123"
+    # the grant itself is not an auth key and must not be forwarded as one
+    assert "trust_remote_code" not in captured
+
+
 def test_an_unresolvable_string_returns_none_rather_than_guessing():
     """None leaves the post-init backstop in charge, which is the safe answer."""
     from transformers import LlamaConfig

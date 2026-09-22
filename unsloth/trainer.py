@@ -511,9 +511,14 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     auto_map = getattr(model_config, "auto_map", None) or {}
     if not trust_remote_code or not isinstance(auto_map, dict):
         return None
+    # The same auth keys `_resolve_string_model_config` forwards, `use_auth_token`
+    # included: transformers still honours it as a deprecated alias for `token` across
+    # the supported range, so dropping it here would authenticate the config fetch and
+    # not this one. A private remote-code checkpoint would then fail to resolve, and
+    # the post-init backstop would raise on a user who had configured nothing.
     forward = {
         key: init_kwargs[key]
-        for key in ("revision", "subfolder", "token", "cache_dir", "code_revision")
+        for key in ("revision", "subfolder", "token", "use_auth_token", "cache_dir", "code_revision")
         if key in init_kwargs
     }
     for auto_class in (
