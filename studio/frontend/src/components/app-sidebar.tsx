@@ -3138,13 +3138,13 @@ export function AppSidebar() {
   ) {
     if (projectSelectionCount <= 1) {
       return (
-        <ContextMenuContent className="unsloth-plus-menu menu-flat-destructive w-56">
+        <ContextMenuContent className="unsloth-plus-menu sidebar-row-menu menu-flat-destructive w-52">
           {renderProjectRowMenuItems(project, order, CONTEXT_ROW_MENU)}
         </ContextMenuContent>
       );
     }
     return (
-      <ContextMenuContent className="unsloth-plus-menu menu-flat-destructive w-52">
+      <ContextMenuContent className="unsloth-plus-menu sidebar-row-menu menu-flat-destructive w-48">
         {projectSelectionCount > 1 && (
           <ContextMenuLabel>
             {t("shell.selection.countSelected", {
@@ -3179,13 +3179,13 @@ export function AppSidebar() {
   function renderChatContextMenu(item: SidebarItem, list: ChatListContext) {
     if (selectionCount <= 1) {
       return (
-        <ContextMenuContent className="unsloth-plus-menu menu-flat-destructive w-56">
+        <ContextMenuContent className="unsloth-plus-menu sidebar-row-menu menu-flat-destructive w-52">
           {renderChatRowMenuItems(item, list, CONTEXT_ROW_MENU)}
         </ContextMenuContent>
       );
     }
     return (
-      <ContextMenuContent className="unsloth-plus-menu menu-flat-destructive w-52">
+      <ContextMenuContent className="unsloth-plus-menu sidebar-row-menu menu-flat-destructive w-48">
         {selectionCount > 1 && (
           <ContextMenuLabel>
             {t("shell.selection.countSelected", { count: selectionCount })}
@@ -3343,7 +3343,7 @@ export function AppSidebar() {
               <P.SubContent
                 sideOffset={0}
                 alignOffset={-4}
-                className="unsloth-plus-menu w-52"
+                className="unsloth-plus-menu sidebar-row-menu w-48"
               >
                 {/* Actions above the rule, destinations below it. */}
                 <P.Item
@@ -3360,7 +3360,7 @@ export function AppSidebar() {
                     <HugeiconsIcon icon={FolderAttachmentIcon} strokeWidth={1.75} className="size-icon" />
                     <span>Project sources</span>
                   </P.SubTrigger>
-                  <P.SubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
+                  <P.SubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu sidebar-row-menu w-48">
                     {projects.length === 0 && (
                       <P.Item disabled>No projects yet</P.Item>
                     )}
@@ -3405,7 +3405,7 @@ export function AppSidebar() {
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
                 <span>Export</span>
               </P.SubTrigger>
-              <P.SubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
+              <P.SubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu sidebar-row-menu w-48">
                 {chatExportOptions().map(({ label, format }) => (
                   <P.Item
                     key={label}
@@ -3707,7 +3707,7 @@ export function AppSidebar() {
               side="bottom"
               align="start"
               sideOffset={0}
-              className="unsloth-plus-menu menu-flat-destructive w-56"
+              className="unsloth-plus-menu sidebar-row-menu menu-flat-destructive w-52"
               trigger={(triggerRef) => (
                 <button
                   ref={triggerRef}
@@ -3903,7 +3903,7 @@ export function AppSidebar() {
             side="bottom"
             align="start"
             sideOffset={0}
-            className="unsloth-plus-menu menu-flat-destructive w-56"
+            className="unsloth-plus-menu sidebar-row-menu menu-flat-destructive w-52"
             trigger={(triggerRef) => (
               <button
                 ref={triggerRef}

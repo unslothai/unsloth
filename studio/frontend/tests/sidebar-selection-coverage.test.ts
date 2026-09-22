@@ -225,3 +225,39 @@ test("the shared menu items are written against the injected family", () => {
   assert.match(APP_SIDEBAR, /function renderMoveRowItems\([^)]*P: RowMenuParts,\n\s*\)/s);
   assert.match(APP_SIDEBAR, /<OpenChatFolderUnavailableItem Item=\{P\.Item\} \/>/);
 });
+
+
+// The row menu is the longest in the app, so it runs one step below the composer menus it
+// shares a look with. Scoped to .sidebar-row-menu: .unsloth-plus-menu alone dresses a dozen
+// other surfaces that must not move.
+
+test("every row-menu surface takes the compact class", () => {
+  const surfaces = APP_SIDEBAR.match(/className="unsloth-plus-menu[^"]*"/g) ?? [];
+  const rowMenus = surfaces.filter((c) => c.includes("menu-flat-destructive"));
+  assert.ok(rowMenus.length >= 6, "expected both 3-dot menus and both right-click menus");
+  for (const cls of rowMenus) {
+    assert.match(cls, /sidebar-row-menu/, `a row menu surface missed the class: ${cls}`);
+  }
+  // Sub-content is portaled out of the menu, so it carries the class itself.
+  for (const sub of APP_SIDEBAR.match(/<P\.SubContent[^>]*className="[^"]*"/g) ?? []) {
+    assert.match(sub, /sidebar-row-menu/, `a submenu missed the class: ${sub}`);
+  }
+});
+
+test("the compact class is scoped, and both menu families get the same rules", () => {
+  const CSS = readSrc("index.css");
+  // Sized only through the modifier, never on .unsloth-plus-menu itself.
+  assert.match(CSS, /\.unsloth-plus-menu\.sidebar-row-menu\[data-slot\] \{/);
+  assert.match(CSS, /--icon-size: var\(--ui-icon-size-sm\);/);
+  // A right-click menu and a 3-dot menu must dress alike, so every item rule names both slots.
+  const plusRules = CSS.split("\n\t.unsloth-plus-menu").slice(1);
+  for (const rule of plusRules) {
+    const head = rule.slice(0, rule.indexOf("{"));
+    if (!head.includes('dropdown-menu-item')) continue;
+    assert.match(
+      head,
+      /context-menu-item/,
+      `a plus-menu item rule styles only the dropdown family: ${head.trim()}`,
+    );
+  }
+});
