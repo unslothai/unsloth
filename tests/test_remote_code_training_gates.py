@@ -406,3 +406,19 @@ def test_standard_tokenizer_fields_count_as_text_inputs():
     from unsloth.models.vision import _TEXT_BATCH_KEYS
 
     assert "token_type_ids" in _TEXT_BATCH_KEYS
+
+
+def test_a_required_cache_control_is_a_missing_text_input():
+    """cache_position without a default is not something the collator supplies, so a forward
+    that demands it cannot take a text batch; input_ids and attention_mask without defaults
+    are fine."""
+    from unsloth.models.vision import _required_non_text_inputs
+
+    def needs_cache(self, input_ids, attention_mask, cache_position, labels = None):
+        pass
+
+    def plain(self, input_ids, attention_mask, labels = None, cache_position = None):
+        pass
+
+    assert _required_non_text_inputs(needs_cache) == ["cache_position"]
+    assert _required_non_text_inputs(plain) == []

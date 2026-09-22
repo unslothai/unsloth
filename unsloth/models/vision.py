@@ -1235,8 +1235,15 @@ _TEXT_BATCH_KEYS = frozenset(
 )
 
 
+# What a text collator really puts in a batch. A required control argument (cache_position,
+# use_cache, past_key_values, return_dict) is not supplied by the Trainer, so a forward that
+# demands one without a default cannot take a text batch either.
+_COLLATOR_SUPPLIED_KEYS = frozenset(("input_ids", "attention_mask", "labels", "token_type_ids", "position_ids"))
+
+
 def _required_non_text_inputs(forward):
-    """Parameters a text batch cannot supply: no default and not a text batch key."""
+    """Parameters a text batch cannot supply: no default and not something the collator puts
+    in the batch."""
     try:
         parameters = inspect.signature(forward).parameters
     except (TypeError, ValueError):
@@ -1247,7 +1254,7 @@ def _required_non_text_inputs(forward):
         if name != "self"
         and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
         and p.default is inspect.Parameter.empty
-        and name not in _TEXT_BATCH_KEYS
+        and name not in _COLLATOR_SUPPLIED_KEYS
     ]
 
 
