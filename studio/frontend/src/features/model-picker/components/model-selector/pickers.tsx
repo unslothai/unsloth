@@ -1845,13 +1845,14 @@ function GgufVariantExpander({
   const effectiveRecommendedByGroup = useMemo(() => {
     const recommended = new Map<string, string>();
     for (const group of variantGroups) {
+      const preferred = preferredByGroup.get(group.key) ?? null;
       if (!anyBudgetGb && !budgetKnown) {
-        const preferred = preferredByGroup.get(group.key) ?? null;
         if (preferred) recommended.set(group.key, preferred.quant);
         continue;
       }
-      const best = recommendedQuantForDevice(group.variants, getGgufFit);
-      if (best) recommended.set(group.key, best.quant);
+      // Null when the group carries no sizes at all, so there is nothing to measure.
+      const pick = recommendedQuantForDevice(group.variants, getGgufFit) ?? preferred;
+      if (pick) recommended.set(group.key, pick.quant);
     }
     return recommended;
   }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit]);

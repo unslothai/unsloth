@@ -1116,18 +1116,26 @@ export function ggufFitIsComfortable(fit: GgufFitClass): boolean {
 
 /** What to recommend on a device whose budget is known: the largest quant that runs with room to
  *  spare, else the largest that runs at all, else the smallest. Quality the machine can actually
- *  hold, rather than whatever size the repo defaults to. */
+ *  hold, rather than whatever size the repo defaults to.
+ *
+ *  Null when no variant carries a size, since then there is nothing to weigh against the device
+ *  and the caller's repo default is the better guess. */
 export function recommendedQuantForDevice<T extends GgufVariantSizes>(
   variants: readonly T[],
   fitOf: (sizeBytes: number) => GgufFitClass,
 ): T | null {
-  if (variants.length === 0) return null;
   // Ranked by the weights, since that is the quality on offer and the size the row shows. Judged on
   // the download footprint, which also covers the companion GGUFs the loader charges for: a vision
   // projector, or a drafter `auto` promotes to. On `size_bytes` alone this starred quants that go
   // OOM once the mmproj lands beside them.
   const fitOfVariant = (variant: T) => fitOf(ggufVariantFitSizeBytes(variant));
-  const bySizeDesc = [...variants].sort(
+  // A listing with no size metadata reports zero (gguf_variants.py: an OSError stat-ing a local
+  // file, or a manifest an older backend cannot read). Zero prices as the bare context allowance,
+  // so it reads comfortable on any device and would outrank a real quant that only runs at the
+  // edge. Unknown is not comfortable, so it does not compete.
+  const sized = variants.filter((variant) => ggufVariantFitSizeBytes(variant) > 0);
+  if (sized.length === 0) return null;
+  const bySizeDesc = [...sized].sort(
     (left, right) => right.size_bytes - left.size_bytes,
   );
   return (

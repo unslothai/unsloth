@@ -88,6 +88,34 @@ test("companion weights count against the budget", () => {
   assert.equal(recommendedQuantForDevice(vision, fit)?.quant, "UD-Q4_K_XL");
 });
 
+// A listing with no size metadata reports zero, which prices as the bare context allowance and so
+// reads comfortable on any device. Ranked by weights it sorts last, but the comfortable pass would
+// still reach it once every real quant was only marginal or partial.
+test("a variant of unknown size does not outrank one that runs", () => {
+  const listing = [
+    { quant: "UD-Q8_K_XL", size_bytes: 22 * GB },
+    { quant: "UD-Q6_K_XL", size_bytes: 20.5 * GB },
+    { quant: "UD-IQ2_XXS", size_bytes: 0 },
+  ];
+  // A 24 GiB card with 16 GiB of RAM offloads both of these, neither with room to spare: the
+  // comfortable ceiling here is 19.4 GiB. An unpriced zero clears it, so it used to win.
+  const fit = fitOn(24, 16);
+  assert.equal(fit(0), "fits");
+  for (const size of [22, 20.5]) {
+    assert.ok(!ggufFitIsComfortable(fit(size * GB)), `${size} GiB is comfortable`);
+    assert.notEqual(fit(size * GB), "oom", `${size} GiB does not run`);
+  }
+  assert.equal(recommendedQuantForDevice(listing, fit)?.quant, "UD-Q8_K_XL");
+});
+
+test("a group with no sizes at all is left to the caller", () => {
+  const unsized = [
+    { quant: "UD-Q4_K_XL", size_bytes: 0 },
+    { quant: "UD-Q6_K_XL", size_bytes: 0 },
+  ];
+  assert.equal(recommendedQuantForDevice(unsized, fitOn(24, 16)), null);
+});
+
 test("a machine too small for anything still gets the smallest", () => {
   const pick = recommendedQuantForDevice(QUANTS, () => "oom");
   assert.equal(pick?.quant, "UD-IQ1_S");
