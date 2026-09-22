@@ -188,3 +188,71 @@ def test_omni_reaches_the_vllm_guard_rather_than_the_language_model_path():
     needs_processor = is_vlm or resolved in _multimodal_auto_classes()
     is_vlm_config = is_vlm or needs_processor or hasattr(config, "vision_config")
     assert is_vlm_config, "must reach the fast_inference guard"
+
+
+def _tiny(cls):
+    from transformers import LlamaConfig
+
+    return cls(
+        LlamaConfig(
+            hidden_size = 4, num_hidden_layers = 1, num_attention_heads = 1,
+            vocab_size = 8, intermediate_size = 8,
+        )
+    )
+
+
+def _pretrained_base():
+    import torch.nn as nn
+    from transformers import LlamaConfig, PreTrainedModel
+
+    class Base(PreTrainedModel):
+        config_class = LlamaConfig
+
+        def __init__(self, config):
+            super().__init__(config)
+            self.embed = nn.Embedding(8, 4)
+
+    return Base
+
+
+def test_a_getter_that_fails_internally_is_not_read_as_a_bad_signature():
+    """A TypeError from INSIDE a valid zero-argument getter must propagate.
+
+    Skipping it would cost that module its input-gradient hook, and under PEFT
+    with gradient checkpointing the frozen embedding output then carries no
+    gradient: backward fails, or the adapter silently trains on nothing. The
+    signature is asked by binding, before the call, so only a genuine
+    argument mismatch skips.
+    """
+    Base = _pretrained_base()
+
+    class RaisesInside(Base):
+        def get_input_embeddings(self):
+            raise TypeError("genuine bug inside a valid zero-arg getter")
+
+    with pytest.raises(TypeError, match = "genuine bug inside"):
+        _tiny(RaisesInside).enable_input_require_grads()
+
+
+def test_a_getter_that_cannot_take_zero_arguments_is_skipped():
+    """stepfun-ai/Step-3.7-Flash declares get_input_embeddings(self, input_ids)."""
+    Base = _pretrained_base()
+
+    class WrongSignature(Base):
+        def get_input_embeddings(self, input_ids):
+            raise AssertionError("must not be reached")
+
+    _tiny(WrongSignature).enable_input_require_grads()  # must not raise
+
+
+def test_a_normal_model_still_gets_its_hook():
+    """The negative control: neither guard may swallow the ordinary case."""
+    Base = _pretrained_base()
+
+    class Normal(Base):
+        def get_input_embeddings(self):
+            return self.embed
+
+    model = _tiny(Normal)
+    model.enable_input_require_grads()
+    assert model.embed._forward_hooks, "the input-gradient hook must be registered"

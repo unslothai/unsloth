@@ -2005,16 +2005,27 @@ def patch_enable_input_require_grads():
             ):
                 continue
 
+            getter = module.get_input_embeddings
             try:
-                input_embeddings = module.get_input_embeddings()
-            except (NotImplementedError, TypeError):
-                # Two ways a model declines to answer: the transformers 5 base
-                # implementation raises NotImplementedError (vision models such
-                # as GLM V4.6 skip only self.visual), and remote code can
-                # declare a non-standard signature that cannot be called with
-                # no arguments at all (stepfun-ai/Step-3.7-Flash defines
-                # get_input_embeddings(self, input_ids), which raises TypeError).
-                # Neither is a model to guess about, so skip it.
+                inspect.signature(getter).bind()
+            except TypeError:
+                # Remote code can declare a signature that cannot be called with no
+                # arguments at all: stepfun-ai/Step-3.7-Flash defines
+                # get_input_embeddings(self, input_ids). Asked by binding rather
+                # than by calling, so a TypeError raised INSIDE a working getter
+                # still propagates instead of being read as a bad signature and
+                # silently costing the module its input-gradient hook.
+                continue
+            except (ValueError, AttributeError):
+                # No introspectable signature (C-implemented or a strange
+                # descriptor). Undecidable, so fall through and call it.
+                pass
+
+            try:
+                input_embeddings = getter()
+            except NotImplementedError:
+                # transformers 5 defines the method on every PreTrainedModel with a
+                # base implementation that raises (GLM V4.6 skips only self.visual).
                 continue
 
             if input_embeddings is None:
