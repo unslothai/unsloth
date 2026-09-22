@@ -82,7 +82,13 @@ def _scale_constants() -> dict[str, str]:
     and provider.tsx uses the same constant as the CSS fallback, which is what keeps a
     single 34 in the codebase, so read it from there rather than repeating it here.
     """
-    source = _ui_source(INTERFACE_SCALE_RUNTIME)
+    # Raw. These are native chrome: the mac titlebar is 34px because the OS window
+    # decoration is, and the runtime divides it by the webview zoom rather than scaling it
+    # with the interface font. Read through `_ui_source`, a constant respelled as
+    # `calc(34px * var(--ui-space-scale, 1))` would collapse back to 34px here and every
+    # chrome contract downstream would agree with itself while the CSS moved off the
+    # native chrome it is supposed to sit against.
+    source = _window_chrome_source(INTERFACE_SCALE_RUNTIME)
     numbers = dict(re.findall(r"export const (\w+_PX) = (\d+);", source))
     return {
         name: re.sub(r"\$\{(\w+)\}", lambda m: numbers.get(m.group(1), m.group(0)), body)
@@ -2543,6 +2549,10 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (AUDIO_PAGE, "", "h", "34px", 1),
     (AUDIO_PAGE, "[&>button]:", "h", "34px", 1),
     (VIDEO_PAGE, "!", "h", "34px", 2),
+    # The chat page's 30px round controls, including the collapsed New Chat button. The
+    # header they sit in grows with the setting, so one left fixed shrinks against its own row.
+    (CHAT_PAGE, "!", "size", "30px", 1),
+    (CHAT_PAGE, "", "size", "30px", 3),
 )
 
 # Where a class may begin: the start of the string it is written in, or the space after the
