@@ -1339,13 +1339,21 @@ def _text_trainable_core(model, text_intent = True):
     required = [] if has_no_forward else _required_non_text_inputs(forward)
     if not has_no_forward and not required:
         return model
-    if not text_intent and not has_no_forward:
-        # A wrapper with no forward cannot train on any batch, so it is always handed over.
-        print(
-            f"Unsloth: `{type(model).__name__}.forward` requires {', '.join(required)}, so it "
-            "trains on multimodal batches only. Pass `text_only = True` to from_pretrained to "
-            "train its language model on text batches instead."
-        )
+    if not text_intent:
+        # A multimodal load may still generate through the wrapper (Qwen3-Omni's talker and
+        # speech decoder), and dropping those is irreversible, so the wrapper stays whole.
+        if has_no_forward:
+            print(
+                f"Unsloth: `{type(model).__name__}` has no forward of its own, so it cannot be "
+                "trained as loaded. Pass `text_only = True` to from_pretrained to train its "
+                "thinker on text batches instead."
+            )
+        else:
+            print(
+                f"Unsloth: `{type(model).__name__}.forward` requires {', '.join(required)}, so it "
+                "trains on multimodal batches only. Pass `text_only = True` to from_pretrained to "
+                "train its language model on text batches instead."
+            )
         return model
     try:
         from transformers import PreTrainedModel
