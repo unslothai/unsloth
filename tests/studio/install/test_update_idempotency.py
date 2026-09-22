@@ -184,6 +184,25 @@ DIST_RECORDS = (
 )
 
 
+# The digest the installer stamps into the manifest as known_unmet_index, computed the same way:
+# its own installed_dependency_index(), hashed as _installed_index_digest hashes it. The record is
+# only evidence about the installed set it was written against, which is how the installer reads it.
+INSTALLER_DIR = pathlib.Path(__file__).resolve().parents[3] / "studio"
+INDEX_DIGEST = (
+    "import hashlib, sys\n"
+    f"sys.path.insert(0, {str(INSTALLER_DIR)!r})\n"
+    "import install_manifest\n"
+    "index = install_manifest.installed_dependency_index()\n"
+    "if index is None:\n"
+    "    print('')\n"
+    "else:\n"
+    "    digest = hashlib.sha256()\n"
+    "    for name in sorted(index):\n"
+    "        digest.update(f'{name}=={index[name][0]}\\n'.encode('utf-8'))\n"
+    "    print(digest.hexdigest())\n"
+)
+
+
 # ── the install under test ──
 
 
@@ -583,6 +602,14 @@ def snapshot(venv_python: pathlib.Path) -> dict:
         for name, version, mtime, size in json.loads(records.stdout or "[]")
     ]
 
+    index_digest = subprocess.run(
+        [str(venv_python), "-I", "-c", INDEX_DIGEST],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    state["installed_index_digest"] = (index_digest.stdout or "").strip() or None
+
     manifest_path = venv / "unsloth_install_manifest.json"
     manifest = None
     if manifest_path.is_file():
@@ -930,8 +957,15 @@ def _known_unmet_names(state: dict) -> set[str]:
 
     closure_unmet_requirements reports a missing distribution by name and a version outside its
     specifier as "name version"; a "<...>" entry means the audit could not run and names nothing.
+    Only a record whose known_unmet_index matches the installed set it is read against counts.
     """
-    record = (state.get("manifest") or {}).get("known_unmet") or {}
+    manifest = state.get("manifest") or {}
+    # Stale evidence names nothing: a record written against a different installed set says
+    # nothing about this one, and trusting it would let a later step's change hide under it.
+    digest = state.get("installed_index_digest")
+    if not digest or manifest.get("known_unmet_index") != digest:
+        return set()
+    record = manifest.get("known_unmet") or {}
     names: set[str] = set()
     for entries in record.values() if isinstance(record, dict) else ():
         for entry in entries or ():
