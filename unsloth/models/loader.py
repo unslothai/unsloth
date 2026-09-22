@@ -282,7 +282,10 @@ def _resolve_omni_auto_model(model_config, trust_remote_code = None):
         if auto_class is None:
             continue
         try:
-            if resolve_model_class(auto_class, model_config, trust_remote_code = trust_remote_code) is not None:
+            if (
+                resolve_model_class(auto_class, model_config, trust_remote_code = trust_remote_code)
+                is not None
+            ):
                 return auto_class
         except Exception:
             continue
@@ -1903,7 +1906,9 @@ class FastModel(FastBaseModel):
             if hasattr(model_config, "vision_config"):
                 text_config = _get_text_only_config(model_config, old_model_name)
                 # Skip the vision tower only for families with their own text decoder (Gemma 3); others would load random weights, so keep the full model.
-                text_class = resolve_model_class(AutoModelForCausalLM, text_config, trust_remote_code = trust_remote_code)
+                text_class = resolve_model_class(
+                    AutoModelForCausalLM, text_config, trust_remote_code = trust_remote_code
+                )
                 if text_class is None or not _is_family_text_decoder(
                     getattr(model_config, "model_type", ""),
                     getattr(text_config, "model_type", ""),
@@ -1942,8 +1947,18 @@ class FastModel(FastBaseModel):
                     auto_model = AutoModelForVision2Seq
                     # Only when the image-text class has no mapping, so anything that
                     # resolves today keeps the class it resolves to now.
-                    if resolve_model_class(auto_model, model_config, trust_remote_code = trust_remote_code) is None:
-                        auto_model = _resolve_omni_auto_model(model_config, trust_remote_code = trust_remote_code) or auto_model
+                    if (
+                        resolve_model_class(
+                            auto_model, model_config, trust_remote_code = trust_remote_code
+                        )
+                        is None
+                    ):
+                        auto_model = (
+                            _resolve_omni_auto_model(
+                                model_config, trust_remote_code = trust_remote_code
+                            )
+                            or auto_model
+                        )
             else:
                 auto_model = AutoModelForCausalLM
 

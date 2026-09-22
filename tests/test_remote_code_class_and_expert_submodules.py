@@ -421,5 +421,11 @@ def test_every_resolver_probe_forwards_the_trust_decision():
     for module in (loader, vision):
         tree = ast.parse(inspect.getsource(module))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and getattr(node.func, "id", None) in ("resolve_model_class", "_resolve_omni_auto_model"):
-                assert any(k.arg == "trust_remote_code" for k in node.keywords), (module.__name__, node.lineno)
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) in (
+                "resolve_model_class",
+                "_resolve_omni_auto_model",
+            ):
+                assert any(k.arg == "trust_remote_code" for k in node.keywords), (
+                    module.__name__,
+                    node.lineno,
+                )

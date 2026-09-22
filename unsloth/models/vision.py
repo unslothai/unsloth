@@ -1625,7 +1625,9 @@ class FastBaseModel:
         if text_only and hasattr(auto_config, "vision_config"):
             parent_config = auto_config
             text_config = _get_text_only_config(parent_config, model_name)
-            text_class = resolve_model_class(AutoModelForCausalLM, text_config, trust_remote_code = trust_remote_code)
+            text_class = resolve_model_class(
+                AutoModelForCausalLM, text_config, trust_remote_code = trust_remote_code
+            )
             if text_class is not None and _is_family_text_decoder(
                 getattr(parent_config, "model_type", ""),
                 getattr(text_config, "model_type", ""),
