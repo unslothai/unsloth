@@ -378,14 +378,21 @@ export function curatedBudget(
     : undefined;
 }
 
-/** Over-budget text for a curated row. The whole-GB badge figure can round below the one-decimal
- *  budget (24 against 24.1), so the size is then rounded UP to a tenth to still read as over. */
+/** Over-budget text for a curated row. When the whole-GB badge figure does not read above the
+ *  one-decimal budget (24 against 24.1), the size is rounded up and the budget down to a tenth, so
+ *  the shown size is always strictly above the shown budget. The epsilon keeps 16.7999... at 16.8. */
 export function curatedBudgetText(est: number, gpuGb: number, budget: CuratedBudget): string {
-  const budgetGb = Number(budget.allowanceGb.toFixed(1));
-  const needGb = est > budgetGb ? `${est}` : (Math.ceil(budget.sizeGb * 10) / 10).toFixed(1);
+  const shownBudget = Number(budget.allowanceGb.toFixed(1));
+  const wholeReadsOver = est > shownBudget;
+  const needGb = wholeReadsOver
+    ? `${est}`
+    : (Math.ceil(budget.sizeGb * 10 - 1e-9) / 10).toFixed(1);
+  const budgetGb = wholeReadsOver
+    ? shownBudget.toFixed(1)
+    : (Math.floor(budget.allowanceGb * 10 + 1e-9) / 10).toFixed(1);
   const of =
     budget.device === "RAM"
       ? `${Number(budget.deviceGb.toFixed(2))}GB available RAM`
       : `a ${gpuGb}GB GPU`;
-  return `Needs ~${needGb}GB for weights (budget: ~${budgetGb.toFixed(1)}GB, 70% of ${of})`;
+  return `Needs ~${needGb}GB for weights (budget: ~${budgetGb}GB, 70% of ${of})`;
 }

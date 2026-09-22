@@ -318,6 +318,18 @@ test("the over-budget text never shows the size below the budget it exceeds", ()
     text(Z_TURBO, 34.5),
     "Needs ~24.4GB for weights (budget: ~24.1GB, 70% of a 34.5GB GPU)",
   );
+  // A whole 4 GB against a 3.99 allowance: the budget is rounded down so 4.0 still reads as over.
+  const whisper = curatedArtifactFit("unsloth/whisper-large-v3", AUDIO_CATALOG, {
+    gpuGb: 1,
+    systemRamGb: 5.7,
+  });
+  assert.ok(whisper?.sizeGb !== undefined && whisper.fits === false);
+  const whisperBudget = curatedBudget(whisper);
+  assert.ok(whisperBudget);
+  assert.equal(
+    curatedBudgetText(4, 1, whisperBudget),
+    "Needs ~4.0GB for weights (budget: ~3.9GB, 70% of 5.7GB available RAM)",
+  );
   assert.equal(
     text(QWEN_21, 22.49),
     "Needs ~27GB for weights (budget: ~15.7GB, 70% of a 22.49GB GPU)",
