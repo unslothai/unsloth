@@ -7,9 +7,10 @@ pinned build from the backend on its next start, instead of needing a second upd
 from __future__ import annotations
 
 import json
-import subprocess
+import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -61,17 +62,35 @@ def test_only_an_index_release_is_a_candidate(monkeypatch, direct_url, expected)
     assert dr._diffusers_is_an_index_install() is expected
 
 
+class _Proc:
+    """A finished installer, for the Popen the repair starts."""
+
+    def __init__(
+        self,
+        returncode,
+        wait = None,
+    ):
+        self.pid, self.returncode, self._wait = 0, returncode, wait
+
+    def communicate(self, timeout = None):
+        if self._wait is not None:
+            self._wait.wait(5)
+        return "", None
+
+    def poll(self):
+        return self.returncode
+
+
 def test_a_release_install_starts_one_repair_and_records_success(monkeypatch):
     _installed_diffusers(monkeypatch, None)
     calls = []
     release = threading.Event()
 
-    def fake_run(argv, **kwargs):
+    def fake_popen(argv, **kwargs):
         calls.append((argv, kwargs["env"]))
-        release.wait(5)
-        return subprocess.CompletedProcess(argv, dr._INSTALLED, stdout = "")
+        return _Proc(dr._INSTALLED, wait = release)
 
-    monkeypatch.setattr(dr.subprocess, "run", fake_run)
+    monkeypatch.setattr(dr.subprocess, "Popen", fake_popen)
     assert dr.start_diffusers_autorepair_if_needed() is True
     assert dr.diffusers_repair_in_flight() is True
     assert dr.start_diffusers_autorepair_if_needed() is False, "at most once per process"
@@ -88,14 +107,39 @@ def test_nothing_to_do_and_failure_do_not_report_an_install(monkeypatch):
     _installed_diffusers(monkeypatch, None)
     for code in (dr._NOTHING_TO_DO, 2):
         monkeypatch.setattr(dr, "_thread", None)
-        monkeypatch.setattr(
-            dr.subprocess,
-            "run",
-            lambda argv, code = code, **kw: subprocess.CompletedProcess(argv, code, stdout = ""),
-        )
+        monkeypatch.setattr(dr.subprocess, "Popen", lambda argv, code = code, **kw: _Proc(code))
         assert dr.start_diffusers_autorepair_if_needed() is True
         dr._thread.join(5)
         assert dr.diffusers_repair_installed() is False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process tree")
+def test_a_timed_out_repair_stops_the_installers_children_too(monkeypatch, tmp_path):
+    """uv, not the installer, rewrites diffusers, so killing only the installer on timeout would
+    reopen the load gate while the files are still being replaced."""
+    from utils.process_lifetime import _pid_alive, _pid_is_zombie
+
+    pid_file = tmp_path / "child.pid"
+    installer = tmp_path / "installer.py"
+    installer.write_text(
+        "import pathlib, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid))\n"
+        "time.sleep(60)\n",
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(dr, "_INSTALLER", installer)
+    monkeypatch.setattr(dr, "_REPAIR_TIMEOUT_S", 3)
+    dr._run_repair()
+    child = int(pid_file.read_text())
+    for _ in range(50):
+        if not _pid_alive(child) or _pid_is_zombie(child):
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(child, 9)
+        pytest.fail("the installer's child outlived the timed-out repair")
+    assert dr.diffusers_repair_installed() is False
 
 
 @pytest.mark.parametrize(
@@ -106,7 +150,7 @@ def test_opt_outs_start_nothing(monkeypatch, env):
     _installed_diffusers(monkeypatch, None)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(dr.subprocess, "run", lambda *a, **k: pytest.fail("started a repair"))
+    monkeypatch.setattr(dr.subprocess, "Popen", lambda *a, **k: pytest.fail("started a repair"))
     assert dr.start_diffusers_autorepair_if_needed() is False
 
 
@@ -114,7 +158,7 @@ def test_the_pinned_build_starts_nothing(monkeypatch):
     _installed_diffusers(
         monkeypatch, {"url": "https://github.com/huggingface/diffusers", "vcs_info": {}}
     )
-    monkeypatch.setattr(dr.subprocess, "run", lambda *a, **k: pytest.fail("started a repair"))
+    monkeypatch.setattr(dr.subprocess, "Popen", lambda *a, **k: pytest.fail("started a repair"))
     assert dr.start_diffusers_autorepair_if_needed() is False
 
 

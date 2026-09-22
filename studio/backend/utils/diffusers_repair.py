@@ -121,34 +121,46 @@ def _repair_env() -> dict[str, str]:
 
 def _run_repair() -> None:
     global _installed
-    kwargs = {}
+    from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid, terminate_pid
+
+    kwargs = child_popen_kwargs()
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, str(_INSTALLER), "--repair-diffusers-main"],
             env = _repair_env(),
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
             errors = "replace",
-            timeout = _REPAIR_TIMEOUT_S,
             **kwargs,
         )
-    except subprocess.TimeoutExpired:
-        logger.warning("diffusers self-heal timed out after %ss", _REPAIR_TIMEOUT_S)
-        return
     except OSError as exc:
         logger.warning("diffusers self-heal could not start the installer: %s", exc)
         return
-    if result.returncode == _INSTALLED:
+    # Tracked, so a backend that exits mid-install takes the installer and its uv/git children down.
+    adopt_pid(proc.pid)
+    try:
+        output, _ = proc.communicate(timeout = _REPAIR_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        # The whole tree, before the gate reopens: uv keeps rewriting diffusers after its parent dies.
+        terminate_pid(proc.pid, owner_verified = True)
+        proc.kill()
+        proc.wait()
+        logger.warning("diffusers self-heal timed out after %ss", _REPAIR_TIMEOUT_S)
+        return
+    finally:
+        if proc.poll() is not None:
+            forget_pid(proc.pid)
+    if proc.returncode == _INSTALLED:
         _installed = True
         logger.info("diffusers self-heal installed the pinned Diffusers main build")
-    elif result.returncode != _NOTHING_TO_DO:
+    elif proc.returncode != _NOTHING_TO_DO:
         logger.warning(
             "diffusers self-heal could not install the pinned build; run `unsloth studio "
             "update` to retry. Installer output:\n%s",
-            (result.stdout or "")[-4000:],
+            (output or "")[-4000:],
         )
 
 
