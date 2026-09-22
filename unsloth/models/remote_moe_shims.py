@@ -166,6 +166,9 @@ def _gate_forward_without_training_assert(original):
     return forward
 
 
+_MISSING = object()
+
+
 def _moe_train_dispatch(block, x, topk_idx, topk_weight):
     """Differentiable version of the port's `moe_infer` for a single rank."""
     num_tokens, top_k = topk_idx.shape
@@ -195,21 +198,38 @@ def _moe_train_dispatch(block, x, topk_idx, topk_weight):
 
 
 def _moe_forward_with_training_path(original):
+    """Run the port's own forward in train mode, with the block and its gate reporting
+    eval and `moe_infer` swapped for the differentiable dispatch on this instance only.
+
+    Everything the port does around the expert mix is kept as written: DeepSeek adds the
+    shared experts, Kimi-K3's latent MoE wraps the mix in `routed_expert_down_proj`, an
+    RMSNorm and `routed_expert_up_proj`. Rebuilding the forward instead would feed the
+    experts the full hidden size and skip those projections."""
+
     @functools.wraps(original)
     def forward(self, hidden_states):
         if not self.training or getattr(self, "ep_size", 1) > 1:
             return original(self, hidden_states)
-        identity = hidden_states
-        orig_shape = hidden_states.shape
-        topk_idx, topk_weight = self.gate(hidden_states)
-        flat = hidden_states.view(-1, hidden_states.shape[-1])
-        y = _moe_train_dispatch(self, flat, topk_idx, topk_weight).view(*orig_shape)
-        # DeepSeek ports only create `shared_experts` when `n_shared_experts` is set, and
-        # others (sarvam: `num_shared_experts`) store None, so the module itself decides.
-        shared = getattr(self, "shared_experts", None)
-        if shared is not None:
-            y = y + shared(identity)
-        return y
+        gate = getattr(self, "gate", None)
+        gate_was_training = isinstance(gate, torch.nn.Module) and gate.training
+        own = self.__dict__.get("moe_infer", _MISSING)
+        # `training` is a plain attribute; flipping it on the block and its gate changes
+        # only their own `if not self.training` / `assert not self.training` checks, the
+        # experts and projections below keep their train-mode flags.
+        self.training = False
+        if gate_was_training:
+            gate.training = False
+        self.__dict__["moe_infer"] = functools.partial(_moe_train_dispatch, self)
+        try:
+            return original(self, hidden_states)
+        finally:
+            self.training = True
+            if gate_was_training:
+                gate.training = True
+            if own is _MISSING:
+                self.__dict__.pop("moe_infer", None)
+            else:
+                self.__dict__["moe_infer"] = own
 
     forward._unsloth_remote_moe_shim = True
     return forward

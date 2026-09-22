@@ -449,3 +449,138 @@ def test_a_compound_training_predicate_is_recognised(predicate, trains_in_body):
         assert not is_remote_deepseek_moe(CompoundMoE())
     finally:
         sys.modules.pop(module.__name__, None)
+
+
+# moonshotai/Kimi-K3's modeling_kimi_linear.py: a latent MoE. The experts run in a smaller
+# hidden size between `routed_expert_down_proj` and `routed_expert_up_proj` (with an RMSNorm),
+# the gate is not DeepSeek's `MoEGate`, and training raises instead of leaving `y` unbound.
+_KIMI_SRC = """
+import torch
+import torch.nn.functional as F
+from torch import nn
+
+class Cfg:
+    hidden_size = 16; routed_expert_hidden_size = 8; moe_intermediate_size = 12
+    num_experts = 6; num_experts_per_token = 2; num_shared_experts = 1; routed_scaling_factor = 2.0
+
+class KimiRMSNorm(nn.Module):
+    def __init__(self, n, eps=1e-6):
+        super().__init__(); self.weight = nn.Parameter(torch.ones(n)); self.variance_epsilon = eps
+    def forward(self, x):
+        v = x.float().pow(2).mean(-1, keepdim=True)
+        return (self.weight * (x.float() * torch.rsqrt(v + self.variance_epsilon))).to(x.dtype)
+
+class KimiMLP(nn.Module):
+    def __init__(self, hidden, inter):
+        super().__init__()
+        self.w1 = nn.Linear(hidden, inter, bias=False); self.w3 = nn.Linear(hidden, inter, bias=False)
+        self.w2 = nn.Linear(inter, hidden, bias=False)
+    def forward(self, x):
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+
+class KimiMoEGate(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.top_k = config.num_experts_per_token; self.routed_scaling_factor = config.routed_scaling_factor
+        self.weight = nn.Parameter(torch.randn(config.num_experts, config.hidden_size) * 0.3)
+        self.e_score_correction_bias = nn.Parameter(torch.zeros(config.num_experts))
+    def forward(self, hidden_states):
+        bsz, seq_len, h = hidden_states.shape
+        logits = F.linear(hidden_states.view(-1, h).float(), self.weight.float())
+        scores = logits.sigmoid()
+        assert not self.training
+        _, topk_idx = torch.topk(scores + self.e_score_correction_bias, k=self.top_k, dim=-1, sorted=False)
+        topk_weight = scores.gather(1, topk_idx)
+        topk_weight = topk_weight / (topk_weight.sum(dim=-1, keepdim=True) + 1e-20)
+        return topk_idx, topk_weight * self.routed_scaling_factor
+
+class KimiSparseMoeBlock(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config; self.ep_size = 1; self.ep_rank = 0; self.experts_per_rank = config.num_experts
+        self.experts = nn.ModuleList([KimiMLP(config.routed_expert_hidden_size, config.moe_intermediate_size) for _ in range(config.num_experts)])
+        self.gate = KimiMoEGate(config)
+        self.shared_experts = KimiMLP(config.hidden_size, config.moe_intermediate_size)
+        self.routed_expert_down_proj = nn.Linear(config.hidden_size, config.routed_expert_hidden_size, bias=False)
+        self.routed_expert_up_proj = nn.Linear(config.routed_expert_hidden_size, config.hidden_size, bias=False)
+        self.routed_expert_norm = KimiRMSNorm(config.routed_expert_hidden_size)
+    def forward(self, hidden_states):
+        identity = hidden_states
+        orig_shape = hidden_states.shape
+        topk_idx, topk_weight = self.gate(hidden_states)
+        hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+        hidden_states = self.routed_expert_down_proj(hidden_states)
+        if not self.training:
+            y = self.moe_infer(hidden_states, topk_idx, topk_weight)
+        else:
+            raise NotImplementedError("Training mode is not supported in KimiSparseMoeBlock")
+        y = self.routed_expert_norm(y)
+        y = self.routed_expert_up_proj(y)
+        y = y.view(*orig_shape)
+        if self.config.num_shared_experts is not None:
+            y = y + self.shared_experts(identity)
+        return y
+    @torch.no_grad()
+    def moe_infer(self, x, topk_ids, topk_weight):
+        cnts = topk_ids.new_zeros((topk_ids.shape[0], len(self.experts))); cnts.scatter_(1, topk_ids, 1)
+        tokens_per_expert = cnts.sum(dim=0); idxs = topk_ids.view(-1).argsort()
+        sorted_tokens = x[idxs // topk_ids.shape[1]]
+        outputs = []; start_idx = 0
+        for i, num_tokens in enumerate(tokens_per_expert.cpu().numpy()):
+            end_idx = start_idx + num_tokens
+            if num_tokens == 0: continue
+            outputs.append(self.experts[i](sorted_tokens[start_idx:end_idx])); start_idx = end_idx
+        outs = torch.cat(outputs, dim=0) if len(outputs) else sorted_tokens.new_empty(0)
+        new_x = torch.empty_like(outs); new_x[idxs] = outs
+        return new_x.view(*topk_ids.shape, -1).type(topk_weight.dtype).mul_(topk_weight.unsqueeze(dim=-1)).sum(dim=1).type(new_x.dtype)
+"""
+
+
+def _kimi_module(name):
+    import linecache
+
+    filename = f"<{name}>"
+    linecache.cache[filename] = (len(_KIMI_SRC), None, _KIMI_SRC.splitlines(True), filename)
+    mod = types.ModuleType(name)
+    exec(compile(_KIMI_SRC, filename, "exec"), mod.__dict__)
+    for cls in (mod.KimiRMSNorm, mod.KimiMLP, mod.KimiMoEGate, mod.KimiSparseMoeBlock):
+        cls.__module__ = name
+    sys.modules[name] = mod
+    return mod
+
+
+def test_a_latent_moe_trains_through_its_own_projections():
+    """Kimi-K3: the training path must keep the port's latent down/up projections, norm and
+    shared experts, so train mode gives the eval output and every piece gets a gradient."""
+    torch.manual_seed(0)
+    mod = _kimi_module("transformers_modules.tiny_kimi_k3.modeling_kimi_linear")
+    block = mod.KimiSparseMoeBlock(mod.Cfg())
+    x = torch.randn(2, 5, 16)
+    block.train()
+    with pytest.raises((AssertionError, NotImplementedError)):
+        block(x)
+    assert prepare_remote_moe_for_training(block, verbose = False) == ["KimiSparseMoeBlock"]
+    block.eval()
+    with torch.no_grad():
+        reference = block(x)
+    block.train()
+    out = block(x)
+    assert torch.allclose(out, reference, atol = 1e-5, rtol = 1e-5)
+    out.float().pow(2).sum().backward()
+    for p in (
+        block.gate.weight,
+        block.routed_expert_down_proj.weight,
+        block.routed_expert_up_proj.weight,
+        block.routed_expert_norm.weight,
+        block.shared_experts.w2.weight,
+    ):
+        assert p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0
+    assert any(
+        e.w2.weight.grad is not None and e.w2.weight.grad.abs().sum() > 0 for e in block.experts
+    )
+    # The flags and the class method come back after the call.
+    assert block.training and block.gate.training
+    assert "moe_infer" not in vars(block)
+    block.eval()
+    with torch.no_grad():
+        assert torch.allclose(block(x), reference)

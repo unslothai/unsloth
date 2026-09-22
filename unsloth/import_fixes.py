@@ -1219,7 +1219,6 @@ def fix_transformers5_remote_code_model_api():
     if not hasattr(generic, "OutputRecorder"):
         try:
             from transformers.utils.output_capturing import OutputRecorder
-
             generic.OutputRecorder = OutputRecorder
         except Exception:
             pass
@@ -1239,8 +1238,12 @@ def fix_transformers5_remote_code_model_api():
     @functools.wraps(original_post_init)
     def post_init(self, *args, **kwargs):
         keys = getattr(self, "_tied_weights_keys", None)
-        if isinstance(keys, (list, tuple)) and "transformers_modules" in (
-            type(self).__module__ or ""
+        # 4.x reads the list itself; only the 5.x loader (the one with the new tie_weights
+        # keywords) needs the mapping.
+        if (
+            new_keywords
+            and isinstance(keys, (list, tuple))
+            and "transformers_modules" in (type(self).__module__ or "")
         ):
             self._tied_weights_keys = _legacy_tied_weights_mapping(self, keys)
         if new_keywords:
@@ -1251,7 +1254,9 @@ def fix_transformers5_remote_code_model_api():
     PreTrainedModel.post_init = post_init
     setattr(PreTrainedModel, _REMOTE_MODEL_API_FLAG, True)
     if UNSLOTH_ENABLE_LOGGING:
-        logger.info("Unsloth: Remote modeling code written for transformers 4.x gets the 5.x model API shims.")
+        logger.info(
+            "Unsloth: Remote modeling code written for transformers 4.x gets the 5.x model API shims."
+        )
 
 
 def fix_transformers_rope_scaling_drops_theta():

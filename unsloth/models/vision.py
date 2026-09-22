@@ -1627,6 +1627,11 @@ class FastBaseModel:
         # Nemotron-H uses 'mixer' (not 'mamba') for Mamba layers, whose fused kernels pass out_proj.weight straight to F.linear and fail with quantized Params4bit, so skip out_proj.
         if any(mt == "nemotron_h" for mt in (model_types or [])):
             _skip_modules.append("out_proj")
+        # Kimi-K3's attention residuals read the Linear(hidden, 1) projections' .weight as a score vector, which a packed Params4bit cannot be.
+        if any(mt in ("kimi_k3", "kimi_linear") for mt in (model_types or [])):
+            _skip_modules.extend(
+                ("self_attention_res_proj", "mlp_res_proj", "output_attn_res_proj")
+            )
 
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
