@@ -14,6 +14,7 @@ import {
   VIDEO_CATALOG,
   artifactForRepoId,
   catalogToModelOptions,
+  curatedArtifactFit,
   curatedArtifactFitsDevice,
   curatedDisplayNameFor,
   curatedRowLabelFor,
@@ -24,6 +25,7 @@ import {
 const Z_TURBO = "Tongyi-MAI/Z-Image-Turbo";
 const QWEN_IMAGE = "Qwen/Qwen-Image";
 const QWEN_2512 = "Qwen/Qwen-Image-2512";
+const QWEN_21 = "Qwen/Qwen-Image-2.1";
 const H3 = "MiniMaxAI/MiniMax-H3";
 const notDownloaded = () => false;
 
@@ -272,4 +274,32 @@ test("the scheme reaches the name and never the chip", () => {
       }
     }
   }
+});
+
+// Show the verdict's estimate, not the dense catalog size.
+test("Qwen-Image-2.1 is badged with the size its verdict used", () => {
+  const card = onCard(22.49, ["int8", "fp8"]);
+  const fit = curatedArtifactFit(QWEN_21, IMAGE_CATALOG, card);
+  assert.ok(fit?.sizeGb !== undefined);
+  assert.ok(Math.abs(fit.sizeGb - 27.01) < 0.01, String(fit.sizeGb));
+  assert.equal(fit.allowanceGb, 22.49 * 0.7);
+  assert.equal(fit.fits, false);
+  assert.equal(curatedArtifactFitsDevice(QWEN_21, IMAGE_CATALOG, card), fit.fits);
+  // No dense-quant scheme reported: the dense figure.
+  assert.equal(curatedArtifactFit(QWEN_21, IMAGE_CATALOG, onCard(22.49, []))?.sizeGb, 33);
+});
+
+test("Qwen-Image-2.1 routes every card as on main", () => {
+  const group = groupForRepoId(QWEN_21, IMAGE_CATALOG);
+  assert.ok(group);
+  const pick = (gpuGb: number) =>
+    pickDefaultArtifact(group, {
+      ...onCard(gpuGb, ["int8"]),
+      isDownloaded: notDownloaded,
+    }).repoId;
+  // Include 36 GiB to catch changes just below the existing routing threshold.
+  assert.equal(pick(24), "unsloth/Qwen-Image-2.1-GGUF");
+  assert.equal(pick(31.84), "unsloth/Qwen-Image-2.1-GGUF");
+  assert.equal(pick(36), "unsloth/Qwen-Image-2.1-GGUF");
+  assert.equal(pick(39.5), QWEN_21);
 });
