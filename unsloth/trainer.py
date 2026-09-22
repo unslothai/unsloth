@@ -319,7 +319,6 @@ def _mixed_adapter_wrappers():
     """
     try:
         from peft import PeftMixedModel
-
         return ((PeftMixedModel, ("base_model", "model")),)
     except Exception:
         return ()
@@ -431,7 +430,6 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     for architecture in getattr(model_config, "architectures", None) or ():
         try:
             import transformers
-
             resolved = getattr(transformers, architecture, None)
         except Exception:
             resolved = None
@@ -482,7 +480,14 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     # one fetch and not the other.
     forward = {
         key: init_kwargs[key]
-        for key in ("revision", "subfolder", "token", "use_auth_token", "cache_dir", "code_revision")
+        for key in (
+            "revision",
+            "subfolder",
+            "token",
+            "use_auth_token",
+            "cache_dir",
+            "code_revision",
+        )
         if key in init_kwargs
     }
     for auto_class in (
@@ -497,7 +502,6 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
             continue
         try:
             from transformers.dynamic_module_utils import get_class_from_dynamic_module
-
             return get_class_from_dynamic_module(reference, model_name, **forward)
         except Exception:
             continue
