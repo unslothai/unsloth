@@ -1371,10 +1371,18 @@ def _text_trainable_core(model, text_intent = True):
         if _required_non_text_inputs(child_forward):
             continue
         try:
-            has_embeddings = (
-                child.get_input_embeddings() is not None
-                and child.get_output_embeddings() is not None
-            )
+            output_embeddings = child.get_output_embeddings()
+        except Exception:
+            output_embeddings = None
+        if output_embeddings is None:
+            # transformers 4.x returns None from PreTrainedModel.get_output_embeddings unless
+            # the class overrides it, and Qwen3-Omni's thinker only overrides the input side
+            # while owning an lm_head.
+            output_embeddings = getattr(child, "lm_head", None)
+            if not isinstance(output_embeddings, torch.nn.Module):
+                output_embeddings = None
+        try:
+            has_embeddings = child.get_input_embeddings() is not None and output_embeddings is not None
         except Exception:
             has_embeddings = False
         if has_embeddings:

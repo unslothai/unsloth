@@ -153,3 +153,42 @@ def test_the_thinker_carries_the_checkpoint_identity():
     _carry_loader_state_to_core(model, core, "thinker")
     assert core.name_or_path == "Qwen/Qwen3-Omni-30B-A3B-Instruct"
     assert core.config._name_or_path == "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+
+
+def test_a_thinker_whose_output_accessor_says_none_is_still_found_by_its_lm_head():
+    """transformers 4.x returns None from get_output_embeddings unless a class overrides it;
+    Qwen3-Omni's thinker does not, but owns an lm_head."""
+    from transformers import PreTrainedModel, PretrainedConfig
+    from unsloth.models.vision import _text_trainable_core
+
+    class Cfg(PretrainedConfig):
+        model_type = "thinker_for_test"
+
+    class Thinker(PreTrainedModel):
+        config_class = Cfg
+
+        def __init__(self, config):
+            super().__init__(config)
+            self.embed = torch.nn.Embedding(8, 4)
+            self.lm_head = torch.nn.Linear(4, 8)
+
+        def get_input_embeddings(self):
+            return self.embed
+
+        def get_output_embeddings(self):
+            return None
+
+        def forward(self, input_ids = None, labels = None, **kwargs):
+            return self.lm_head(self.embed(input_ids))
+
+    class Wrapper(PreTrainedModel):
+        config_class = Cfg
+
+        def __init__(self, config):
+            super().__init__(config)
+            self.thinker = Thinker(config)
+            self.talker = torch.nn.Linear(2, 2)
+
+    wrapper = Wrapper(Cfg())
+    core = _text_trainable_core(wrapper, text_intent = True)
+    assert isinstance(core, Thinker)
