@@ -2402,6 +2402,7 @@ def _count_gguf_admission_prompt(
     payload,
     messages,
     tools = None,
+    cancel_event = None,
 ) -> int:
     """Count the prepared chat, retaining the existing allowance for media embeddings.
 
@@ -2425,6 +2426,7 @@ def _count_gguf_admission_prompt(
             ),
             continue_final_message = _continue_final_message(payload)
             and bool(trailing_assistant_text(messages)),
+            **({"should_abort": cancel_event.is_set} if cancel_event is not None else {}),
         )
         if type(count) is not int or count <= 0:
             raise ValueError("Invalid prompt token count")
@@ -2549,7 +2551,10 @@ def _openai_llama_admission_recost(
     The gate exists because an idle slot's KV stays resident, which an erased slot's does
     not, so yielding there hands back room that really is free.
     """
-    if reservation is None:
+    if reservation is None or (cancel_event is not None and cancel_event.is_set()):
+        return
+    config = llama_admission_config_from_env()
+    if not (config.enabled and config.kv_budget):
         return
     try:
         lease = reservation.lease_nowait()
@@ -2584,8 +2589,10 @@ def _openai_llama_admission_recost(
         )
         if count_prepared_prompt:
             prompt_tokens = _count_gguf_admission_prompt(
-                llama_backend, payload, conversation, injected_tools
+                llama_backend, payload, conversation, injected_tools, cancel_event = cancel_event
             )
+            if cancel_event is not None and cancel_event.is_set():
+                return
         # Reading "Max" literally here would put the run back on the whole cache at its
         # first round boundary.
         share = max(1, budget // max(1, capacity))
@@ -26290,6 +26297,9 @@ async def produce_openai_chat_completions(
                 )
                 api_monitor.fail(monitor_id, str(exc))
                 raise _openai_admission_http_exception(exc, status_code = 429)
+            except BaseException:
+                _tracker.__exit__(None, None, None)
+                raise
 
             async def gguf_stream_chunks():
                 nonlocal _gguf_decode_finished

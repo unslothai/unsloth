@@ -415,3 +415,186 @@ def test_tool_recost_rechecks_continuation_after_tool_result(monkeypatch, contin
             lease.release()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "disabled", ["UNSLOTH_LLAMA_ADMISSION_CONTROL", "UNSLOTH_LLAMA_ADMISSION_KV_BUDGET"]
+)
+def test_disabled_admission_skips_tool_round_count(monkeypatch, disabled):
+    monkeypatch.setenv(disabled, "0")
+
+    async def scenario():
+        backend = _backend(20)
+        payload = _payload()
+        reservation, _ = await inference._reserve_counted_gguf_chat(
+            request = None,
+            llama_backend = backend,
+            payload = payload,
+            messages = payload.messages,
+        )
+        lease = reservation.lease_nowait()
+        assert lease is not None
+        try:
+            inference._openai_llama_admission_recost(
+                reservation,
+                payload.messages,
+                request = None,
+                llama_backend = backend,
+                payload = payload,
+                count_prepared_prompt = True,
+            )
+            backend.count_chat_tokens.assert_not_called()
+        finally:
+            lease.release()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("cancel_during_count", [False, True])
+def test_cancelled_tool_round_does_not_count_or_recost(cancel_during_count):
+    import threading
+
+    cancel = threading.Event()
+    backend = _backend(20)
+    payload = _payload()
+    lease = Mock()
+    reservation = SimpleNamespace(lease_nowait = lambda: lease)
+    if cancel_during_count:
+
+        def count(*args, **kwargs):
+            assert kwargs["should_abort"]() is False
+            cancel.set()
+            assert kwargs["should_abort"]() is True
+            return 20
+
+        backend.count_chat_tokens.side_effect = count
+    else:
+        cancel.set()
+    inference._openai_llama_admission_recost(
+        reservation,
+        payload.messages,
+        request = None,
+        llama_backend = backend,
+        payload = payload,
+        cancel_event = cancel,
+        count_prepared_prompt = True,
+    )
+    assert backend.count_chat_tokens.call_count == int(cancel_during_count)
+    lease.recost_waiting.assert_not_called()
+
+
+def test_stop_after_native_count_failure_skips_fallback(monkeypatch):
+    import threading
+    import httpx
+    from types import MethodType
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    cancel = threading.Event()
+    calls = []
+
+    def respond(request):
+        calls.append(request.url.path)
+        cancel.set()
+        return httpx.Response(503)
+
+    client_type = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: client_type(transport = httpx.MockTransport(respond), **kw)
+    )
+    backend = _backend(20)
+    backend.base_url = "http://llama.test"
+    backend.is_loaded = True
+    backend.markup_profile = None
+    backend._auth_headers = None
+    backend.count_chat_tokens = MethodType(LlamaCppBackend.count_chat_tokens, backend)
+    payload = _payload()
+    lease = Mock()
+    inference._openai_llama_admission_recost(
+        SimpleNamespace(lease_nowait = lambda: lease),
+        payload.messages,
+        request = None,
+        llama_backend = backend,
+        payload = payload,
+        cancel_event = cancel,
+        count_prepared_prompt = True,
+    )
+    assert calls == ["/v1/chat/completions/input_tokens"]
+    lease.recost_waiting.assert_not_called()
+
+
+def test_cancel_during_stream_admission_exits_tracker(monkeypatch):
+    import threading
+    from starlette.requests import Request
+    from .llama_backend_double import FakeLlamaCppBackend
+    from models.inference import ChatCompletionRequest
+    from state import active_generations
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Backend(FakeLlamaCppBackend):
+        context_length = 30000
+        base_url = "http://cancel-count-test"
+        effective_parallel_slots = 3
+
+        def _request_reasoning_kwargs(self, *args):
+            return {}
+
+        def count_chat_tokens(self, *args, **kwargs):
+            entered.set()
+            assert release.wait(5)
+            return 20
+
+    monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: Backend())
+    monkeypatch.setattr(inference, "_effective_enable_tools", lambda *a, **kw: False)
+    monkeypatch.setattr(inference, "_CANCEL_REGISTRY", {})
+    monkeypatch.setattr(active_generations, "_ACTIVE", {})
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "Hello"}],
+        stream = True,
+        enable_tools = False,
+        cancel_id = "count-cancel",
+        thread_id = "count-cancel",
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/chat/completions",
+            "headers": [],
+            "query_string": b"",
+            "state": {},
+        }
+    )
+
+    async def scenario():
+        task = asyncio.create_task(
+            inference.produce_openai_chat_completions(
+                payload,
+                request,
+                "test-user",
+                cancel_on_disconnect = True,
+            )
+        )
+        try:
+
+            async def wait_for_count():
+                while not entered.is_set():
+                    if task.done():
+                        await task
+                        pytest.fail("Count was never entered")
+                    await asyncio.sleep(0.001)
+
+            await asyncio.wait_for(wait_for_count(), timeout = 2)
+            assert active_generations.count() == 1
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not inference._CANCEL_REGISTRY
+            assert active_generations.count() == 0
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions = True)
+
+    asyncio.run(scenario())
