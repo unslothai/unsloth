@@ -894,12 +894,25 @@ def pickled_remote_processor(tmp_path):
         sys.modules.pop(module_name, None)
 
 
+def _skip_when_the_child_cannot_run(out):
+    """A child that dies before the class is even unpickled says nothing about the finder:
+    no accelerator for `import unsloth` (the CPU CI runners), or the dynamic-module cache
+    the pickled class lives in is not on the child's path."""
+    if out.returncode == 0:
+        return
+    stderr = out.stderr
+    if "cannot find any torch accelerator" in stderr or "get_device_type" in stderr:
+        pytest.skip(f"the child has no accelerator for unsloth: {stderr.strip()[-300:]}")
+    if "No module named 'transformers_modules" in stderr:
+        pytest.skip(f"the child cannot see the dynamic-module cache: {stderr.strip()[-300:]}")
+
+
 def test_a_spawn_started_worker_rebuilds_a_patched_class(pickled_remote_processor):
     """The finder's test: a fresh interpreter must still honour numpy."""
     out = _run_spawn_child(pickled_remote_processor, "import unsloth")
+    _skip_when_the_child_cannot_run(out)
     if (
         out.returncode != 0
-        and "get_device_type" not in out.stderr
         and ("unsloth" in out.stderr and "Error" in out.stderr and "TypeError" not in out.stderr)
     ):
         pytest.skip(f"the child could not import unsloth: {out.stderr.strip()[-400:]}")
@@ -914,6 +927,7 @@ def test_a_spawn_started_worker_without_unsloth_is_the_documented_limit(pickled_
     unpatched, and the failure is loud rather than a silent dtype change.
     """
     out = _run_spawn_child(pickled_remote_processor, "")
+    _skip_when_the_child_cannot_run(out)
     assert out.returncode != 0, out.stdout
     # Either failure mode counts: unpatched, the child now dies earlier on the
     # class-body decorator rather than later on numpy `normalize`, and pinning
