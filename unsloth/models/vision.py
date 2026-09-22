@@ -1317,6 +1317,13 @@ def _text_trainable_core(model, text_intent = True):
     siblings are dropped so their weights are freed. Wrappers whose forward
     accepts a text batch (every transformers VLM, whose image inputs default to
     None) are returned unchanged, as is anything ambiguous.
+
+    A wrapper with no forward of its own is the same case: Qwen3-Omni's
+    `Qwen3OmniMoeForConditionalGeneration` composes a thinker, a talker and a
+    speech decoder and only generates, so a trainer's `model(input_ids = ...)`
+    reached `nn.Module.forward` and failed with "_forward_unimplemented() got an
+    unexpected keyword argument 'input_ids'". Its `thinker` is what fine-tuning
+    targets (transformers' own recipes train it and save a thinker checkpoint).
     `UNSLOTH_KEEP_COMPOSED_WRAPPER=1` turns this off.
 
     `text_intent` is True only when the caller passed `text_only = True`: a
@@ -1328,10 +1335,9 @@ def _text_trainable_core(model, text_intent = True):
     if os.environ.get("UNSLOTH_KEEP_COMPOSED_WRAPPER", "0") == "1":
         return model
     forward = getattr(type(model), "forward", None)
-    if forward is None or forward is torch.nn.Module.forward:
-        return model
-    required = _required_non_text_inputs(forward)
-    if not required:
+    has_no_forward = forward is None or forward is torch.nn.Module.forward
+    required = [] if has_no_forward else _required_non_text_inputs(forward)
+    if not has_no_forward and not required:
         return model
     if not text_intent:
         print(
@@ -1374,9 +1380,15 @@ def _text_trainable_core(model, text_intent = True):
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+    if has_no_forward:
+        reason = f"`{type(model).__name__}` has no forward of its own"
+    else:
+        reason = (
+            f"`{type(model).__name__}.forward` requires {', '.join(required)}, which a text "
+            "batch does not carry"
+        )
     print(
-        f"Unsloth: `{type(model).__name__}.forward` requires {', '.join(required)}, which a text "
-        f"batch does not carry, so training uses its `{name}` (`{type(core).__name__}`)."
+        f"Unsloth: {reason}, so training uses its `{name}` (`{type(core).__name__}`)."
         + (f" Dropped {', '.join(dropped)}: not used by text training." if dropped else "")
         + " Saving writes a checkpoint of that module."
     )
