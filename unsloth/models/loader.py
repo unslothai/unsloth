@@ -33,6 +33,11 @@ from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
+from .mistral_format import (
+    MistralFormatRedirect,
+    mistral_format_redirect,
+    prepare_mistral_format_checkpoint,
+)
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -642,6 +647,7 @@ def _fix_rope_inv_freq(model):
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     @_offline_aware_load
+    @mistral_format_redirect
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length = 2048,
@@ -992,6 +998,13 @@ class FastLanguageModel(FastLlamaModel):
                     f"to obtain the latest transformers build, then restart this session."
                 )
             if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
+                # An architecture transformers already implements is loaded through a
+                # translated view of the same shards; anything else keeps the explanation.
+                _view = prepare_mistral_format_checkpoint(
+                    model_name, token, base_revision, local_files_only
+                )
+                if _view is not None:
+                    raise MistralFormatRedirect(_view, model_name)
                 raise RuntimeError(_mistral_format_error(model_name)) from autoconfig_exc
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
@@ -1443,6 +1456,7 @@ class FastModel(FastBaseModel):
 
     @staticmethod
     @_offline_aware_load
+    @mistral_format_redirect
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
         max_seq_length = 2048,
@@ -1807,6 +1821,13 @@ class FastModel(FastBaseModel):
                     f"to obtain the latest transformers build, then restart this session."
                 )
             if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
+                # An architecture transformers already implements is loaded through a
+                # translated view of the same shards; anything else keeps the explanation.
+                _view = prepare_mistral_format_checkpoint(
+                    model_name, token, base_revision, local_files_only
+                )
+                if _view is not None:
+                    raise MistralFormatRedirect(_view, model_name)
                 raise RuntimeError(_mistral_format_error(model_name)) from autoconfig_exc
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
