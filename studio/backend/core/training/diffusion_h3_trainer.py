@@ -83,6 +83,8 @@ from core.training.diffusion_train_common import (
     _restore_perf_flags,
     h3_train_unsupported_reason,
     native_bf16_supported,
+    native_bf16_supported_xpu,
+    resolve_train_device,
     resolve_train_steps,
     train_recipe_overrides,
 )
@@ -480,25 +482,17 @@ def run_h3_lora_training(
             save_on_stop = False
         return True
 
-    device = "cuda"
-    if not torch.cuda.is_available():
-        xpu = getattr(torch, "xpu", None)
-        device = (
-            "xpu"
-            if (callable(getattr(xpu, "is_available", None)) and xpu.is_available())
-            else "cpu"
-        )
+    device = resolve_train_device()
     if device == "cuda" and not native_bf16_supported():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
             "this CUDA device does not support bf16."
         )
-    if device == "xpu":
-        xpu = getattr(torch, "xpu", None)
-        if not (callable(getattr(xpu, "is_bf16_supported", None)) and xpu.is_bf16_supported()):
-            raise ValueError(
-                "This trainer requires a bfloat16-capable GPU; this XPU device does not support bf16."
-            )
+    if device == "xpu" and not native_bf16_supported_xpu():
+        raise ValueError(
+            "This trainer requires a bfloat16-capable GPU; this XPU device does not "
+            "support bf16 natively."
+        )
     weight_dtype = torch.bfloat16 if device in ("cuda", "xpu") else torch.float32
 
     # allow_modular: this loop loads through ModularPipeline.from_pretrained, and a local MiniMax-H3

@@ -57,8 +57,10 @@ from core.training.diffusion_train_common import (
     discover_image_caption_pairs,
     has_functional_torchao,
     native_bf16_supported,
+    native_bf16_supported_xpu,
     PermutationBatchSampler,
     repo_is_prequantized,
+    resolve_train_device,
     resolve_train_steps,
     restore_resume_state,
     write_resume_checkpoint,
@@ -1854,27 +1856,22 @@ def run_dit_lora_training(
             save_on_stop = False
         return True
 
-    device = "cuda"
-    if not torch.cuda.is_available():
-        xpu = getattr(torch, "xpu", None)
-        device = (
-            "xpu"
-            if (callable(getattr(xpu, "is_available", None)) and xpu.is_available())
-            else "cpu"
-        )
-    # The flow-matching + 4-bit path is bf16 throughout (fp32 on a CPU-only box, to keep import/unit tests architecture-agnostic).
-    # Fail fast on pre-Ampere CUDA, gating on NATIVE bf16 (capability major >= 8), since is_bf16_supported() counts emulation. An XPU device without native bf16 is refused the same way.
+    device = resolve_train_device()
+    # The flow-matching + 4-bit path is bf16 throughout (fp32 on a CPU-only box, to keep import/unit tests
+    # architecture-agnostic).
+    # Fail fast on pre-Ampere CUDA, gating on NATIVE bf16 (capability major >= 8), since is_bf16_supported() counts
+    # emulation. An XPU device without native bf16 is refused the same way, via the XPU helper that asks for the
+    # native answer explicitly.
     if device == "cuda" and not native_bf16_supported():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
             "this CUDA device does not support bf16."
         )
-    if device == "xpu":
-        xpu = getattr(torch, "xpu", None)
-        if not (callable(getattr(xpu, "is_bf16_supported", None)) and xpu.is_bf16_supported()):
-            raise ValueError(
-                "This trainer requires a bfloat16-capable GPU; this XPU device does not support bf16."
-            )
+    if device == "xpu" and not native_bf16_supported_xpu():
+        raise ValueError(
+            "This trainer requires a bfloat16-capable GPU; this XPU device does not "
+            "support bf16 natively."
+        )
     weight_dtype = torch.bfloat16 if device in ("cuda", "xpu") else torch.float32
 
     _assert_trusted_base_model(cfg.base_model)
@@ -2016,6 +2013,8 @@ def _train_dit(
         gc.collect()
         if device == "cuda":
             torch.cuda.empty_cache()
+        elif device == "xpu":
+            torch.xpu.empty_cache()
 
         # The cache keeps the posterior affine parameters, so per-step sampling noise is preserved.
         if use_cache:
@@ -2057,6 +2056,8 @@ def _train_dit(
         gc.collect()
         if device == "cuda":
             torch.cuda.empty_cache()
+        elif device == "xpu":
+            torch.xpu.empty_cache()
     # Variant picks use their own stream so the training loop index/noise draws stay seed-deterministic.
     variant_rng = random.Random(cfg.seed + 1)
 

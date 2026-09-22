@@ -613,10 +613,11 @@ def effective_mixed_precision(cfg: Any) -> str:
 
     requested = str(getattr(cfg, "mixed_precision", "") or "")
     if str(getattr(cfg, "resolved_family", "") or "").strip().lower() in _FLOW_TRAIN_FAMILIES:
-        # No flow-matching trainer reads mixed_precision (weight_dtype is bf16 on CUDA, fp32 otherwise), so recording
-        # the REQUEST failed a later bf16 resume as a precision mismatch between identical runs. Keyed on
-        # _FLOW_TRAIN_FAMILIES so the answer follows the weight dtype.
-        return "bf16" if torch.cuda.is_available() else "no"
+        # No flow-matching trainer reads mixed_precision (weight_dtype is bf16 on an accelerator, fp32 otherwise), so
+        # recording the REQUEST failed a later bf16 resume as a precision mismatch between identical runs. Keyed on
+        # _FLOW_TRAIN_FAMILIES so the answer follows the weight dtype -- which means resolving the device the same way
+        # the loops do, or an XPU run would train in bf16 and record "no".
+        return "bf16" if resolve_train_device() in ("cuda", "xpu") else "no"
     if not torch.cuda.is_available():
         return "no"
     if requested == "bf16" and not native_bf16_supported():
@@ -641,6 +642,55 @@ def native_bf16_supported() -> bool:
             return bool(torch.cuda.is_bf16_supported())
         return torch.cuda.get_device_capability()[0] >= 8
     except Exception:  # noqa: BLE001 -- no torch / probe failure -> treat as unsupported
+        return False
+
+
+def resolve_train_device() -> str:
+    """The device a flow-matching trainer will actually run on: CUDA first, then Intel XPU, else
+    CPU. CUDA keeps priority so a box carrying both trains where it always did.
+
+    Every probe is guarded individually, the same way ``dit_accelerator_missing_reason`` guards
+    them: a torch build that exposes an accelerator module whose ``is_available()`` raises (an
+    uninitialised driver) must fall through to the next candidate, not kill the run. Shared so the
+    two flow trainers and the precision the run RECORDS cannot disagree about the answer."""
+    import torch  # noqa: PLC0415 -- keep the import list light for the training subprocess
+
+    def _probe(module) -> bool:
+        try:
+            fn = getattr(module, "is_available", None)
+            return bool(fn()) if callable(fn) else False
+        except Exception:  # noqa: BLE001 -- probe failure -> this accelerator is not usable
+            return False
+
+    if _probe(getattr(torch, "cuda", None)):
+        return "cuda"
+    if _probe(getattr(torch, "xpu", None)):
+        return "xpu"
+    return "cpu"
+
+
+def native_bf16_supported_xpu() -> bool:
+    """True only when the live XPU provides NATIVE bf16, the XPU counterpart of
+    ``native_bf16_supported``.
+
+    ``torch.xpu.is_bf16_supported()`` defaults to ``including_emulation=True`` and then
+    short-circuits before ever reading ``has_bfloat16_conversions``, so it answers True for EVERY
+    available XPU -- exactly the emulation trap ``native_bf16_supported`` exists to avoid on the
+    CUDA side. Ask for the native answer explicitly. Never raises."""
+    import torch  # noqa: PLC0415
+
+    fn = getattr(getattr(torch, "xpu", None), "is_bf16_supported", None)
+    if not callable(fn):
+        return False
+    try:
+        return bool(fn(including_emulation = False))
+    except TypeError:
+        # A torch predating the including_emulation parameter: its answer is the only one there is.
+        try:
+            return bool(fn())
+        except Exception:  # noqa: BLE001 -- probe failure -> treat as unsupported
+            return False
+    except Exception:  # noqa: BLE001 -- probe failure -> treat as unsupported
         return False
 
 
