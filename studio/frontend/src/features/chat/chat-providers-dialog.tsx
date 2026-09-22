@@ -2003,13 +2003,12 @@ export function ChatProvidersSettings({
 
   return (
     <div className="flex min-h-0 flex-col gap-6">
-      <header className="flex flex-col gap-1 pr-8">
-        <div className="flex min-w-0 flex-col gap-1">
-          <h1 className="font-heading text-lg font-semibold">Connections</h1>
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            Manage model connections for chat.
-          </p>
-        </div>
+      {/* Same title/description metrics as every other settings page. */}
+      <header className="flex min-w-0 flex-col gap-1 pr-8">
+        <h1 className="text-xl font-semibold font-heading">Connections</h1>
+        <p className="text-xs text-muted-foreground">
+          Manage model connections for chat.
+        </p>
       </header>
 
       <div className="flex w-full max-w-[760px] flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-x-6">
