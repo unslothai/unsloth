@@ -220,13 +220,6 @@ export const ar = {
       moveUp: "تحريك لأعلى",
       moveDown: "تحريك لأسفل",
     },
-    drag: {
-      reorder: "إعادة ترتيب",
-      pin: "تثبيت",
-      unpin: "إلغاء التثبيت",
-      moveTo: "نقل إلى {name}",
-      moveToRecents: "نقل إلى الأخيرة",
-    },
     dialog: {
       deleteChat: {
         title: "حذف المحادثة",

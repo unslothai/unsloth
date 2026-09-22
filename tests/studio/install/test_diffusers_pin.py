@@ -186,13 +186,59 @@ def test_the_main_build_is_on_by_default_and_opts_out_on_zero(monkeypatch):
     assert len(progressed) == 1, progressed
 
 
-def test_the_main_build_keeps_the_release_when_there_is_no_git(monkeypatch):
-    """Diffusers is mandatory, unlike triton_kernels, so a host with no working git must be left
-    with the release the previous step installed rather than nothing at all."""
+def test_the_main_build_falls_back_to_the_zip_when_there_is_no_git(monkeypatch):
+    """No git is the COMMON case, so it must still get the pinned commit.
+
+    Measured on a host whose ``git`` exits non-zero, which is what the desktop bundle looks like on
+    macOS: installing 0.1.811 and then updating to 0.1.812 both left diffusers at 0.40.0, and
+    Qwen-Image-2.1 refused to load on an install that had done nothing wrong. Nothing about that
+    needed git: the same commit is a zip over plain https. The git clone stays the default because
+    it records a ref, and this is the fallback.
+    """
     module = _probe_module("install_python_stack_probe2")
 
     monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
     monkeypatch.setattr(module, "_has_working_git", lambda: False)
+    monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: False)
+    monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_note", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_record_step", lambda *a, **k: None)
+    calls = []
+
+    def _capture(label, *args, **kwargs):
+        calls.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(module, "pip_install_try", _capture)
+    module._diffusers_main_step()
+
+    assert len(calls) == 1, calls
+    args, kwargs = calls[0]
+    assert kwargs.get("req") is None, "the git requirement file must not be handed to pip here"
+    spec = [arg for arg in args if arg.startswith("diffusers @ ")]
+    assert len(spec) == 1, args
+    revision = _requirements(MAIN_FILE)[0].rpartition("@")[2].strip().lower()
+    assert spec[0] == (
+        "diffusers @ https://github.com/huggingface/diffusers/archive/" f"{revision}.zip"
+    ), spec
+
+
+def test_the_main_build_keeps_the_release_when_there_is_no_git_and_no_zip(monkeypatch):
+    """Diffusers is mandatory, unlike triton_kernels, so a host that can reach neither route must
+    be left with the release the previous step installed rather than nothing at all.
+
+    Reached by a pin file the zip route cannot serve: a non-GitHub remote, or a branch ref, which
+    an archive cannot pin because it records no ref of its own.
+    """
+    module = _probe_module("install_python_stack_probe2b")
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.setattr(module, "_has_working_git", lambda: False)
+    monkeypatch.setattr(
+        module,
+        "_direct_reference_in_requirements",
+        lambda req: ("https://gitlab.example/huggingface/diffusers", "a" * 40, ""),
+    )
     monkeypatch.setattr(
         module, "pip_install_try", lambda *a, **k: pytest.fail("a git requirement without git")
     )
@@ -202,6 +248,61 @@ def test_the_main_build_keeps_the_release_when_there_is_no_git(monkeypatch):
     module._diffusers_main_step()
     # And it SAYS so, rather than leaving the install looking like it got the main build.
     assert notes and "no working git" in notes[0].lower()
+
+
+def test_an_archive_install_reads_back_as_resident(monkeypatch):
+    """The half that makes the zip route survive.
+
+    Without it the fallback works exactly once: pip records ``archive_info`` and no ref, the
+    residency check only understood ``vcs_info``, so the main build read as absent,
+    ``_diffusers_main_supersedes_release`` said the release pin had not been superseded, and the
+    NEXT pass reinstalled diffusers 0.40.0 straight over it. Measured, not theorised.
+    """
+    module = _probe_module("install_python_stack_probe2c")
+
+    revision = _requirements(MAIN_FILE)[0].rpartition("@")[2].strip().lower()
+    archive = f"https://github.com/huggingface/diffusers/archive/{revision}.zip"
+    monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: True)
+
+    monkeypatch.setattr(
+        module,
+        "_recorded_direct_url",
+        lambda dist: {"url": archive, "archive_info": {"hash": "sha256=abc"}},
+    )
+    assert module._direct_reference_is_installed(MAIN_FILE, "diffusers") is True
+
+    # A zip of a DIFFERENT commit is not this one, which is the whole reason the SHA has to be in
+    # the URL: an archive records no ref, so the URL is the only provenance there is.
+    other = f"https://github.com/huggingface/diffusers/archive/{'b' * 40}.zip"
+    monkeypatch.setattr(
+        module,
+        "_recorded_direct_url",
+        lambda dist: {"url": other, "archive_info": {"hash": "sha256=abc"}},
+    )
+    assert module._direct_reference_is_installed(MAIN_FILE, "diffusers") is False
+
+
+def test_the_zip_route_refuses_anything_it_cannot_pin():
+    """The derivation is narrow on purpose: a wrong URL installs the wrong tree silently."""
+    module = _probe_module("install_python_stack_probe2d")
+    commit = "0" * 40
+
+    assert module._github_archive_url("https://github.com/a/b.git", commit) == (
+        f"https://github.com/a/b/archive/{commit}.zip"
+    )
+    assert module._github_archive_url("https://www.github.com/a/b/", commit) == (
+        f"https://github.com/a/b/archive/{commit}.zip"
+    )
+    # A short SHA, a branch and a tag all fail: an archive carries no history, so only a full
+    # commit in the URL can identify the tree afterwards.
+    assert module._github_archive_url("https://github.com/a/b", commit[:12]) is None
+    assert module._github_archive_url("https://github.com/a/b", "main") is None
+    assert module._github_archive_url("https://github.com/a/b", "v1.2.3") is None
+    # Other forges spell archives differently, and ssh carries no https route at all.
+    assert module._github_archive_url("https://gitlab.com/a/b", commit) is None
+    assert module._github_archive_url("ssh://git@github.com/a/b", commit) is None
+    # A subdirectory is part of the package identity and this URL cannot carry it.
+    assert module._github_archive_url("https://github.com/a/b", commit, "sub") is None
 
 
 def test_a_failed_main_build_degrades_instead_of_failing_the_install(monkeypatch):
@@ -234,8 +335,8 @@ def test_a_failed_main_build_degrades_instead_of_failing_the_install(monkeypatch
 
     assert attempted and attempted[0].name == "diffusers-main.txt"
     assert (
-        steps["diffusers-main.txt"] == "skipped"
-    ), "a failed build recorded as 'ran' would report an install that never happened"
+        steps["diffusers-main.txt"] == "failed"
+    ), "the setup fast path reads 'failed' to stop forcing a pass that cannot succeed"
     assert notes and "keeps the pinned" in notes[0]
 
 
@@ -610,3 +711,80 @@ def test_the_full_deps_escape_hatch_reaches_both_diffusers_steps(monkeypatch):
     assert installed == [], installed
     assert len(calls) == 1 and "opted out" in calls[0], calls
     assert module._diffusers_main_supersedes_release() is False
+
+
+def _fast_path_probe_module(
+    monkeypatch,
+    *,
+    resident,
+    git = True,
+    last = None,
+    requested = True,
+):
+    module = _probe_module("install_python_stack_fastpath_probe")
+    if requested:
+        monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", "0")
+    monkeypatch.setattr(module, "_has_working_git", lambda: git)
+    monkeypatch.setattr(module, "_diffusers_main_resident", lambda *a, **k: resident)
+    manifest = {"step_results": {"diffusers-main.txt": last}} if last else {}
+    monkeypatch.setattr(module.install_manifest, "read_manifest", lambda *a, **k: manifest)
+    return module
+
+
+def test_the_fast_path_is_forced_when_the_main_build_never_went_in(monkeypatch):
+    """An install updated by an installer that predates 11c is current and still on the release."""
+    module = _fast_path_probe_module(monkeypatch, resident = False)
+    assert module._diffusers_main_needs_dependency_pass() is True
+
+
+def test_a_resident_main_build_keeps_the_fast_path(monkeypatch):
+    module = _fast_path_probe_module(monkeypatch, resident = True)
+    assert module._diffusers_main_needs_dependency_pass() is False
+
+
+def test_a_host_without_git_is_forced_only_when_the_zip_route_exists(monkeypatch):
+    """11c installs the pinned commit from a zip without git; with no such route it skips, and
+    forcing the pass there would repeat it on every update."""
+    module = _fast_path_probe_module(monkeypatch, resident = False, git = False)
+    assert module._diffusers_main_archive(module.REQ_ROOT / "diffusers-main.txt") is not None
+    assert module._diffusers_main_needs_dependency_pass() is True
+    monkeypatch.setattr(module, "_diffusers_main_archive", lambda req: None)
+    assert module._diffusers_main_needs_dependency_pass() is False
+
+
+def test_a_recorded_failed_build_keeps_the_fast_path(monkeypatch):
+    """A host that cannot reach github.com would otherwise run the whole pass on every update."""
+    module = _fast_path_probe_module(monkeypatch, resident = False, last = "failed")
+    assert module._diffusers_main_needs_dependency_pass() is False
+    module = _fast_path_probe_module(monkeypatch, resident = False, last = "skipped")
+    assert module._diffusers_main_needs_dependency_pass() is True
+
+
+def test_opting_out_forces_the_pass_only_while_the_main_build_is_resident(monkeypatch):
+    """11b reinstates the release, but only if the pass runs."""
+    module = _fast_path_probe_module(monkeypatch, resident = True, requested = False)
+    assert module._diffusers_main_needs_dependency_pass() is True
+    module = _fast_path_probe_module(monkeypatch, resident = False, requested = False)
+    assert module._diffusers_main_needs_dependency_pass() is False
+
+
+@pytest.mark.parametrize("script", ["setup.sh", "setup.ps1"])
+def test_both_fast_paths_consult_the_probe(script):
+    source = (REPO_ROOT / "studio" / script).read_text(encoding = "utf-8")
+    assert "--diffusers-main-needs-dependency-pass" in source
+
+
+def test_the_probe_flag_answers_without_a_traceback():
+    """A crash also exits 1, which setup.sh reads as 'keep the fast path'."""
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, str(STACK), "--diffusers-main-needs-dependency-pass"],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert result.returncode in (0, 1), result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
