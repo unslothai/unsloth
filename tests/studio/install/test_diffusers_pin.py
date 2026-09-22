@@ -797,7 +797,7 @@ def _repair_module(
     resident_after,
     uncontended = (True,),
 ):
-    """``needed`` and ``uncontended`` are read in turn, one per poll of the pass lock."""
+    """``uncontended`` is read once per poll of the pass lock, ``needed`` once the lock is free."""
     import contextlib
 
     module = _probe_module("install_python_stack_repair_probe")
@@ -817,6 +817,12 @@ def _repair_module(
         module.install_manifest, "update_manifest", lambda **extra: recorded.append(extra)
     )
     module.recorded = recorded
+    module.lock_polls = lambda: len(polls)
+    polls = []
+    lock = module.install_manifest.pass_lock
+    monkeypatch.setattr(
+        module.install_manifest, "pass_lock", lambda *a, **k: polls.append(1) or lock()
+    )
     ran = []
     monkeypatch.setattr(module, "_diffusers_main_step", lambda: ran.append(True))
     return module, ran
@@ -861,11 +867,26 @@ def test_the_startup_repair_waits_out_a_peer_holding_the_pass(monkeypatch):
     backend's repair, or an update, is still replacing it."""
     # The peer installed the build: nothing left to do once it lets go.
     module, ran = _repair_module(
-        monkeypatch, needed = [True, True, False], resident_after = True, uncontended = [False, False]
+        monkeypatch, needed = [False], resident_after = True, uncontended = [False, False, True]
     )
     assert module._repair_diffusers_main() == 1 and ran == []
+    assert module.lock_polls() == 3
     # The peer's pass ended without the build: install it now.
     module, ran = _repair_module(
-        monkeypatch, needed = [True, True], resident_after = True, uncontended = [False, True]
+        monkeypatch, needed = [True], resident_after = True, uncontended = [False, True]
     )
     assert module._repair_diffusers_main() == 0 and ran == [True]
+
+
+def test_a_recorded_repair_failure_still_waits_for_a_peer(monkeypatch):
+    """An update retrying the failed build holds the pass while it rewrites diffusers."""
+    module, ran = _repair_module(
+        monkeypatch, needed = [True], resident_after = False, uncontended = [False, True]
+    )
+    monkeypatch.setattr(
+        module.install_manifest,
+        "read_manifest",
+        lambda *a, **k: {module._DIFFUSERS_MAIN_REPAIR_KEY: "failed"},
+    )
+    assert module._repair_diffusers_main() == 1 and ran == []
+    assert module.lock_polls() == 2

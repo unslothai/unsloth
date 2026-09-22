@@ -10669,14 +10669,17 @@ def _repair_diffusers_main() -> int:
 
     global USE_UV, _STEP, _TOTAL
     while True:
-        if (
-            not _diffusers_main_requested()
-            or not _diffusers_main_needs_dependency_pass()
-            or _startup_repair_failed()
-        ):
-            return 1
         with install_manifest.pass_lock() as uncontended:
+            # Every "nothing to do" answer waits for the lock too: until a sibling backend's repair or an
+            # update leaves the pass it may be rewriting diffusers, and returning would let the backend
+            # that started this import it.
             if uncontended:
+                if (
+                    not _diffusers_main_requested()
+                    or not _diffusers_main_needs_dependency_pass()
+                    or _startup_repair_failed()
+                ):
+                    return 1
                 USE_UV = _bootstrap_uv()
                 _STEP, _TOTAL = 0, 1
                 _diffusers_main_step()
@@ -10685,8 +10688,6 @@ def _repair_diffusers_main() -> int:
                 # Or every start retries a fetch this host cannot make, refusing diffusion loads meanwhile.
                 install_manifest.update_manifest(**{_DIFFUSERS_MAIN_REPAIR_KEY: "failed"})
                 return 2
-        # A sibling backend's repair or an update holds the pass and may be rewriting diffusers. Waiting,
-        # not returning, keeps the backend that started this refusing diffusers loads until it is done.
         time.sleep(_REPAIR_LOCK_POLL_S)
 
 
