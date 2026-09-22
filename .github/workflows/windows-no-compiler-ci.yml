@@ -59,9 +59,6 @@ on:
       # list. install.sh --local hands off to the checked-out studio/setup.sh
       # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
       # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
-      - 'studio/backend/utils/prebuilt/llama_backend.py'
-      - 'studio/backend/utils/uv_path_safety.py'
-      - 'studio/backend/utils/wheel_utils.py'
       - 'studio/install_llama_prebuilt.py'
       - 'studio/install_manifest.py'
       - 'studio/install_python_stack.py'
@@ -71,6 +68,9 @@ on:
       # setup.sh runs this at setup.sh:5130 and setup.ps1 at setup.ps1:9025, so it is the
       # last executed edge of the installer chain that was not listed here.
       - 'studio/install_whisper_prebuilt.py'
+      - 'studio/backend/utils/**'
+      - 'pyproject.toml'
+      - 'studio/backend/requirements/**'
       - '.github/workflows/windows-no-compiler-ci.yml'
   push:
     branches: [main]
@@ -84,9 +84,6 @@ on:
       - 'tests/studio/test_installer_av_shapes.py'
       - '.github/scripts/Watch-ForCompiler.ps1'
       - 'tests/python/test_compiler_watch_temp_scan.py'
-      - 'studio/backend/utils/prebuilt/llama_backend.py'
-      - 'studio/backend/utils/uv_path_safety.py'
-      - 'studio/backend/utils/wheel_utils.py'
       - 'studio/install_llama_prebuilt.py'
       - 'studio/install_manifest.py'
       - 'studio/install_python_stack.py'
@@ -94,6 +91,9 @@ on:
       - 'studio/prebuilt_core.py'
       - 'studio/setup.sh'
       - 'studio/install_whisper_prebuilt.py'
+      - 'studio/backend/utils/**'
+      - 'pyproject.toml'
+      - 'studio/backend/requirements/**'
       - '.github/workflows/windows-no-compiler-ci.yml'
   workflow_dispatch:
 
