@@ -162,10 +162,10 @@ test("a lit row never sinks below the surface it sits on", () => {
 });
 
 test("a dark selection fill takes the token, not a wash", () => {
-  // A wash is scaled by --contrast-wash-gain, which falls to a quarter at the
-  // bottom of the range, while the selection token stops at --contrast-state-mix.
-  // Painted as washes, the selected tab and the selected quant sank to within a
-  // couple of levels of the surface under them there.
+  // A wash is scaled by --contrast-wash-gain, which still falls further at the
+  // bottom of the range than --contrast-state-mix does. Painted as washes, the
+  // selected tab and the selected quant sank to within a couple of levels of
+  // the surface under them there.
   assert.match(
     HUB_CSS,
     /html\.dark \.hub-tab-toggle-pill,\s*html\.dark \.hub-tab-toggle-pill:hover \{[^}]*background-color: var\(--accent\)/,

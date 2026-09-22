@@ -979,7 +979,12 @@ export function applyCustomizationToDocument(
     // step with the tokens above.
     const gain = (span: number) =>
       (raising ? 1 + distance * span : 1 - distance * span).toFixed(3);
-    setVar(CONTRAST_WASH_GAIN_VAR, gain(raising ? 0.7 : 0.75));
+    // Lowering keeps most of a wash rather than a quarter of it. These washes
+    // are the chrome you aim at, not decoration: tab tracks, header pills,
+    // chips, filter triggers. At a quarter strength a 4% fill landed 2 levels
+    // off the page, so the unselected half of a segmented control and the whole
+    // Hub toolbar read as bare background.
+    setVar(CONTRAST_WASH_GAIN_VAR, gain(raising ? 0.7 : 0.4));
     setVar(CONTRAST_EDGE_GAIN_VAR, gain(raising ? 0.9 : 0.8));
   } else {
     el.removeAttribute("data-contrast-adjust");

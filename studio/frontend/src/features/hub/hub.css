@@ -696,8 +696,10 @@
     box-shadow: none;
   }
 
+  /* 6.5%, in line with .hub-chip. At 4.5% the track sat 9 levels off the page
+     and the unselected half of the control had nothing to stand on. */
   html.dark .hub-tab-toggle {
-    background-color: color-mix(in srgb, var(--foreground) calc(4.5% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(6.5% * var(--contrast-wash-gain, 1)), transparent);
     border: 0;
     box-shadow: none;
   }
@@ -778,8 +780,10 @@
     border-radius: 9999px;
   }
 
+  /* 6%, landing on --card. At 3.5% the quant row it holds was 7 levels off the
+     page and read as loose text rather than a control. */
   .dark .hub-download-card {
-    background-color: color-mix(in srgb, var(--foreground) calc(3.5% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(6% * var(--contrast-wash-gain, 1)), transparent);
     border: 1px solid color-mix(in srgb, var(--foreground) calc(5.5% * var(--contrast-edge-gain, 1)), transparent);
     box-shadow: none;
   }
@@ -1279,8 +1283,9 @@
     white-space: nowrap;
   }
 
+  /* The toolbar pills read as one family with the chips below them. */
   html.dark .hub-page .hub-stat-pill {
-    background-color: color-mix(in srgb, var(--foreground) calc(4% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(6.5% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   .hub-page .hub-stat-pill-value {
