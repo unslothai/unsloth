@@ -152,7 +152,12 @@ def test_the_blocker_names_itself_in_the_warning(monkeypatch, caplog):
     import unsloth.trainer as trainer_module
 
     class _StubSFTTrainer:
-        def __init__(self, model = None, args = None, **kwargs):
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            **kwargs,
+        ):
             self.model = model
             self.args = args
 
@@ -168,12 +173,12 @@ def test_the_blocker_names_itself_in_the_warning(monkeypatch, caplog):
         module.SFTTrainer(model = _NoKwargs(), args = config)
 
     assert "packing=True ignored" in caplog.text, "the reason chain never emitted"
-    assert "_NoKwargs.forward()" in caplog.text, (
-        "the model's forward is what blocks packing, so the warning has to say so"
-    )
-    assert "UNSLOTH_RETURN_LOGITS" not in caplog.text, (
-        "naming the env var blames a flag the user did not set for a model-shape blocker"
-    )
+    assert (
+        "_NoKwargs.forward()" in caplog.text
+    ), "the model's forward is what blocks packing, so the warning has to say so"
+    assert (
+        "UNSLOTH_RETURN_LOGITS" not in caplog.text
+    ), "naming the env var blames a flag the user did not set for a model-shape blocker"
 
 
 def test_the_signature_probe_runs_once_per_call():
