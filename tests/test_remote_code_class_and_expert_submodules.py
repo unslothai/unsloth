@@ -157,7 +157,9 @@ def test_cross_repository_auto_map_skips_the_local_sibling(monkeypatch):
     monkeypatch.setattr(dmu, "get_class_from_dynamic_module", fake_get)
     got = U.resolve_model_class(AutoModelForCausalLM, config)
     assert got is Remote and got is not local_cls
-    assert seen == dict(class_ref = "modeling_llama.LlamaForCausalLM", repo_id = "other/repo")
+    # Unsplit, with the model path: transformers decides which repository the code comes from
+    # and applies a model revision only when both are the same repository.
+    assert seen == dict(class_ref = "other/repo--modeling_llama.LlamaForCausalLM", repo_id = "fake/repo")
 
 
 def test_native_config_keeps_native_resolution():
@@ -278,3 +280,27 @@ def test_non_moe_model_adds_nothing():
     model = _Model()
     model.config = SimpleNamespace(model_type = "llama")
     assert U.get_moe_expert_submodule_leaves(model, ["up_proj", "down_proj"]) == []
+
+
+def test_only_a_generated_regex_is_widened_to_the_routed_experts():
+    """A regex the caller wrote is their scope: `.*\\.shared_experts\\.down_proj` matches no
+    routed expert on purpose, so widening it would attach an adapter to every routed expert in
+    every layer. The generated text-only regex still gets the nested alternative."""
+    U = _utils()
+    model = _Model()
+    caller_regex = r".*\.shared_experts\.down_proj"
+    kept, detect, leaves = U.widen_target_regex_to_expert_submodules(model, caller_regex, caller_regex, auto_regex = False)
+    assert kept == caller_regex and detect == caller_regex and leaves == []
+    matched = {n for n, _ in model.named_modules() if re.fullmatch(kept, n)}
+    assert matched and all(".shared_experts." in n for n in matched)
+
+    generated = _text_only_regex()
+    widened, detect, leaves = U.widen_target_regex_to_expert_submodules(model, generated, generated, auto_regex = True)
+    assert leaves == ["down_proj", "up_proj"]
+    assert detect == widened != generated
+    matched = {n for n, _ in model.named_modules() if re.fullmatch(widened, n)}
+    assert any(".experts." in n for n in matched)
+
+    # A leaf list as the detection target keeps its own identity through the widening.
+    widened, detect, leaves = U.widen_target_regex_to_expert_submodules(model, generated, ["down_proj"], auto_regex = True)
+    assert leaves == ["down_proj"] and detect == ["down_proj"] and widened != generated

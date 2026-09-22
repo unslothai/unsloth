@@ -2667,6 +2667,9 @@ class FastBaseModel:
             )
         _raise_if_fast_inference_modules_to_save(model, modules_to_save)
 
+        # True only when the regex below is generated here: a regex the caller wrote is kept as
+        # written, so a request for the shared expert alone never grows to every routed expert.
+        _target_modules_auto_regex = False
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -2676,6 +2679,7 @@ class FastBaseModel:
                 finetune_mlp_modules = finetune_mlp_modules,
                 **_audio_kwargs,
             )
+            _target_modules_auto_regex = True
         else:
             assert type(target_modules) in (list, tuple, str)
             # Route an explicit list through get_peft_regex when the caller scoped a layer family or opted into audio, so the new audio/embedder branches are considered. finetune_audio_layers is a POSITIVE term: negating it would force every explicit list through the filter.
@@ -2701,6 +2705,7 @@ class FastBaseModel:
                     target_modules = list(target_modules),
                     **_audio_kwargs,
                 )
+                _target_modules_auto_regex = True
 
         if hasattr(model, "vllm_engine"):
             if (
@@ -2741,20 +2746,16 @@ class FastBaseModel:
         # Per-expert submodule layouts (mixer.experts.<i>.up_proj, the Nemotron-H hub code): a leaf
         # list already reaches them by suffix; the text-only regex stops one level short, so add
         # the nested alternative to it, scoped to the MLP leaves the caller asked for. Before the
-        # expert detection below, so the routed experts count as reachable.
-        if isinstance(target_modules, str):
-            _expert_submodule_leaves = get_moe_expert_submodule_leaves(model, _moe_module_detect)
-            if _expert_submodule_leaves and not any(
-                re.fullmatch(target_modules, name) for name, _ in model.named_modules() if ".experts." in name
-            ):
-                _detect_was_scoped_regex = _moe_module_detect is target_modules
-                target_modules = f"(?:{target_modules})|(?:{moe_expert_submodule_regex(_expert_submodule_leaves)})"
-                if _detect_was_scoped_regex:
-                    _moe_module_detect = target_modules
-                print(
-                    f"Unsloth: Detected MoE model with per-expert submodules. "
-                    f"Enabling LoRA on expert projections {_expert_submodule_leaves}."
-                )
+        # expert detection below, so the routed experts count as reachable. Only a regex built
+        # here is widened: one the caller wrote (`.*\.shared_experts\.down_proj`) is their scope.
+        target_modules, _moe_module_detect, _expert_submodule_leaves = widen_target_regex_to_expert_submodules(
+            model, target_modules, _moe_module_detect, auto_regex = _target_modules_auto_regex,
+        )
+        if _expert_submodule_leaves:
+            print(
+                f"Unsloth: Detected MoE model with per-expert submodules. "
+                f"Enabling LoRA on expert projections {_expert_submodule_leaves}."
+            )
 
         # Per-expert Linear layouts (gpt-oss bnb-4bit) target experts via target_modules, not fused Parameters. Extend either form PEFT accepts: a leaf list, or a regex string.
         _moe_module_targets = get_moe_target_modules(model, _moe_module_detect)
