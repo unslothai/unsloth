@@ -263,3 +263,47 @@ def test_a_training_capable_remote_moe_is_left_alone():
         assert not is_remote_deepseek_moe(DeepseekV3MoE())
     finally:
         sys.modules.pop(module.__name__, None)
+
+
+def test_the_gate_of_a_training_capable_block_is_not_patched():
+    """A training-capable block's gate computes its auxiliary loss in train mode; the gate is
+    patched only when its block is the inference-only port."""
+    import linecache, sys, types
+    from unsloth.models.remote_moe_shims import prepare_remote_moe_for_training
+
+    name = "transformers_modules.capable2.modeling_deepseek"
+    src = """
+import torch
+from torch import nn
+class MoEGate(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.topk_method = "greedy"; self.n_group = 1; self.topk_group = 1
+        self.routed_scaling_factor = 1.0; self.norm_topk_prob = False; self.top_k = 1
+    def forward(self, x):
+        return x
+class DeepseekV3MoE(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.gate = MoEGate(); self.experts = nn.ModuleList([nn.Linear(2, 2)])
+    def forward(self, x):
+        if self.training:
+            return x * 2
+        else:
+            return self.moe_infer(x)
+    def moe_infer(self, x):
+        return x
+"""
+    filename = f"<{name}>"
+    linecache.cache[filename] = (len(src), None, src.splitlines(True), filename)
+    mod = types.ModuleType(name)
+    exec(compile(src, filename, "exec"), mod.__dict__)
+    for cls in (mod.MoEGate, mod.DeepseekV3MoE):
+        cls.__module__ = name
+    sys.modules[name] = mod
+    try:
+        block = mod.DeepseekV3MoE()
+        assert prepare_remote_moe_for_training(block, verbose = False) == []
+        assert not getattr(mod.MoEGate.forward, "_unsloth_remote_moe_shim", False)
+    finally:
+        sys.modules.pop(name, None)

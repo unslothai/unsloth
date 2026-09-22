@@ -179,6 +179,14 @@ def prepare_remote_moe_for_training(model, verbose = True):
     patched = []
     seen = set()
     shimmed_classes = set()
+    # A gate is patched only when the MoE block that owns it is the inference-only port: a
+    # training-capable block's gate computes its auxiliary routing loss in train mode, and
+    # running it in eval mode would silently drop that loss.
+    shimmable_gates = set()
+    for module in model.modules():
+        gate = getattr(module, "gate", None)
+        if gate is not None and is_remote_deepseek_moe(module):
+            shimmable_gates.add(type(gate))
     for module in model.modules():
         cls = type(module)
         if cls in seen:
@@ -192,7 +200,7 @@ def prepare_remote_moe_for_training(model, verbose = True):
             shimmed_classes.add(cls)
             _rebind_accelerate_hook(module)
             continue
-        if is_remote_deepseek_gate(module):
+        if is_remote_deepseek_gate(module) and cls in shimmable_gates:
             cls.forward = _gate_forward_without_training_assert(cls.forward)
             patched.append(cls.__name__)
             shimmed_classes.add(cls)
