@@ -407,6 +407,33 @@ def share_kv_rows(entries, base):
     return shared
 
 
+def compact_sliding_windows(entries):
+    """Drop the rows a sliding-window entry holds beyond its window after a multi-row update.
+    Its next update, of any size, reads none of them, so this changes nothing that update
+    computes, and a snapshot would otherwise keep a whole prefill chunk."""
+    rings = _cache_classes("RotatingKVCache")
+    pending = list(entries)
+    compacted = []
+    while pending:
+        entry = pending.pop()
+        nested = entry if isinstance(entry, (list, tuple)) else getattr(entry, "caches", None)
+        if isinstance(nested, (list, tuple)):
+            pending.extend(nested)
+        elif type(entry) in rings and entry.keys is not None:
+            excess = entry.keys.shape[2] - entry.max_size
+            # In temporal order, as a multi-row update leaves it; the trim is the single-row update's own.
+            if excess > 0 and entry._idx == entry.keys.shape[2]:
+                entry.keys = entry._trim(excess, entry.keys)
+                entry.values = entry._trim(excess, entry.values)
+                entry._idx = entry.max_size
+                compacted.extend((entry.keys, entry.values))
+    if compacted:
+        import mlx.core as mx
+
+        # Now, so the rows cut are released rather than held by a pending slice.
+        mx.eval(compacted)
+
+
 class VLMPromptSnapshotStore:
     """Boundary snapshots, most recently used last, under a byte budget. A snapshot that a
     longer one of the same conversation extends reads its in-order KV rows from that one, its
@@ -444,6 +471,7 @@ class VLMPromptSnapshotStore:
         return best[1], len(best[0])
 
     def store(self, key, prefix_ids, entries):
+        compact_sliding_windows(entries)
         nbytes = cache_entries_nbytes(entries)
         if nbytes > self._max_bytes:
             logger.debug(

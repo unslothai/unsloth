@@ -904,3 +904,27 @@ def test_store_holds_the_kv_rows_nested_snapshots_share_once():
     assert len(store) == 2
     assert store.nbytes == cache_entries_nbytes(lone) + cache_entries_nbytes(nested[2])
 
+
+@pytest.mark.parametrize("keep", [0, 4])
+@pytest.mark.parametrize("next_rows", [1, 5])
+def test_a_compacted_window_updates_exactly_as_the_full_one(keep, next_rows):
+    mx = pytest.importorskip("mlx.core")
+    cache = pytest.importorskip("mlx_vlm.models.cache")
+
+    def rows(start, n):
+        return mx.arange(start * 8, (start + n) * 8, dtype = mx.float32).reshape(1, 1, n, 8)
+
+    def window():
+        ring = cache.RotatingKVCache(max_size = 16, keep = keep)
+        for start in (0, 24):
+            ring.update_and_fetch(rows(start, 24), -rows(start, 24))
+        return ring
+
+    full, compact = window(), window()
+    VLMPromptSnapshotStore(1 << 30).store("m", [1], [[compact]])
+    assert compact.keys.shape[2] == 16 < full.keys.shape[2]
+    for start, n in ((48, next_rows), (48 + next_rows, 1)):
+        got = compact.update_and_fetch(rows(start, n), -rows(start, n))
+        want = full.update_and_fetch(rows(start, n), -rows(start, n))
+        for a, b in zip(got, want):
+            assert a.shape == b.shape and mx.array_equal(a, b).item()
