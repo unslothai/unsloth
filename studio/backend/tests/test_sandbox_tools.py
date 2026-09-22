@@ -755,6 +755,25 @@ class TestNetworkTargetResolution:
                 f"s.proxies = {{'https': 'http://{_H}'}}\nt.get('https://pypi.org/')",
                 id = "proxy_read_through_a_copy",
             ),
+            pytest.param(
+                f"import requests\nclass S(requests.Session):\n    pass\nS().get('http://{_H}/')",
+                id = "client_subclass",
+            ),
+            pytest.param(
+                "import httpx\nclass A(httpx.Client):\n    pass\nclass B(A):\n    pass\n"
+                f"b = B()\nb.get('http://{_H}/')",
+                id = "client_subclass_two_levels",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\np = s.proxies\n"
+                f"p['https'] = 'http://{_H}'\ns.get('https://pypi.org/')",
+                id = "proxy_mapping_aliased_then_set",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\np = s.proxies\n"
+                f"p.update({{'https': 'http://{_H}'}})\ns.get('https://pypi.org/')",
+                id = "proxy_mapping_aliased_then_updated",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -837,6 +856,8 @@ class TestNetworkTargetResolution:
             "    def go(self):\n        self.session.get('https://pypi.org/')",
             "import requests\nrequests.get('https://pypi.org/', proxies={'https': 'https://pypi.org'})",
             "import requests\ns = requests.Session()\ns.headers.update({'a': 'b'})",
+            "import requests\nclass S(requests.Session):\n    pass\nS().get('https://pypi.org/')",
+            "import requests\nd = {}\nd.update({'https': 'http://203.0.113.5'})\nrequests.get('https://pypi.org/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):

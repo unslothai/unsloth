@@ -17229,6 +17229,8 @@ def _check_signal_escape_patterns(code: str):
             # Receiver path -> the paths copied to or from it, which may be the same client: a
             # proxy set through `t` after `t = s` is used by `s.get(...)`.
             self.path_links: "dict[str, set[str]]" = {}
+            # Path -> the clients whose proxy mapping it names, after `p = s.proxies`.
+            self.proxy_owners: "dict[str, set[str]]" = {}
             # Class id -> its family: the classes in this file joined through their base names.
             self.class_family: "dict[int, str]" = {}
             # Method id -> (first parameter, class family); `self_names` is the stack in effect.
@@ -17417,6 +17419,20 @@ def _check_signal_escape_patterns(code: str):
                             self.visit(item)
                 elif isinstance(value, ast.AST):
                     self.visit(value)
+            if self.collecting and isinstance(node, ast.ClassDef):
+                # A local subclass of a client is that client: `class S(requests.Session)` then
+                # `S().get(url)` runs the inherited method.
+                where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                inherited = {
+                    c
+                    for base in node.bases
+                    for c in self._fq_candidates(base, where)
+                    if c in _CLIENT_CLASSES
+                }
+                if inherited:
+                    self.func_aliases.setdefault(node.name, set()).update(inherited)
+                    # Registered where the class name is bound, after its bases have run.
+                    self._register_alias(node.name, node.body[0])
             args = getattr(node, "args", None)
             if self.collecting and args is not None:
                 # A default is what the parameter holds when the caller passes nothing:
@@ -17629,14 +17645,30 @@ def _check_signal_escape_patterns(code: str):
                         stack.append(other)
             return seen
 
-        def _record_proxy(self, target, value) -> None:
-            """`s.proxies = {...}` and `s.proxies["https"] = ...` configure where `s` connects."""
+        def _record_proxy(
+            self,
+            target,
+            value,
+            mutated = False,
+        ) -> None:
+            """`s.proxies = {...}`, `s.proxies["https"] = ...`, and the same mutation through
+            `p = s.proxies`, configure where `s` connects."""
             if isinstance(target, ast.Subscript):
-                target = target.value
+                target, mutated = target.value, True
             if isinstance(target, ast.Attribute) and target.attr in _PROXY_KEYWORDS:
-                path = self._receiver_path(target.value)
-                if path is not None:
-                    self.proxy_values.setdefault(path, []).append(value)
+                owners = {self._receiver_path(target.value)}
+            elif mutated and self._receiver_path(target) is not None:
+                owners = set().union(
+                    *(
+                        self.proxy_owners.get(path, ())
+                        for path in self._linked_paths(self._receiver_path(target))
+                    )
+                )
+            else:
+                return
+            for owner in owners:
+                if owner is not None:
+                    self.proxy_values.setdefault(owner, []).append(value)
 
         def visit_Assign(self, node):
             if not self.collecting:
@@ -17654,6 +17686,11 @@ def _check_signal_escape_patterns(code: str):
             for target, value, named in pairs:
                 self._record_proxy(target, value)
                 self._link(target, value)
+                if isinstance(value, ast.Attribute) and value.attr in _PROXY_KEYWORDS:
+                    owner = self._receiver_path(value.value)
+                    alias = self._receiver_path(target)
+                    if owner is not None and alias is not None:
+                        self.proxy_owners.setdefault(alias, set()).add(owner)
                 if self._register(target, named, node):
                     registered.add(target.id)
             self._rebind(node, exempt = registered)
@@ -17781,14 +17818,10 @@ def _check_signal_escape_patterns(code: str):
         def visit_Call(self, node):
             if self.collecting:
                 func = node.func
-                if (
-                    isinstance(func, ast.Attribute)
-                    and func.attr in ("update", "setdefault")
-                    and isinstance(func.value, ast.Attribute)
-                ):
+                if isinstance(func, ast.Attribute) and func.attr in ("update", "setdefault"):
                     # `s.proxies.update({...})`, `update(https = ...)` and `setdefault(k, v)`.
                     for value in [*node.args, *(kw.value for kw in node.keywords)]:
-                        self._record_proxy(func.value, value)
+                        self._record_proxy(func.value, value, mutated = True)
                 self.generic_visit(node)
                 return
             # Resolving an alias may only ADD a way to recognise this call, never take one away.
