@@ -1618,6 +1618,7 @@ try:
         parse_reasoning_budget_message_override,
         parse_reasoning_budget_override,
         parse_split_mode_override,
+        parse_tensor_split_override,
         resolve_reasoning_budget,
         resolve_reasoning_budget_message,
         resolve_tensor_parallel,
@@ -1681,6 +1682,7 @@ except ImportError:
         parse_reasoning_budget_message_override,
         parse_reasoning_budget_override,
         parse_split_mode_override,
+        parse_tensor_split_override,
         resolve_reasoning_budget,
         resolve_reasoning_budget_message,
         resolve_tensor_parallel,
@@ -7205,10 +7207,13 @@ def _should_strip_tensor_split(request: LoadRequest) -> bool:
     override it), and with the ratio cleared it wants llama.cpp's default
     free-VRAM split. Either way an inherited --tensor-split must go, else the
     cleared case silently keeps the stale ratio while status reports None.
-    Unlike _should_strip_split_mode this leaves --split-mode untouched, so a
-    user's row/none/layer mode survives an Unsloth split-ratio edit. When the
-    Tensor Parallelism toggle IS overriding the mode, _should_strip_split_mode
-    (called alongside this at every site) strips --split-mode anyway.
+    Explicit extras must be promoted into ``request.tensor_split`` first (same
+    pattern as ``-ngl`` -> ``gpu_layers``) or the strip would discard the only
+    copy of an asymmetric MoE split (#11330). Unlike _should_strip_split_mode
+    this leaves --split-mode untouched, so a user's row/none/layer mode survives
+    an Unsloth split-ratio edit. When the Tensor Parallelism toggle IS overriding
+    the mode, _should_strip_split_mode (called alongside this at every site)
+    strips --split-mode anyway.
     """
     return (
         getattr(request, "gpu_memory_mode", "auto") == "manual"
@@ -15182,6 +15187,19 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
     ) == (request.chat_template_override or None)
 
 
+def _inherit_resident_load_in_4bit(backend, request, model_identifier: str) -> None:
+    """An omitted load_in_4bit keeps the resident precision, not the 4-bit default."""
+    if "load_in_4bit" in (getattr(request, "model_fields_set", set()) or set()):
+        return
+    if not _same_loaded_identifier(backend.active_model_name, model_identifier):
+        return
+    resident = (backend.models.get(backend.active_model_name, {}) or {}).get(
+        "load_in_4bit_requested"
+    )
+    if resident is not None:
+        request.load_in_4bit = bool(resident)
+
+
 def _non_gguf_runtime_settings_match(backend, request) -> bool:
     """Whether the resident non-GGUF model already runs the request's load settings.
 
@@ -15741,11 +15759,36 @@ async def _load_model_impl(
         # stripping the raw flags. This keeps CLI pass-through such as
         # ``-ngl 20`` from being silently replaced by the manual default (-1).
         # The inherited path already strips offload flags. Manual + per-GPU
-        # ratio owns --tensor-split the same way.
+        # ratio owns --tensor-split the same way: promote ``-ts`` into
+        # ``tensor_split`` first, or the strip drops an asymmetric MoE split
+        # and llama-server falls back to a near-even layer count (#11330).
+        # At gpu_layers < 0 the strip does not fire, so the ratio sits in extras
+        # AND in the field; both copies die in load_model's Auto-layers branch,
+        # which test_manual_auto_layers_never_emits_two_tensor_splits pins.
         if request.gpu_memory_mode == "manual" and extra_llama_args:
+            _manual_updates: dict[str, Any] = {}
             _gpu_layers_override = parse_gpu_layers_override(extra_llama_args)
             if _gpu_layers_override is not None:
-                request = request.model_copy(update = {"gpu_layers": _gpu_layers_override})
+                _manual_updates["gpu_layers"] = _gpu_layers_override
+            # reserialized only where the launcher REWRITES the ratio, the same predicate
+            # _should_strip_tensor_split uses: manual with the RESOLVED layer count non-negative.
+            # At Auto layers both copies are dropped before argv, so judging a rendering nothing
+            # emits would refuse a flag the child never sees. 400, not the 500 a raise gives.
+            _resolved_layers = (
+                _gpu_layers_override
+                if _gpu_layers_override is not None
+                else getattr(request, "gpu_layers", -1)
+            )
+            try:
+                _tensor_split_override = parse_tensor_split_override(
+                    extra_llama_args, reserialized = _resolved_layers >= 0
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+            if _tensor_split_override is not None:
+                _manual_updates["tensor_split"] = _tensor_split_override
+            if _manual_updates:
+                request = request.model_copy(update = _manual_updates)
             _stripped_explicit = strip_shadowing_flags(
                 extra_llama_args,
                 strip_context = False,
@@ -15891,6 +15934,7 @@ async def _load_model_impl(
                     await asyncio.to_thread(acquire_for_request, CHAT)
                 return reused
         if not (request.gguf_variant or is_direct_gguf_request):
+            _inherit_resident_load_in_4bit(backend, request, model_identifier)
             if (
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
                 and _mlx_runtime_settings_match(backend, request)
@@ -16971,6 +17015,15 @@ def _requires_security_review_for_model(
         return False
 
 
+def _mlx_base_for_config(config) -> Optional[str]:
+    from core.inference.model_ids import mlx_host_bnb_base_repo
+    for candidate in (getattr(config, "identifier", None), getattr(config, "base_model", None)):
+        base = mlx_host_bnb_base_repo(candidate)
+        if base:
+            return base
+    return None
+
+
 @router.post("/validate", response_model = ValidateModelResponse)
 async def validate_model(
     request: ValidateModelRequest,
@@ -17076,15 +17129,34 @@ async def validate_model(
         # the GPU; the opposite pairing refused a load that only ever runs on the CPU.
         # Same translation, same strip, so the guard below judges the same command.
         # After the validation above, so nothing here parses a token the load refuses.
+        # ``-ts`` / ``--tensor-split`` is promoted the same way (#11330).
         if getattr(request, "gpu_memory_mode", None) == "manual" and effective_extra_args:
             from core.inference.llama_server_args import (
                 parse_gpu_layers_override,
+                parse_tensor_split_override,
                 strip_shadowing_flags,
             )
 
+            _validate_manual_updates: dict[str, Any] = {}
             _validate_ngl_override = parse_gpu_layers_override(effective_extra_args)
             if _validate_ngl_override is not None:
-                request = request.model_copy(update = {"gpu_layers": _validate_ngl_override})
+                _validate_manual_updates["gpu_layers"] = _validate_ngl_override
+            # Same reserialized judgement, and the same 400, as the load path above.
+            _validate_resolved_layers = (
+                _validate_ngl_override
+                if _validate_ngl_override is not None
+                else getattr(request, "gpu_layers", -1)
+            )
+            try:
+                _validate_ts_override = parse_tensor_split_override(
+                    effective_extra_args, reserialized = _validate_resolved_layers >= 0
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            if _validate_ts_override is not None:
+                _validate_manual_updates["tensor_split"] = _validate_ts_override
+            if _validate_manual_updates:
+                request = request.model_copy(update = _validate_manual_updates)
             effective_extra_args = strip_shadowing_flags(
                 effective_extra_args,
                 strip_context = False,
@@ -17351,6 +17423,7 @@ async def validate_model(
                 chat_template = chat_template,
                 requires_transformers_upgrade = transformers_upgrade is not None,
                 transformers_upgrade = transformers_upgrade,
+                mlx_loads_base_model = await asyncio.to_thread(_mlx_base_for_config, config),
             )
         )
 
@@ -18476,9 +18549,13 @@ async def clear_api_monitor(current_subject: str = Depends(get_current_subject))
 
 
 @studio_router.get("/monitor/{entry_id}")
-async def get_api_monitor_entry(entry_id: str, current_subject: str = Depends(get_current_subject)):
+async def get_api_monitor_entry(
+    entry_id: str,
+    current_subject: str = Depends(get_current_subject),
+    include_prompt: bool = True,
+):
     """Return full prompt/reply details for one OpenAI-compatible API request."""
-    entry = api_monitor.get(entry_id, subject = current_subject)
+    entry = api_monitor.get(entry_id, subject = current_subject, include_prompt = include_prompt)
     if entry is None:
         raise HTTPException(status_code = 404, detail = "Monitor entry not found")
     return entry
@@ -38540,12 +38617,7 @@ async def diffusion_download_plan(
             model_kind = kind,
             base_repo = request.base_repo,
         )
-        # Plan for the engine /images/load will pick, not diffusers unconditionally: a GGUF on a GPU-less host routes to native
-        # sd.cpp, which reads different files. predict_engine applies the policy without activating anything.
         planner = backend
-        if fam is not None and predict_engine(fam, model_kind = kind) == ENGINE_SD_CPP:
-            from core.inference.sd_cpp_backend import get_sd_cpp_backend
-            planner = get_sd_cpp_backend()
         # BEFORE the plan is handed back and staged. The load route refuses a precision this
         # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
         # unsupported host paid for the GGUF and its companions -- or tens of GB of video
@@ -38560,11 +38632,20 @@ async def diffusion_download_plan(
         # the training guard below exists to prevent, so the RANKING waits until training is known
         # idle. The ids are validated and translated either way -- that costs no CUDA context, and
         # skipping it entirely let the plan accept a GPU the load would refuse, and size its file
-        # set for the wrong card. ONE resolution for the whole request, reused by preflight + plan.
+        # set for the wrong card. ONE resolution for the whole request, reused by the engine
+        # prediction below, the preflight and the plan.
         gpu_ordinal = None
         training = fam is not None and await asyncio.to_thread(_training_is_active)
         if fam is not None:
             gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
+        # Plan for the engine /images/load will pick: a GGUF on a GPU-less host routes to native
+        # sd.cpp, which reads different files. Card-scoped, since the failure records are per card.
+        if (
+            fam is not None
+            and predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal) == ENGINE_SD_CPP
+        ):
+            from core.inference.sd_cpp_backend import get_sd_cpp_backend
+            planner = get_sd_cpp_backend()
         if fam is not None and not training:
             if planner is backend:
                 await asyncio.to_thread(
@@ -38798,7 +38879,12 @@ async def load_diffusion_model_gated(
         # afterwards destroys the model this preserves. Fails open on offline/transient, and runs
         # only where something is at stake -- a GPU handoff, or an engine switch.
         try:
-            pending_name = predict_engine(fam, model_kind = kind) if fam is not None else None
+            # Card-scoped like the activation below, or the wrong engine's preflight runs.
+            pending_name = (
+                predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal)
+                if fam is not None
+                else None
+            )
         except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
             pending_name = None
         # Same bar, same reason, for an EXPLICIT precision this host can never honor. begin_load
@@ -38852,7 +38938,14 @@ async def load_diffusion_model_gated(
         require_no_foreign_generations()
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         engine = await asyncio.to_thread(
-            select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind
+            functools.partial(
+                select_and_activate_engine,
+                fam,
+                hf_token = request.hf_token,
+                model_kind = kind,
+                # The ordinal resolved above: re-resolving re-ranks by free VRAM and can pick another card.
+                gpu_ordinal = gpu_ordinal,
+            )
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
         # install then fails lands on the OTHER engine. Re-ask the engine actually activated when

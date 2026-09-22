@@ -216,17 +216,10 @@ export const hi = {
       priority: "प्राथमिकता",
       lastUpdated: "अंतिम अपडेट",
       manualOrder: "मैन्युअल क्रम",
-      priorityHint: "सक्रिय और अपठित पहले",
-      lastUpdatedHint: "सबसे नए पहले",
-      manualOrderHint: "पंक्तियाँ खींचकर क्रम बदलें",
       switchedToManual: "अब मैन्युअल क्रम: पंक्तियाँ खींचकर क्रम बदलें",
       organizeChats: "चैट व्यवस्थित करें",
       organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
-      dragDrop: "खींचें और छोड़ें",
-      dragHints: "खींचते समय संकेत दिखाएँ",
-      reorderSwitchesSort: "क्रम बदलने पर मैन्युअल क्रम पर स्विच करें",
-      dragOpensFolders: "पॉइंटर के नीचे फ़ोल्डर खोलें",
       moveUp: "ऊपर ले जाएँ",
       moveDown: "नीचे ले जाएँ",
     },
@@ -579,7 +572,16 @@ export const hi = {
       sourceHint: "मॉडल रनर अपने अलग लॉग लिखते हैं, इसलिए लोड या जनरेशन विफल होने का कारण अक्सर सर्वर लॉग के बजाय वहीं मिलता है।",
       path: "स्थान",
       pathCopy: "पथ कॉपी करें",
-      refreshSection: "रिफ़्रेश",
+      currentSession: "वर्तमान",
+      statusLive: "लाइव",
+      statusPaused: "रुका हुआ",
+      statusStale: "पुराना",
+      filterPlaceholder: "पंक्तियाँ फ़िल्टर करें",
+      lineCount: "{count} पंक्तियाँ",
+      filteredLineCount: "{total} में से {shown} पंक्तियाँ",
+      wrapLines: "पंक्तियाँ रैप करें",
+      jumpToLatest: "नवीनतम पर जाएँ",
+      noMatches: "फ़िल्टर से कोई पंक्ति मेल नहीं खाती।",
       mode: "मोड",
       modeLive: "लाइव",
       modeInterval: "हर 3 सेकंड",
@@ -898,6 +900,16 @@ export const hi = {
         revoked: "सभी पूर्वावलोकन लिंक रद्द किए गए",
         revokeError: "पूर्वावलोकन लिंक रद्द नहीं किए जा सके",
       },
+      managedProviderUrls: {
+        sectionTitle: "प्रबंधित खाते",
+        enableLabel: "स्थानीय और नेटवर्क कनेक्शन",
+        enableDescription:
+          "प्रबंधित खातों को अपने कनेक्शन स्थानीय या नेटवर्क पतों की ओर इंगित करने दें, जैसे इस कंप्यूटर या आपके लोकल नेटवर्क पर चल रहा Ollama या llama.cpp सर्वर। डिफ़ॉल्ट रूप से बंद, क्योंकि इससे वे खाते आपके कंप्यूटर और नेटवर्क पर चल रही सेवाओं तक पहुँच सकते हैं।",
+        lockedByEnvironment:
+          "इस सर्वर पर UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 द्वारा तय, जो सभी खातों के लिए निजी पतों को अस्वीकार करता है।",
+        loadError: "प्रबंधित खाता कनेक्शन सेटिंग्स लोड नहीं हो सकीं।",
+        saveError: "प्रबंधित खाता कनेक्शन सेटिंग्स सहेजी नहीं जा सकीं।",
+      },
       notifications: {
         sectionTitle: "सूचनाएं",
         showLlamaUpdates: "llama.cpp अपडेट सूचनाएं",
@@ -1135,7 +1147,7 @@ export const hi = {
       custom: {
         chatWidth: {
           label: "चैट की चौड़ाई",
-          description: "संदेशों और इनपुट बॉक्स की चौड़ाई तय करें। पूरी चौड़ाई साइडबार के बीच की जगह का उपयोग करती है।",
+          description: "संदेशों और इनपुट बॉक्स की चौड़ाई।",
           standard: "मानक",
           wide: "चौड़ा",
           full: "पूरी चौड़ाई",
@@ -1208,7 +1220,6 @@ export const hi = {
         },
         contrast: {
           label: "कंट्रास्ट",
-          description: "बॉर्डर और सेकंडरी टेक्स्ट की तीव्रता।",
         },
         reduceMotion: {
           label: "एनिमेशन कम करें",
@@ -1238,7 +1249,7 @@ export const hi = {
       sidebarNav: {
         title: "साइडबार नेविगेशन",
         description:
-          "साइडबार के टैब पिन करें और उनका क्रम बदलें। जो टैब पिन नहीं हैं वे “अधिक” मेन्यू में इकट्ठा हो जाते हैं; यदि सिर्फ़ एक ही टैब पिन नहीं है तो एक आइटम वाला मेन्यू बनाने के बजाय उसे छिपा दिया जाता है। नई चैट अपनी जगह पर तय रहती है।",
+          "साइडबार के टैब पिन करें और क्रम बदलें। बिना पिन वाले टैब “अधिक” मेन्यू में चले जाते हैं।",
         dragToReorder: "क्रम बदलने के लिए खींचें",
         pinToSidebar: "{name} को साइडबार में पिन करें",
         moreHolds: "अधिक ({count})",
@@ -1246,7 +1257,7 @@ export const hi = {
       sidebarMenu: {
         title: "साइडबार मेन्यू",
         description:
-          "साइडबार के प्रोफ़ाइल मेन्यू में आइटम दिखाएं, छिपाएं और क्रम बदलें। सेटिंग्स, सहायता, लॉग आउट और शटडाउन अपनी जगह पर तय रहते हैं।",
+          "प्रोफ़ाइल मेन्यू के शॉर्टकट चुनें और उनका क्रम बदलें।",
         darkModeToggle: "डार्क मोड टॉगल",
         dragToReorder: "क्रम बदलने के लिए खींचें",
       },
@@ -1386,6 +1397,54 @@ export const hi = {
         copied: "पथ कॉपी किया गया",
         openError: "फ़ोल्डर नहीं खोला जा सका",
         copyError: "पथ कॉपी नहीं किया जा सका",
+        caches: {
+          label: "कैश फ़ाइलें",
+          description:
+            "कैश में {size}, जिनमें से {reclaimable} अभी साफ़ किया जा सकता है।",
+          hint: "पैकेज डाउनलोड, कंपाइल किए गए कर्नेल और ट्रांसफ़र कैश जिन्हें Unsloth ज़रूरत पड़ने पर दोबारा बना लेता है। डाउनलोड किए गए मॉडल, प्रोजेक्ट, चैट, सेटिंग्स और आपका Hugging Face टोकन यहाँ कभी साफ़ नहीं किए जाते।",
+          keywords:
+            "कैश साफ़ करना हटाना खाली जगह डिस्क अस्थायी कंपाइल cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "कैश का आकार मापा जा रहा है...",
+          measureFailed: "कैश मापे नहीं जा सके",
+          empty: "कोई कैश फ़ाइल नहीं मिली।",
+          detailsAction: "विवरण",
+          recheckAction: "फिर से जाँचें",
+          hideDetailsAction: "विवरण छिपाएँ",
+          clearAction: "कैश साफ़ करें",
+          clearOneAction: "साफ़ करें",
+          clearingAction: "साफ़ किया जा रहा है...",
+          confirmTitle: "कैश की गई फ़ाइलें साफ़ करें?",
+          confirmDescription: "इससे लगभग {size} खाली होगा।",
+          confirmOneTitle: "{name} साफ़ करें?",
+          safety:
+            "अगली बार ज़रूरत पड़ने पर Unsloth कैश दोबारा बना लेता है। डाउनलोड किए गए मॉडल, प्रोजेक्ट, चैट, सेटिंग्स और आपके Hugging Face टोकन को छुआ नहीं जाता।",
+          hubCost:
+            "यह मॉडल कैश है। इसे साफ़ करने पर अगली बार उपयोग करते समय वे मॉडल फिर से डाउनलोड होंगे।",
+          datasetsCost:
+            "इसे साफ़ करने पर अगली बार उपयोग करते समय वे डेटासेट फिर से डाउनलोड होंगे।",
+          blocked: "साफ़ नहीं किया गया: {reason}",
+          cleared: "{size} साफ़ किया गया",
+          partial: "कुछ कैश फ़ाइलें हटाई नहीं जा सकीं",
+          clearFailed: "कैश साफ़ नहीं किए जा सके",
+          names: {
+            uv: "uv पैकेज कैश",
+            pip: "pip डाउनलोड कैश",
+            npm: "npm पैकेज कैश",
+            bun: "Bun पैकेज कैश",
+            torchInductor: "Torch Inductor कंपाइल कैश",
+            torchExtensions: "Torch एक्सटेंशन बिल्ड",
+            triton: "Triton कर्नेल कैश",
+            cuda: "CUDA कर्नेल कैश",
+            numba: "Numba कंपाइल कैश",
+            matplotlib: "Matplotlib फ़ॉन्ट कैश",
+            vllm: "vLLM कैश",
+            unslothCompiled: "Unsloth कंपाइल किए गए मॉड्यूल",
+            hfXet: "Hugging Face ट्रांसफ़र कैश",
+            hfAssets: "Hugging Face एसेट कैश",
+            hfDatasets: "Hugging Face डेटासेट कैश",
+            hfHub: "Hugging Face मॉडल कैश",
+          },
+        },
         futureDownloads: "केवल नए डाउनलोड",
         environmentManaged: "{variable} एनवायरनमेंट वेरिएबल द्वारा प्रबंधित।",
         locationFree: "{free} खाली",
@@ -1506,9 +1565,9 @@ export const hi = {
           "मंज़ूरी के प्रॉम्प्ट छोड़ देता है। केवल भरोसेमंद वातावरण में उपयोग करें।",
       },
       remote: {
-        title: "रिमोट Unsloth Studio से जुड़ें",
+        title: "रिमोट Unsloth से जुड़ें",
         description:
-          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे Unsloth Studio की ओर भेजें (या --api-key सीधे दें):",
+          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे Unsloth की ओर भेजें (या --api-key सीधे दें):",
       },
       passthrough: {
         title: "एजेंट को आर्ग्युमेंट भेजना",
@@ -1536,17 +1595,11 @@ export const hi = {
       rememberParamsPerModelHint:
         "बंद होने पर सभी मॉडल एक ही सेटिंग इस्तेमाल करते हैं।",
       autoCompactHint:
-        "उपलब्ध VRAM के बजाय आपके तय किए गए संदर्भ की लंबाई का उपयोग करता है।",
+        "केवल लोकल GGUF चैट पर लागू। हटाए गए टर्न इंडेक्स किए जाते हैं ताकि मॉडल उन्हें दोबारा खोज सके, और रीसेट पर जितने स्थायी निर्देश समा सकें, वे हूबहू दोहरा दिए जाते हैं, जिनमें बीच वाले के बजाय सबसे पुराने और सबसे नए को प्राथमिकता मिलती है। आर्काइव के लिए सहेजी गई चैट और वेक्टर इंडेक्स ज़रूरी हैं; इनके बिना पुराने टर्न हटा दिए जाते हैं। उपलब्ध VRAM के बजाय आपके तय किए गए संदर्भ की लंबाई का उपयोग करता है।",
       pastedTextShortDescription:
         "{count} या अधिक अक्षरों वाला पेस्ट किया गया टेक्स्ट .txt अटैचमेंट बन जाता है। छोटा टेक्स्ट संदेश बॉक्स में रहता है।",
       pastedTextOffDescription:
         "पेस्ट किया गया सारा टेक्स्ट संदेश बॉक्स में रहता है, चाहे उसकी लंबाई कितनी भी हो।",
-      compactionDescriptionInherit:
-        "सर्वर की संदर्भ नीति का पालन करें।",
-      compactionDescriptionCheckpoint:
-        "सबसे हाल का संवाद और स्थायी निर्देश बनाए रखें।",
-      compactionDescriptionRolling:
-        "पुराने संवाद हटाकर हाल का इतिहास और चुनी गई अतिरिक्त खाली जगह बनाए रखें।",
       projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
       projectsSectionDescription:
         "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",
@@ -1570,7 +1623,7 @@ export const hi = {
           "आइटम को चैट के + साइड मेन्यू में पिन करें। बाकी आइटम “More” में चले जाएँगे।",
         chatWithFiles: "फ़ाइलों के साथ चैट (RAG)",
         mcp: "MCP",
-        skills: "एजेंट कौशल",
+        skills: "कौशल",
         savedPrompts: "सहेजे गए प्रॉम्प्ट",
         compareChat: "चैट की तुलना करें",
         exportChat: "चैट एक्सपोर्ट करें",
@@ -1593,22 +1646,20 @@ export const hi = {
         "हर मॉडल के साथ आखिरी बार इस्तेमाल किए गए प्रॉम्प्ट, तापमान और अन्य सेटिंग्स वापस लाएँ।",
       autoCompact: "लंबी चैट को अपने आप कॉम्पैक्ट करें",
       autoCompactDescription:
-        "लोकल GGUF चैट की कॉन्टेक्स्ट सीमा भरने पर पुराने टर्न हटाएँ।",
-      compactionStyle: "कॉन्टेक्स्ट भरने पर",
-      compactionStyleDescription:
-        "सर्वर डिफ़ॉल्ट से UNSLOTH_CONTEXT_POLICY बना रहता है। बातचीत रीसेट करने पर नवीनतम टर्न और स्थायी निर्देश रहते हैं। स्लाइडिंग विंडो सबसे पुराने टर्न हटाती है और हाल का अधिक इतिहास रख सकती है।",
-      compactionStyleInherit: "सर्वर डिफ़ॉल्ट उपयोग करें",
-      compactionStyleCheckpoint: "बातचीत रीसेट करें",
-      compactionStyleRollingDefault: "पुराने टर्न हटाएँ (~25% अतिरिक्त जगह)",
-      compactionStyleRolling10: "पुराने टर्न हटाएँ (~10% अतिरिक्त जगह)",
-      compactionStyleRolling5: "पुराने टर्न हटाएँ (~5% अतिरिक्त जगह)",
-      compactionStyleRollingNone: "पुराने टर्न हटाएँ (कोई अतिरिक्त कटौती नहीं)",
+        "चैट का कॉन्टेक्स्ट भरने पर पुराने टर्न खोजे जा सकने वाले आर्काइव में चले जाते हैं।",
       autoCompactKeywords:
-        "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम compaction rolling checkpoint headroom",
+        "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम आर्काइव पुनर्प्राप्ति खोज compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "संक्षिप्त",
+        auto: "चलने के दौरान विस्तृत करें",
+        expanded: "हमेशा विस्तृत",
+      },
+      visibilityKeywords:
+        "संक्षिप्त समेटें विस्तृत खोलें बंद रीज़निंग थिंकिंग टूल कॉल टूल गतिविधि समूह स्ट्रीमिंग",
       thinking: {
-        collapseByDefault: "थिंकिंग को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
-        collapseByDefaultDescription:
-          "मॉडल के सोचते समय रीज़निंग अपने आप खुलने के बजाय संक्षिप्त रहती है। पढ़ने के लिए किसी भी ब्लॉक को विस्तृत करें।",
+        visibility: "थिंकिंग",
+        visibilityDescription:
+          "रीज़निंग कैसे खुलती है। आप किसी भी ब्लॉक को खुद विस्तृत या संक्षिप्त कर सकते हैं।",
       },
       currentDate: {
         label: "मॉडल को आज की तारीख बताएँ",
@@ -1618,12 +1669,14 @@ export const hi = {
         saveError: "मौजूदा तारीख की सेटिंग्स अपडेट नहीं हो सकीं",
       },
       tools: {
-        collapseByDefault: "टूल गतिविधि को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
-        collapseByDefaultDescription:
-          "टूल चलते समय उनके इनपुट और आउटपुट संक्षिप्त रखें। जाँचने के लिए किसी भी टूल पंक्ति को विस्तृत करें।",
-        foldIntoThinking: "टूल कॉल को थिंकिंग में समेटें",
+        visibility: "टूल कॉल",
+        visibilityDescription:
+          "टूल गतिविधि कैसे खुलती है। आप किसी भी कॉल को खुद विस्तृत या संक्षिप्त कर सकते हैं।",
+        foldIntoThinking: "टूल कॉल को थिंकिंग के अंतर्गत समूहित करें",
         foldIntoThinkingDescription:
-          "किसी टर्न के टूल कॉल तब तक छिपाएँ जब तक उसका थिंकिंग ब्लॉक न खोला जाए।",
+          "किसी टर्न के टूल कॉल अलग पंक्तियों के बजाय उसके थिंकिंग ब्लॉक के भीतर दिखाएँ।",
+        foldIntoThinkingBlocked:
+          "जब तक टूल कॉल «हमेशा विस्तृत» पर सेट हैं तब तक उपलब्ध नहीं, क्योंकि वे अलग पंक्तियों में ही रहते हैं।",
       },
       webSearch: {
         title: "वेब खोज",
@@ -2731,11 +2784,11 @@ export const hi = {
     tooLarge: "VRAM से बड़ा है, CPU पर ऑफ़लोड होगा। छोटा क्वांटाइज़ेशन तेज़ चलता है",
   },
   skills: {
-    title: "एजेंट कौशल",
+    title: "कौशल",
     description: "कौशल आपके मानक एजेंट फ़ोल्डरों से खोजे जाते हैं। उन्हें यहाँ सक्षम करें, फिर चैट में @ टाइप करके किसी का उल्लेख करें।",
     precedence: "~/.agents/skills को ~/.claude/skills पर प्राथमिकता मिलती है।",
     refresh: "रीफ़्रेश",
-    empty: "कोई एजेंट कौशल नहीं मिला। ~/.agents/skills या ~/.claude/skills में SKILL.md फ़ोल्डर जोड़ें, फिर रीफ़्रेश करें।",
+    empty: "कोई कौशल नहीं मिला। ~/.agents/skills या ~/.claude/skills में SKILL.md फ़ोल्डर जोड़ें, फिर रीफ़्रेश करें।",
     sourceAgents: "Agents",
     sourceClaude: "Claude",
     sourceBundled: "बंडल्ड",
@@ -2745,7 +2798,7 @@ export const hi = {
     shadowedBy: "इसी नाम का एक और कौशल ({source}) प्राथमिकता लेता है।",
     enable: "{name} सक्षम करें",
     disable: "{name} अक्षम करें",
-    updateError: "एजेंट कौशल अपडेट नहीं हो सका",
-    mentions: "एजेंट कौशल",
+    updateError: "कौशल अपडेट नहीं हो सका",
+    mentions: "कौशल",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

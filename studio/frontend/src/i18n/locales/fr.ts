@@ -216,17 +216,10 @@ export const fr = {
       priority: "Priorité",
       lastUpdated: "Dernière mise à jour",
       manualOrder: "Ordre manuel",
-      priorityHint: "Actifs et non lus en premier",
-      lastUpdatedHint: "Les plus récents en premier",
-      manualOrderHint: "Faites glisser les lignes pour les réorganiser",
       switchedToManual: "Tri manuel : faites glisser les lignes pour les réorganiser",
       organizeChats: "Organiser les discussions",
       organizeProjects: "Organiser les projets",
       sortPinnedChats: "Trier les discussions épinglées",
-      dragDrop: "Glisser-déposer",
-      dragHints: "Afficher une indication pendant le glissement",
-      reorderSwitchesSort: "Réordonner passe en ordre manuel",
-      dragOpensFolders: "Ouvrir les dossiers sous le pointeur",
       moveUp: "Monter",
       moveDown: "Descendre",
     },
@@ -580,7 +573,16 @@ export const fr = {
       sourceHint: "Les exécuteurs de modèles écrivent leurs propres journaux : un chargement ou une génération en échec y est donc souvent expliqué plutôt que dans le journal du serveur.",
       path: "Emplacement",
       pathCopy: "Copier le chemin",
-      refreshSection: "Actualisation",
+      currentSession: "Actuel",
+      statusLive: "En direct",
+      statusPaused: "En pause",
+      statusStale: "Obsolète",
+      filterPlaceholder: "Filtrer les lignes",
+      lineCount: "{count} lignes",
+      filteredLineCount: "{shown} sur {total} lignes",
+      wrapLines: "Retour à la ligne",
+      jumpToLatest: "Aller à la fin",
+      noMatches: "Aucune ligne ne correspond au filtre.",
       mode: "Mode",
       modeLive: "En direct",
       modeInterval: "Toutes les 3 secondes",
@@ -912,6 +914,18 @@ export const fr = {
         revoked: "Tous les liens d'aperçu ont été révoqués",
         revokeError: "Impossible de révoquer les liens d'aperçu",
       },
+      managedProviderUrls: {
+        sectionTitle: "Comptes gérés",
+        enableLabel: "Connexions locales et réseau",
+        enableDescription:
+          "Autorise les comptes gérés à pointer leurs connexions vers des adresses locales ou réseau, comme un serveur Ollama ou llama.cpp sur cet ordinateur ou sur votre réseau local. Désactivé par défaut, car cela permet à ces comptes d'atteindre les services exécutés sur votre ordinateur et sur votre réseau.",
+        lockedByEnvironment:
+          "Défini par UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 sur ce serveur, qui refuse les adresses privées pour tous les comptes.",
+        loadError:
+          "Impossible de charger les paramètres de connexion des comptes gérés.",
+        saveError:
+          "Impossible d'enregistrer les paramètres de connexion des comptes gérés.",
+      },
       notifications: {
         sectionTitle: "Notifications",
         showLlamaUpdates: "Notifications de mise à jour de llama.cpp",
@@ -1155,7 +1169,7 @@ export const fr = {
       custom: {
         chatWidth: {
           label: "Largeur du chat",
-          description: "Réglez la largeur des messages et de la zone de saisie. La pleine largeur utilise l’espace entre les barres latérales.",
+          description: "Largeur des messages et de la zone de saisie.",
           standard: "Standard",
           wide: "Large",
           full: "Pleine largeur",
@@ -1228,7 +1242,6 @@ export const fr = {
         },
         contrast: {
           label: "Contraste",
-          description: "Intensité des bordures et du texte secondaire.",
         },
         reduceMotion: {
           label: "Réduire les animations",
@@ -1258,7 +1271,7 @@ export const fr = {
       sidebarNav: {
         title: "Navigation de la barre latérale",
         description:
-          "Épinglez et réorganisez les onglets de la barre latérale. Les onglets non épinglés sont regroupés dans le menu « Plus » ; s'il ne reste qu'un seul onglet non épinglé, il est masqué au lieu de créer un menu à une seule entrée. « Nouvelle discussion » reste fixe.",
+          "Épinglez et réorganisez les onglets de la barre latérale. Les onglets non épinglés vont dans le menu « Plus ».",
         dragToReorder: "Faites glisser pour réorganiser",
         pinToSidebar: "Épingler {name} dans la barre latérale",
         moreHolds: "Plus ({count})",
@@ -1266,7 +1279,7 @@ export const fr = {
       sidebarMenu: {
         title: "Menu de la barre latérale",
         description:
-          "Affichez, masquez et réorganisez les éléments du menu de profil de la barre latérale. Paramètres, Aide, Se déconnecter et Arrêter restent fixes.",
+          "Choisissez et réorganisez les raccourcis du menu de profil.",
         darkModeToggle: "Bascule du mode sombre",
         dragToReorder: "Faites glisser pour réorganiser",
       },
@@ -1409,6 +1422,54 @@ export const fr = {
         copied: "Chemin copié",
         openError: "Impossible d'ouvrir le dossier",
         copyError: "Impossible de copier le chemin",
+        caches: {
+          label: "Fichiers de cache",
+          description:
+            "{size} dans les caches, dont {reclaimable} peuvent être vidés maintenant.",
+          hint: "Téléchargements de paquets, noyaux compilés et caches de transfert que Unsloth reconstruit quand il en a besoin. Les modèles téléchargés, les projets, les conversations, les paramètres et votre jeton Hugging Face ne sont jamais vidés ici.",
+          keywords:
+            "cache caches vider nettoyer purger supprimer libérer espace disque temporaire compilé cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Mesure de la taille des caches...",
+          measureFailed: "Impossible de mesurer les caches",
+          empty: "Aucun fichier de cache trouvé.",
+          detailsAction: "Détails",
+          recheckAction: "Revérifier",
+          hideDetailsAction: "Masquer les détails",
+          clearAction: "Vider les caches",
+          clearOneAction: "Vider",
+          clearingAction: "Vidage en cours...",
+          confirmTitle: "Vider les fichiers en cache ?",
+          confirmDescription: "Cela libère environ {size}.",
+          confirmOneTitle: "Vider {name} ?",
+          safety:
+            "Unsloth reconstruit un cache la prochaine fois qu'il en a besoin. Les modèles téléchargés, les projets, les conversations, les paramètres et votre jeton Hugging Face ne sont pas touchés.",
+          hubCost:
+            "Il s'agit du cache des modèles. Le vider entraîne un nouveau téléchargement de ces modèles lors de leur prochaine utilisation.",
+          datasetsCost:
+            "Vider ceci entraîne un nouveau téléchargement de ces jeux de données lors de leur prochaine utilisation.",
+          blocked: "Non vidé : {reason}",
+          cleared: "{size} libérés",
+          partial: "Certains fichiers de cache n'ont pas pu être supprimés",
+          clearFailed: "Impossible de vider les caches",
+          names: {
+            uv: "Cache des paquets uv",
+            pip: "Cache des téléchargements pip",
+            npm: "Cache des paquets npm",
+            bun: "Cache des paquets Bun",
+            torchInductor: "Cache de compilation Torch Inductor",
+            torchExtensions: "Compilations d'extensions Torch",
+            triton: "Cache des noyaux Triton",
+            cuda: "Cache des noyaux CUDA",
+            numba: "Cache de compilation Numba",
+            matplotlib: "Cache des polices Matplotlib",
+            vllm: "Cache vLLM",
+            unslothCompiled: "Modules compilés Unsloth",
+            hfXet: "Cache de transfert Hugging Face",
+            hfAssets: "Cache des ressources Hugging Face",
+            hfDatasets: "Cache des jeux de données Hugging Face",
+            hfHub: "Cache des modèles Hugging Face",
+          },
+        },
         futureDownloads: "Nouveaux téléchargements uniquement",
         environmentManaged: "Géré par la variable d'environnement {variable}.",
         locationFree: "Espace libre : {free}",
@@ -1533,9 +1594,9 @@ export const fr = {
           "Ignore les demandes d'autorisation. À n'utiliser que dans des environnements de confiance.",
       },
       remote: {
-        title: "Se connecter à un Unsloth Studio distant",
+        title: "Se connecter à un Unsloth distant",
         description:
-          "Faites pointer unsloth start vers un Unsloth Studio exécuté ailleurs en définissant ces variables avant le lancement (ou passez --api-key directement) :",
+          "Faites pointer unsloth start vers un Unsloth exécuté ailleurs en définissant ces variables avant le lancement (ou passez --api-key directement) :",
       },
       passthrough: {
         title: "Transmettre des arguments à l'agent",
@@ -1563,16 +1624,11 @@ export const fr = {
       rememberParamsPerModelHint:
         "Lorsque cette option est désactivée, tous les modèles utilisent les mêmes réglages.",
       autoCompactHint:
-        "Utilise la longueur de contexte définie, pas la VRAM disponible.",
+        "Uniquement les chats GGUF locaux. Les échanges évincés sont indexés pour que le modèle puisse les retrouver, et une réinitialisation cite mot pour mot les instructions permanentes qui tiennent, en gardant les plus anciennes et les plus récentes plutôt que celles du milieu. L’archivage nécessite un chat enregistré et l’index vectoriel ; sans eux, les anciens échanges sont supprimés. Utilise la longueur de contexte définie, pas la VRAM disponible.",
       pastedTextShortDescription:
         "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
       pastedTextOffDescription:
         "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
-      compactionDescriptionInherit: "Suit la politique de contexte du serveur.",
-      compactionDescriptionCheckpoint:
-        "Conserve le dernier échange et les instructions permanentes.",
-      compactionDescriptionRolling:
-        "Supprime les échanges les plus anciens pour conserver les plus récents et la marge choisie.",
       projectsSection: "Afficher la section Projets",
       projectsSectionDescription:
         "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
@@ -1596,7 +1652,7 @@ export const fr = {
           "Épinglez des éléments dans le menu latéral + du chat. Les autres seront placés dans « Plus ».",
         chatWithFiles: "Discuter avec des fichiers (RAG)",
         mcp: "MCP",
-        skills: "Compétences des agents",
+        skills: "Compétences",
         savedPrompts: "Invites enregistrées",
         compareChat: "Comparer le chat",
         exportChat: "Exporter le chat",
@@ -1619,26 +1675,20 @@ export const fr = {
         "Restaure le dernier prompt, la température et les autres réglages utilisés pour chaque modèle.",
       autoCompact: "Compacter automatiquement les longues discussions",
       autoCompactDescription:
-        "Supprime les anciens échanges lorsqu’une discussion GGUF locale atteint sa limite de contexte.",
-      compactionStyle: "Lorsque le contexte est plein",
-      compactionStyleDescription:
-        "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
-      compactionStyleInherit: "Utiliser la valeur du serveur",
-      compactionStyleCheckpoint: "Réinitialiser la discussion",
-      compactionStyleRollingDefault:
-        "Supprimer les anciens tours (~25 % d’espace supplémentaire)",
-      compactionStyleRolling10:
-        "Supprimer les anciens tours (~10 % d’espace supplémentaire)",
-      compactionStyleRolling5:
-        "Supprimer les anciens tours (~5 % d’espace supplémentaire)",
-      compactionStyleRollingNone:
-        "Supprimer les anciens tours (sans réduction supplémentaire)",
+        "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
       autoCompactKeywords:
-        "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge compaction rolling checkpoint headroom",
+        "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
+      visibility: {
+        collapsed: "Replié",
+        auto: "Déplier pendant l’exécution",
+        expanded: "Toujours déplié",
+      },
+      visibilityKeywords:
+        "replier replié déplier déplié ouvert fermé réflexion raisonnement appels d'outils activité des outils regrouper streaming",
       thinking: {
-        collapseByDefault: "Replier la réflexion par défaut",
-        collapseByDefaultDescription:
-          "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",
+        visibility: "Réflexion",
+        visibilityDescription:
+          "Comment la réflexion s’ouvre. Vous pouvez toujours déplier ou replier un bloc vous-même.",
       },
       currentDate: {
         label: "Indiquer la date du jour au modèle",
@@ -1648,12 +1698,14 @@ export const fr = {
         saveError: "Impossible de mettre à jour les paramètres de date actuelle",
       },
       tools: {
-        collapseByDefault: "Replier l’activité des outils par défaut",
-        collapseByDefaultDescription:
-          "Garde les entrées et sorties des outils repliées pendant leur exécution. Dépliez une ligne d’outil pour l’examiner.",
-        foldIntoThinking: "Replier les appels d'outils dans la Réflexion",
+        visibility: "Appels d’outils",
+        visibilityDescription:
+          "Comment l’activité des outils s’ouvre. Vous pouvez toujours déplier ou replier un appel vous-même.",
+        foldIntoThinking: "Regrouper les appels d’outils dans la Réflexion",
         foldIntoThinkingDescription:
-          "Masque les appels d'outils d'un tour jusqu'à l'ouverture de son bloc de Réflexion.",
+          "Affiche les appels d’outils d’un tour dans son bloc de Réflexion plutôt que sur leurs propres lignes.",
+        foldIntoThinkingBlocked:
+          "Indisponible tant que les appels d’outils sont sur « Toujours déplié », qui les garde sur leurs propres lignes.",
       },
       webSearch: {
         title: "Recherche web",
@@ -2805,11 +2857,11 @@ export const fr = {
     tooLarge: "Plus volumineux que la VRAM, sera déchargé sur le CPU. Une quantification plus petite est plus rapide",
   },
   skills: {
-    title: "Compétences des agents",
+    title: "Compétences",
     description: "Les compétences sont détectées dans vos dossiers d'agents standard. Activez-les ici, puis tapez @ dans le chat pour en mentionner une.",
     precedence: "~/.agents/skills est prioritaire par rapport à ~/.claude/skills.",
     refresh: "Actualiser",
-    empty: "Aucune compétence d'agent trouvée. Ajoutez un dossier SKILL.md dans ~/.agents/skills ou ~/.claude/skills, puis actualisez.",
+    empty: "Aucune compétence trouvée. Ajoutez un dossier SKILL.md dans ~/.agents/skills ou ~/.claude/skills, puis actualisez.",
     sourceAgents: "Agents",
     sourceClaude: "Claude",
     sourceBundled: "Intégrée",
@@ -2819,7 +2871,7 @@ export const fr = {
     shadowedBy: "Une autre compétence ({source}) portant ce nom est prioritaire.",
     enable: "Activer {name}",
     disable: "Désactiver {name}",
-    updateError: "Impossible de mettre à jour la compétence d'agent",
-    mentions: "Compétences des agents",
+    updateError: "Impossible de mettre à jour la compétence",
+    mentions: "Compétences",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

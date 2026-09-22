@@ -4,6 +4,7 @@
 """Settings policy: the account, shared and owner routers decide who may reach each
 /api/settings path."""
 
+import asyncio
 import functools
 import hashlib
 import re
@@ -61,6 +62,7 @@ from utils.upload_limits import (
     upload_limit_bytes,
     upload_limit_label,
 )
+from utils.cache_inventory import CACHE_KEYS, cache_inventory, purge_caches
 from utils.xet_notice_settings import reserve_xet_notice
 from utils.chat_preferences_settings import (
     get_show_model_disclaimer,
@@ -137,6 +139,12 @@ from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
+)
+from utils.managed_provider_url_settings import (
+    DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED,
+    get_managed_private_provider_urls_allowed,
+    private_urls_locked_by_environment,
+    set_managed_private_provider_urls_allowed,
 )
 from utils.current_date_prompt_settings import (
     DEFAULT_CURRENT_DATE_PROMPT_ENABLED,
@@ -726,6 +734,47 @@ class HuggingFaceCacheResponse(BaseModel):
     environment_variable: Optional[str] = None
 
 
+class CacheEntryResponse(BaseModel):
+    key: str
+    group: str
+    # Clearing this costs a re-download, so the UI never folds it into a
+    # "clear everything" action.
+    opt_in: bool
+    paths: list[str]
+    size_bytes: int
+    entry_count: int
+    present: bool
+    purgeable: bool
+    blocked_reason: Optional[str] = None
+
+
+class CacheInventoryResponse(BaseModel):
+    caches: list[CacheEntryResponse]
+    total_bytes: int
+    reclaimable_bytes: int
+    free_bytes: Optional[int] = None
+    total_disk_bytes: Optional[int] = None
+
+
+class CachePurgePayload(BaseModel):
+    # Cache identifiers, never paths: the backend owns the mapping from a key to
+    # a directory, so a caller cannot name one of its own.
+    keys: list[str] = Field(min_length = 1, max_length = len(CACHE_KEYS))
+
+
+class CachePurgeResultResponse(BaseModel):
+    key: str
+    freed_bytes: int
+    removed_entries: int
+    errors: list[str]
+
+
+class CachePurgeResponse(BaseModel):
+    results: list[CachePurgeResultResponse]
+    freed_bytes: int
+    inventory: CacheInventoryResponse
+
+
 class LlamaCppPathPayload(BaseModel):
     path: Optional[str] = Field(default = None, max_length = MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH)
 
@@ -1128,6 +1177,49 @@ def update_hugging_face_cache(
     return _hugging_face_cache_response()
 
 
+@_owner_settings_router.get("/caches", response_model = CacheInventoryResponse)
+async def get_caches(
+    refresh: bool = False,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> CacheInventoryResponse:
+    """Size every cache this install writes to, plus the free space around them.
+
+    ``refresh`` re-walks every cache instead of reusing a size measured in the
+    last minute, for the Recheck the UI offers after something big was written.
+    It is the interactive button, and a walk of a large hub or triton cache is
+    seconds of stat calls in the shared executor with no memo in front of it, so
+    only a UI session may ask for one. A plain read stays open to an API key.
+    """
+    if refresh:
+        require_ui_session(via_api_key)
+    # A cold walk of a large hub or triton cache is seconds of stat calls, so it
+    # stays off the event loop.
+    inventory = await asyncio.to_thread(cache_inventory, refresh = refresh)
+    return CacheInventoryResponse(**inventory)
+
+
+@_owner_settings_router.post("/caches/purge", response_model = CachePurgeResponse)
+async def purge_caches_endpoint(
+    payload: CachePurgePayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> CachePurgeResponse:
+    """Empty the named caches. Only the interactive UI may delete anything."""
+    require_ui_session(via_api_key)
+    try:
+        result = await asyncio.to_thread(purge_caches, payload.keys)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            str(exc),
+            event = "settings.purge_caches_failed",
+            log = logger,
+        ) from exc
+    return CachePurgeResponse(**result)
+
+
 @_owner_settings_router.get("/llama-cpp-path", response_model = LlamaCppPathResponse)
 def get_llama_cpp_path(current_subject: str = Depends(get_current_subject)) -> LlamaCppPathResponse:
     return _llama_cpp_path_response()
@@ -1439,6 +1531,60 @@ def update_last_local_model(
     return LastLocalModelResponse(
         **payload.model_dump(exclude = {"client_now"}), server_now = _server_now
     )
+
+
+class DiffusionAcceleratorFallbackRecord(BaseModel):
+    accelerator: str
+    fallback: Optional[str] = None
+    # Qualifying failures under the current fingerprint; `proven` means one named the BUILD.
+    strikes: int = 0
+    proven: bool = False
+    diverting: bool = False
+    # Taken under a different driver, bundle or set of cards, so it is already inert.
+    stale: bool = False
+
+
+class DiffusionAcceleratorFallbackResponse(BaseModel):
+    records: list[DiffusionAcceleratorFallbackRecord] = []
+    # False when UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK is off, where no record can divert.
+    enabled: bool = True
+    diverting: bool = False
+
+
+def _diffusion_accelerator_fallback_response() -> DiffusionAcceleratorFallbackResponse:
+    from core.inference.sd_cpp_backend import accelerator_runtime_failure_state
+    return DiffusionAcceleratorFallbackResponse(**accelerator_runtime_failure_state())
+
+
+@_owner_settings_router.get(
+    "/diffusion-accelerator-fallback", response_model = DiffusionAcceleratorFallbackResponse
+)
+def get_diffusion_accelerator_fallback(
+    current_subject: str = Depends(get_current_subject),
+) -> DiffusionAcceleratorFallbackResponse:
+    """Which native diffusion accelerators this host has been recorded as unable to run.
+
+    Upstream publishes one generic ROCm stable-diffusion.cpp build, not one per gfx arch, so a card
+    it carries no kernels for cannot start it and the host moves to Vulkan (#9278, #8814).
+    """
+    return _diffusion_accelerator_fallback_response()
+
+
+@_owner_settings_router.delete(
+    "/diffusion-accelerator-fallback", response_model = DiffusionAcceleratorFallbackResponse
+)
+def clear_diffusion_accelerator_fallback(
+    current_subject: str = Depends(get_current_subject),
+) -> DiffusionAcceleratorFallbackResponse:
+    """Forget the records, so the next load tries this host's own accelerator again.
+
+    A driver upgrade or a new card retires them through the fingerprint; this is the way back for a
+    fix it cannot see. Reinstalling does not clear them: the record lives in settings, not the tree.
+    """
+    from core.inference.sd_cpp_backend import clear_accelerator_runtime_failures
+
+    clear_accelerator_runtime_failures()
+    return _diffusion_accelerator_fallback_response()
 
 
 @_owner_settings_router.get("/vram-budget", response_model = VramBudgetResponse)
@@ -2988,6 +3134,18 @@ class PreviewSharingResponse(BaseModel):
     default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
 
 
+class ManagedProviderUrlsPayload(BaseModel):
+    allowed: StrictBool
+
+
+class ManagedProviderUrlsResponse(BaseModel):
+    allowed: bool
+    default_allowed: bool = DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED
+    # UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 holds the answer: the UI says why rather than
+    # showing a switch that silently reverts.
+    locked_by_environment: bool = False
+
+
 class CurrentDatePromptPayload(BaseModel):
     enabled: StrictBool
 
@@ -3220,6 +3378,53 @@ def update_preview_sharing(
         ) from exc
     logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
     return PreviewSharingResponse(enabled = enabled)
+
+
+def _managed_provider_urls_response() -> ManagedProviderUrlsResponse:
+    # The EFFECTIVE answer, not the stored preference: a switch reading back on while every save
+    # is refused would be the worst of the three things this could say.
+    return ManagedProviderUrlsResponse(
+        allowed = get_managed_private_provider_urls_allowed(),
+        locked_by_environment = private_urls_locked_by_environment(),
+    )
+
+
+@_shared_settings_router.get("/managed-provider-urls", response_model = ManagedProviderUrlsResponse)
+def get_managed_provider_urls(
+    current_subject: str = Depends(get_current_subject),
+) -> ManagedProviderUrlsResponse:
+    """Readable by any account: a managed one has to be able to tell a refusal the owner can lift
+    from one nobody on this installation can, and it learns the same bit by trying to save a URL."""
+    return _managed_provider_urls_response()
+
+
+@_owner_settings_router.put("/managed-provider-urls", response_model = ManagedProviderUrlsResponse)
+def update_managed_provider_urls(
+    payload: ManagedProviderUrlsPayload,
+    current_subject: str = Depends(get_current_subject),
+    # Installation policy: set at the console, not from a remote key that happens to be owned.
+    _ui_session: None = Depends(_require_ui_session),
+) -> ManagedProviderUrlsResponse:
+    """Allow or refuse private and LAN provider base URLs for the installation's managed accounts.
+
+    Off by default. The preference is stored either way, so removing
+    ``UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS`` later restores what the owner chose here rather
+    than a default.
+    """
+    try:
+        allowed = set_managed_private_provider_urls_allowed(payload.allowed)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid managed provider URL setting."),
+            event = "settings.update_managed_provider_urls_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.managed_provider_urls_updated subject=%s allowed=%s", current_subject, allowed
+    )
+    return _managed_provider_urls_response()
 
 
 @_account_settings_router.get("/current-date-prompt", response_model = CurrentDatePromptResponse)
