@@ -3,6 +3,17 @@ name: Runner pool probe
 # Does the runner label change how long a job waits? Identical no-op cells dispatched in
 # the same second from one matrix, so the label is the only variable. Re-run it after any
 # relabelling, to check the advantage did not just move with the crowd.
+#
+# This file is touched so the probe DISPATCHES on the pull request that moved 13 more
+# jobs off `ubuntu-latest`, because its only trigger is a change to itself. That is the
+# measurement the relabelling is supposed to be gated on, and taking it after the move
+# rather than before is the whole point: #10914 measured `ubuntu-latest` at a 44.9 minute
+# median against every other Ubuntu label under two minutes, and the sentence above
+# predicts that gap narrows as work migrates onto the label that was winning. 58 of this
+# repo's `runs-on` lines still said `ubuntu-latest` when the tranche was cut, so if the
+# advantage is a fixed property of the pools this should barely move, and if it is only
+# ever "wherever the crowd is not" it should shrink measurably. Read the result before
+# cutting a second tranche; a narrowed gap is a reason to stop, not to keep going.
 on:
   pull_request:
     paths:

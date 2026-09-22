@@ -213,7 +213,7 @@ jobs:
     # repetitions is a base-vs-base null in the same session, free. See
     # `in_arm_repeatability` and `confine_to_runner`.
     name: ${{ matrix.label }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Backstop only. Every blocking step below carries its own cap, and they sum
     # to 44: 12 Chromium + 10 + 10 installs + 3 boot/health + 9 film. That is
     # the point -- a step cap names the step in the log, a job cap reports the
@@ -602,7 +602,7 @@ jobs:
   verdict:
     name: Parity verdict, scored against the null
     needs: arms
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

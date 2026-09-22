@@ -96,7 +96,7 @@ permissions:
 jobs:
   build:
     name: Frontend build + bundle sanity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Two browser smokes (~50s) plus the Chromium install now sit inside this.
     # 20 was not a budget, it was the bound on the Chromium install: the step had
     # none of its own, so the job timeout was what eventually stopped it, and it
@@ -337,7 +337,7 @@ jobs:
           fi
 
           # Then ask whether the system libraries are actually missing instead of
-          # assuming they are. ubuntu-latest is a browser-testing image and ships
+          # assuming they are. ubuntu-24.04 is a browser-testing image and ships
           # nearly all of them; when it does, this skips an apt update and a
           # transaction that would install nothing. Launching the engine is the
           # honest test of that -- it is what the smokes below are about to do.

@@ -48,7 +48,7 @@ permissions:
 jobs:
   source-lint:
     name: Source lint (Python + shell + YAML + JSON + safety nets)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Real work here is well under a minute; the budget is sized for the apt step
     # below, which is bounded at 13 minutes of worst-case retries. Raised from 5,
     # where the job timeout was doing the bounding -- and doing it badly, since a
@@ -84,7 +84,7 @@ jobs:
       # Both are pure read-only checks: no server, no port, no install of Unsloth, no
       # state outside the workspace. They are launched here in the BACKGROUND and
       # collected in the last step of this job, so they overlap the ~65 s of lint below
-      # and cost no wall clock at all rather than being appended to it. ubuntu-latest has
+      # and cost no wall clock at all rather than being appended to it. ubuntu-24.04 has
       # four cores and the lint steps are single-threaded, so the capacity is there.
       #
       # Each lane gets its own venv. That is the only isolation this needs, and it is

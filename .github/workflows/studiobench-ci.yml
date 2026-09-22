@@ -85,7 +85,7 @@ permissions:
 jobs:
   selftests:
     name: Selftests, lint and the single-file build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -123,7 +123,7 @@ jobs:
 
   liveness:
     name: Real-path session, every action ran
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       STUDIO_PORT: '18902'
@@ -190,7 +190,7 @@ jobs:
           fi
 
           # Ask whether the system libraries are actually missing rather than assuming
-          # it. ubuntu-latest is a browser-testing image and usually ships them, in
+          # it. ubuntu-24.04 is a browser-testing image and usually ships them, in
           # which case install-deps is a full apt transaction to install nothing.
           # Launching the engine is the honest test, and it is what the run does next.
           probe() {

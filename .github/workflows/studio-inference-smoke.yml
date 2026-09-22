@@ -145,7 +145,7 @@ jobs:
   # independence the three jobs had.
   inference-smoke:
     name: GGUF inference smoke (API, tools, vision)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Was 25 + 25 + 30 across three runners. Sequentially they share one
     # install, so the sum is well under 60, but a cold model cache on the
     # vision phase is the slow case. Every step that can block also carries

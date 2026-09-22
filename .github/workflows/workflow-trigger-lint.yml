@@ -39,7 +39,7 @@ permissions:
 jobs:
   workflow-trigger-lint:
     name: workflow-trigger lint (pull_request_target / cache-poisoning)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Raised from 5 when this job absorbed 12 more guard modules. Serial they are
     # 209s on a 192-core box and 119s at -n 4, which is what a GitHub runner has;
     # 5 minutes left no headroom for a slower runner and would have failed on
@@ -99,7 +99,7 @@ jobs:
       # one each. `-n 4` then uses the cores the runner already has: 304 tests, 128s
       # serial against 68s at -n 4, identical results either way.
       #
-      # Pinned to 4 rather than `auto` deliberately. ubuntu-latest is a 4-core runner, so
+      # Pinned to 4 rather than `auto` deliberately. ubuntu-24.04 is a 4-core runner, so
       # on CI the two are the same, but `auto` scales to the host and each xdist worker
       # re-imports that expensive conftest. Measured on a 192-core machine: `auto` spawned
       # 192 workers and took 327s, worse than running serially. A fixed width is the same
@@ -202,7 +202,7 @@ jobs:
   # dependency and it keeps the job to a couple of minutes.
   security-regression-suites:
     name: security suites (torch-dependent)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Harden runner (egress block)
@@ -252,7 +252,7 @@ jobs:
       # files, and pyproject.toml sets testpaths = ["tests/security"], so a bare
       # pytest here would silently widen into the suites the light runner already
       # covers and the failure of THIS job would stop meaning what it says.
-      # `ubuntu-latest` has no accelerator, and every one of these files imports
+      # `ubuntu-24.04` has no accelerator, and every one of these files imports
       # `unsloth.models`, which reaches `get_device_type()`. `UNSLOTH_ALLOW_CPU=1` is
       # this repo's documented flag for importing on a driverless host, and it is what
       # the rest of the CPU CI already uses. `UNSLOTH_ZOO_DISABLE_GPU_INIT` is not a

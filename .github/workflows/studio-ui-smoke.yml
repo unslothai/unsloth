@@ -109,7 +109,7 @@ permissions:
 jobs:
   ui-smoke:
     name: Chat UI Tests (${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Left at 30 even though each shard carries about half of the work.
     #
     # It was briefly cut to 20 on the reasoning that a quarter of the job needs a quarter
@@ -126,9 +126,18 @@ jobs:
       # one after another, and at 22.1 minutes on average it was the largest job in the
       # repo. The setup every shard has to repeat is small -- checkout, Linux deps,
       # Install Unsloth, Playwright browsers, about 2.6 minutes -- so splitting it was
-      # nearly all profit in wall-clock. Four shards went too far: the queue wait for an
-      # ubuntu-latest runner dwarfs a six-minute shard, so `banner` is folded into `chat`
-      # (both install the three engines) and `picker` into `extra` (both chromium only).
+      # nearly all profit in wall-clock. Four shards went too far: the queue wait dwarfed a
+      # six-minute shard, so `banner` is folded into `chat` (both install the three
+      # engines) and `picker` into `extra` (both chromium only).
+      #
+      # That queue wait was measured while this job ran on `ubuntu-latest`, whose median
+      # was 44.9 minutes. It now runs on `ubuntu-24.04`, where the same measurement put
+      # every other Ubuntu label under two minutes, so the argument against a third and
+      # fourth shard is weaker than when it was written. The fold is left in place because
+      # it does not rest on the queue alone: each extra shard also repeats the 2.6 minute
+      # setup and, more importantly, the shard boundaries are the Unsloth instances (see
+      # below), so splitting further would mean booting the same instance twice. Revisit
+      # with the relabelled numbers rather than with these.
       #
       # The boundaries are the Unsloth instances, not an even division of scripts: a
       # Unsloth boot, its health wait, its bootstrap password and the scripts that drive
@@ -382,7 +391,7 @@ jobs:
           fi
 
           # Then ask whether the system libraries are actually missing, instead of
-          # assuming they are. ubuntu-latest is a browser-testing image and ships
+          # assuming they are. ubuntu-24.04 is a browser-testing image and ships
           # nearly all of them; when it does, `install-deps` is a full apt update
           # and transaction to install nothing. Launching each engine is the honest
           # test of that -- it is exactly what the suites are about to do.
@@ -954,7 +963,7 @@ jobs:
 
   ui-indicator:
     name: Loaded-models indicator (cross-browser)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Its own job, not a step in ui-smoke, because it was 853s of that job's 30
     # minute limit -- three browser engines at ~4.7 minutes each -- and it pushed
     # the five Playwright steps after it past the limit. Those steps did not fail;
@@ -1129,7 +1138,7 @@ jobs:
           fi
 
           # Then ask whether the system libraries are actually missing, instead of
-          # assuming they are. ubuntu-latest is a browser-testing image and ships
+          # assuming they are. ubuntu-24.04 is a browser-testing image and ships
           # nearly all of them; when it does, `install-deps` is a full apt update
           # and transaction to install nothing. Launching each engine is the honest
           # test of that -- it is exactly what the suites are about to do.

@@ -94,7 +94,7 @@ permissions:
 jobs:
   api-smoke:
     name: Unsloth API & Auth Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Sized for the apt step's bounded worst case (13m) plus the smoke itself.
     # Raised from 12, where the job budget was smaller than the retries the step
     # authorises, so the job timeout would have fired first and reported nothing.
