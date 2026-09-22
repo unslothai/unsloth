@@ -3,7 +3,7 @@
 
 import { isExternalModelId } from "../../src/features/chat/external-providers.ts";
 import * as identity from "../../src/features/model-picker/model-config/model-identity.ts";
-import * as links from "../../src/features/model-picker/sharing/links.ts";
+import * as links from "./sharing-links.ts";
 import type * as Target from "../../src/features/model-picker/sharing/target.ts";
 import * as localPath from "../../src/lib/local-path.ts";
 import { loadWithStubs } from "./module-stubs.ts";

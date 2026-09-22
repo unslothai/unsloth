@@ -17,7 +17,7 @@ const { createRunConfigInbox } = await import(
   "../src/features/model-picker/sharing/inbox.ts"
 );
 const { parseRunConfigLink, createRunConfigLink } = await import(
-  "../src/features/model-picker/sharing/links.ts"
+  "./helpers/sharing-links.ts"
 );
 
 const hub = "unsloth://open_from_hf?model=owner/model";

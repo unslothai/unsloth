@@ -4,4 +4,4 @@
 export { DeepLinkHandler } from "./deep-link-handler";
 
 export { createDeepLinkIntentGate } from "./deep-link-intent";
-export { parseUnslothDeepLink } from "./parse-deep-link";
+export { isValidRepoId, parseUnslothDeepLink } from "./parse-deep-link";

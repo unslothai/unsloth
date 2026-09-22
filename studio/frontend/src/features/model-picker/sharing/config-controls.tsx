@@ -30,6 +30,7 @@ export function SharedRunConfigControls({
   hydrated,
   canImport,
   disabled,
+  className,
   onImport,
 }: {
   target: ModelPickTarget;
@@ -38,6 +39,7 @@ export function SharedRunConfigControls({
   hydrated: boolean;
   canImport: boolean;
   disabled: boolean;
+  className: string;
   onImport: (changes: Partial<PerModelConfig>) => void;
 }) {
   const [sharing, setSharing] = useState(false);
@@ -78,8 +80,8 @@ export function SharedRunConfigControls({
       <Button
         type="button"
         size="sm"
-        variant="ghost"
-        className="h-8"
+        variant="outline"
+        className={className}
         disabled={!ready || disabled}
         onClick={() => setSharing(true)}
       >

@@ -14,7 +14,7 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 registerBundlerResolver();
 installLocalStorageFake();
-const links = await import("../src/features/model-picker/sharing/links.ts");
+const links = await import("./helpers/sharing-links.ts");
 const { createRunConfigInbox } = await import(
   "../src/features/model-picker/sharing/inbox.ts"
 );
@@ -142,6 +142,77 @@ test("sign-out discards both pending and recoverable links before another sessio
   doc.receiver.receiveSharedRunConfigUrls([run]);
   assert.equal(doc.inbox.getSnapshot()?.value.config.nParallel, 3);
   doc.dispose();
+});
+
+test("pending links survive repeated login reloads before signing in", (t) => {
+  let now = 1_000;
+  t.mock.method(Date, "now", () => now);
+  for (const native of [true, false]) {
+    const app = harness({ url: native ? "http://localhost/chat" : browserRun });
+    let doc = app.loadDocument();
+    if (native) doc.receiver.receiveSharedRunConfigUrls([run]);
+    else doc.receiver.receiveStartupRunConfigUrl();
+    assert.equal(app.recovery.size, 1);
+    const saved = JSON.parse([...app.recovery.values()][0]);
+    for (let reload = 0; reload < 2; reload += 1) {
+      now += 60_000;
+      doc.dispose();
+      window.location.href = "http://localhost/login";
+      doc = app.loadDocument();
+      doc.receiver.receiveStartupRunConfigUrl();
+      assert.equal(doc.inbox.getSnapshot()?.value.config.nParallel, 3);
+      assert.equal(doc.inbox.getSnapshot()?.replaceHistory, !native);
+      assert.equal(app.recovery.size, 1);
+      assert.equal(
+        JSON.parse([...app.recovery.values()][0]).expiresAt,
+        saved.expiresAt,
+      );
+    }
+    app.recovery.clear();
+    app.signIn();
+    doc.dispose();
+    const signedIn = app.loadDocument();
+    signedIn.receiver.receiveStartupRunConfigUrl();
+    assert.equal(signedIn.inbox.getSnapshot()?.value.config.nParallel, 3);
+    assert.equal(app.recovery.size, 0);
+    signedIn.dispose();
+    assert.deepEqual(app.errors, []);
+  }
+});
+
+test("clearing absent credentials during an auth redirect preserves a pre-login link", () => {
+  const app = harness({ url: browserRun });
+  const before = app.loadDocument();
+  before.receiver.receiveStartupRunConfigUrl();
+  app.signOut();
+  before.dispose();
+  window.location.href = "http://localhost/login";
+  const after = app.loadDocument();
+  after.receiver.receiveStartupRunConfigUrl();
+  assert.equal(after.inbox.getSnapshot()?.value.config.nParallel, 3);
+  after.dispose();
+});
+
+test("pre-login recovery cannot outlive its expiry or cross a session boundary", () => {
+  for (const change of ["expired", "session"] as const) {
+    const app = harness({ url: browserRun });
+    const before = app.loadDocument();
+    before.receiver.receiveStartupRunConfigUrl();
+    before.dispose();
+    assert.equal(app.recovery.size, 1);
+    for (const [key, raw] of app.recovery) {
+      const saved = JSON.parse(raw);
+      if (change === "expired") saved.expiresAt = 0;
+      else saved.session = "other-account";
+      app.recovery.set(key, JSON.stringify(saved));
+    }
+    window.location.href = "http://localhost/login";
+    const after = app.loadDocument();
+    after.receiver.receiveStartupRunConfigUrl();
+    assert.equal(after.inbox.getSnapshot(), null);
+    assert.equal(app.recovery.size, 0);
+    after.dispose();
+  }
 });
 
 for (const change of ["session", "expired", "invalid", "newer"] as const) {

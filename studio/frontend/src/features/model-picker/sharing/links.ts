@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isValidRepoId as isShareableModelId } from "@/features/deep-links";
 import type { PerModelConfig } from "../model-config/per-model-config";
 import {
   SHARED_CONFIG_FIELDS,
@@ -22,7 +23,6 @@ export type RunConfigLinkResult =
   | { kind: "invalid"; error: string }
   | { kind: "valid"; value: SharedRunConfig };
 
-const repoSegment = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 const variantSegment = /^[A-Za-z0-9_][A-Za-z0-9._ -]*$/;
 const windowsDevice = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9]) *(?:\.|$)/i;
 const malformedEscape = /%(?![0-9a-f]{2})/i;
@@ -41,21 +41,7 @@ function oversizedRunLink(raw: string): RunConfigLinkResult {
     : { kind: "unrelated" };
 }
 
-export function isShareableModelId(model: string): boolean {
-  const segments = model.split("/");
-  return (
-    segments.length === 2 &&
-    !model.endsWith(".git") &&
-    segments.every(
-      (segment) =>
-        segment.length <= 96 &&
-        segment === segment.trim() &&
-        repoSegment.test(segment) &&
-        !segment.includes("..") &&
-        !segment.includes("--"),
-    )
-  );
-}
+export { isShareableModelId };
 
 function validVariant(value: string): boolean {
   return (

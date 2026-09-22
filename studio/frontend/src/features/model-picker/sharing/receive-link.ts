@@ -31,6 +31,7 @@ const nativeScheme = /^unsloth:/i;
 let startupUrl = typeof window === "undefined" ? "" : window.location.href;
 const recoveryKey = "unsloth.run-config-login.v1";
 let awaitingLogin = false;
+let recoveryExpiresAt = 0;
 
 function clearRecovery() {
   try {
@@ -40,29 +41,42 @@ function clearRecovery() {
   }
 }
 
+function saveRecovery() {
+  const pending = runConfigInbox.getSnapshot();
+  if (!pending || pending.draftKey) {
+    return;
+  }
+  recoveryExpiresAt ||= Date.now() + 10 * 60_000;
+  try {
+    sessionStorage.setItem(
+      recoveryKey,
+      JSON.stringify({
+        url: createRunConfigLink(pending.value),
+        replaceHistory: pending.replaceHistory,
+        session: localStorage.getItem(AUTH_SESSION_MARK_KEY),
+        expiresAt: recoveryExpiresAt,
+      }),
+    );
+  } catch {
+    toast.error("Reopen the run settings link after signing in.");
+  }
+}
+
 export function subscribeRunConfigSession(onChange: () => void): () => void {
   const onCleared = () => {
     startupUrl = "";
     acceptNativeIntent.clear();
-    clearPendingImport();
+    if (awaitingLogin) {
+      saveRecovery();
+    } else {
+      clearPendingImport();
+    }
     onChange();
   };
   const onStored = () => {
-    const pending = runConfigInbox.getSnapshot();
-    if (awaitingLogin && pending && !pending.draftKey) {
-      try {
-        sessionStorage.setItem(
-          recoveryKey,
-          JSON.stringify({
-            url: createRunConfigLink(pending.value),
-            replaceHistory: pending.replaceHistory,
-            session: localStorage.getItem(AUTH_SESSION_MARK_KEY),
-            expiresAt: Date.now() + 10 * 60_000,
-          }),
-        );
-      } catch {
-        toast.error("Reopen the run settings link after signing in.");
-      }
+    if (awaitingLogin) {
+      saveRecovery();
+      awaitingLogin = false;
     }
     onChange();
   };
@@ -70,6 +84,7 @@ export function subscribeRunConfigSession(onChange: () => void): () => void {
     const pending = runConfigInbox.getSnapshot();
     if (!pending || pending.draftKey) {
       awaitingLogin = false;
+      recoveryExpiresAt = 0;
       clearRecovery();
     }
   });
@@ -84,6 +99,7 @@ export function subscribeRunConfigSession(onChange: () => void): () => void {
 
 function clearPendingImport() {
   awaitingLogin = false;
+  recoveryExpiresAt = 0;
   clearRecovery();
   const pending = runConfigInbox.getSnapshot();
   if (pending) {
@@ -110,6 +126,7 @@ export function cancelRunConfigImportForEdit(draftKey: string): void {
 function receiveParsedLink(
   parsed: RunConfigLinkResult,
   replaceHistory = false,
+  expiresAt = 0,
 ): boolean {
   if (parsed.kind === "unrelated") {
     return false;
@@ -128,6 +145,10 @@ function receiveParsedLink(
     replaceHistory,
   });
   awaitingLogin = !hasAuthToken();
+  if (awaitingLogin) {
+    recoveryExpiresAt = expiresAt;
+    saveRecovery();
+  }
   return true;
 }
 
@@ -172,12 +193,12 @@ export function receiveStartupRunConfigUrl(): void {
     typeof recovery?.url === "string" &&
     typeof recovery.expiresAt === "number" &&
     recovery.expiresAt > Date.now() &&
-    recovery.session === localStorage.getItem(AUTH_SESSION_MARK_KEY) &&
-    hasAuthToken()
+    recovery.session === localStorage.getItem(AUTH_SESSION_MARK_KEY)
   ) {
     receiveParsedLink(
       parseRunConfigLink(recovery.url),
       recovery.replaceHistory === true,
+      recovery.expiresAt,
     );
   }
 }

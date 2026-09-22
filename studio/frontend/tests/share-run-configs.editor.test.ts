@@ -25,7 +25,7 @@ const fields = await import("../src/features/model-picker/sharing/fields.ts");
 const sharedArgs = await import(
   "../src/features/model-picker/sharing/extra-args.ts"
 );
-const links = await import("../src/features/model-picker/sharing/links.ts");
+const links = await import("./helpers/sharing-links.ts");
 const { DEFAULT_PER_MODEL_CONFIG } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
@@ -242,6 +242,7 @@ test("Share opens and closes its dialog; dismissing a pending import gives feedb
     },
   );
   const props = {
+    className: "h-9 rounded-full",
     target,
     config: DEFAULT_PER_MODEL_CONFIG,
     ready: true,

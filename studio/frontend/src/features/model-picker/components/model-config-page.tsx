@@ -3400,6 +3400,7 @@ export function ModelConfigPage({
             Reset
           </Button>
           <SharedRunConfigControls
+            className={FOOTER_BUTTON_CLASS}
             target={target}
             config={config}
             ready={!extraArgsHydrating}

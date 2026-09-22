@@ -12,7 +12,7 @@ registerBundlerResolver();
 installLocalStorageFake();
 
 const { createRunConfigLink, parseRunConfigLink, MAX_RUN_CONFIG_URL_LENGTH } =
-  await import("../src/features/model-picker/sharing/links.ts");
+  await import("./helpers/sharing-links.ts");
 const { SHARED_CONFIG_KEYS } = await import(
   "../src/features/model-picker/sharing/fields.ts"
 );

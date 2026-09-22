@@ -22,9 +22,7 @@ const fields = await import("../src/features/model-picker/sharing/fields.ts");
 const inboxModule = await import(
   "../src/features/model-picker/sharing/inbox.ts"
 );
-const { parseRunConfigLink } = await import(
-  "../src/features/model-picker/sharing/links.ts"
-);
+const { parseRunConfigLink } = await import("./helpers/sharing-links.ts");
 const { resolveLoadMaxSeqLength } = await import(
   "../src/features/chat/presets/preset-policy.ts"
 );
