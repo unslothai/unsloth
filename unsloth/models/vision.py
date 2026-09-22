@@ -60,9 +60,10 @@ def _multimodal_auto_classes():
     """
     import transformers
 
-    # AutoModelForImageTextToText is only bound above on transformers 5, so it
-    # is looked up rather than referenced: naming it directly would raise
-    # NameError on 4.x, where the other branch ran.
+    # Looked up rather than referenced because the import above binds whichever
+    # name exists, and the module-level alias is the only one guaranteed bound:
+    # 4.51.3 has both, 5.5.0 dropped AutoModelForVision2Seq, so which of the two
+    # is a live class depends on the installed version.
     classes = [AutoModelForVision2Seq]
     # AutoModelForSpeechSeq2Seq is deliberately absent: Whisper lives there, it
     # already reaches AutoProcessor through is_whisper, and adding it would move
