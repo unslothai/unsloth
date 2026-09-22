@@ -33,7 +33,7 @@ _REPAIR_TIMEOUT_S = 900
 _INSTALLED, _NOTHING_TO_DO = 0, 1
 
 # Unattended, so secrets and index redirects stay out, as in mlx_repair. The Windows names are what
-# Python, git and uv need to start at all there.
+# Python, git and uv need to start at all there; UV_OFFLINE is the operator's no-network switch.
 _ENV_ALLOWLIST = frozenset(
     {
         "PATH",
@@ -60,6 +60,7 @@ _ENV_ALLOWLIST = frozenset(
         "CURL_CA_BUNDLE",
         "UV_SYSTEM_CERTS",
         "UV_NATIVE_TLS",
+        "UV_OFFLINE",
         "SYSTEMROOT",
         "WINDIR",
         "COMSPEC",

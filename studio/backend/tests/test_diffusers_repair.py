@@ -166,9 +166,11 @@ def test_secrets_and_index_redirects_stay_out_of_the_installer_env(monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "secret")
     monkeypatch.setenv("UV_INDEX_URL", "https://evil.example/simple")
     monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", "1")
+    monkeypatch.setenv("UV_OFFLINE", "1")
     env = dr._repair_env()
     assert "HF_TOKEN" not in env and "UV_INDEX_URL" not in env
     assert env["UNSLOTH_DIFFUSERS_MAIN"] == "1"
+    assert env["UV_OFFLINE"] == "1", "an offline install must not reach GitHub from the repair"
 
 
 def test_the_load_gate_waits_for_a_running_repair(monkeypatch):

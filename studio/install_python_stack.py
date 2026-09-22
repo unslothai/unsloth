@@ -10644,23 +10644,30 @@ def _diffusers_main_needs_dependency_pass() -> bool:
     return last != "failed"
 
 
+_REPAIR_LOCK_POLL_S = 5
+
+
 def _repair_diffusers_main() -> int:
     """11c on its own, for the backend's startup self-heal: 0 installed, 1 nothing to do, 2 failed.
 
     An update from a release that predates 11c runs that release's installer, which never installs
     the build; the backend that starts afterwards is the first new code such a host runs.
     """
+    import time
+
     global USE_UV, _STEP, _TOTAL
-    if not _diffusers_main_requested() or not _diffusers_main_needs_dependency_pass():
-        return 1
-    with install_manifest.pass_lock() as uncontended:
-        if not uncontended:
-            # An update is running, and its own pass installs the build.
+    while True:
+        if not _diffusers_main_requested() or not _diffusers_main_needs_dependency_pass():
             return 1
-        USE_UV = _bootstrap_uv()
-        _STEP, _TOTAL = 0, 1
-        _diffusers_main_step()
-    return 0 if _diffusers_main_resident() else 2
+        with install_manifest.pass_lock() as uncontended:
+            if uncontended:
+                USE_UV = _bootstrap_uv()
+                _STEP, _TOTAL = 0, 1
+                _diffusers_main_step()
+                return 0 if _diffusers_main_resident() else 2
+        # A sibling backend's repair or an update holds the pass and may be rewriting diffusers. Waiting,
+        # not returning, keeps the backend that started this refusing diffusers loads until it is done.
+        time.sleep(_REPAIR_LOCK_POLL_S)
 
 
 def _diffusers_main_step() -> None:

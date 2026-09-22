@@ -795,20 +795,23 @@ def _repair_module(
     *,
     needed,
     resident_after,
-    uncontended = True,
+    uncontended = (True,),
 ):
+    """``needed`` and ``uncontended`` are read in turn, one per poll of the pass lock."""
     import contextlib
 
     module = _probe_module("install_python_stack_repair_probe")
     monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
-    monkeypatch.setattr(module, "_diffusers_main_needs_dependency_pass", lambda: needed)
+    needed, uncontended = iter(needed), iter(uncontended)
+    monkeypatch.setattr(module, "_diffusers_main_needs_dependency_pass", lambda: next(needed))
     monkeypatch.setattr(module, "_bootstrap_uv", lambda: True)
     monkeypatch.setattr(module, "_diffusers_main_resident", lambda *a, **k: resident_after)
     monkeypatch.setattr(
         module.install_manifest,
         "pass_lock",
-        lambda *a, **k: contextlib.nullcontext(uncontended),
+        lambda *a, **k: contextlib.nullcontext(next(uncontended)),
     )
+    monkeypatch.setattr(module, "_REPAIR_LOCK_POLL_S", 0)
     ran = []
     monkeypatch.setattr(module, "_diffusers_main_step", lambda: ran.append(True))
     return module, ran
@@ -816,15 +819,27 @@ def _repair_module(
 
 def test_the_startup_repair_runs_only_the_main_step(monkeypatch):
     """The backend's self-heal: 0 once the build is in, 2 when the step could not install it."""
-    module, ran = _repair_module(monkeypatch, needed = True, resident_after = True)
+    module, ran = _repair_module(monkeypatch, needed = [True], resident_after = True)
     assert module._repair_diffusers_main() == 0 and ran == [True]
-    module, ran = _repair_module(monkeypatch, needed = True, resident_after = False)
+    module, ran = _repair_module(monkeypatch, needed = [True], resident_after = False)
     assert module._repair_diffusers_main() == 2 and ran == [True]
 
 
-def test_the_startup_repair_leaves_a_healthy_or_busy_install_alone(monkeypatch):
-    module, ran = _repair_module(monkeypatch, needed = False, resident_after = True)
+def test_the_startup_repair_leaves_a_healthy_install_alone(monkeypatch):
+    module, ran = _repair_module(monkeypatch, needed = [False], resident_after = True)
     assert module._repair_diffusers_main() == 1 and ran == []
-    # An update holds the pass lock and installs the build itself.
-    module, ran = _repair_module(monkeypatch, needed = True, resident_after = False, uncontended = False)
+
+
+def test_the_startup_repair_waits_out_a_peer_holding_the_pass(monkeypatch):
+    """Returning at once would let the backend that started it import diffusers while a sibling
+    backend's repair, or an update, is still replacing it."""
+    # The peer installed the build: nothing left to do once it lets go.
+    module, ran = _repair_module(
+        monkeypatch, needed = [True, True, False], resident_after = True, uncontended = [False, False]
+    )
     assert module._repair_diffusers_main() == 1 and ran == []
+    # The peer's pass ended without the build: install it now.
+    module, ran = _repair_module(
+        monkeypatch, needed = [True, True], resident_after = True, uncontended = [False, True]
+    )
+    assert module._repair_diffusers_main() == 0 and ran == [True]
