@@ -26,7 +26,7 @@ export function KeyRevealCard({
   const [copied, setCopied] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Plain-HTTP Studio has no clipboard API, so leave the token selected for Ctrl+C.
+  // Preselected so Ctrl+C works even where the copy button cannot.
   useEffect(() => {
     selectToken(inputRef.current);
   }, []);
