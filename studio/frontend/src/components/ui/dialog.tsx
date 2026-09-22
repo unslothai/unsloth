@@ -3,6 +3,8 @@
 
 "use client";
 
+import { AppPortalGate } from "@/components/app-readiness";
+
 import { Dialog as DialogPrimitive } from "radix-ui";
 import type * as React from "react";
 import { createContext, useContext } from "react";
@@ -33,7 +35,11 @@ function DialogTrigger({
 function DialogPortal({
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Portal>) {
-  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />;
+  return (
+    <AppPortalGate>
+      <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />
+    </AppPortalGate>
+  );
 }
 
 function DialogClose({
@@ -91,7 +97,7 @@ function DialogContent({
           className={cn(
             // max-h + scroll keeps tall dialogs reachable on short viewports; a call site
             // managing its own height overrides both (twMerge drops the base classes).
-            "bg-background data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 ring-foreground/5 grid max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] max-w-[calc(100%-2rem)] gap-6 overflow-y-auto rounded-4xl px-7 pt-8 pb-7 text-sm ring-1 duration-100 sm:max-w-md top-1/2 left-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2",
+            "bg-background data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] grid max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] max-w-[calc(100%-2rem)] gap-6 overflow-y-auto rounded-4xl px-7 pt-8 pb-7 text-sm ring-1 duration-100 sm:max-w-md top-1/2 left-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2",
             // Viewport-fixed dialogs center below the desktop titlebar, which paints over them at
             // z-70, and fill the screen at phone width instead of floating on a sliver of backdrop.
             // Both are viewport-sized, so neither applies to a dialog portaled into a container.

@@ -40,12 +40,12 @@ from typing import Any, Mapping, Sequence
 
 from ..scoring.schema import Measure
 
-#: The declared doses. Four points spanning three orders of magnitude, because a two-point
-#: "line" cannot be distinguished from a step and a three-point one cannot show curvature.
+#: The declared doses. Four points spanning three orders of magnitude, because a two-point "line"
+#: cannot be distinguished from a step and a three-point one cannot show curvature.
 DOSES: tuple[int, ...] = (4, 40, 400, 4000)
 
 #: A fit this far from the through-origin model is called nonlinear rather than reported as a
-#: slope. Loose, because the question is "is this O(children)", not "what is the exact constant".
+#: slope. Loose, because the question is "is this O(children)", not the exact constant.
 MIN_R2_FOR_LINE = 0.90
 
 #: An intercept larger than this fraction of the largest-dose cost means most of the cost is not
@@ -128,8 +128,8 @@ def _r2(xs: Sequence[float], ys: Sequence[float], predict) -> float | None:
     ss_tot = sum((y - mean) ** 2 for y in ys)
     ss_res = sum((y - predict(x)) ** 2 for x, y in zip(xs, ys))
     if ss_tot <= 0:
-        # Every reading identical. R2 is undefined, and reporting 1.0 (a perfect fit) for a flat
-        # line is exactly the wrong way round: this is the case with the least information.
+        # Every reading identical. R2 is undefined, and reporting 1.0 for a flat line is exactly the wrong
+        # way round: this is the case with the least information.
         return None
     return 1.0 - (ss_res / ss_tot)
 
@@ -213,10 +213,10 @@ def fit_dose_response(
 
     largest_cost = max(ys)
     floor = detection_floor_ms
-    # Detectability is judged on the FREE slope, not the through-origin one. A perfectly flat
-    # series still has a large through-origin slope, because forcing the line through zero makes
-    # the constant offset look like a per-child cost; judging detectability on that number turns
-    # every null result into a positive identification.
+    # Detectability is judged on the FREE slope, not the through-origin one: a perfectly flat series
+    # still has a large through-origin slope, because forcing the line through zero makes the
+    # constant offset look like a per-child cost, which turns every null result into a positive
+    # identification.
     detectable = (
         slope_free is not None
         and floor is not None
@@ -246,10 +246,10 @@ def fit_dose_response(
         and largest_cost > 0
         and abs(intercept_free) / largest_cost > MAX_INTERCEPT_FRACTION
     ):
-        # Checked BEFORE the through-origin R2, because a straight line with a big offset fits a
-        # free line perfectly and a through-origin line badly. Reporting that as NONLINEAR would
-        # be exactly backwards: the data is as linear as data gets, it just does not pass through
-        # zero, and the offset is the finding.
+        # Checked BEFORE the through-origin R2, because a straight line with a big offset fits a free line
+        # perfectly and a through-origin line badly. Reporting that as NONLINEAR would be backwards: the
+        # data is as linear as data gets, it just does not pass through zero, and the offset is the
+        # finding.
         verdict = "MOSTLY FIXED COST"
         note = (
             f"the free fit puts {abs(intercept_free) / largest_cost:.0%} of the largest-dose cost "

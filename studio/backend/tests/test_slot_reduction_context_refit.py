@@ -4,7 +4,8 @@
 """Regression tests for context fitting after serving-slot reduction.
 
 The synthetic plans use Qwen3.8-27B metadata and capture the generated command.
-Each case names its speculative mode because unknown values resolve to Auto.
+Cases specify speculation explicitly and use synthetic slot costs unless testing
+the real estimator.
 """
 
 from __future__ import annotations
@@ -19,11 +20,29 @@ if _TESTS_DIR not in sys.path:
 
 import pytest  # noqa: E402
 
-from test_llama_cpp_placement import _backend, _launch  # noqa: E402
+import core.inference.llama_cpp as llama_cpp  # noqa: E402
+from test_llama_cpp_placement import (  # noqa: E402
+    _backend,
+    _install_slot_scaled_compute,
+    _launch,
+)
 
 MIB = 1024 * 1024
 NATIVE_CTX = 262144
 CARD_MIB = 12 * 1024  # usable 11,919 MiB at the 0.97 pin fraction
+
+# The weights these cases are built on, named for the slot count the reduction
+# leaves them at on CARD_MIB when four are asked for. The reduction only has
+# something to do inside a band, and the band moves with _FIT_MIN_CTX, since the
+# search prices every candidate slot count at the floor: raising it 4096 -> 8192
+# moved the band down about 1,400 MiB and left the old weights either fitting
+# whole at the floor under `--fit on` or collapsing to one slot for every ask.
+# These were re-measured against the floor rather than nudged until green -- each
+# keeps the role its test needs (a three-slot survivor, a two-slot survivor, and
+# an ask that still discriminates), which is what the assertions below are about.
+_KEEPS_THREE_MIB = 9_200
+_KEEPS_TWO_MIB = 9_800
+_ASK_STILL_MATTERS_MIB = 9_400
 MIXED_CARDS = (CARD_MIB, 1_280)  # a primary plus a card too small to plan onto
 
 # Qwen3.8-27B-GGUF metadata.
@@ -58,6 +77,23 @@ DENSE = {
     "_context_length": NATIVE_CTX,
 }
 
+# Gemma 3 12B-shaped: five sliding-window layers in six.
+SLIDING_WINDOW = {
+    "_architecture": "gemma3",
+    "_vocab_size": 262144,
+    "_n_layers": 48,
+    "_n_kv_heads": 8,
+    "_n_heads": 16,
+    "_embedding_length": 3840,
+    "_feed_forward_length": 15360,
+    "_kv_key_length": 256,
+    "_kv_value_length": 256,
+    "_key_length_mla": None,
+    "_context_length": 131072,
+    "_sliding_window": 1024,
+    "_sliding_window_pattern": [i % 6 != 5 for i in range(48)],
+}
+
 
 def _plan(
     tmp_path,
@@ -69,8 +105,10 @@ def _plan(
     n_ctx = 0,
     metadata = HYBRID,
     gpus = 1,
+    slot_scaled_compute = True,
 ):
-    """Return the generated placement plan. ``vram_mib`` may be a per-card sequence."""
+    """Return the generated placement plan. ``vram_mib`` may be a per-card sequence.
+    ``slot_scaled_compute`` False prices the compute buffer with the real estimator."""
     cards = list(vram_mib) if isinstance(vram_mib, (tuple, list)) else [vram_mib] * gpus
     memory = [(i, mib, mib) for i, mib in enumerate(cards)]
     backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
@@ -82,6 +120,8 @@ def _plan(
     backend._read_gguf_metadata = read
     backend._get_gguf_size_bytes = lambda _path: weights_mib * MIB
     del backend._can_estimate_kv  # the real one, now that the dims are set
+    if slot_scaled_compute:
+        _install_slot_scaled_compute(backend)
     backend.probe_server_capabilities = lambda _binary = None: {
         "mtp_token": "draft-mtp",
         "supports_ngram_mod": True,
@@ -112,9 +152,9 @@ class TestTheLaunchedCountOwnsTheContext:
     @pytest.mark.parametrize(
         "weights_mib,asked,slots,ctx",
         [
-            (9_600, 4, 3, 5_888),  # main: 3 slots, 4096
-            (10_200, 4, 2, 7_680),  # main: 2 slots, 4096
-            (10_200, 8, 2, 7_680),  # main: 2 slots, 4096
+            (_KEEPS_THREE_MIB, 4, 3, 12_288),
+            (_KEEPS_TWO_MIB, 4, 2, 14_080),
+            (_KEEPS_TWO_MIB, 8, 2, 14_080),  # the same answer from a larger ask
         ],
     )
     def test_auto_context_follows_the_reduction(self, tmp_path, weights_mib, asked, slots, ctx):
@@ -122,7 +162,9 @@ class TestTheLaunchedCountOwnsTheContext:
         assert (got["slots"], got["fit"]) == (slots, "off")
         assert got["ctx"] == got["ceiling"] == ctx
 
-    @pytest.mark.parametrize("weights_mib,asked,final", [(9_600, 4, 3), (10_200, 4, 2)])
+    @pytest.mark.parametrize(
+        "weights_mib,asked,final", [(_KEEPS_THREE_MIB, 4, 3), (_KEEPS_TWO_MIB, 4, 2)]
+    )
     def test_reducing_to_a_count_matches_starting_at_it(self, tmp_path, weights_mib, asked, final):
         """A reduced plan matches one started at its final slot count."""
         reduced = _plan(tmp_path, weights_mib = weights_mib, n_parallel = asked, spec = "off")
@@ -130,22 +172,80 @@ class TestTheLaunchedCountOwnsTheContext:
         assert reduced["slots"] == direct["slots"] == final
         assert (reduced["ctx"], reduced["ceiling"]) == (direct["ctx"], direct["ceiling"])
 
-    def test_the_published_ceiling_is_not_the_4096_anchor(self, tmp_path):
-        """The published ceiling follows the final slot count."""
-        got = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off")
-        assert got["ceiling"] == 7_680
+    def test_the_published_ceiling_is_not_the_fit_floor_anchor(self, tmp_path):
+        """The published ceiling follows the final slot count.
+
+        Named for the floor rather than 4096 because the anchor it must not be is
+        whatever _FIT_MIN_CTX currently is: the reduction prices its search there,
+        so a ceiling that came back equal to the floor would mean the search result
+        was published instead of the context the final slot count actually affords.
+        """
+        got = _plan(tmp_path, weights_mib = _KEEPS_TWO_MIB, n_parallel = 4, spec = "off")
+        assert got["ceiling"] == 14_080
+        assert got["ceiling"] != llama_cpp._FIT_MIN_CTX
 
     def test_a_layer_split_across_two_cards_re_fits_the_same_way(self, tmp_path):
         """The same invariant holds for a two-card layer split."""
         reduced = _plan(
-            tmp_path, weights_mib = 14_000, n_parallel = 4, spec = "off", vram_mib = 8_704, gpus = 2
+            tmp_path, weights_mib = 13_800, n_parallel = 4, spec = "off", vram_mib = 8_704, gpus = 2
         )
         direct = _plan(
-            tmp_path, weights_mib = 14_000, n_parallel = 2, spec = "off", vram_mib = 8_704, gpus = 2
+            tmp_path, weights_mib = 13_800, n_parallel = 2, spec = "off", vram_mib = 8_704, gpus = 2
         )
         assert (reduced["slots"], reduced["fit"]) == (2, "off")
-        assert reduced["ctx"] == reduced["ceiling"] == 8_448
+        assert reduced["ctx"] == reduced["ceiling"] == 10_752
         assert (reduced["ctx"], reduced["ceiling"]) == (direct["ctx"], direct["ceiling"])
+
+
+class TestTheRealEstimatorStillReduces:
+    """Real pricing reduces slots for hybrid state costs and keeps slots on dense models."""
+
+    @pytest.mark.parametrize("weights_mib,slots,ctx", [(10_400, 3, 9_472), (10_500, 2, 10_240)])
+    def test_a_hybrid_load_reduces_and_re_fits(self, tmp_path, weights_mib, slots, ctx):
+        got = _plan(
+            tmp_path, weights_mib = weights_mib, n_parallel = 4, spec = "off", slot_scaled_compute = False
+        )
+        assert (got["slots"], got["fit"], got["ctx"]) == (slots, "off", ctx)
+        direct = _plan(
+            tmp_path,
+            weights_mib = weights_mib,
+            n_parallel = slots,
+            spec = "off",
+            slot_scaled_compute = False,
+        )
+        assert (direct["slots"], direct["ctx"]) == (slots, ctx)
+
+    def test_a_sliding_window_split_reprices_its_masks_per_candidate(self, tmp_path):
+        """A layer split's sliding-window masks scale with slots, so each candidate
+        prices its own count rather than the one asked for."""
+        plans = [
+            _plan(
+                tmp_path,
+                weights_mib = 21_200,
+                n_parallel = asked,
+                spec = "off",
+                metadata = SLIDING_WINDOW,
+                gpus = 2,
+                slot_scaled_compute = False,
+            )
+            for asked in (16, 1)
+        ]
+        assert [(p["slots"], p["fit"], p["ctx"]) for p in plans] == [(1, "off", 8_448)] * 2
+
+    def test_a_dense_load_keeps_its_slots(self, tmp_path):
+        plans = [
+            _plan(
+                tmp_path,
+                weights_mib = 8_200,
+                n_parallel = asked,
+                spec = "off",
+                metadata = DENSE,
+                slot_scaled_compute = False,
+            )
+            for asked in (1, 4)
+        ]
+        assert [(p["slots"], p["fit"]) for p in plans] == [(1, "off"), (4, "off")]
+        assert plans[0]["ctx"] == plans[1]["ctx"]
 
 
 class TestTheRefitStaysOnTheCardsTheReductionChose:
@@ -153,24 +253,30 @@ class TestTheRefitStaysOnTheCardsTheReductionChose:
     alone, and only the small card can hold a longer context."""
 
     def test_the_refit_does_not_pull_in_another_card(self, tmp_path):
-        got = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS)
+        got = _plan(
+            tmp_path, weights_mib = _KEEPS_TWO_MIB, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS
+        )
         assert (got["slots"], got["fit"], got["devices"]) == (2, "off", "0")
-        assert got["ctx"] == 7_680
+        assert got["ctx"] == 14_080
 
     def test_it_matches_a_request_started_at_the_final_count(self, tmp_path):
         reduced = _plan(
-            tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS
+            tmp_path, weights_mib = _KEEPS_TWO_MIB, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS
         )
-        direct = _plan(tmp_path, weights_mib = 10_200, n_parallel = 2, spec = "off", vram_mib = MIXED_CARDS)
+        direct = _plan(
+            tmp_path, weights_mib = _KEEPS_TWO_MIB, n_parallel = 2, spec = "off", vram_mib = MIXED_CARDS
+        )
         assert reduced["devices"] == direct["devices"] == "0"
         assert (reduced["ctx"], reduced["ceiling"]) == (direct["ctx"], direct["ceiling"])
 
     def test_the_ceiling_still_counts_the_card_the_launch_left_out(self, tmp_path):
         """The ceiling keeps measuring across both cards, not just the launched one."""
-        mixed = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS)
-        alone = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off")
-        assert mixed["ctx"] == alone["ctx"] == 7_680
-        assert (mixed["ceiling"], alone["ceiling"]) == (9_472, 7_680)
+        mixed = _plan(
+            tmp_path, weights_mib = _KEEPS_TWO_MIB, n_parallel = 4, spec = "off", vram_mib = MIXED_CARDS
+        )
+        alone = _plan(tmp_path, weights_mib = _KEEPS_TWO_MIB, n_parallel = 4, spec = "off")
+        assert mixed["ctx"] == alone["ctx"] == 14_080
+        assert (mixed["ceiling"], alone["ceiling"]) == (14_592, 14_080)
 
 
 class TestAutoSpeculationStillDecidesBeforeTheReduction:
@@ -178,7 +284,7 @@ class TestAutoSpeculationStillDecidesBeforeTheReduction:
 
     def test_a_direct_one_slot_request_drops_the_drafter_and_keeps_context(self, tmp_path):
         got = _plan(tmp_path, weights_mib = 10_200, n_parallel = 1, spec = "auto")
-        assert (got["slots"], got["ctx"], got["spec"]) == (1, 18_688, "ngram-mod")
+        assert (got["slots"], got["ctx"], got["spec"]) == (1, 18_944, "ngram-mod")
 
     @pytest.mark.parametrize("asked", [4, 8])
     def test_a_reduced_request_still_carries_the_drafter_it_admitted(self, tmp_path, asked):
@@ -201,35 +307,136 @@ class TestWhatMustNotMove:
         got = _plan(tmp_path, weights_mib = 8_400, n_parallel = 4, spec = "off", n_ctx = 32768)
         assert (got["ctx"], got["slots"], got["fit"]) == (32768, 2, "off")
         # The measured ceiling still follows the final slot count.
-        assert got["ceiling"] == 35_840
+        assert got["ceiling"] == 36_096
 
     def test_an_explicit_context_that_forces_offload_is_unchanged(self, tmp_path):
         """An explicit context that requires offload is unchanged."""
         got = _plan(tmp_path, weights_mib = 10_200, n_parallel = 4, spec = "off", n_ctx = 32768)
+        # The launched context stays a literal: honouring the request verbatim IS the
+        # contract, so a derived value here would assert nothing.
         assert (got["ctx"], got["slots"], got["fit"]) == (32768, 4, "on")
-        assert got["ceiling"] == 4096
+        # The ceiling is the published safe zone, which no reduction reached, so it is
+        # the offload fallback. Tracks the constant; #9492 moved it 4096 -> 8192.
+        assert got["ceiling"] == min(llama_cpp._AUTO_OFFLOAD_CTX, NATIVE_CTX)
+        assert got["ceiling"] < got["ctx"], "the sheet must still warn above the safe zone"
 
     def test_a_count_that_needs_no_reduction_is_untouched(self, tmp_path):
         """A plan that needs no slot reduction is unchanged."""
         got = _plan(tmp_path, weights_mib = 6_000, n_parallel = 4, spec = "off")
-        assert (got["slots"], got["fit"], got["ctx"]) == (4, "off", 51_200)
+        assert (got["slots"], got["fit"], got["ctx"]) == (4, "off", 51_456)
 
     def test_weights_that_fit_nowhere_still_offload(self, tmp_path):
-        """Oversized weights still fall back to offload."""
+        """Oversized weights still fall back to offload, at the Auto offload context.
+
+        The one case in this file that reads the constant rather than the reduction:
+        no slot count places these weights, so the block below never fires and the
+        context is the fallback itself. Tracked rather than hardcoded, since #9492
+        moved it from 4096 to 8192 and a literal here is a re-edit every time.
+        """
         got = _plan(tmp_path, weights_mib = 11_400, n_parallel = 4, spec = "off")
-        assert (got["fit"], got["ctx"], got["ceiling"]) == ("on", 4096, 4096)
+        offload_ctx = min(llama_cpp._AUTO_OFFLOAD_CTX, NATIVE_CTX)
+        assert (got["fit"], got["ctx"], got["ceiling"]) == ("on", offload_ctx, offload_ctx)
+        # The case is still the one this name claims: nothing was rescued, and the
+        # native length really was cut down to the fallback.
+        assert got["slots"] == 4, "the reduction fired; this is no longer the offload case"
+        assert got["ctx"] < NATIVE_CTX
 
     @pytest.mark.parametrize(
         "weights_mib,slots,ctx",
         [
-            (9_200, 3, 4_864),  # main: 3 slots, 4096
-            (10_000, 1, 6_144),  # main: 1 slot,  4096
+            (8_200, 3, 8_704),
+            (9_000, 1, 9_984),
         ],
     )
     def test_a_dense_target_gains_only_its_compute_buffer(self, tmp_path, weights_mib, slots, ctx):
         """Dense models also recover slot-scaled compute-buffer capacity."""
         got = _plan(tmp_path, weights_mib = weights_mib, n_parallel = 4, spec = "off", metadata = DENSE)
         assert (got["slots"], got["ctx"]) == (slots, ctx)
+
+
+# Multiples of the fit floor rather than literals. _AUTO_OFFLOAD_CTX is documented
+# to sit at or above _FIT_MIN_CTX, so sweeping it below the floor would drive the
+# planner through a state the product never reaches and call whatever came back a
+# regression. Identical to [4096, 8192, 16384, 32768] while the floor is 4096, and
+# still the intended sweep after it moves.
+_OFFLOAD_SWEEP = [llama_cpp._FIT_MIN_CTX * step for step in (1, 2, 4, 8)]
+
+
+class TestTheReductionIsPricedAtTheFitFloor:
+    """The search that picks the slot count must not be priced at _AUTO_OFFLOAD_CTX.
+
+    That constant is what Auto settles for once offload is unavoidable. This block
+    exists to overturn that verdict by re-asking at fewer slots, so a higher probe
+    context can only make the search fail -- and its failure is all-or-nothing: no
+    reduction, `--fit on`, and the slot count kept at the ask it could not afford.
+
+    #9492 raised the constant 4096 -> 8192 and, through this one shared read, moved
+    placement. The arithmetic, on the 12 GiB card these tests use (budget
+    12288 x 0.97 = 11,919.36 MiB) at the 10,200 MiB of weights this block was first
+    written against: the candidates are 707 MiB apart (557.75 MiB of per-slot
+    compute buffer plus 149.625 MiB of per-slot Mamba state), while probing 256
+    tokens higher costs a uniform 64 KiB/token. The 2-slot candidate was 11,685.0
+    MiB at a 4096 probe and 11,947.0 MiB at 8192, so a display constant moved it
+    across the budget by 27.6 MiB. The weights above are lighter now only because
+    _FIT_MIN_CTX itself moved to 8192 and carried the reducible band down with it;
+    the margins being this thin is the reason the sweep below exists.
+    """
+
+    # A band that a reduction rescues from offload. Every one of these launched
+    # `--fit off` before #9492 and `--fit on` after it, which is the ~3x decode
+    # collapse (#6718) the reduction was written to avoid.
+    RESCUED = [
+        (10_200, HYBRID),
+        (10_400, HYBRID),
+        (10_600, HYBRID),
+        (9_000, DENSE),
+        (9_200, DENSE),
+        (9_400, DENSE),
+    ]
+
+    @pytest.mark.parametrize("offload_ctx", _OFFLOAD_SWEEP)
+    def test_moving_the_offload_fallback_does_not_move_the_placement(
+        self, tmp_path, monkeypatch, offload_ctx
+    ):
+        """Sweeping the constant leaves slots, residency, context and cards alone.
+
+        Pinned against the sweep rather than against one value, so this cannot be
+        satisfied by re-baselining the constant into the expectation.
+        """
+        monkeypatch.setattr(llama_cpp, "_AUTO_OFFLOAD_CTX", offload_ctx)
+        got = _plan(tmp_path, weights_mib = _KEEPS_TWO_MIB, n_parallel = 4, spec = "off")
+        assert (got["slots"], got["fit"], got["ctx"], got["devices"]) == (2, "off", 14_080, "0")
+
+    @pytest.mark.parametrize("weights_mib,metadata", RESCUED)
+    @pytest.mark.parametrize("offload_ctx", _OFFLOAD_SWEEP[:2])
+    def test_a_load_the_reduction_can_rescue_never_offloads(
+        self, tmp_path, monkeypatch, weights_mib, metadata, offload_ctx
+    ):
+        monkeypatch.setattr(llama_cpp, "_AUTO_OFFLOAD_CTX", offload_ctx)
+        got = _plan(tmp_path, weights_mib = weights_mib, n_parallel = 4, spec = "off", metadata = metadata)
+        assert got["fit"] == "off", "a placeable load was handed to --fit offload"
+        # It was rescued BY the reduction rather than fitting outright, or the row
+        # would prove nothing about this block.
+        assert got["slots"] < 4
+
+    def test_weights_past_the_band_still_offload(self, tmp_path):
+        """The counterweight: the rows above are not green because everything is.
+
+        Without this, RESCUED could drift into sizes that place at the full ask and
+        the assertions there would hold for the wrong reason.
+        """
+        got = _plan(tmp_path, weights_mib = 11_400, n_parallel = 4, spec = "off")
+        assert (got["fit"], got["slots"]) == ("on", 4)
+
+    def test_asking_for_more_slots_never_returns_fewer(self, tmp_path):
+        """Monotone in the ask. At head, asking for 2 got 2 and asking for 3 got 1."""
+        finals = [
+            _plan(tmp_path, weights_mib = _ASK_STILL_MATTERS_MIB, n_parallel = n, spec = "off")["slots"]
+            for n in (1, 2, 3, 4, 6, 8)
+        ]
+        assert finals == sorted(finals), finals
+        # Not a row of identical numbers, which would sort trivially.
+        assert len(set(finals)) > 1, finals
 
 
 class TestTheSearchPredicate:
@@ -280,18 +487,23 @@ class TestTheLoggedReserveFollowsTheLaunch:
         monkeypatch.setattr("core.inference.llama_cpp.logger", _Recorder())
         assert planner_logger is not None  # the real one is restored on teardown
 
+        # Asks that converge on one plan at this floor. 2 is not among them any
+        # more: at _FIT_MIN_CTX 8192 two slots fit on this card outright, so the
+        # ask survives untouched and Auto settles on ngram-mod with no MTP reserve
+        # to log. That is a different launch, not a differing reserve, so pinning
+        # it here would test the fixture rather than the claim.
         seen = []
-        for asked in (2, 4, 8):
+        for asked in (4, 6, 8):
             lines.clear()
-            got = _plan(tmp_path, weights_mib = 8_000, n_parallel = asked, spec = "auto", vram_mib = 9_728)
+            got = _plan(tmp_path, weights_mib = 7_600, n_parallel = asked, spec = "auto", vram_mib = 9_728)
             reserves = set(re.findall(r"MTP reserve: ([\d.]+) GB", "\n".join(lines)))
             assert reserves, "the reserve was never logged"
             seen.append((got["slots"], got["ctx"], got["spec"], reserves))
 
-        assert seen[0][:3] == (1, 5_632, "draft-mtp")
+        assert seen[0][:3] == (1, 11_520, "draft-mtp")
         assert len({row[:3] for row in seen}) == 1, "the three launches differ"
         assert len({frozenset(row[3]) for row in seen}) == 1, seen
-        assert seen[0][3] == {"0.31"}
+        assert seen[0][3] == {"0.34"}
 
 
 # KV-estimable metadata without a native context length.
@@ -302,15 +514,26 @@ class TestAGgufWithNoNativeContext:
     """Cover slot reduction when native-context metadata is absent."""
 
     @pytest.mark.parametrize(
-        "vram_mib,weights_mib,asked,slots",
+        "vram_mib,weights_mib,asked",
         [
-            (12 * 1024, 9_000, 8, 3),
-            (16 * 1024, 12_000, 8, 5),
+            (12 * 1024, 9_000, 8),
+            (16 * 1024, 12_000, 8),
         ],
     )
     def test_the_reduction_still_pins_without_a_native_context(
-        self, tmp_path, vram_mib, weights_mib, asked, slots
+        self, tmp_path, vram_mib, weights_mib, asked
     ):
+        """Without native-context metadata the search has no length to expand to,
+        so the reduction pins at the fit floor itself.
+
+        The floor is read, not spelled 4096, for the reason
+        test_weights_that_fit_nowhere_still_offload gives about _AUTO_OFFLOAD_CTX:
+        a literal here is a re-edit every time the constant moves, and the re-edit
+        is indistinguishable from noticing that placement changed. The exact
+        surviving slot count is left unpinned for the same reason -- it is
+        arithmetic against the floor, not the claim in this test's name. What must
+        hold is that a reduction happened at all and that it stayed resident.
+        """
         got = _plan(
             tmp_path,
             weights_mib = weights_mib,
@@ -319,7 +542,10 @@ class TestAGgufWithNoNativeContext:
             vram_mib = vram_mib,
             metadata = NO_NATIVE_CTX,
         )
-        assert (got["slots"], got["fit"], got["ctx"]) == (slots, "off", 4096)
+        assert (got["fit"], got["ctx"]) == ("off", llama_cpp._FIT_MIN_CTX)
+        assert (
+            1 <= got["slots"] < asked
+        ), f"the reduction did not fire: asked for {asked}, kept {got['slots']}"
 
     def test_no_planner_exception_is_swallowed(self, tmp_path, monkeypatch):
         """The broad placement handler must not hide a planner failure."""

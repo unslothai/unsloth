@@ -219,6 +219,8 @@ def test_runtime_resolver_uses_studio_path_and_does_not_silently_fallback(
 def test_runtime_resolver_rejects_a_selected_binary_that_loses_execute_permission(
     settings_store, monkeypatch, tmp_path
 ):
+    from core.inference.llama_cpp import LlamaCppBackend
+
     from core.inference import llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import (
         LLAMA_SERVER_NOT_FOUND_DETAIL,
@@ -297,8 +299,9 @@ def test_settings_route_round_trips_the_selected_folder(settings_store, monkeypa
 
 
 def test_settings_route_reports_reload_while_old_binary_launch_is_pending(monkeypatch):
-    from routes import inference as inference_route
     from routes import settings as settings_route
+
+    from routes import inference as inference_route
 
     class _PendingBackend:
         is_active = False
@@ -314,8 +317,9 @@ def test_settings_route_reports_reload_while_old_binary_launch_is_pending(monkey
 
 
 def test_settings_route_rejects_api_key_writes_before_mutation(monkeypatch):
-    from fastapi import HTTPException
     from routes import settings as settings_route
+
+    from fastapi import HTTPException
 
     mutated = False
 
@@ -337,8 +341,9 @@ def test_settings_route_rejects_api_key_writes_before_mutation(monkeypatch):
 
 
 def test_settings_route_returns_the_specific_validation_error(settings_store, tmp_path):
-    from fastapi import HTTPException
     from routes import settings as settings_route
+
+    from fastapi import HTTPException
 
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -355,3 +360,61 @@ def test_settings_route_returns_the_specific_validation_error(settings_store, tm
         f"No executable {path_settings.llama_server_binary_name()} was found in that folder "
         "or its build/bin directory."
     )
+
+
+# The account that does not exist anywhere, which is what a rename leaves behind in a
+# service unit or a .env.
+_UNKNOWN_USER = "~no-such-account-anywhere/llama.cpp"
+
+
+def test_an_unresolvable_named_user_does_not_raise_out_of_the_expansion():
+    """Codex 3962583754, P2. Path.expanduser() raises RuntimeError on a name it cannot
+    resolve, unlike os.path.expanduser, which hands the value straight back.
+
+    Measured on this host:
+
+        Path("~no-such-account-anywhere/llama.cpp").expanduser()
+        RuntimeError: Could not determine home directory.
+
+    Every reader of UNSLOTH_LLAMA_CPP_PATH used the raising form, so a stale pin made
+    runtime discovery itself throw rather than treating the override as unusable and
+    continuing down the documented search order.
+    """
+    with pytest.raises(RuntimeError):
+        Path(_UNKNOWN_USER).expanduser()
+    assert path_settings.expanded_user_path(_UNKNOWN_USER) == Path(_UNKNOWN_USER)
+
+
+def test_the_resolvable_forms_still_expand(monkeypatch, tmp_path):
+    """The guard must not cost the expansion that was the point of adding it."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    assert path_settings.expanded_user_path("~/llama.cpp") == tmp_path / "llama.cpp"
+    assert path_settings.expanded_user_path("~") == tmp_path
+    absolute = tmp_path / "elsewhere" / "llama.cpp"
+    assert path_settings.expanded_user_path(absolute) == absolute
+    assert path_settings.expanded_user_path("relative/llama.cpp") == Path("relative/llama.cpp")
+
+
+def test_the_status_payload_survives_an_unresolvable_override(settings_store, monkeypatch):
+    """The UI reads this, and a raise here is a broken settings page rather than a
+    message saying the pin is unusable."""
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", _UNKNOWN_USER)
+    status = path_settings.custom_llama_cpp_path_status()
+    assert status["source"] == "environment"
+    assert status["path"] == _UNKNOWN_USER
+    assert status["resolved_binary"] is None
+    assert status["available"] is False
+
+
+def test_discovery_continues_past_an_unresolvable_override(monkeypatch, tmp_path):
+    """The failure the item is actually about: _find_llama_server_binary threw instead
+    of falling through, and several callers have no exception boundary, so a model
+    operation reported the expansion error rather than using another runtime."""
+    llama_cpp = pytest.importorskip("core.inference.llama_cpp")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", _UNKNOWN_USER)
+    monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
+    # Not asserting which runtime is found: the machine decides that. The claim under
+    # test is only that the search reaches its own answer instead of raising.
+    result = llama_cpp.LlamaCppBackend._find_llama_server_binary()
+    assert result is None or isinstance(result, (str, Path, tuple))

@@ -98,7 +98,7 @@ def test_prebuilt_core_gate_matches_the_generated_source():
 def test_backend_serves_no_tls_in_process():
     """truststore's injection is client-side: a context built after it cannot serve TLS.
 
-    Studio serves plain HTTP on loopback, but an in-process HTTPS listener added
+    Unsloth serves plain HTTP on loopback, but an in-process HTTPS listener added
     later would fail at handshake wherever activation is default-on.
     """
     server_side = ("PROTOCOL_TLS_SERVER", "ssl_certfile", "ssl_keyfile")

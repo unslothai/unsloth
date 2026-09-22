@@ -3,7 +3,7 @@
 
 """Where a project's workspace folder lands, and what happens when it cannot.
 
-Project workspaces are the only thing Studio writes into the user's Documents,
+Project workspaces are the only thing Unsloth writes into the user's Documents,
 so a Documents folder it guesses wrong about breaks project creation and
 nothing else. On Windows that guess is wrong by default whenever OneDrive's
 Known Folder Move has repointed Documents at the synced copy.
@@ -103,7 +103,7 @@ def test_the_workspace_error_carries_the_folder_it_could_not_make(tmp_path, monk
 
 
 def test_creating_a_project_says_which_folder_failed(tmp_path, monkeypatch):
-    """A folder Studio cannot create is the one failure this route has.
+    """A folder Unsloth cannot create is the one failure this route has.
 
     It used to surface as a bare 500, which says nothing about which folder or
     what to do, and the folder is one the user can move.

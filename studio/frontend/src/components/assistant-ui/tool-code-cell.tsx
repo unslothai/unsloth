@@ -8,9 +8,10 @@ import { MAX_HIGHLIGHT_CHARS, codeFence } from "@/lib/markdown-plugins";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
+import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { code as codePlugin } from "@streamdown/code";
-import { CopyIcon, DownloadIcon } from "lucide-react";
+import { IconActionButton } from "./icon-action-button";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 
@@ -45,26 +46,19 @@ export function CopyBtn({ text }: { text: string }) {
   }, [text]);
 
   return (
-    <button
-      type="button"
-      onClick={copy}
-      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      aria-label="Copy to clipboard"
-    >
+    <IconActionButton label={copied ? "Copied" : "Copy to clipboard"} onClick={copy}>
       {copied ? (
         <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
-        <CopyIcon className="size-3" />
+        <HugeiconsIcon icon={Copy01Icon} className="size-3" />
       )}
-      {copied ? "Copied" : "Copy"}
-    </button>
+    </IconActionButton>
   );
 }
 
 function DownloadBtn({ code, name }: { code: string; name: string }) {
-  // Route through the shared boundary: browsers keep the normal download,
-  // Tauri gets the native save chooser. A bare blob anchor is silently
-  // dropped by the desktop WebView2.
+  // Route through the shared boundary: browsers keep the normal download, Tauri gets the native
+  // save chooser. A bare blob anchor is silently dropped by the desktop WebView2.
   const download = useCallback(() => {
     void downloadFile(code, name, "text/plain;charset=utf-8").catch((error) => {
       if (!isDownloadCancelled(error)) {
@@ -74,15 +68,9 @@ function DownloadBtn({ code, name }: { code: string; name: string }) {
   }, [code, name]);
 
   return (
-    <button
-      type="button"
-      onClick={download}
-      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      aria-label="Download"
-    >
-      <DownloadIcon className="size-3" />
-      Download
-    </button>
+    <IconActionButton label="Download" onClick={download}>
+      <HugeiconsIcon icon={Download01Icon} className="size-3" />
+    </IconActionButton>
   );
 }
 

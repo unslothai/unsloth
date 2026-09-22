@@ -34,7 +34,7 @@ from ..scoring.schema import Measure
 from ..scoring.score import LadderScore, RungScore
 from .payload import excluded_totals
 
-#: The three frame numbers that must appear together or not at all.
+#:The three frame numbers that must appear together or not at all.
 HEADLINE_FRAME_METRICS = ("time_in_jank_pct", "jank_index", "max_frame_ms")
 
 
@@ -141,8 +141,8 @@ def render_rung_table(ladder: LadderScore) -> str:
 def render_rung_metrics(rung: RungScore, *, indent: str = "  ") -> str:
     lines = [f"{indent}{rung.tokens:,} tokens -- score {rung.score:.1f}"]
     if not rung.complete:
-        # Printing six "not attempted" lines for a rung that never ran buries the one fact that
-        # matters, which is why it did not run.
+        # Printing six "not attempted" lines for a rung that never ran buries the one fact that matters,
+        # which is why it did not run.
         lines.append(f"{indent}  INCOMPLETE: {rung.incomplete_reason}")
         lines.append(
             f"{indent}  scores 0 and keeps its weight; no metric was measured at this rung"
@@ -217,9 +217,9 @@ def render_ab_table(result: AbResult) -> str:
         lines.append("")
         lines.append("VOID. No numbers are quotable from this comparison.")
         lines.append(f"  {result.void_reason}")
-        # The paragraph under the reason explains the NULL CONTROL, and printing it under an
-        # incomplete plan named the wrong cause for the void. A void has more than one cause; the
-        # reason line carries which one, and only a null control gets the null-control paragraph.
+        # The paragraph under the reason explains the NULL CONTROL, and printing it under an incomplete
+        # plan named the wrong cause for the void. A void has more than one cause; the reason line carries
+        # which one.
         if result.is_null_control:
             lines.append(
                 "  The null-treatment control measures whether this machine can currently tell "
@@ -252,10 +252,9 @@ def render_ab_table(result: AbResult) -> str:
             if metric.ci_low is not None
             else "too few pairs"
         )
-        # A BOUND IS NOT A MEASUREMENT. An arm under its instrument floor contributes the floor,
-        # so the ratio understates the true magnitude and must not be quoted as a point estimate.
-        # Marked in the ratio cell rather than footnoted, for the reason the void path gives: the
-        # table gets screenshotted and the note does not.
+        # A BOUND IS NOT A MEASUREMENT. An arm under its instrument floor contributes the floor, so the
+        # ratio understates the true magnitude and must not be quoted as a point estimate. Marked in the
+        # ratio cell rather than footnoted, because the table gets screenshotted and the note does not.
         ratio_cell = (
             f">={metric.ratio_geomean:.3f}"
             if metric.bounded and metric.ratio_geomean >= 1.0
@@ -275,6 +274,22 @@ def render_ab_table(result: AbResult) -> str:
             f"({abs(1.0 - result.headline_ratio) * 100:.1f}% {direction}, weighted)"
         )
     lines.append(f"VERDICT: {result.verdict}")
+    unresolved = [m for m in result.metrics if m.withheld]
+    if unresolved:
+        lines.append("")
+        lines.append(
+            "These metrics cleared the noise floor without a 95% CI that clears 1.0, either "
+            "because the interval contains it or because there were too few pairs to compute "
+            "one, so no direction is claimed for them. They are excluded from the headline "
+            "ratio above, which would otherwise quote their size as a measured win:"
+        )
+        for metric in unresolved:
+            why = (
+                f"ci95 {metric.ci_low:.3f}-{metric.ci_high:.3f} contains 1.0"
+                if metric.ci_low is not None and metric.ci_high is not None
+                else f"no ci95 from {metric.n_pairs} usable pair(s)"
+            )
+            lines.append(f"  {metric.metric_key}: ratio {metric.ratio_geomean:.3f}, {why}")
     if result.regressions:
         lines.append("")
         lines.append(

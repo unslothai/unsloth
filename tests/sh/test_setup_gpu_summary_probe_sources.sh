@@ -9,11 +9,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-PASS=0
-FAIL=0
 SKIP=0
 
 {
@@ -21,6 +20,11 @@ SKIP=0
     sed -n '/^_setup_rocminfo_gpu_records()/,/^}/p' "$SETUP_SH"
     sed -n '/^_setup_amd_smi_gpu_records()/,/^}/p'  "$SETUP_SH"
     sed -n '/^_setup_amd_smi_hip_order()/,/^}/p'  "$SETUP_SH"
+    # Called from the selection block below, so they have to come with it: without them
+    # the block runs with the helpers undefined and every case that reaches a
+    # discrete-vs-iGPU choice dies on "command not found" rather than answering.
+    sed -n '/^_amd_gfx_is_shadowing_integrated()/,/^}/p'  "$SETUP_SH"
+    sed -n '/^_amd_prefer_discrete_gfx()/,/^}/p'  "$SETUP_SH"
     # The real initialiser group, not a restated one. Seeding these here would hide the
     # thing that matters under `set -u`: a variable the selection block reads but no arm
     # assigns aborts `unsloth studio update` outright.
@@ -38,11 +42,19 @@ grep -q '_setup_amd_smi_gpu_records' "$WORK/block.sh" || {
     echo "FATAL: the amd-smi record parser is not wired into the block" >&2; exit 1; }
 grep -q '_setup_amd_smi_hip_order' "$WORK/block.sh" || {
     echo "FATAL: the amd-smi HIP reorder is not wired into the block" >&2; exit 1; }
+grep -q '^_amd_prefer_discrete_gfx()' "$WORK/block.sh" || {
+    echo "FATAL: the discrete-GPU preference helper is not in the block" >&2; exit 1; }
+grep -q '^_amd_gfx_is_shadowing_integrated()' "$WORK/block.sh" || {
+    echo "FATAL: the integrated-GPU test the preference reads is not in the block" >&2
+    exit 1; }
 bash -n "$WORK/block.sh" || { echo "FATAL: extracted block does not parse" >&2; exit 1; }
 
 # The same two halves, split, for the arms that reach selection without probing anything.
 sed -n '/^_setup_amd_detected=false$/,/^_setup_amd_records=""$/p' "$SETUP_SH" > "$WORK/init.sh"
 {
+    # The same helpers, for the same reason: this half holds the selection too.
+    sed -n '/^_amd_gfx_is_shadowing_integrated()/,/^}/p'  "$SETUP_SH"
+    sed -n '/^_amd_prefer_discrete_gfx()/,/^}/p'  "$SETUP_SH"
     awk '/^if \[ "\$_setup_nvidia_usable" = true \]; then/ {on=1}
          on && /UNSLOTH_ROCM_GFX_ARCH env override/ {exit}
          on {print}' "$SETUP_SH"
@@ -52,6 +64,8 @@ grep -q '_setup_nvidia_usable=false' "$WORK/init.sh" || {
     echo "FATAL: initialiser group not found in $SETUP_SH" >&2; exit 1; }
 grep -q '_setup_amd_record=' "$WORK/select.sh" || {
     echo "FATAL: selection block not found in $SETUP_SH" >&2; exit 1; }
+grep -q '^_amd_prefer_discrete_gfx()' "$WORK/select.sh" || {
+    echo "FATAL: the discrete-GPU preference helper is not in the split half" >&2; exit 1; }
 bash -n "$WORK/init.sh" && bash -n "$WORK/select.sh" || {
     echo "FATAL: extracted halves do not parse" >&2; exit 1; }
 
@@ -82,15 +96,6 @@ case "$1 $2" in
 esac
 STUB
 chmod +x "$WORK/roc/rocminfo" "$WORK/smi/amd-smi"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"; PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"; FAIL=$((FAIL + 1))
-    fi
-}
 
 # $1 rocminfo fixture ("-" = not installed), $2 amd-smi fixture, $3 visible-device mask.
 # Prints "gfx|name". The probe log is left in $WORK/probes for the call-count asserts.

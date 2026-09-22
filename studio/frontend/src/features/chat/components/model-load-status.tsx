@@ -19,12 +19,9 @@ function clampProgress(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
-/**
- * Split a composed progress label like "22.8 of 122.3 GB • 330.1 MB/s • 5m 9s
- * left" into a primary chunk (next to the percent) and a secondary chunk (its
- * own row), so neither line wraps raggedly once rate/ETA appears mid-download.
- * Labels without " • " return primary-only, so the secondary row doesn't render.
- */
+/** Split a composed progress label into a primary chunk, next to the percent, and a secondary chunk
+ *  on its own row, so neither line wraps raggedly once rate and ETA appear mid-download. Labels
+ *  without the separator return primary-only, so the secondary row does not render. */
 function splitProgressLabel(
   label: string | null | undefined,
 ): { primary: string; secondary: string } {
@@ -71,7 +68,7 @@ export function ModelLoadDescription({
             ) : null}
             <Progress
               value={clampProgress(progressPercent)}
-              className="mt-1 h-1 bg-foreground/[0.08]"
+              className="mt-1 h-1 bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]"
             />
           </div>
         ) : message ? (
@@ -108,7 +105,7 @@ export function ModelLoadInlineStatus({
       {hasProgress ? (
         <div className="flex min-w-0 flex-[1.35] items-center gap-2.5">
           <div className="min-w-[7rem] flex-1">
-            <Progress value={clampProgress(progressPercent)} className="h-1 bg-foreground/[0.08]" />
+            <Progress value={clampProgress(progressPercent)} className="h-1 bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]" />
           </div>
           <div
             className="flex shrink-0 items-center gap-1 text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/80"

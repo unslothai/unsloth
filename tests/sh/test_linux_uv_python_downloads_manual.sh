@@ -5,43 +5,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF "$_needle"; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected to find '$_needle')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_not_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF "$_needle"; then
-        echo "  FAIL: $_label (found '$_needle' but should not)"
-        FAIL=$((FAIL + 1))
-    else
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    fi
-}
-
 _FN=$(mktemp)
 {
     sed -n '/^PYTHON_SKIP=/p' "$INSTALL_SH"
@@ -149,9 +114,9 @@ else
     PASS=$((PASS + 1))
 fi
 
-echo "=== Studio installer stream ==="
+echo "=== Unsloth installer stream ==="
 
-# A successful retry must clear the first attempt's Studio failure marker.
+# A successful retry must clear the first attempt's Unsloth failure marker.
 _STREAM=$(mktemp)
 {
     printf 'C_ERR=""; TAURI_MODE=true; UNSLOTH_VERBOSE=false; UNSLOTH_DL_MARKER_MIN_BYTES=52428800\n'
@@ -234,7 +199,7 @@ _out=$(_emit fedora)
 assert_contains "fedora fallback still returns 0" "$_out" "RC=0"
 assert_contains "fedora fallback ran uv python install" "$_out" \
     "python install >=3.13,<3.14,!=3.13.8"
-assert_contains "recovery clears the Studio failure" "$_out" "ERROR_CLEAR"
+assert_contains "recovery clears the Unsloth failure" "$_out" "ERROR_CLEAR"
 assert_eq "ERROR_CLEAR is the last error-state line" "ERROR_CLEAR" \
     "$(echo "$_out" | grep -oE 'ERROR_OUTPUT|ERROR_CLEAR' | tail -1)"
 
@@ -277,7 +242,7 @@ fi
 wait "$_pid" || true
 _out=$(cat "$_live")
 assert_contains "live fedora fallback still returns 0" "$_out" "RC=0"
-assert_contains "live recovery still clears the Studio failure" "$_out" "ERROR_CLEAR"
+assert_contains "live recovery still clears the Unsloth failure" "$_out" "ERROR_CLEAR"
 assert_eq "live ERROR_CLEAR is the last error-state line" "ERROR_CLEAR" \
     "$(echo "$_out" | grep -oE 'ERROR_OUTPUT|ERROR_CLEAR' | tail -1)"
 rm -rf "$_sd"
@@ -287,7 +252,7 @@ _out=$(_emit other)
 assert_not_contains "unrelated stream failure: no python install" "$_out" "python install"
 assert_contains "unrelated stream failure: non-zero" "$_out" "RC=2"
 if echo "$_out" | grep -q ERROR_CLEAR; then
-    echo "  FAIL: unrecovered failure must not clear the Studio error"
+    echo "  FAIL: unrecovered failure must not clear the Unsloth error"
     FAIL=$((FAIL + 1))
 else
     echo "  PASS: unrecovered failure does not emit ERROR_CLEAR"

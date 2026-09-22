@@ -533,7 +533,6 @@ def test_apprun_retires_only_the_font_policies_whose_mount_is_gone(tmp_path):
     live_policy = state / "unsloth-studio/fonts-mount-live.conf"
     assert live_policy.is_file()
 
-    # Simulate an unmounted AppImage.
     dead = _apprun_mount(tmp_path, "mount-dead")
     subprocess.run([dead / "AppRun"], check = True, capture_output = True, env = env)
     dead_policy = state / "unsloth-studio/fonts-mount-dead.conf"
@@ -570,8 +569,7 @@ def test_apprun_encodes_a_mount_path_carrying_xml_and_sed_metacharacters(tmp_pat
     policy = materialized.read_text(encoding = "utf-8")
     assert "@APPDIR@" not in policy
 
-    # Fontconfig drops a whole policy it cannot parse, which puts host COLRv1
-    # fonts back in front of Skia.
+    # Fontconfig drops a whole policy it cannot parse, which puts host COLRv1 fonts back in front of Skia.
     root = ElementTree.fromstring(policy)
     directories = [element.text for element in root.findall("dir")]
     assert directories == [f"{appdir}/usr/share/unsloth/fonts"]
@@ -693,11 +691,49 @@ def test_managed_appimage_children_preserve_host_library_paths():
     assert "UNSLOTH_HOST_LD_LIBRARY_PATH" in APPRUN.read_text(encoding = "utf-8")
     assert "UNSLOTH_HOST_LD_LIBRARY_PATH" in process_source
 
-    # Cover std children, Tokio children, and host launchers.
     production_source = process_source.split('#[cfg(all(test, target_os = "linux"))]', 1)[0]
     assert production_source.count("for name in APPIMAGE_GUI_ONLY_VARS") == 3
     for source_path, (call, expected) in child_process_calls.items():
         assert source_path.read_text(encoding = "utf-8").count(call) == expected
+
+
+def test_the_deb_ships_the_polkit_action_in_app_debian_updates_authenticate_with():
+    # Only this files mapping puts the polkit action on disk, and dropping it fails nothing:
+    # is_supported_install() still returns true and every update silently falls back to the
+    # release page. The dpkg -L check in desktop-app-clean-machine-ci.yml is stronger but runs
+    # only on a non-fork pull request, so it cannot gate a staging replica.
+    config = json.loads(
+        (REPO_ROOT / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
+    )
+    assert "deb" in config["bundle"]["targets"]
+    files = config["bundle"]["linux"]["deb"]["files"]
+    action = "/usr/share/polkit-1/actions/ai.unsloth.studio.update.policy"
+    assert files[action].endswith("/ai.unsloth.studio.update.policy")
+
+    policy = REPO_ROOT / "studio/src-tauri/linux" / files[action].removeprefix("./linux/")
+    source = policy.read_text(encoding = "utf-8")
+    assert '<action id="ai.unsloth.studio.update">' in source
+    # auth_admin on all three implicit cases is what prompts instead of elevating silently.
+    assert source.count("auth_admin") == 3
+    # The annotations are what makes this narrower than a plain pkexec call: polkit pins the
+    # program and its first argument, so the action cannot run anything else.
+    assert (
+        '<annotate key="org.freedesktop.policykit.exec.path">/usr/bin/unsloth-studio</annotate>'
+        in source
+    )
+    assert (
+        '<annotate key="org.freedesktop.policykit.exec.argv1">--install-debian-update</annotate>'
+        in source
+    )
+    # Those two pins must match what tauri derives from the crate name and what main.rs
+    # dispatches on, or polkit refuses every update.
+    cargo = (REPO_ROOT / "studio/src-tauri/Cargo.toml").read_text(encoding = "utf-8")
+    assert 'name = "unsloth-studio"' in cargo
+    debian_update = (REPO_ROOT / "studio/src-tauri/src/debian_update.rs").read_text(
+        encoding = "utf-8"
+    )
+    assert 'const INSTALL_ARGUMENT: &str = "--install-debian-update";' in debian_update
+    assert 'const INSTALLED_BINARY: &str = "/usr/bin/unsloth-studio";' in debian_update
 
 
 def test_release_notes_recommend_native_deb_without_claiming_universality():

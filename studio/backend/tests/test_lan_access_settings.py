@@ -38,6 +38,7 @@ def _app(**over):
         lan_access_is_colab = False,
         lan_access_launch_managed = False,
         lan_access_wildcard_bind = False,
+        lan_access_wildcard_ip_versions = (),
         lan_access_secure_launch = False,
         lan_access_frontend_served = True,
         lan_access_loop = None,
@@ -85,21 +86,63 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch, stored_se
     assert lan_settings.get_lan_access_auto_start() is False
 
 
+def test_port_persistence_defaults_to_automatic_and_validates(stored_settings):
+    assert lan_settings.get_lan_access_port() is None
+    assert lan_settings.lan_access_port_candidates() == tuple(range(8888, 8909))
+
+    assert lan_settings.set_lan_access_port(43210) == 43210
+    assert lan_settings.get_lan_access_port() == 43210
+    assert lan_settings.lan_access_port_candidates() == (43210,)
+
+    for invalid in (0, 65536, True, "8888"):
+        with pytest.raises((ValueError, TypeError)):
+            lan_settings.set_lan_access_port(invalid)
+        with pytest.raises(ValueError):
+            routes.LanAccessPortPayload(port = invalid)
+
+    stored_settings[lan_settings.LAN_ACCESS_PORT_KEY] = "broken"
+    assert lan_settings.get_lan_access_port() is None
+    assert routes.LanAccessPortPayload(port = None).port is None
+
+    with pytest.raises(ValueError):
+        routes.LanAccessPortPayload()
+
+
+def test_saving_a_new_port_policy_clears_the_previous_bind_error():
+    app = _app()
+    lan_access._error = "bind_failed"
+
+    status = lan_settings.save_lan_access_port(app, 43210)
+    assert status["error"] is None
+    assert status["configured_port"] == 43210
+
+    lan_access._error = "bind_failed"
+    status = lan_settings.save_lan_access_port(app, None)
+    assert status["error"] is None
+    assert status["configured_port"] is None
+
+
 # ── launch policy ──
 
 
 @pytest.mark.parametrize(
-    "bind_host,launch_managed",
+    "bind_host,launch_managed,wildcard,ip_versions",
     [
-        ("127.0.0.1", False),
-        ("localhost", False),
-        ("::1", False),
-        ("0.0.0.0", True),
-        ("::", True),
-        ("192.168.1.24", True),
+        ("127.0.0.1", False, False, ()),
+        ("localhost", False, False, ()),
+        ("::1", False, False, ()),
+        ("0.0.0.0", True, True, (4,)),
+        ("::", True, True, (6,)),
+        ("::0", True, True, (6,)),
+        ("0:0:0:0:0:0:0:0", True, True, (6,)),
+        ("0", True, True, (4,)),
+        ("::ffff:0.0.0.0", True, True, (4,)),
+        ("192.168.1.24", True, False, ()),
     ],
 )
-def test_configure_reads_launch_ownership_from_the_bind_host(bind_host, launch_managed):
+def test_configure_reads_launch_ownership_from_the_bind_host(
+    bind_host, launch_managed, wildcard, ip_versions
+):
     state = SimpleNamespace()
     lan_settings.configure_lan_access(
         state,
@@ -110,7 +153,155 @@ def test_configure_reads_launch_ownership_from_the_bind_host(bind_host, launch_m
         frontend_served = True,
     )
     assert state.lan_access_launch_managed is launch_managed
+    assert state.lan_access_wildcard_bind is wildcard
+    assert state.lan_access_wildcard_ip_versions == ip_versions
+    assert state.lan_access_bind_host == bind_host
     assert state.lan_access_ready is False
+
+
+def test_an_ephemeral_hostname_launch_keeps_its_loopback_policy(monkeypatch):
+    monkeypatch.setattr(
+        lan_settings.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
+        ],
+    )
+    state = SimpleNamespace()
+
+    lan_settings.configure_lan_access(
+        state,
+        port = 0,
+        bind_host = "loopback.test",
+        secure = False,
+        is_colab = False,
+        frontend_served = True,
+    )
+
+    assert state.lan_access_launch_addresses == ("127.0.0.1",)
+    assert state.lan_access_launch_managed is False
+
+
+def _transport_request(
+    *,
+    server = ("192.168.1.24", 8888),
+    client = ("192.168.1.90", 54321),
+    state = None,
+    headers = None,
+):
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/v1/models",
+            "root_path": "",
+            "query_string": b"",
+            "headers": [
+                (name.lower().encode(), value.encode()) for name, value in (headers or {}).items()
+            ],
+            "server": server,
+            "client": client,
+            "app": SimpleNamespace(state = state or SimpleNamespace()),
+        }
+    )
+
+
+def _listener(
+    address = "192.168.1.24",
+    *,
+    running = True,
+    port = 8888,
+):
+    return {"running": running, "port": port, "addresses": [address]}
+
+
+@pytest.mark.parametrize(
+    "server,client,listener,expected",
+    [
+        (("192.168.1.24", 8888), ("10.0.0.90", 54321), _listener(), True),
+        (("fd00::24", 8888), ("fe80::90", 54321), _listener("fd00::24"), True),
+        (("::ffff:192.168.1.24", 8888), ("::ffff:192.168.1.90", 54321), _listener(), True),
+        (("192.168.1.24", 8889), ("192.168.1.90", 54321), _listener(), False),
+        (("192.168.1.25", 8888), ("192.168.1.90", 54321), _listener(), False),
+        (("192.168.1.24", 8888), ("192.168.1.90", 54321), _listener(running = False), False),
+        (("64.227.100.5", 8888), ("192.168.1.90", 54321), _listener("64.227.100.5"), False),
+        (("192.168.1.24", 8888), ("8.8.8.8", 54321), _listener(), False),
+        (("192.168.1.24", 8888), ("127.0.0.1", 54321), _listener(), False),
+        (("127.0.0.1", 8888), ("192.168.1.90", 54321), _listener("127.0.0.1"), False),
+        (("192.168.1.24", 8888), None, None, False),
+    ],
+)
+def test_private_lan_live_listener_matrix(monkeypatch, server, client, listener, expected):
+    monkeypatch.setattr(lan_access, "lan_listener_status", lambda: listener)
+    assert (
+        lan_settings.request_on_lan_access(_transport_request(server = server, client = client))
+        is expected
+    )
+
+
+def test_private_lan_ignores_forwarding_headers(monkeypatch):
+    monkeypatch.setattr(lan_access, "lan_listener_status", lambda: _listener())
+    headers = dict.fromkeys(("host", "forwarded", "x-forwarded-for", "origin"), "192.168.1.90")
+    assert not lan_settings.request_on_lan_access(
+        _transport_request(
+            server = ("127.0.0.1", 8888),
+            client = ("127.0.0.1", 54321),
+            headers = headers,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "bind_host,resolved,server,secure,is_colab,expected",
+    [
+        ("192.168.1.24", None, "192.168.1.24", False, False, True),
+        ("0.0.0.0", None, "192.168.1.24", False, False, True),
+        ("::", None, "fd00::24", False, False, True),
+        ("::0", None, "fd00::24", False, False, True),
+        ("0", None, "192.168.1.24", False, False, True),
+        ("::ffff:0.0.0.0", None, "192.168.1.24", False, False, True),
+        ("studio.lan", "192.168.1.24", "192.168.1.24", False, False, True),
+        ("studio.lan", "127.0.0.1", "127.0.0.1", False, False, False),
+        ("studio.lan", "64.227.100.5", "64.227.100.5", False, False, False),
+        ("studio.lan", "error", "192.168.1.24", False, False, False),
+        ("192.168.1.24", None, "192.168.1.24", True, False, False),
+        ("192.168.1.24", None, "192.168.1.24", False, True, False),
+    ],
+)
+def test_private_lan_launch_managed_matrix(
+    monkeypatch, bind_host, resolved, server, secure, is_colab, expected
+):
+    def resolve(_host, port, *_args, **_kwargs):
+        if resolved == "error":
+            raise OSError("dns unavailable")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (resolved, port))]
+
+    if resolved is not None:
+        monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(
+        lan_access,
+        "lan_listener_status",
+        lambda: {"running": False, "port": None, "addresses": []},
+    )
+    state = SimpleNamespace()
+    lan_settings.configure_lan_access(
+        state,
+        port = 8888,
+        bind_host = bind_host,
+        secure = secure,
+        is_colab = is_colab,
+        frontend_served = True,
+    )
+    assert (
+        lan_settings.request_on_lan_access(
+            _transport_request(
+                server = (server, 8888),
+                client = ("192.168.1.90", 54321),
+                state = state,
+            )
+        )
+        is expected
+    )
 
 
 # ── status ──
@@ -122,6 +313,22 @@ def test_a_loopback_launch_offers_a_startable_off_state():
     assert status["block_reason"] is None
     assert status["can_start"] is True and status["can_stop"] is False
     assert status["urls"] == []
+    assert status["keyless_lan_eligible"] is False
+
+
+def test_lan_status_uses_one_fail_closed_keyless_state(monkeypatch):
+    import utils.keyless_api_access as keyless
+
+    monkeypatch.setattr(keyless, "get_keyless_api_access_settings", lambda: ("inference", True))
+    status = lan_settings.lan_access_status(_app())
+    assert (status["keyless_scope"], status["keyless_tools"]) == ("inference", True)
+
+    def unreadable():
+        raise OSError("settings unavailable")
+
+    monkeypatch.setattr(keyless, "get_keyless_api_access_settings", unreadable)
+    status = lan_settings.lan_access_status(_app())
+    assert (status["keyless_scope"], status["keyless_tools"]) == ("off", False)
 
 
 @pytest.mark.parametrize(
@@ -146,17 +353,111 @@ def test_a_pending_admin_password_blocks_exposing_the_server(monkeypatch):
     assert status["can_start"] is False
 
 
+@pytest.mark.parametrize(
+    "bind_host,wildcard,expected_urls",
+    [
+        ("0.0.0.0", True, ["http://10.1.1.144:8888"]),
+        ("::", True, ["http://[fd00::144]:8888"]),
+        ("::0", True, ["http://[fd00::144]:8888"]),
+        ("0:0:0:0:0:0:0:0", True, ["http://[fd00::144]:8888"]),
+        ("0", True, ["http://10.1.1.144:8888"]),
+        ("::ffff:0.0.0.0", True, ["http://10.1.1.144:8888"]),
+        ("10.1.1.144", False, ["http://203.0.113.9:8888"]),
+    ],
+)
+def test_status_carries_the_bind_host_so_a_block_can_name_it(
+    monkeypatch, bind_host, wildcard, expected_urls
+):
+    """The launch-managed block covers a wildcard and a single-address bind
+    alike, so the address itself has to reach the settings UI."""
+    monkeypatch.setattr(
+        lan_access,
+        "detect_lan_addresses",
+        lambda ip_version = 4: ["fd00::144"] if ip_version == 6 else ["10.1.1.144"],
+    )
+    state = SimpleNamespace(server_url = "http://203.0.113.9:8888")
+    lan_settings.configure_lan_access(
+        state,
+        port = 8888,
+        bind_host = bind_host,
+        secure = False,
+        is_colab = False,
+        frontend_served = True,
+    )
+    state.lan_access_ready = True
+    status = lan_settings.lan_access_status(SimpleNamespace(state = state))
+    assert status["bind_host"] == bind_host
+    assert status["wildcard_bind"] is wildcard
+    assert status["urls"] == expected_urls
+    assert status["block_reason"] == "launch_managed"
+
+
+def test_a_dual_stack_wildcard_launch_reports_both_address_families(monkeypatch):
+    monkeypatch.setattr(
+        host_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 8888)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 8888, 0, 0)),
+        ],
+    )
+    detected_versions = []
+
+    def _detect(ip_version = 4):
+        detected_versions.append(ip_version)
+        return ["10.1.1.144"] if ip_version == 4 else ["fd00::144"]
+
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", _detect)
+    state = SimpleNamespace(server_url = "http://203.0.113.9:8888")
+    lan_settings.configure_lan_access(
+        state,
+        port = 8888,
+        bind_host = "dual-wildcard.test",
+        secure = False,
+        is_colab = False,
+        frontend_served = True,
+    )
+    state.lan_access_ready = True
+
+    status = lan_settings.lan_access_status(SimpleNamespace(state = state))
+    assert state.lan_access_wildcard_ip_versions == (4, 6)
+    assert status["urls"] == ["http://10.1.1.144:8888", "http://[fd00::144]:8888"]
+    assert detected_versions == [4, 6]
+
+
+def test_the_response_model_carries_the_bind_host_to_the_client():
+    """The status dict reaches the client through LanAccessResponse, which drops
+    any field it does not declare."""
+    state = SimpleNamespace(server_url = "http://10.1.1.144:8888")
+    lan_settings.configure_lan_access(
+        state,
+        port = 8888,
+        bind_host = "10.1.1.144",
+        secure = False,
+        is_colab = False,
+        frontend_served = True,
+    )
+    state.lan_access_ready = True
+    request = SimpleNamespace(app = SimpleNamespace(state = state))
+    served = routes._lan_access_response(request).model_dump()
+    assert served["bind_host"] == "10.1.1.144"
+    assert served["wildcard_bind"] is False
+
+
 def test_a_specific_host_launch_reports_the_address_it_was_given():
     status = lan_settings.lan_access_status(_app(lan_access_launch_managed = True))
     assert status["state"] == "online" and status["managed_by"] == "launch"
     assert status["urls"] == ["http://192.168.1.24:8888"]
+    assert status["keyless_lan_eligible"] is True
     assert status["can_stop"] is False
 
 
-def test_a_wildcard_launch_shows_lan_addresses_not_the_public_sharing_address(monkeypatch):
-    """server_url resolves the public IP for sharing, which behind NAT reaches
-    nothing on the LAN and would trip the public-address warning as well."""
-    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda: ["192.168.1.24"])
+def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public_address(
+    monkeypatch,
+):
+    """The status refreshes every LAN address instead of relying on server_url's
+    single direct base, and never leaks an obsolete public-address value."""
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["192.168.1.24"])
     state = _app(
         lan_access_launch_managed = True,
         lan_access_wildcard_bind = True,
@@ -166,11 +467,15 @@ def test_a_wildcard_launch_shows_lan_addresses_not_the_public_sharing_address(mo
     assert status["urls"] == ["http://192.168.1.24:8888"]
     assert status["public_urls"] == []
 
-    # detection is not repeated on every poll
-    monkeypatch.setattr(
-        lan_access, "detect_lan_addresses", lambda: pytest.fail("re-detected on a poll")
-    )
-    assert lan_settings.lan_access_status(state)["urls"] == ["http://192.168.1.24:8888"]
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["10.0.0.7"])
+    assert lan_settings.lan_access_status(state)["urls"] == ["http://10.0.0.7:8888"]
+
+
+def test_listener_urls_bracket_ipv6_literals():
+    assert lan_settings._listener_urls(["192.168.1.24", "fd00::24"], 8888) == [
+        "http://192.168.1.24:8888",
+        "http://[fd00::24]:8888",
+    ]
 
 
 def test_a_publicly_routable_bind_is_flagged_so_the_ui_can_warn(monkeypatch):
@@ -189,6 +494,7 @@ def test_a_publicly_routable_bind_is_flagged_so_the_ui_can_warn(monkeypatch):
     status = lan_settings.lan_access_status(_app())
     assert status["urls"] == ["http://192.168.1.24:8888", "http://64.227.100.5:8888"]
     assert status["public_urls"] == ["http://64.227.100.5:8888"]
+    assert status["keyless_lan_eligible"] is True
 
 
 @pytest.mark.parametrize(
@@ -201,6 +507,8 @@ def test_a_publicly_routable_bind_is_flagged_so_the_ui_can_warn(monkeypatch):
         ("100.64.1.1", False),
         ("64.227.100.5", True),
         ("8.8.8.8", True),
+        ("fd00::24", False),
+        ("2001:4860:4860::8844", True),
         ("not-an-ip", False),
     ],
 )
@@ -214,7 +522,21 @@ def test_a_private_bind_carries_no_public_warning(monkeypatch):
         "lan_listener_status",
         lambda: {"running": True, "addresses": ["192.168.1.24"], "port": 8888, "error": None},
     )
-    assert lan_settings.lan_access_status(_app())["public_urls"] == []
+    status = lan_settings.lan_access_status(_app())
+    assert status["public_urls"] == []
+    assert status["keyless_lan_eligible"] is True
+
+
+def test_a_cgnat_bind_is_not_reported_as_keyless_lan(monkeypatch):
+    monkeypatch.setattr(
+        lan_access,
+        "lan_listener_status",
+        lambda: {"running": True, "addresses": ["100.64.0.10"], "port": 8888, "error": None},
+    )
+    status = lan_settings.lan_access_status(_app())
+    assert status["state"] == "online"
+    assert status["public_urls"] == []
+    assert status["keyless_lan_eligible"] is False
 
 
 def test_api_only_launches_advertise_that_the_web_ui_is_not_served():
@@ -242,7 +564,7 @@ def test_detection_drops_addresses_no_other_device_can_open(monkeypatch):
     monkeypatch.setattr(
         lan_access,
         "_interface_addresses",
-        lambda: [
+        lambda _ip_version = 4: [
             "127.0.0.1",
             "169.254.10.1",
             "224.0.0.1",
@@ -262,7 +584,7 @@ def test_detection_drops_addresses_no_other_device_can_open(monkeypatch):
 @pytest.mark.allow_network
 def test_the_default_route_address_leads_so_it_becomes_the_shown_url(monkeypatch):
     routed = _require_lan_address()
-    monkeypatch.setattr(lan_access, "_interface_addresses", lambda: ["203.0.113.9"])
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version = 4: ["203.0.113.9"])
     assert lan_access.detect_lan_addresses() == [routed, "203.0.113.9"]
 
 
@@ -311,6 +633,33 @@ def test_interface_enumeration_skips_adapters_that_are_down(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "psutil", fake)
     assert lan_access._interface_addresses() == ["10.0.0.7"]
+    assert lan_access._interface_addresses(6) == ["fe80::1"]
+
+
+def test_ipv6_detection_keeps_only_reachable_unscoped_addresses(monkeypatch):
+    class _NoRouteSocket:
+        def connect(self, _address):
+            raise OSError("network is unreachable")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(lan_access.socket, "socket", lambda *_args, **_kwargs: _NoRouteSocket())
+    monkeypatch.setattr(
+        lan_access,
+        "_interface_addresses",
+        lambda _ip_version = 4: [
+            "::1",
+            "fe80::1%en0",
+            "ff02::1",
+            "::",
+            "fd00::24",
+            "2001:4860:4860::8844",
+            "fd00::24",
+        ],
+    )
+
+    assert lan_access.detect_lan_addresses(6) == ["fd00::24", "2001:4860:4860::8844"]
 
 
 def test_interface_enumeration_skips_windows_host_only_switches(monkeypatch):
@@ -347,20 +696,107 @@ def test_interface_enumeration_skips_windows_host_only_switches(monkeypatch):
 
 def test_wsl_nat_address_is_not_advertised(monkeypatch):
     monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "nat")
-    monkeypatch.setattr(lan_access, "_interface_addresses", lambda: ["172.25.35.232"])
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version = 4: ["172.25.35.232"])
     assert lan_access.detect_lan_addresses() == []
 
 
 def test_wsl_unknown_networking_mode_fails_closed(monkeypatch):
     monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "unknown")
-    monkeypatch.setattr(lan_access, "_interface_addresses", lambda: ["172.25.35.232"])
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version = 4: ["172.25.35.232"])
     assert lan_access.detect_lan_addresses() == []
 
 
 def test_wsl_mirrored_networking_keeps_reachable_addresses(monkeypatch):
     monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "mirrored")
-    monkeypatch.setattr(lan_access, "_interface_addresses", lambda: ["192.168.1.20"])
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version = 4: ["192.168.1.20"])
     assert lan_access.detect_lan_addresses() == ["192.168.1.20"]
+
+
+def test_wsl_mode_is_cached_while_interface_addresses_still_refresh(monkeypatch):
+    class _NoRouteSocket:
+        def connect(self, _address):
+            raise OSError("network is unreachable")
+
+        def close(self):
+            pass
+
+    mode_calls = []
+    interface_addresses = iter([["192.168.1.20"], ["192.168.1.21"]])
+    monkeypatch.setattr(lan_access.sys, "platform", "linux")
+    monkeypatch.setattr(lan_access.platform, "release", lambda: "6.6.87.2-microsoft-standard-WSL2")
+    monkeypatch.setattr(lan_access, "_wsl_mode_cache", None)
+    monkeypatch.setattr(lan_access.socket, "socket", lambda *_args, **_kwargs: _NoRouteSocket())
+    monkeypatch.setattr(
+        lan_access,
+        "_interface_addresses",
+        lambda _ip_version = 4: next(interface_addresses),
+    )
+    monkeypatch.setattr(
+        lan_access.subprocess,
+        "run",
+        lambda *_args, **_kwargs: mode_calls.append(True) or SimpleNamespace(stdout = "mirrored\n"),
+    )
+
+    assert lan_access.detect_lan_addresses() == ["192.168.1.20"]
+    assert lan_access.detect_lan_addresses() == ["192.168.1.21"]
+    assert len(mode_calls) == 1
+
+
+def test_wsl_mode_cache_retries_a_timeout_after_expiry(monkeypatch):
+    now = [100.0]
+    mode_calls = []
+
+    def _run(*_args, **_kwargs):
+        mode_calls.append(True)
+        if len(mode_calls) == 1:
+            raise lan_access.subprocess.TimeoutExpired(["wslinfo"], 1)
+        return SimpleNamespace(stdout = "mirrored\n")
+
+    monkeypatch.setattr(lan_access.sys, "platform", "linux")
+    monkeypatch.setattr(lan_access.platform, "release", lambda: "microsoft-standard-WSL2")
+    monkeypatch.setattr(lan_access, "_wsl_mode_cache", None)
+    monkeypatch.setattr(lan_access.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(lan_access.subprocess, "run", _run)
+
+    assert lan_access._wsl_networking_mode() == "unknown"
+    now[0] += lan_access._WSL_MODE_CACHE_TTL - 1
+    assert lan_access._wsl_networking_mode() == "unknown"
+    assert len(mode_calls) == 1
+    now[0] += 2
+    assert lan_access._wsl_networking_mode() == "mirrored"
+    assert len(mode_calls) == 2
+
+
+def test_concurrent_wsl_mode_checks_share_one_probe(monkeypatch):
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+    mode_calls = []
+    results = []
+
+    def _run(*_args, **_kwargs):
+        mode_calls.append(True)
+        probe_started.set()
+        assert release_probe.wait(2)
+        return SimpleNamespace(stdout = "mirrored\n")
+
+    monkeypatch.setattr(lan_access.sys, "platform", "linux")
+    monkeypatch.setattr(lan_access.platform, "release", lambda: "microsoft-standard-WSL2")
+    monkeypatch.setattr(lan_access, "_wsl_mode_cache", None)
+    monkeypatch.setattr(lan_access.subprocess, "run", _run)
+    threads = [
+        threading.Thread(target = lambda: results.append(lan_access._wsl_networking_mode()))
+        for _ in range(2)
+    ]
+
+    threads[0].start()
+    assert probe_started.wait(2)
+    threads[1].start()
+    release_probe.set()
+    for thread in threads:
+        thread.join(2)
+
+    assert results == ["mirrored", "mirrored"]
+    assert len(mode_calls) == 1
 
 
 # ── live listener ──
@@ -511,15 +947,23 @@ def test_a_start_with_no_usable_address_fails_without_leaving_state(monkeypatch)
     assert lan_access.lan_listener_status()["error"] is None
 
 
-def test_a_port_already_taken_on_every_address_fails_closed(monkeypatch):
+def test_automatic_tries_each_port_and_exact_does_not_fall_back(monkeypatch):
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda: ["10.0.0.7"])
+    attempted = []
 
-    def _refuse(*_args, **_kwargs):
+    def _refuse(_address, port):
+        attempted.append(port)
         raise OSError("address in use")
 
     monkeypatch.setattr(lan_access, "_bind_listener", _refuse)
     with pytest.raises(RuntimeError, match = "bind_failed"):
-        lan_access.start_lan_listener(object(), object(), 8888)
+        lan_access.start_lan_listener(object(), object(), 8888, (8889, 8890))
+    assert attempted == [8888, 8889, 8890]
+
+    attempted.clear()
+    with pytest.raises(RuntimeError, match = "bind_failed"):
+        lan_access.start_lan_listener(object(), object(), 43210)
+    assert attempted == [43210]
     assert lan_access.lan_listener_status()["running"] is False
 
 
@@ -736,6 +1180,7 @@ def test_stop_releases_the_sockets_itself_when_the_serving_loop_is_gone(monkeypa
 
 
 def _configured(live_server):
+    lan_settings.set_lan_access_port(live_server.port)
     """The live app carrying the launch policy run.py would have published on it."""
     lan_settings.configure_lan_access(
         live_server.app.state,
@@ -853,9 +1298,100 @@ def test_start_refuses_while_a_block_is_in_force():
         lan_settings.stop_lan_access(_app(lan_access_launch_managed = True))
 
 
-def test_start_refuses_a_port_the_server_never_published():
-    with pytest.raises(RuntimeError, match = "server_port_unavailable"):
-        lan_settings.start_lan_access(_app(lan_access_port = None))
+def test_start_uses_the_saved_port_policy(monkeypatch):
+    calls = []
+    loop = SimpleNamespace(is_closed = lambda: False, is_running = lambda: True)
+    app = _app(lan_access_loop = loop)
+    monkeypatch.setattr(
+        lan_access,
+        "start_lan_listener",
+        lambda _app, _loop, port, fallback: calls.append((port, fallback)) or ("10.0.0.7",),
+    )
+
+    lan_settings.start_lan_access(app)
+    assert calls == [(8888, tuple(range(8889, 8909)))]
+
+    lan_settings.set_lan_access_port(43210)
+    lan_settings.start_lan_access(app)
+    assert calls[-1] == (43210, ())
+
+
+@pytest.mark.parametrize(
+    "stored,reason",
+    [
+        (43210, "lan_access_port_unavailable"),
+        ("broken", "lan_access_port_invalid"),
+    ],
+)
+def test_start_refuses_when_the_saved_port_policy_is_unusable(
+    monkeypatch, stored_settings, stored, reason
+):
+    stored_settings[lan_settings.LAN_ACCESS_PORT_KEY] = stored
+    loop = SimpleNamespace(is_closed = lambda: False, is_running = lambda: True)
+    app = _app(lan_access_loop = loop)
+    calls = []
+    monkeypatch.setattr(
+        lan_access,
+        "start_lan_listener",
+        lambda *_args: calls.append(_args) or ("10.0.0.7",),
+    )
+    if stored == 43210:
+        monkeypatch.setattr(
+            studio_db,
+            "get_app_setting",
+            lambda *_args: (_ for _ in ()).throw(OSError("database unavailable")),
+        )
+
+    with pytest.raises(RuntimeError, match = reason):
+        lan_settings.start_lan_access(app)
+    assert calls == []
+
+
+def test_start_and_port_save_are_serialized(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    running = False
+    loop = SimpleNamespace(is_closed = lambda: False, is_running = lambda: True)
+    app = _app(lan_access_loop = loop)
+
+    def status(_app):
+        return {
+            "state": "online" if running else "off",
+            "can_start": not running,
+            "block_reason": None,
+        }
+
+    def start_listener(*_args):
+        nonlocal running
+        entered.set()
+        assert release.wait(timeout = 2)
+        running = True
+        return ("10.0.0.7",)
+
+    monkeypatch.setattr(lan_settings, "lan_access_status", status)
+    monkeypatch.setattr(lan_access, "start_lan_listener", start_listener)
+
+    start_thread = threading.Thread(target = lan_settings.start_lan_access, args = (app,))
+    start_thread.start()
+    assert entered.wait(timeout = 2)
+
+    save_errors = []
+
+    def save():
+        try:
+            lan_settings.save_lan_access_port(app, 43210)
+        except RuntimeError as exc:
+            save_errors.append(str(exc))
+
+    save_thread = threading.Thread(target = save)
+    save_thread.start()
+    time.sleep(0.05)
+    assert save_thread.is_alive(), "port save did not wait for the in-flight start"
+
+    release.set()
+    start_thread.join(timeout = 2)
+    save_thread.join(timeout = 2)
+    assert save_errors == ["lan_access_running"]
 
 
 def test_start_refuses_once_the_server_loop_is_gone(monkeypatch):
@@ -899,6 +1435,23 @@ def test_colab_auto_start_setting_is_read_only(monkeypatch):
     assert exc.value.status_code == 409
 
 
+def test_port_update_route_rejects_running_and_colab_lan_access(monkeypatch):
+    for reason in ("lan_access_running", "colab"):
+        monkeypatch.setattr(
+            routes,
+            "save_lan_access_port",
+            lambda *_args, reason = reason: (_ for _ in ()).throw(RuntimeError(reason)),
+        )
+        with pytest.raises(HTTPException) as exc:
+            routes.update_lan_access_port(
+                SimpleNamespace(app = _app()),
+                routes.LanAccessPortPayload(port = 43210),
+                "admin",
+                None,
+            )
+        assert exc.value.status_code == 409 and exc.value.detail == reason
+
+
 def test_a_blocked_start_answers_409_rather_than_500(monkeypatch):
     monkeypatch.setattr(
         routes, "start_lan_access", lambda _app: (_ for _ in ()).throw(RuntimeError("colab"))
@@ -923,7 +1476,7 @@ def test_management_rejects_api_keys():
             continue
         args = node.args.args + node.args.kwonlyargs
         gated[node.name] = any(a.arg == "_ui_session" for a in args)
-    assert len(gated) == 4, f"expected 4 lan-access handlers, found {sorted(gated)}"
+    assert len(gated) == 5, f"expected 5 lan-access handlers, found {sorted(gated)}"
     assert all(
         gated.values()
     ), f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"

@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Install, launch and authenticate a real Studio. VENDORED from `studio_test_kit`.
+"""Install, launch and authenticate a real Unsloth. VENDORED from `studio_test_kit`.
 
 Vendored on purpose. The shipped artifact is a single `studiobench.pyz` a tester runs on a machine
-that has a Studio and nothing else, so it cannot import a module that lives elsewhere in this
+that has an Unsloth and nothing else, so it cannot import a module that lives elsewhere in this
 repository. The logic is `studio_test_kit.lifecycle` plus `studio_test_kit.auth`, with two
 deliberate changes:
 
 - **stdlib only.** `studio_test_kit.auth` uses `httpx`; this uses `urllib.request`, so `--doctor`
   and `--attach` work on a machine with nothing pip-installed but Playwright.
-- **The password-change gate is handled.** A current Studio mints a bootstrap password and sets
+- **The password-change gate is handled.** A current Unsloth mints a bootstrap password and sets
   `must_change_password`, and until it is cleared EVERY authenticated route answers
   `403 Password change required` while `/healthz` answers 200 and login itself succeeds. That
   failure is silent one request too late, and it is what stops a thread from being seeded at all.
@@ -44,9 +44,8 @@ class StudioInstall:
     bootstrap_password: Optional[str] = None
     port: Optional[int] = None
     pid: Optional[int] = None
-    #: The commit `branch` RESOLVED TO, which is the build that was installed. `branch` is what
-    #: the caller typed, and a branch or a movable tag is not a build. See
-    #: `__main__.commit_problems`.
+    #: The commit `branch` RESOLVED TO, which is the build that was installed. `branch` is what the
+    #: caller typed, and a branch or a movable tag is not a build. See `__main__.commit_problems`.
     commit: Optional[str] = None
 
     @property
@@ -54,14 +53,14 @@ class StudioInstall:
         return f"http://127.0.0.1:{self.port}"
 
 
-#: What the backend gives an access token: `auth/authentication.py`, ACCESS_TOKEN_EXPIRE_MINUTES.
-#: Only a FALLBACK. The expiry actually enforced is the `exp` claim in the token this run was
-#: handed, which is read from the token itself; this number is what to assume when the server
-#: hands back something that is not a readable JWT.
+#: What the backend gives an access token (`auth/authentication.py`,
+#: ACCESS_TOKEN_EXPIRE_MINUTES). Only a FALLBACK: the expiry enforced is the `exp` claim read
+#: from the token itself, and this is what to assume when the server hands back something that
+#: is not a readable JWT.
 ACCESS_TOKEN_TTL_S = 60 * 60
 #: How far ahead of `exp` a token is replaced. Seeding a 1M-token thread is ONE request with a
-#: 900 second timeout, so a token that is merely valid at the moment the request is written is not
-#: good enough: it has to still be valid when the server finishes reading the body.
+#: 900 second timeout, so a token merely valid when the request is written is not good enough:
+#: it must still be valid when the server finishes reading the body.
 TOKEN_REFRESH_MARGIN_S = 15 * 60
 
 
@@ -115,7 +114,7 @@ class StudioAuth:
     base_url: str
     username: str
     password: str
-    #: Unix seconds, from the token's own `exp`. None means "unknown", treated as `ACCESS_TOKEN_TTL_S`
+    #: Unix seconds, from the token's own `exp`. None means unknown, treated as `ACCESS_TOKEN_TTL_S`
     #: from the moment this object was built.
     expires_at: Optional[float] = None
     #: Called with `self` after the token is replaced. The browser context seeds its localStorage
@@ -123,9 +122,9 @@ class StudioAuth:
     on_rotate: Optional[Callable[["StudioAuth"], None]] = None
     rotations: int = field(default = 0, init = False)
     #: Turned off the first time a FRESH token still reads as expiring, which means the `exp` this
-    #: process reads and the server's own clock do not agree. See `rotate`.
+    #: process reads and the server's clock do not agree. See `rotate`.
     proactive: bool = field(default = True, init = False)
-    #: The last `on_rotate` failure, kept rather than raised. See `rotate`.
+    #:The last `on_rotate` failure, kept rather than raised. See `rotate`.
     hook_error: Optional[str] = field(default = None, init = False)
 
     def __post_init__(self) -> None:
@@ -155,7 +154,7 @@ class StudioAuth:
         A FRESH TOKEN THAT IS ALREADY INSIDE THE MARGIN TURNS THE PROACTIVE HALF OFF, and this is
         the guard against the one way "refresh before `exp`" can run away. `needs_refresh` compares
         the server's `exp` against THIS PROCESS'S clock, and the two are not required to agree: a
-        Studio running 45 minutes behind, or a deployment that shortens
+        Unsloth running 45 minutes behind, or a deployment that shortens
         `ACCESS_TOKEN_EXPIRE_MINUTES` below the margin, makes every token ever issued look like it
         is about to expire. Without this, every single request would log in again and append
         another init script to the browser context for the rest of the run. So the condition is
@@ -197,7 +196,7 @@ def auth_request_json(
 
     Both halves are needed. The proactive half is what keeps a 900 second seeding PUT from dying
     half way through a request that was valid when it started. The reactive half covers what this
-    process cannot compute: a clock offset against the server, a Studio restarted underneath the
+    process cannot compute: a clock offset against the server, an Unsloth restarted underneath the
     run, or a token invalidated by something else. One retry only -- a 401 that survives a fresh
     login is a real refusal and must be raised, not looped on.
 
@@ -281,9 +280,9 @@ def register_provider(base_url: str, auth: StudioAuth, provider: ProviderSeed) -
     """
     existing = auth_request_json(auth, f"{base_url.rstrip('/')}/api/providers/") or []
     for row in existing:
-        # Idempotent across runs. Every run binds a NEW ephemeral pacer port, so a stale entry
-        # from a previous run points at a port nothing is listening on, and leaving it there gives
-        # the picker two identically named models of which one is dead.
+        # Idempotent across runs. Every run binds a NEW ephemeral pacer port, so a stale entry points at
+        # a port nothing is listening on and gives the picker two identically named models of which one
+        # is dead.
         if row.get("display_name") == provider.name:
             try:
                 auth_request_json(
@@ -410,8 +409,8 @@ def checkout_ref(repo: Path, ref: str) -> str:
     """
     fetched = _run(["git", "fetch", "--tags", "origin", ref], cwd = repo, check = False)
     if fetched.returncode != 0:
-        # A ref the remote will not serve by name (an old server, or `ref^1`, which is a local
-        # expression rather than something to ask for). Fetch everything and resolve it here.
+        # A ref the remote will not serve by name (an old server, or `ref^1`, a local expression). Fetch
+        # everything and resolve it here.
         _run(["git", "fetch", "--tags", "origin"], cwd = repo, check = False)
     candidates = [] if fetched.returncode != 0 else ["FETCH_HEAD"]
     candidates += [f"origin/{ref}", ref]
@@ -432,10 +431,9 @@ def checkout_ref(repo: Path, ref: str) -> str:
     )
 
 
-#: What `install.sh` is allowed. A multi-gigabyte download and build, documented in the README as
-#: "budgeted at up to 45 minutes" and explicitly NOT part of a tier's wall clock. Named rather
-#: than inlined because the run's watchdog has to add it to a deadline it would otherwise fire in
-#: the middle of: see `watchdog_deadline_s`.
+#: What `install.sh` is allowed. A multi-gigabyte download and build, documented as 'budgeted at
+#: up to 45 minutes' and explicitly NOT part of a tier's wall clock. Named rather than inlined
+#: because the run's watchdog has to add it to a deadline it would otherwise fire inside.
 INSTALL_TIMEOUT_S = 60 * 45
 
 
@@ -452,11 +450,11 @@ def install_studio(
     if not (reuse_clone and (repo / ".git").exists()):
         if repo.exists():
             shutil.rmtree(repo)
-        # Cloned WITHOUT `--branch`, then moved onto the ref locally, so one code path serves a
-        # branch, a tag and a commit sha instead of two that disagree about what a ref is.
+        # Cloned WITHOUT `--branch`, then moved onto the ref locally, so one code path serves a branch,
+        # a tag and a commit sha instead of two that disagree about what a ref is.
         _run(["git", "clone", remote, str(repo)])
-    # KEPT, not discarded. `checkout_ref` is the only place that knows which commit a ref names,
-    # and the ref alone cannot tell a resumed run that `main` moved underneath it.
+    # KEPT, not discarded: `checkout_ref` is the only place that knows which commit a ref names, and
+    # the ref alone cannot tell a resumed run that `main` moved underneath it.
     commit = checkout_ref(repo, branch)
     install_sh = repo / "install.sh"
     if not install_sh.exists():
@@ -507,13 +505,13 @@ def _read_bootstrap_password(home: Path, log_path: Path, deadline: float) -> Opt
 
 
 #: How long to keep looking for the launched server's pid. It appears once the server has forked
-#: and exec'd, which is after `setsid -f` has already returned, so this is a poll rather than a
-#: read. Named so a test can set it to zero instead of sleeping through it.
+#: and exec'd, after `setsid -f` has returned, so this is a poll rather than a read. Named so a
+#: test can set it to zero.
 PID_DISCOVERY_TIMEOUT_S = 15.0
 
 
 def _discover_pid(port: int, timeout_s: Optional[float] = None) -> Optional[int]:
-    """The pid of the Studio serving `port`, or None. Polls, because it appears asynchronously.
+    """The pid of the Unsloth serving `port`, or None. Polls, because it appears asynchronously.
 
     THE PROCESS WE LAUNCHED IS NOT THE PROCESS WE SPAWNED. `launch_studio` runs the server under
     `setsid -f`, which always forks and lets the parent exit without waiting, so the pid `Popen`
@@ -566,28 +564,26 @@ def launch_studio(
     healthz_timeout_s: int = 240,
     password_timeout_s: int = 30,
 ) -> StudioInstall:
-    # AN OCCUPIED PORT IS REFUSED BEFORE ANYTHING IS LAUNCHED, and this is the half of the
-    # abandoned-server failure that no cleanup can reach. `--keep-studio` asks for a Studio to be
-    # LEFT RUNNING on this port, so the next run's `unsloth studio -p <port>` finds one of our own
-    # servers there and aborts rather than binding (`studio/backend/run.py`, `_resolve_port` with
-    # `avoid_own_studio`); when the pid record is not readable it falls back to the NEXT port
-    # instead. Either way nothing this run launched is on `port`.
-    #
-    # Everything downstream then agrees that the launch worked. `_discover_pid` pgreps for
-    # `unsloth studio.*-p <port>` and finds the OLD process; `wait_for_healthz` takes its 200 from
-    # it; and `authenticate` retries with `BENCH_PASSWORD`, which a previous studiobench run has
-    # already rotated that Studio to, so the login succeeds as well. The run then measures the
-    # build the PREVIOUS invocation installed while `run_meta` records the ref this one asked for,
-    # and `stop_studio` kills the server the caller asked to keep. There is no reading anywhere
-    # that says which build answered, so this is refused rather than reported.
+    # AN OCCUPIED PORT IS REFUSED BEFORE ANYTHING IS LAUNCHED, the half of the abandoned-server
+    # failure no cleanup can reach. `--keep-studio` leaves an Unsloth running on this port, so the
+    # next run's `unsloth studio -p <port>` finds one of our own servers and aborts rather than
+    # binding, or falls back to the NEXT port when the pid record is unreadable. Either way nothing
+    # this run launched is on `port`.
+    # `studio/backend/run.py::_resolve_port`, `avoid_own_studio`.
+    # Everything downstream then agrees the launch worked: `_discover_pid` pgreps and finds the OLD
+    # process, `wait_for_healthz` takes its 200 from it, and `authenticate` retries with
+    # `BENCH_PASSWORD`, which a previous run has already rotated that Unsloth to. The run measures
+    # the build the PREVIOUS invocation installed while `run_meta` records the ref this one asked
+    # for, and `stop_studio` kills the server the caller asked to keep. No reading anywhere says
+    # which build answered.
     if port_is_busy(port):
         holder = _discover_pid(port, 0.0)
         raise RuntimeError(
             f"port {port} is already in use"
-            + (f" by Studio pid {holder}" if holder else "")
-            + ". A Studio launched here would abort or land on another port while this harness "
+            + (f" by Unsloth pid {holder}" if holder else "")
+            + ". An Unsloth launched here would abort or land on another port while this harness "
             "measured whatever is already answering. Stop it (`unsloth studio stop`, or the "
-            "Studio a previous --keep-studio run left behind) or pass --port."
+            "Unsloth a previous --keep-studio run left behind) or pass --port."
         )
     log_path = Path(log_path).resolve()
     log_path.parent.mkdir(parents = True, exist_ok = True)
@@ -595,7 +591,7 @@ def launch_studio(
     bin_path = _find_unsloth_bin(install)
     env = {"UNSLOTH_STUDIO_HOME": str(install.home), **(extra_env or {})}
     # NOT `UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1`: that opt-in SSRF guard rejects any
-    # non-global address, which is exactly what the pacer's 127.0.0.1 base URL is.
+    # non-global address, which is exactly the pacer's 127.0.0.1 base URL.
     env.pop("UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS", None)
     cmd = [
         "setsid",
@@ -615,23 +611,21 @@ def launch_studio(
     install.bootstrap_password = _read_bootstrap_password(
         install.home, log_path, time.time() + password_timeout_s
     )
-    # BEFORE the health check, not after it. A Studio that starts and stays unhealthy used to raise
-    # here with `install.pid` still None, and `stop_studio` has nothing to kill without it -- so the
-    # detached server was left running on the requested port while the CLI unwound. It is not idle
-    # there: the next attempt's `unsloth studio -p <port>` finds one of our own servers on the port
-    # and aborts rather than binding (`run.py:_resolve_port`, `avoid_own_studio`), while
-    # `wait_for_healthz` gets its 200 from the STALE process -- which by then may have finished
-    # starting. That run measures the build the previous attempt installed and records the ref this
-    # one asked for, which is the one failure this harness may never produce quietly.
+    # BEFORE the health check, not after. An Unsloth that starts and stays unhealthy used to raise
+    # here with `install.pid` still None, so `stop_studio` had nothing to kill and the detached
+    # server was left on the requested port. The next attempt then aborts rather than binding while
+    # `wait_for_healthz` gets its 200 from the STALE process, measuring the build the previous
+    # attempt installed while recording the ref this one asked for: the one failure this harness may
+    # never produce quietly.
     install.pid = _discover_pid(port)
     healthy = wait_for_healthz(install.base_url, healthz_timeout_s)
     if install.pid is None:
-        # One more look: a server slow enough to miss the window above is exactly the one whose
-        # health check just timed out, and it is the one that most needs to be terminated.
+        # One more look: a server slow enough to miss the window above is exactly the one whose health
+        # check just timed out, and the one that most needs terminating.
         install.pid = _discover_pid(port, 0.0)
     if not healthy:
         stop_studio(install)
-        raise TimeoutError(f"Studio on :{port} did not pass /healthz within {healthz_timeout_s}s")
+        raise TimeoutError(f"Unsloth on :{port} did not pass /healthz within {healthz_timeout_s}s")
     return install
 
 
@@ -678,11 +672,10 @@ def authenticate(
     the run simply fails to seed a thread and reports an empty one. So the gate is read from
     `/api/auth/status` up front and cleared through the one endpoint that accepts the gated token.
     """
-    # Try the supplied password, then the one a PREVIOUS studiobench run rotated to. Studio mints
-    # a bootstrap password and demands it be changed; this function is what changes it, so the
-    # second run against the same home is handed a bootstrap password that no longer exists and
-    # gets a 401 whose message sends you to `reset-password`. Measured on the second run against
-    # a home the first run had already set up. Trying both makes reruns and `--resume` work.
+    # Try the supplied password, then the one a PREVIOUS studiobench run rotated to. Unsloth mints a
+    # bootstrap password and demands it be changed, and this function is what changes it, so the
+    # second run against the same home is handed a password that no longer exists and gets a 401
+    # pointing at `reset-password`. Trying both makes reruns and `--resume` work.
     attempts = [password, new_password] if password != new_password else [password]
     auth = None
     last: Optional[Exception] = None

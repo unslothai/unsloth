@@ -92,6 +92,7 @@ on:
       # change would burn a slot from the 5-job account-wide macOS cap to run
       # nothing related. studio-backend-ci.yml covers both on ubuntu-latest and
       # already triggers on them.
+      - 'studio/backend/tests/test_mlx_inference_backend.py'
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
       - 'tests/studio/run_real_mlx_smoke.py'
       - 'tests/studio/mac_capability_verdict_smoke.py'
@@ -111,6 +112,7 @@ on:
       - 'studio/backend/core/inference/mlx_inference.py'
       - 'studio/backend/main.py'
       - 'studio/backend/utils/mlx_repair.py'
+      - 'studio/backend/tests/test_mlx_inference_backend.py'
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
       - 'tests/studio/run_real_mlx_smoke.py'
       - 'tests/studio/mac_capability_verdict_smoke.py'
@@ -174,7 +176,7 @@ jobs:
       # runners. Keep this job in audit while its egress destinations are
       # observed, then graduate it to a reviewed block-mode allowlist.
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -190,6 +192,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: mlx
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
@@ -322,6 +325,16 @@ jobs:
           python -m pytest -v --tb=short \
             tests/studio/test_mlx_training_worker_behaviors.py
 
+      # The inference backend's numerical tests importorskip mlx, so they skip on
+      # studio-backend-ci.yml's ubuntu runner and only ever execute here. Run from
+      # studio/backend: its conftest puts that directory on sys.path.
+      - name: MLX inference backend tests
+        working-directory: studio/backend
+        env:
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          python -m pytest -v --tb=short tests/test_mlx_inference_backend.py
+
       # Real MLX training + inference smoke test. Trains
       # unsloth/gemma-3-270m-it for 7 deterministic LoRA steps
       # (batch_size=2, gradient_accumulation_steps=3) on a single
@@ -423,7 +436,7 @@ jobs:
       # Three boots, one per step: the self-heal is once per process, so the
       # opted-out and the in-flight cases cannot share a server.
       # ---------------------------------------------------------------
-      - name: Provision a Studio venv for the capability-verdict boots
+      - name: Provision an Unsloth venv for the capability-verdict boots
         run: |
           set -euo pipefail
           # `unsloth studio` re-execs into $STUDIO_HOME/unsloth_studio and refuses to
@@ -539,16 +552,45 @@ jobs:
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
 
-          # Wait for /health to come up
-          for i in $(seq 1 30); do
-            if curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
-              echo "  server up after ${i}s"
+          # Wait for /health to come up.
+          #
+          # 180s, the budget .github/scripts/wait-for-health.sh fixes for the
+          # Studio health waits, and the one the other server waits under
+          # .github/workflows already use. This poll was the outlier at 30, and
+          # 30 is under the cost of the thing it waits for: over 21 completed
+          # runs the server took 20.0s to 30.6s of wall clock to answer /health,
+          # median 27.8s, so the slowest passes were landing on the deadline and
+          # four runs -- including two pushes to main -- failed with the model
+          # still loading. Nothing here is slow when the server is healthy: the
+          # loop returns on the first good probe, so a larger budget costs only
+          # the runs that were going to fail anyway.
+          #
+          # A wall-clock deadline rather than an iteration count. With
+          # --max-time each probe can cost seconds, so an iteration is not a
+          # second and counting iterations does not bound the wait. $SECONDS is
+          # this shell's elapsed wall time. The old loop showed the gap: it
+          # advertised 30s, and its 30 iterations took 34s to expire.
+          #
+          # --connect-timeout/--max-time because curl sets no maximum transfer
+          # time by default. A server that binds the port and then wedges parks
+          # a probe forever, and one infinite iteration is not a deadline.
+          HEALTH_TIMEOUT=180
+          started=$SECONDS
+          deadline=$(( started + HEALTH_TIMEOUT ))
+          healthy=0
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            if curl -sf --connect-timeout 3 --max-time 5 \
+                 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+              healthy=1
+              # Elapsed wall time, not the iteration count the old loop
+              # printed: that undercounted, reporting 26s for a 28.0s wait.
+              echo "  server up after $(( SECONDS - started ))s"
               break
             fi
             sleep 1
           done
-          if ! curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
-            echo "::error::llama-server never became healthy"
+          if [ "$healthy" != "1" ]; then
+            echo "::error::llama-server never became healthy after $(( SECONDS - started ))s"
             tail -40 /tmp/llama-server.log
             exit 1
           fi

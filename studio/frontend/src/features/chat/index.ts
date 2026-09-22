@@ -16,6 +16,7 @@ export {
   listChatAttachments,
   listGgufVariants,
   listLocalModels,
+  estimateKvCache,
   listLoras,
   listModels,
   listRecommendedFolders,
@@ -25,11 +26,13 @@ export {
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
+  validateModel,
   type BrowseFoldersResponse,
   type CachedGgufRepo,
   type CachedModelRepo,
   type ChatAttachmentPage,
   type ChatAttachmentRecord,
+  type KvCacheEstimate,
   type LocalModelInfo,
   type ScanFolderInfo,
 } from "./api/chat-api";
@@ -43,6 +46,7 @@ export {
   applyActiveModelStatusToStore,
   resolveInferenceCheckpointId,
 } from "./lib/apply-inference-status-to-store";
+export { isSpeechOnlyStatus } from "./lib/speech-only-status";
 export {
   ChatSettingsPanel,
   ParamSlider,
@@ -52,10 +56,18 @@ export {
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
 export {
+  hydrateModelDisclaimerPreference,
+  refreshModelDisclaimerPreference,
+  saveModelDisclaimerPreference,
+} from "./sync-model-disclaimer-preference";
+export { useChatActive, useInComparePane } from "./runtime-provider";
+export {
   CHAT_RAG_CAPTION_KEY,
   CHAT_RAG_OCR_KEY,
   normalizeSpeculativeType,
   readPersistedSpeculativeType,
+  CHAT_GPU_MEMORY_MODE_KEY,
+  CHAT_SPECULATIVE_TYPE_KEY,
   readPersistedGpuMemoryMode,
   reconcilePersistedGpuIds,
   reconcilePersistedGpuSelection,
@@ -66,6 +78,7 @@ export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
   toolOutputKey,
+  toolResultText,
   toolThreadScope,
   useToolOutputFor,
   useUnresolvedToolPaneScope,
@@ -74,18 +87,63 @@ export {
 export { useToolAwaitingApproval } from "./tool-approval";
 export { PermissionModeDropdown } from "./permission-mode-select";
 export { useChatSearchStore } from "./stores/chat-search-store";
+export type { ChatNavigationState } from "./stores/chat-navigation-store";
+export {
+  adjacentChatItem,
+  countUnreadRows,
+  nextAttentionChatItem,
+  openChatItemById,
+  recentChatItemAtSlot,
+  useChatNavigationStore,
+  visibleChatItems,
+} from "./stores/chat-navigation-store";
+export {
+  setSidebarDragSource,
+  sidebarDragSource,
+  type SidebarDragSource,
+  type SidebarRowKind,
+} from "./stores/sidebar-drag-source";
+export {
+  clearReasoningRound,
+  setReasoningRoundOpen,
+  useReasoningRoundStore,
+  type ReasoningRoundState,
+} from "./stores/reasoning-round-store";
+export {
+  folderRingKey,
+  planKey,
+  planSidebarDrop,
+  rowKey,
+  sectionRingKey,
+  STAY,
+  type DropEdge,
+  type SidebarDragItem,
+  type SidebarDropAction,
+  type SidebarDropContext,
+  type SidebarDropCue,
+  type SidebarDropEffects,
+  type SidebarDropOutcome,
+  type SidebarDropPlace,
+  type SidebarDropPlan,
+  type SidebarDropZone,
+  type SidebarSection,
+} from "./lib/sidebar-drag";
+export { useSidebarDrag, SPRING_OPEN_DELAY_MS } from "./hooks/use-sidebar-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
   applyManualOrder,
-  dropEdgeFor,
+  dropEdgeAt,
+  folderDropTarget,
+  insertIdAt,
   moveIdBy,
+  placeIdAt,
   showsInRecents,
   PINNED_ORDER_SCOPE,
+  PINNED_PROJECT_ORDER_SCOPE,
   PROJECT_ORDER_SCOPE,
   projectOrderScope,
   RECENTS_ORDER_SCOPE,
-  reorderIds,
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   useSidebarOrganizationStore,
 } from "./stores/sidebar-organization-store";
@@ -112,6 +170,7 @@ export {
 export {
   adoptPreStreamRunReservation,
   cancelPreStreamRunReservations,
+  cancelPreStreamRunForThreadIds,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
@@ -120,6 +179,8 @@ export {
   releasePreStreamRunReservation,
   reservePreStreamRun,
 } from "./utils/pre-stream-run-reservation";
+export { claimThreadCreation } from "./utils/chat-thread-creation-claim";
+export { useChatProjectScope } from "./chat-project-scope";
 // Audio swaps the same llama-server Chat decodes on, so it needs the same confirmation.
 export {
   confirmStopRunningChatsIfNeeded,
@@ -142,6 +203,10 @@ export {
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
 } from "./utils/prompt-queue-model-boundary";
+export {
+  planUserPromptQueueStop,
+  userStopTargetCancelMode,
+} from "./utils/prompt-queue-user-stop";
 export { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 export { rangeBetween, toggleSelected } from "./utils/row-selection";
 export {
@@ -171,6 +236,14 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+// A provider catalogue lands async, so capability reads need to re-run when it does.
+export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
+// What a per-model reasoning pin displaced in the live runtime, so clearing it can put it back.
+export {
+  noteEffortDisplacedByPin,
+  reconcilePinnedReasoningEffort,
+  takeEffortDisplacedByPin,
+} from "./stores/chat-runtime-store";
 export {
   type AttachmentText,
   assertDocumentAttachmentSize,
@@ -189,10 +262,23 @@ export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { StopRunningChatsDialog } from "./components/stop-running-chats-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
+export { EditProjectDialog } from "./components/edit-project-dialog";
+export {
+  chatExportOptions,
+  exportConversationByFormat,
+  getSidebarItemThreadIds,
+  recordedSandboxSessionIds,
+  sandboxSessionIdsHolding,
+  type ConversationExportFormat,
+} from "./components/chat-row-menu";
+export { OpenChatFolderUnavailableItem } from "./components/open-chat-folder-item";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
-export { extractYoutubeVideoId } from "./utils/youtube-url";
+export {
+  extractYoutubeVideoId,
+  extractYoutubeVideoUrlFromClipboard,
+} from "./utils/youtube-url";
 export {
   isSearchImagesToolResult,
   searchImagePath,
@@ -203,6 +289,7 @@ export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt"
 export {
   formatMcpToolName,
   mcpServerFromProvenance,
+  mcpToolFromProvenance,
 } from "./utils/mcp-tool-name";
 export {
   PASTED_TEXT_PREVIEW_MAX_CHARS,
@@ -211,7 +298,9 @@ export {
   createPastedTextFile,
   isPastedTextContent,
   isPastedTextFile,
+  isPlainPasteChord,
   pasteLongTextAsFile,
+  plainPasteStillCounts,
   pastedTextContentBytes,
   pastedTextContentPreview,
   pastedTextOf,
@@ -224,11 +313,11 @@ export {
   getStoredChatThread,
   isThreadIncognito,
   listStoredChatMessages,
+  listStoredChatProjects,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
-export { estimateMessagesTokenCount } from "./utils/estimate-chat-tokens";
-export { recordedSandboxSessionId } from "./utils/recorded-sandbox-session";
+export { allRecordedSandboxSessionIds } from "./utils/recorded-sandbox-session";
 export {
   markChatThreadDeleted,
   removeChatThreadTombstones,
@@ -240,11 +329,22 @@ export {
 } from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
-  reasoningAutoOpensWhileStreaming,
+  reasoningFollowsPreference,
   resolveReasoningOpen,
   resolveReasoningToggle,
   startsNewReasoningRound,
 } from "./utils/reasoning-visibility";
+export {
+  DEFAULT_THINKING_VISIBILITY,
+  DEFAULT_TOOL_VISIBILITY,
+  DISPLAY_VISIBILITIES,
+  type DisplayVisibility,
+  defaultOpenFor,
+  foldIsActive,
+  migrateVisibility,
+  normaliseDisplayVisibility,
+  resolveOpen,
+} from "./utils/display-visibility";
 export { ArtifactCard } from "./artifacts/artifact-card";
 export { ResearchMessage } from "./components/research-message";
 export {
@@ -273,6 +373,7 @@ export {
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
 export {
+  COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
   buildFineTuneJsonl,
   bulkExportConversationsByScope,
@@ -339,5 +440,27 @@ export {
   StudioSpeechSynthesisAdapter,
   createConfiguredUtterance,
   curateSystemVoices,
+  generateCustomTtsAudio,
   generateStudioTtsAudio,
+  releaseTtsAudioUrl,
 } from "./adapters/studio-speech-synthesis-adapter";
+export { ChatSkillsDialog } from "./components/chat-skills-dialog";
+export {
+  SKILL_MENTION_PATTERN,
+  listSkills,
+  refreshSkillsCatalog,
+  setSkillEnabled,
+  settleSkillsForText,
+  useSkillsCatalog,
+  type SkillRecord,
+} from "./api/skills-api";
+export {
+  composerSubmitIntent,
+  composerFollowUpBehavior,
+  composerShortcutLabels,
+  followUpSubmitIntent,
+  steeringInsertionIndex,
+  type ComposerSendShortcut,
+  type ComposerFollowUpBehavior,
+  type ComposerSubmitIntent,
+} from "./utils/composer-preferences";

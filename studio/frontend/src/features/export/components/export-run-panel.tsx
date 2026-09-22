@@ -19,12 +19,14 @@ import {
 import { FolderBrowser } from "@/features/model-picker";
 import {
   AlertCircleIcon,
-  ArrowRight01Icon,
   CancelCircleIcon,
   CheckmarkCircle02Icon,
   FolderSearchIcon,
   Key01Icon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronRightIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -353,7 +355,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                         className="flex items-center gap-1 text-ui-11 text-emerald-600 hover:text-emerald-700 transition-colors"
                       >
                         Get token
-                        <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
+                        <ChevronRightIcon className="size-3" />
                       </a>
                     </div>
                     <InputGroup>
@@ -503,7 +505,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
       {showProgress && (
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-foreground/10 px-2.5 py-1 text-ui-10 font-semibold">
+            <span className="rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] px-2.5 py-1 text-ui-10 font-semibold">
               {PHASE_LABELS[run.phase] ?? run.phase}
             </span>
             {summaryMethod === "gguf" && run.quantTotal > 1 && (
@@ -525,7 +527,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
           </div>
           <Progress
             value={progress}
-            className="h-2 bg-foreground/[0.05]"
+            className="h-2 bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]"
             indicatorClassName={
               run.phase === "error"
                 ? "bg-destructive"

@@ -16,6 +16,7 @@ lets this run in seconds rather than behind a GGUF download.
 
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -30,8 +31,8 @@ ART.mkdir(parents = True, exist_ok = True)
 
 TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TIMEOUT_MS", "30000"))
 
-# The installation-wide slots the per-chat edits below must not touch. The legacy confirm toggle
-# is here on purpose: loadPermissionMode falls back to it, so writing it would leak globally.
+# The installation-wide slots the per-chat edits below must not touch. The legacy confirm toggle is here on purpose:
+# loadPermissionMode falls back to it, so writing it would leak globally.
 GLOBAL_KEYS = (
     "unsloth_chat_tools_enabled",
     "unsloth_chat_code_tools_enabled",
@@ -119,9 +120,24 @@ def sign_in(page):
     return page.evaluate("() => localStorage.getItem('unsloth_auth_token')")
 
 
-def seed_thread(page, token, title):
+def app_created_thread_id():
+    """The id a chat started in the app really carries.
+
+    assistant-ui mints `__LOCALID_<id>` for a thread before its first send, the thread list
+    adapter hands that same string back as the remoteId, and the row keeps it as its primary
+    key. The prefix therefore says nothing about whether a row exists.
+    """
+    return f"__LOCALID_{uuid.uuid4().hex}"
+
+
+def seed_thread(
+    page,
+    token,
+    title,
+    thread_id = None,
+):
     """Create a saved chat with one message, the state the sidebar and the loader expect."""
-    thread_id = str(uuid.uuid4())
+    thread_id = thread_id or str(uuid.uuid4())
     now = int(time.time() * 1000)
     api(
         page,
@@ -287,6 +303,68 @@ def read_globals(page):
     )
 
 
+def check_reasoning_page_navigation(page, token):
+    step("saved reasoning pages render the selected source range")
+    source = "\n\n".join(
+        f"Step {index:04d}. Compare this observation with the preceding reasoning "
+        "and keep the complete trace available for inspection."
+        for index in range(400)
+    )
+    thread_id = seed_thread(page, token, "Reasoning page navigation")
+    messages = api(page, f"/api/chat/threads/{thread_id}/messages", token = token)["messages"]
+    messages.append(
+        {
+            "id": str(uuid.uuid4()),
+            "threadId": thread_id,
+            "parentId": messages[0]["id"],
+            "role": "assistant",
+            "content": [
+                {"type": "reasoning", "text": source},
+                {"type": "text", "text": "The final answer stays separate."},
+            ],
+            "createdAt": int(time.time() * 1000),
+        }
+    )
+    api(
+        page,
+        f"/api/chat/threads/{thread_id}/messages",
+        method = "PUT",
+        token = token,
+        body = {"messages": messages},
+    )
+    open_thread(page, thread_id)
+    # By slot, not by label. This clicked `name = "Thought for 0 seconds"` until #11373
+    # reworded the trigger to "Worked for ...", and a driver that names the copy fails the
+    # whole leg on a wording change while the button it wants is right there. The slot is
+    # what the component guarantees; the wording is product copy and moves.
+    page.locator('[data-slot="reasoning-trigger"]').first.click()
+    navigation = page.get_by_role("navigation", name = "Reasoning pages")
+    body = page.locator('[data-slot="reasoning-text"]')
+
+    def expect_selected_page():
+        expect(navigation).to_be_visible()
+        match = re.search(r"(\d+)–(\d+) of (\d+)", navigation.inner_text())
+        assert match, "missing reasoning source range"
+        start, end, total = map(int, match.groups())
+        assert total == len(source)
+        assert 0 < end - start + 1 <= 8192
+        expect(body).to_have_text(source[start - 1 : end].replace("\n", ""))
+        return start, end
+
+    latest = expect_selected_page()
+    navigation.get_by_role("button", name = "Earlier", exact = True).click()
+    earlier = expect_selected_page()
+    assert earlier[1] < latest[0]
+    navigation.get_by_role("button", name = "Earlier", exact = True).click()
+    oldest = expect_selected_page()
+    assert oldest[1] < earlier[0]
+    navigation.get_by_role("button", name = "Newer", exact = True).click()
+    assert expect_selected_page() == earlier
+    navigation.get_by_role("button", name = "Latest", exact = True).click()
+    assert expect_selected_page() == latest
+    expect(page.get_by_text("The final answer stays separate.", exact = True)).to_be_visible()
+
+
 def main():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(args = ["--no-sandbox", "--disable-dev-shm-usage"])
@@ -318,11 +396,8 @@ def main():
             fail(f"toggling back never reached the defaults: {disabled_globals!r}")
 
         step("pin the installation default every later step compares against")
-        # The install is shared, not fresh: the UI workflow boots this server on the same
-        # Studio home the chat-ui and cross-browser permission tests have already used, and
-        # those leave a permission level behind in the mirrored settings. Every assertion
-        # below names a literal level, so the default is set here rather than assumed.
-        # No chat is open, so this writes the installation default itself.
+        # The install is shared, not fresh: earlier UI tests run on the same Unsloth home and
+        # leave a permission level behind, so the default is set here rather than assumed.
         choose_permission(page, "Approve for me")
         print(
             f"[thread-settings]   defaults now {read_globals(page)!r}",
@@ -330,7 +405,10 @@ def main():
         )
 
         step("seed two saved chats")
-        thread_a = seed_thread(page, token, "Chat A")
+        # Both id shapes are real: chats started in the app keep their `__LOCALID_` id as the row's primary key,
+        # imported and older rows do not. Seeding only uuids is what let this run miss the prefix being read as
+        # "no row yet".
+        thread_a = seed_thread(page, token, "Chat A", app_created_thread_id())
         thread_b = seed_thread(page, token, "Chat B")
         print(f"[thread-settings]   A={thread_a} B={thread_b}", flush = True)
 
@@ -380,8 +458,8 @@ def main():
         expect_pills(page, "B after switching back", False, True, "Run automatically")
 
         step("and a sidebar switch, with no reload, does the same")
-        # The reload-free path is the one users take, and the only one where the store still
-        # holds the outgoing chat's values when the incoming snapshot is applied.
+        # The reload-free path is the one users take, and the only one where the store still holds the outgoing chat's
+        # values when the incoming snapshot is applied.
         open_thread_in_page(page, "Chat A")
         expect_pills(page, "A after an in-page switch", True, False, "Ask for approval")
         open_thread_in_page(page, "Chat B")
@@ -389,8 +467,8 @@ def main():
         shoot(page, "03-in-page-switch")
 
         step("leaving a chat for a new one restores the installation defaults in place")
-        # No reload here either, so the defaults have to come from the captured copy rather
-        # than from the store being rebuilt out of localStorage.
+        # No reload here either, so the defaults have to come from the captured copy rather than from the store being
+        # rebuilt out of localStorage.
         new_chat_in_page(page)
         expect_pills(page, "new chat after an in-page switch", False, False, "Approve for me")
 
@@ -442,6 +520,8 @@ def main():
         for thread in listing.get("threads", []):
             if thread.get("settings") is not None:
                 fail(f"thread listing carries a settings snapshot: {thread['id']}")
+
+        check_reasoning_page_navigation(page, token)
 
         if page_errors:
             fail(f"page errors during the run: {page_errors[:3]!r}")

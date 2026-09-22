@@ -6,10 +6,15 @@ export {
   downloadManager,
   finishExternalJob,
   jobKeyOf,
+  pendingDrafterPresentation,
   startExternalJob,
   subscribeJobListeners,
+  type TransportMode,
   updateExternalJob,
+  TRANSPORT_MODE_STORAGE_KEY,
   useDownloadManagerStore,
+  useHttpPartialsResumable,
+  useTransportMode,
 } from "./download-manager";
 export { HfTokenIndicator } from "./components/hf-token-indicator";
 export { useHubDatasetSearch } from "./hooks/use-hub-dataset-search";
@@ -59,6 +64,7 @@ export {
   defaultCapabilities,
   deleteCachedDataset,
   deleteCachedModel,
+  epochMillisecondsToSeconds,
   fetchInventorySource,
   findCompleteHfCacheLocalRow,
   formatLocalUpdated,
@@ -73,8 +79,8 @@ export {
   localSourceLabel,
   normalizeCapabilities,
   normalizeModelFormat,
-  normalizeRuntime,
   normalizeTimestamp,
+  partialSetFromRows,
   removeScanFolder,
   resolveInventoryResource,
   useDeviceInventorySources,
@@ -99,6 +105,7 @@ export { hubTokenHeader } from "./lib/hub-token-header";
 export {
   ggufVariantsMatch,
   isOllamaLinkPath,
+  isOllamaModelId,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
   publicModelId,
@@ -106,6 +113,7 @@ export {
 } from "./lib/model-identity";
 export {
   formatBytes,
+  formatRate,
   formatRelativeShort,
   ownerOf,
   repoOf,

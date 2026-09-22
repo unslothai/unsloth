@@ -9,7 +9,7 @@ classifier is right on what models actually emit, so this file scores it against
 corpus captured from local models (``tests/data/plan_vs_answer.jsonl``).
 
 How the corpus was built: three GGUF models (Qwen3-0.6B, Qwen3-1.7B,
-Llama-3.2-1B-Instruct) were driven through llama-server with the real Studio tool
+Llama-3.2-1B-Instruct) were driven through llama-server with the real Unsloth tool
 schemas over prompts spanning tool-requiring questions, questions needing no tool,
 list-formatted answers, ambiguous requests, non-English, and follow-ups issued after
 a tool had already run. Turns cut off by the token cap were dropped, since a

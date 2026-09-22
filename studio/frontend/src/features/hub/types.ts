@@ -4,7 +4,6 @@
 import type {
   BaseModelSource,
   LocalSource,
-  ModelInventoryCapabilities,
   ModelInventoryFormat,
 } from "@/features/hub/inventory";
 import type { HfModelResult } from "@/features/hub/hooks/use-hub-model-search";
@@ -39,27 +38,10 @@ export interface DiscoverRow {
   capabilities: Capability[];
 }
 
-export type SelectedResourceSource = "huggingface" | "hub_cache" | LocalSource;
-
-export type SelectedResourceCacheState =
-  | "remote"
-  | "cached"
-  | "local"
-  | "partial";
-
-export interface SelectedResourceRef {
-  repoId: string | null;
-  localPath: string | null;
-  source: SelectedResourceSource;
-  cacheState: SelectedResourceCacheState;
-  runId: string;
-  trainId: string;
-}
-
 export interface SelectedModelView {
   id: string;
+  loadId: string | null;
   kind: "discover" | "cache" | "local";
-  resource: SelectedResourceRef;
   displayId: string;
   hubRepoId: string | null;
   owner: string;
@@ -79,10 +61,10 @@ export interface SelectedModelView {
   adapterType?: string | null;
   trainingMethod?: string | null;
   isDownloaded: boolean;
+  runtimeCanChat: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
   partialResumable?: boolean;
-  runtimeCapabilities?: ModelInventoryCapabilities;
   capabilities: Capability[];
   license: string | null;
   pipelineTag?: string;

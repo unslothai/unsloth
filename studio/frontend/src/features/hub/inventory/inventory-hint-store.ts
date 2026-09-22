@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { evictOldestUnprotected } from "../lib/lru-map.ts";
 import { INVENTORY_HINT_KINDS } from "./constants.ts";
 import {
   type InventoryHintReconciliation,
@@ -15,7 +16,6 @@ import {
   repoKey,
 } from "./inventory-hints.ts";
 import type { InventoryHint } from "./types.ts";
-import { evictOldestUnprotected } from "../lib/lru-map.ts";
 
 export const MAX_OBSERVED_INVENTORY_KEYS_PER_KIND = 1024;
 
@@ -23,6 +23,7 @@ type ObservedInventoryKeys = Record<InventoryHint["kind"], Set<string>>;
 
 export type PendingHintReconciliationCommit = {
   kind: InventoryHint["kind"];
+  protectedObservedKeys?: ReadonlySet<string>;
   reconciliation: Pick<
     InventoryHintReconciliation,
     "pending" | "staleCompletedHints" | "observedKeys"
@@ -44,6 +45,7 @@ const INVENTORY_HINT_EQUALITY_FIELDS = {
   kind: true,
   repoId: true,
   bytes: true,
+  startedAt: true,
   createdAt: true,
 } satisfies Record<keyof InventoryHint, true>;
 
@@ -80,9 +82,13 @@ function inventoryHintEqual(
   }
   return INVENTORY_HINT_EQUALITY_KEYS.every((key) => {
     const left =
-      key === "bytes" || key === "createdAt" ? (a[key] ?? 0) : a[key];
+      key === "bytes" || key === "startedAt" || key === "createdAt"
+        ? (a[key] ?? 0)
+        : a[key];
     const right =
-      key === "bytes" || key === "createdAt" ? (b[key] ?? 0) : b[key];
+      key === "bytes" || key === "startedAt" || key === "createdAt"
+        ? (b[key] ?? 0)
+        : b[key];
     return left === right;
   });
 }
@@ -136,7 +142,10 @@ function pendingHasHint(
   if (!existing) {
     return false;
   }
-  return (existing.bytes ?? 0) >= (hint.bytes ?? 0);
+  return (
+    (existing.bytes ?? 0) >= (hint.bytes ?? 0) &&
+    (existing.createdAt ?? 0) >= (hint.createdAt ?? 0)
+  );
 }
 
 export function pendingWithInventoryHints(
@@ -152,14 +161,47 @@ export function pendingWithInventoryHints(
   return next;
 }
 
+export function rememberCompletedInventoryHints(
+  hints: readonly InventoryHint[],
+): void {
+  if (hints.length === 0) {
+    return;
+  }
+  const state = useInventoryHintStore.getState();
+  const next = pendingWithInventoryHints(state.pending, hints);
+  if (!pendingInventoryHintsEqual(state.pending, next)) {
+    useInventoryHintStore.setState({
+      pending: clonePendingInventoryHints(next),
+    });
+  }
+}
+
+export function discardPendingInventoryHint(
+  kind: InventoryHint["kind"],
+  repoId: string,
+): void {
+  const state = useInventoryHintStore.getState();
+  const key = repoKey(repoId);
+  if (!state.pending[kind].has(key)) {
+    return;
+  }
+  const pending = clonePendingInventoryHints(state.pending);
+  pending[kind].delete(key);
+  useInventoryHintStore.setState({ pending });
+}
+
 function rememberObservedInventoryKeys(
   current: ObservedInventoryKeys,
   kind: InventoryHint["kind"],
   keys: ReadonlySet<string>,
   pending: PendingInventoryHints,
+  protectedKeys: ReadonlySet<string>,
 ): ObservedInventoryKeys {
   const observed = new Set(current[kind]);
   for (const key of keys) {
+    if (pending[kind].has(key) || protectedKeys.has(key)) {
+      continue;
+    }
     observed.delete(key);
     observed.add(key);
   }
@@ -172,6 +214,22 @@ function rememberObservedInventoryKeys(
     return current;
   }
   return { ...current, [kind]: observed };
+}
+
+export function forgetObservedInventoryHint(
+  kind: InventoryHint["kind"],
+  repoId: string,
+): void {
+  const state = useInventoryHintStore.getState();
+  const key = repoKey(repoId);
+  if (!state.observedKeys[kind].has(key)) {
+    return;
+  }
+  const observed = new Set(state.observedKeys[kind]);
+  observed.delete(key);
+  useInventoryHintStore.setState({
+    observedKeys: { ...state.observedKeys, [kind]: observed },
+  });
 }
 
 export const useInventoryHintStore = create<InventoryHintState>()(
@@ -190,7 +248,11 @@ export const useInventoryHintStore = create<InventoryHintState>()(
       let next = pendingWithInventoryHints(state.pending, completedHints);
       let observedKeys = state.observedKeys;
       const completedHintsToSuppress: InventoryHint[] = [];
-      for (const { kind, reconciliation } of reconciliations) {
+      for (const {
+        kind,
+        protectedObservedKeys = new Set<string>(),
+        reconciliation,
+      } of reconciliations) {
         const committed = commitInventoryHintReconciliation({
           current: next,
           kind,
@@ -204,6 +266,7 @@ export const useInventoryHintStore = create<InventoryHintState>()(
           kind,
           reconciliation.observedKeys,
           next,
+          protectedObservedKeys,
         );
         completedHintsToSuppress.push(...committed.completedHintsToSuppress);
       }

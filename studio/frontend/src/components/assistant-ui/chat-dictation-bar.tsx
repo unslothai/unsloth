@@ -240,10 +240,12 @@ export const ChatDictationBar: FC<{
           />
         ))}
       </div>
-      <span className="mr-4 shrink-0 tabular-nums text-sm text-muted-foreground">
+      {/* Classed so narrow panes can tighten these; both are shrink-0, so they
+          set the bar's floor and would otherwise overflow the composer. */}
+      <span className="unsloth-dictation-timer mr-4 shrink-0 tabular-nums text-sm text-muted-foreground">
         {formatElapsed(elapsed)}
       </span>
-      <div className="flex shrink-0 items-center gap-2.5">
+      <div className="unsloth-dictation-actions flex shrink-0 items-center gap-2.5">
         <TooltipIconButton
           type="button"
           tooltip={
@@ -256,7 +258,7 @@ export const ChatDictationBar: FC<{
           onClick={stop}
           // Neutral grey in both themes: --secondary is brand green on the
           // default light palette, and too close to --card on dark.
-          className="size-9 rounded-full bg-accent text-foreground hover:bg-accent/70 dark:bg-white/10 dark:hover:bg-white/[0.16]"
+          className="size-9 rounded-full bg-accent text-foreground hover:bg-accent/70 dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.16*var(--contrast-wash-gain,1)))]"
         >
           {transcribing === "stop" ? (
             <Spinner className="size-3.5" />
