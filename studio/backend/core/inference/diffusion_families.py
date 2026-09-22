@@ -365,6 +365,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen3-VL 8B, pre-cast. Independent of the DiT scheme, as on every other family.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-2.1-FP8"),),
         cfg_kwarg = "true_cfg_scale",
+        # 2.1 is UNIFIED: one pipeline, and QwenImage21Pipeline.__call__ takes ``image`` as condition
+        # images alongside the prompt, so this is the FLUX.2 shape rather than the Qwen-Image-Edit
+        # one. Not ``edit``, which means the pipeline IS the edit pipeline and there is no plain
+        # text-to-image: here text-to-image is the default and the images are optional context. The
+        # encoder reads each one as vision context and the VAE turns it into latent tokens prepended
+        # to the noise, with no ``strength`` anywhere, which is exactly what the reference workflow
+        # passes. Without this flag diffusion.py refuses reference images for this family and the
+        # capability ships dark.
+        reference = True,
         aliases = ("qwen_image_21", "qwenimage21", "qwen-image-21"),
         # Built by us from Qwen/Qwen-Image-2.1 itself: the same 238 tensors under upstream's own
         # names, cast fp32 -> bf16 and written as one file, because sd-cli takes --vae as a single

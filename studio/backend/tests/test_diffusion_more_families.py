@@ -752,3 +752,30 @@ def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade
     # cannot sit here unnoticed after its release ships.
     declared = set(_PIPELINE_MIN_DIFFUSERS.values())
     assert _UNRELEASED_MIN_DIFFUSERS <= declared, sorted(_UNRELEASED_MIN_DIFFUSERS - declared)
+
+
+def test_qwen_image_21_takes_reference_images_but_is_not_an_edit_only_family():
+    """2.1 is unified, so it is the FLUX.2 shape and not the Qwen-Image-Edit one.
+
+    ``QwenImage21Pipeline.__call__`` takes ``image`` as optional condition images beside the prompt,
+    with no ``strength`` and the size from width/height, which is what the reference workflow passes.
+    ``edit`` would mean the pipeline IS the edit pipeline with no plain text-to-image, which is
+    Qwen-Image-Edit, a different model with a different pipeline class. Getting this wrong in either
+    direction is silent: False refuses reference images outright, True would demand an input image
+    for every generation.
+    """
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    assert fam.reference is True
+    assert fam.edit is False
+    assert fam.pipeline_class == "QwenImage21Pipeline"
+    # It also has no separate img2img or inpaint pipeline upstream: the one class covers both jobs.
+    assert fam.img2img_pipeline_class is None
+    assert fam.inpaint_pipeline_class is None
+
+    # The edit family is a different model entirely, and must not have been merged into this one.
+    edit = detect_family("Qwen/Qwen-Image-Edit-2511")
+    assert edit is not None and edit.name == "qwen-image-edit" and edit.edit is True
+    assert edit.pipeline_class != fam.pipeline_class
