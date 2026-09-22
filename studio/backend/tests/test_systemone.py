@@ -713,6 +713,19 @@ def test_decision_api_cannot_be_enabled_where_laya_is_not_installed(client, monk
     assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 200
 
 
+def test_oversized_question_text_is_refused_before_the_model(client, runtime):
+    questions = {"q": {"type": "noul", "instructions": "x" * systemone.MAX_QUESTION_CHARS}}
+    response = _post(client, questions = questions)
+    assert response.status_code == 400
+    assert "longer than" in response.json()["detail"]["message"]
+    criteria = {f"option {i}": "y" * 200 for i in range(200)}
+    assert (
+        _post(client, questions = {"q": {"type": "choice", "criteria": criteria}}).status_code == 400
+    )
+    assert runtime == []
+    assert _post(client).status_code == 200
+
+
 def test_real_laya_answers_through_the_route(client, monkeypatch):
     path = os.environ.get("SYSTEMONE_TEST_LAYA")
     if not path:

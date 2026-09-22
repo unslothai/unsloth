@@ -22,6 +22,8 @@ MAX_CHOICES = 255
 MAX_SCORE_LEVELS = 10
 # Laya reads about a thousand tokens of state; far past that only costs tokenizer time under the model lock.
 MAX_STATE_CHARS = 200_000
+# Laya keeps ~192 tokens of a question head; this only bounds tokenizer work under the model lock.
+MAX_QUESTION_CHARS = 20_000
 _TYPES = ("noul", "choice", "score")
 
 router = APIRouter()
@@ -62,6 +64,12 @@ def _error(
 
 
 def _validate(name: str, question: QuestionIn) -> None:
+    if len(name) + len(json.dumps(question.model_dump(), ensure_ascii = False)) > MAX_QUESTION_CHARS:
+        raise _error(
+            400,
+            "invalid_request_error",
+            f"Question is longer than {MAX_QUESTION_CHARS} characters",
+        )
     if question.type not in _TYPES:
         raise _error(
             400, "api_usage_error", f'Question "{name}" has unknown type "{question.type}"'
