@@ -286,3 +286,40 @@ def test_numpy_shim_is_idempotent_and_removable(siglip2_module):
 
     restored = _fresh_module(SIGLIP2)
     assert not getattr(restored.convert_image_to_patches, "_unsloth_numpy_dispatch", False)
+
+
+@pytest.mark.parametrize("style", ["positional", "keyword", "legacy-keyword"])
+def test_numpy_dispatch_covers_the_keyword_forms(siglip2_module, style):
+    """Both helpers have a valid keyword form, and transformers renamed one.
+
+    pad_along_first_dim's first parameter went from `array` (4.x) to `tensor`
+    (5.x), so a 4.x caller using the keyword names something the current
+    implementation does not accept at all.
+    """
+    np = pytest.importorskip("numpy")
+    if not _image_processing_reexports_are_missing(siglip2_module):
+        # transformers 4.x: the shim is correctly a no-op, and the 5.x spelling
+        # of the first parameter does not exist there to be accepted.
+        pytest.skip("this transformers still re-exports the image helpers")
+    _install_legacy_image_reexports(SIGLIP2)
+    image = _numpy_image()
+
+    if style == "positional":
+        patches = siglip2_module.convert_image_to_patches(image, 2)
+        padded, mask = siglip2_module.pad_along_first_dim(patches, 6)
+    elif style == "keyword":
+        patches = siglip2_module.convert_image_to_patches(image = image, patch_size = 2)
+        padded, mask = siglip2_module.pad_along_first_dim(
+            tensor = patches,
+            target_length = 6,
+        )
+    else:
+        patches = siglip2_module.convert_image_to_patches(image = image, patch_size = 2)
+        padded, mask = siglip2_module.pad_along_first_dim(
+            array = patches,
+            target_length = 6,
+        )
+
+    assert isinstance(patches, np.ndarray) and patches.shape == (4, 12)
+    assert isinstance(padded, np.ndarray) and padded.shape == (6, 12)
+    assert mask.tolist() == [1, 1, 1, 1, 0, 0]

@@ -822,9 +822,13 @@ def _legacy_pad_along_first_dim(
     return array, mask
 
 
+# The keyword the first argument goes by, per era. transformers renamed
+# pad_along_first_dim's first parameter from `array` to `tensor` when it moved
+# to torch, so a 4.x caller using the keyword form names something the current
+# implementation does not accept at all.
 _LEGACY_NUMPY_IMAGE_HELPERS = {
-    "convert_image_to_patches": _legacy_convert_image_to_patches,
-    "pad_along_first_dim": _legacy_pad_along_first_dim,
+    "convert_image_to_patches": (_legacy_convert_image_to_patches, ("image",)),
+    "pad_along_first_dim": (_legacy_pad_along_first_dim, ("array", "tensor")),
 }
 
 
@@ -840,16 +844,35 @@ def _install_legacy_numpy_image_helpers(module):
     import numpy as np
 
     bound = []
-    for name, legacy in _LEGACY_NUMPY_IMAGE_HELPERS.items():
+    for name, (legacy, first_names) in _LEGACY_NUMPY_IMAGE_HELPERS.items():
         current = getattr(module, name, None)
         if current is None or getattr(current, "_unsloth_numpy_dispatch", False):
             continue
 
-        def make(current = current, legacy = legacy):
+        def make(
+            current = current,
+            legacy = legacy,
+            first_names = first_names,
+        ):
             @functools.wraps(current)
             def dispatch(*args, **kwargs):
+                # The first argument may arrive positionally or under either
+                # era's keyword, so check all of them before deciding.
                 first = args[0] if args else None
+                if first is None:
+                    for key in first_names:
+                        if key in kwargs:
+                            first = kwargs[key]
+                            break
                 if isinstance(first, np.ndarray):
+                    # Normalise onto the 4.x keyword the legacy function names,
+                    # so a caller using the current era's spelling still works.
+                    if not args:
+                        for key in first_names[1:]:
+                            if key in kwargs:
+                                kwargs = dict(kwargs)
+                                kwargs[first_names[0]] = kwargs.pop(key)
+                                break
                     return legacy(*args, **kwargs)
                 return current(*args, **kwargs)
 
