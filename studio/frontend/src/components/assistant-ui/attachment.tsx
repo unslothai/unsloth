@@ -234,7 +234,7 @@ const PastedTextAttachmentUI: FC<{
       }
       onClick={isComposer ? showInTextField : undefined}
     >
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-foreground/10">
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]">
         <HugeiconsIcon
           icon={TextAlignLeft01Icon}
           strokeWidth={2}
@@ -332,7 +332,7 @@ const AttachmentUI: FC = () => {
               className={cn(
                 "aui-attachment-tile size-14 cursor-pointer overflow-hidden rounded-[14px] border bg-muted transition-opacity hover:opacity-75",
                 isComposer &&
-                  "aui-attachment-tile-composer border-foreground/20",
+                  "aui-attachment-tile-composer border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]",
               )}
               id="attachment-tile"
               aria-label={accessibleName}
