@@ -1728,6 +1728,45 @@ def test_a_repo_with_no_sibling_snapshot_widens_nothing(tmp_path):
     assert local_path_gguf_companion_roots(str(selected)) == ()
 
 
+def test_a_sibling_symlinked_to_the_selected_snapshot_is_not_a_second_root(tmp_path):
+    """One physical snapshot plus an alias of it is still one snapshot.
+
+    The sibling scan excluded the selected snapshot by path equality while the gate above
+    it compared with `samefile`, so `snapshots/alias -> snapshots/only` came back as a
+    second root. That defeats the `len(roots) > 1` guard, which is what stops a lone root
+    from being handed to callers who read a non-None tuple as
+    `allow_disjoint_search_root`.
+    """
+    from core.inference.local_model_resolver import local_path_gguf_companion_roots
+
+    repo = tmp_path / "cache" / "models--a--b"
+    snapshots = repo / "snapshots"
+    selected = snapshots / "only"
+    selected.mkdir(parents = True)
+    (selected / "model.gguf").touch()
+    (snapshots / "alias").symlink_to(selected, target_is_directory = True)
+
+    assert local_path_gguf_companion_roots(str(selected)) == ()
+
+
+def test_an_aliased_sibling_does_not_displace_a_real_one(tmp_path):
+    """The alias drops out; a genuine sibling revision still widens the scope."""
+    from core.inference.local_model_resolver import local_gguf_companion_roots
+
+    repo = tmp_path / "cache" / "models--a--b"
+    snapshots = repo / "snapshots"
+    selected = snapshots / "weights"
+    selected.mkdir(parents = True)
+    (selected / "model.gguf").touch()
+    real = snapshots / "companion"
+    real.mkdir()
+    (real / "mmproj.gguf").touch()
+    (snapshots / "alias").symlink_to(selected, target_is_directory = True)
+
+    roots = local_gguf_companion_roots(str(selected), repo_level = True)
+    assert tuple(map(Path, roots)) == (selected, real)
+
+
 def test_an_explicitly_empty_companion_scope_is_not_recomputed():
     """`()` means two different things and only one of them may be widened.
 
