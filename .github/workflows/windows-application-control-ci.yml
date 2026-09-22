@@ -55,6 +55,18 @@ on:
       - '.github/workflows/windows-application-control-ci.yml'
   push:
     branches: [main]
+    paths:
+      - 'install.ps1'
+      - 'scripts/uninstall.ps1'
+      - 'studio/setup.ps1'
+      - 'unsloth_cli/**'
+      - 'studio/src-tauri/src/process.rs'
+      - 'studio/src-tauri/src/update.rs'
+      - 'studio/src-tauri/src/commands.rs'
+      - 'studio/src-tauri/src/desktop_auth.rs'
+      - 'studio/src-tauri/src/preflight/managed.rs'
+      - 'pyproject.toml'
+      - '.github/workflows/windows-application-control-ci.yml'
   workflow_dispatch:
 
 concurrency:

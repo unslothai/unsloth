@@ -65,6 +65,30 @@ on:
       - '.github/scripts/studio_smoke/multi_turn_chat.py'
   push:
     branches: [main]
+    paths:
+      - 'studio/backend/**'
+      - 'studio/frontend/**'
+      - 'studio/setup.ps1'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
+      - 'unsloth_cli/**'
+      - 'install.ps1'
+      - 'scripts/uninstall.ps1'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
+      - 'pyproject.toml'
+      - 'tests/studio_setup_ps1/**'
+      - 'tests/studio/*.ps1'
+      - 'tests/studio/test_pester_bootstrap_hardening.py'
+      - '.github/workflows/studio-windows-inference-smoke.yml'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/scripts/hf-download-with-retry.sh'
+      - '.github/scripts/studio_smoke/multi_turn_chat.py'
   workflow_dispatch:
 
 concurrency:

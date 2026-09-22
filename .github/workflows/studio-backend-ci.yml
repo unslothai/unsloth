@@ -59,6 +59,19 @@ on:
       - '.github/workflows/security-audit.yml'
   push:
     branches: [main]
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'tests/**'
+      - 'docker/**'
+      - 'install.sh'
+      - 'install.ps1'
+      - 'scripts/**'
+      - 'pyproject.toml'
+      - '.github/actions/**'
+      - '.github/workflows/studio-backend-ci.yml'
+      - '.github/workflows/security-audit.yml'
 
 concurrency:
   # Unique per commit on main, so a merge burst cannot cancel a pending run

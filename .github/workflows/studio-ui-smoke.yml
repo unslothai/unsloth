@@ -61,6 +61,30 @@ on:
       - '.github/actions/uv-cache-save/action.yml'
   push:
     branches: [main]
+    paths:
+      - 'studio/backend/**'
+      - 'studio/frontend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
+      - 'unsloth_cli/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
+      - '.github/scripts/run-studio-indicator-browser.sh'
+      - '.github/workflows/studio-ui-smoke.yml'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/scripts/hf-download-with-retry.sh'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      - '.github/actions/install-unsloth-local/action.yml'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   workflow_dispatch:
 
 concurrency:

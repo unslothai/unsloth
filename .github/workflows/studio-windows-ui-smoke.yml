@@ -46,6 +46,29 @@ on:
       - '.github/scripts/hf-download-with-retry.sh'
   push:
     branches: [main]
+    paths:
+      - 'studio/backend/**'
+      - 'studio/frontend/**'
+      - 'studio/setup.ps1'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
+      - 'unsloth_cli/**'
+      - 'install.ps1'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
+      - 'pyproject.toml'
+      - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
+      - '.github/scripts/run-studio-indicator-browser.sh'
+      - '.github/workflows/studio-windows-ui-smoke.yml'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/run-studio-ui-lane.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/scripts/hf-download-with-retry.sh'
   workflow_dispatch:
 
 concurrency:

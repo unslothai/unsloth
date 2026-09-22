@@ -56,6 +56,21 @@ on:
       - '.github/scripts/retry-with-apt-lock.sh'
   push:
     branches: [main]
+    paths:
+      - 'tests/studio/studiobench/**'
+      - '.github/workflows/studiobench-ci.yml'
+      - 'studio/frontend/**'
+      - 'studio/backend/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      - '.github/actions/install-unsloth-local/action.yml'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/scripts/retry-with-apt-lock.sh'
   workflow_dispatch:
 
 concurrency:

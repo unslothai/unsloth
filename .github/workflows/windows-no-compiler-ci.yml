@@ -57,6 +57,17 @@ on:
       - '.github/workflows/windows-no-compiler-ci.yml'
   push:
     branches: [main]
+    paths:
+      - 'install.ps1'
+      - 'studio/setup.ps1'
+      - 'scripts/uninstall.ps1'
+      - 'install.sh'
+      - 'studio/src-tauri/src/install.rs'
+      - 'studio/src-tauri/src/process.rs'
+      - 'tests/studio/test_installer_av_shapes.py'
+      - '.github/scripts/Watch-ForCompiler.ps1'
+      - 'tests/python/test_compiler_watch_temp_scan.py'
+      - '.github/workflows/windows-no-compiler-ci.yml'
   workflow_dispatch:
 
 concurrency:

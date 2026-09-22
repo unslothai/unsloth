@@ -159,6 +159,7 @@ jobs:
             tests/studio/test_macos_slots_per_commit.py \
             tests/studio/test_main_runs_survive_merge_bursts.py \
             tests/studio/test_pull_requests_cancel_superseded_runs.py \
+            tests/studio/test_push_filters_match_pull_request_filters.py \
             tests/studio/test_probe_cost_claim_is_measured.py \
             tests/studio/test_merge_ref_age_is_reported.py \
             tests/studio/test_pester_bootstrap_hardening.py \

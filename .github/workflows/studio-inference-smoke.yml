@@ -71,6 +71,27 @@ on:
       - '.github/actions/uv-cache-save/action.yml'
   push:
     branches: [main]
+    paths:
+      - 'studio/backend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
+      - 'unsloth_cli/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      - '.github/workflows/studio-inference-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/scripts/hf-download-with-retry.sh'
+      - '.github/scripts/studio_smoke/multi_turn_chat.py'
+      - '.github/actions/install-unsloth-local/action.yml'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   # Manual trigger for pre-warming HF_HOME caches on main, or re-running
   # against an arbitrary branch without pushing a no-op commit.
   workflow_dispatch:
