@@ -36,6 +36,7 @@ import {
 } from "react";
 
 import {
+  FLOATING_MONITOR_WIDTH,
   floatingMonitorConstraintStyle,
   getFloatingMonitorLayout,
 } from "./floating-monitor-layout";
@@ -114,6 +115,7 @@ function naturalWidth(monitor: HTMLDivElement): number {
 function useMonitorLayout(
   constraintsElement: HTMLDivElement | null,
   narrowed: boolean,
+  hidden: boolean,
 ) {
   // This panel's claim on the shared frame. Reopening the monitor mid-exit
   // mounts the replacement while the old panel is still animating out, and the
@@ -129,6 +131,7 @@ function useMonitorLayout(
   const preferredHeightRef = useRef<number | null>(null);
   const surfaceWidthRef = useRef(0);
   const narrowedRef = useRef(narrowed);
+  const hiddenRef = useRef(hidden);
   // The user's own placement while the container is at full width. Cleared when
   // they drag while it is narrowed, which is a newer choice, not a clamp.
   const chosenLeftRef = useRef<number | null>(null);
@@ -216,12 +219,14 @@ function useMonitorLayout(
       }
 
       // Publish the real box so the overlay stack can keep clear of it.
-      useMonitorFrameStore.getState().setFrame(publisher, {
-        left: monitorBox.left,
-        top: monitorBox.top,
-        right: monitorBox.right,
-        bottom: monitorBox.bottom,
-      });
+      if (!hiddenRef.current) {
+        useMonitorFrameStore.getState().setFrame(publisher, {
+          left: monitorBox.left,
+          top: monitorBox.top,
+          right: monitorBox.right,
+          bottom: monitorBox.bottom,
+        });
+      }
 
       setLayout((current) => {
         // Mid-drag the offset lives in a transform, and the measured box already includes it, so
@@ -267,6 +272,17 @@ function useMonitorLayout(
   // Narrowing clamps the monitor left, and `place()` keeps the clamped spot.
   // The position the user did drag to is put back when the container widens.
   // Settled in a layout effect, before the next observation can reconcile.
+  // The API monitor treats any published frame as a live obstacle, so an
+  // invisible resource monitor must not keep publishing its box. Visibility and
+  // aria-hidden fire no ResizeObserver, so `hidden` also feeds the republish
+  // below: it is what restores the box once the monitor is on screen again.
+  useLayoutEffect(() => {
+    hiddenRef.current = hidden;
+    if (hidden) {
+      useMonitorFrameStore.getState().clearFrame(publisher);
+    }
+  }, [hidden, publisher]);
+
   useLayoutEffect(() => {
     if (narrowedRef.current === narrowed) {
       return;
@@ -285,7 +301,7 @@ function useMonitorLayout(
   useLayoutEffect(() => {
     void layout;
     const monitor = monitorRef.current;
-    if (!(monitor && constraintsElement)) {
+    if (!(monitor && constraintsElement) || hiddenRef.current) {
       return;
     }
     const box = monitor.getBoundingClientRect();
@@ -295,7 +311,7 @@ function useMonitorLayout(
       right: box.right,
       bottom: box.bottom,
     });
-  }, [layout, constraintsElement, publisher]);
+  }, [layout, constraintsElement, publisher, hidden]);
 
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     const monitor = monitorRef.current;
@@ -398,6 +414,11 @@ function useMonitorLayout(
     }
     const { left, top, constraintsWidth, constraintsHeight } = session;
     dragSessionRef.current = null;
+    // A position-only change does not fire the observer, and the next
+    // reconcile may already be narrowed.
+    if (!narrowedRef.current) {
+      chosenLeftRef.current = left;
+    }
     // Written to the node as well as to state, in this order, so handing the
     // offset back to left/top cannot show a frame at the spot it started from.
     const monitor = monitorRef.current;
@@ -465,13 +486,14 @@ interface FloatingMonitorPanelProps {
   dockedBesideRunSettings: boolean;
   onClose: () => void;
   settingsWidth: number;
+  onRenderedWidth: (width: number) => void;
   suppressed: boolean;
   systemInfo: ReturnType<typeof useSystemInfo>;
 }
-
 function FloatingMonitorPanel({
   dockedBesideRunSettings,
   onClose,
+  onRenderedWidth,
   settingsWidth,
   suppressed,
   systemInfo,
@@ -490,7 +512,22 @@ function FloatingMonitorPanel({
   } = useMonitorLayout(
     constraintsElement,
     dockedBesideRunSettings || suppressed,
+    suppressed,
   );
+
+  // offsetWidth, not the bounding rect: the panel animates in from scale 0.94, and
+  // a rect read through that transform is short of the width it settles at.
+  useEffect(() => {
+    const monitor = monitorRef.current;
+    if (!monitor) {
+      return;
+    }
+    const measure = () => onRenderedWidth(monitor.offsetWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(monitor);
+    return () => observer.disconnect();
+  }, [monitorRef, onRenderedWidth]);
 
   const zIndex = useFloatingPanelZIndex("resource-monitor");
   const raisePanel = useFloatingPanelOrderStore((state) => state.raise);
@@ -746,7 +783,7 @@ export function FloatingMonitor() {
   // docked offset has to come from the same value the panel paints at.
   const { width: committedSettingsWidth } = useChatSettingsWidth();
   const { pinned } = useSidebarPin();
-  const { width: sidebarWidth } = useSidebarWidth();
+  const { width: committedSidebarWidth } = useSidebarWidth();
   const isChatRoute = pathname === "/chat";
 
   // Dragging the panel's edge paints `--chat-settings-width` straight onto the
@@ -773,10 +810,35 @@ export function FloatingMonitor() {
     const observer = new ResizeObserver(measure);
     observer.observe(panel);
     return () => observer.disconnect();
-  }, [isChatRoute, settingsPanelOpen]);
+  }, [isChatRoute, settingsPanelOpen, isMobile]);
+
+  // Same lag as the settings panel: the sidebar paints per frame and commits
+  // on release, so a docked monitor could sit under a grown sidebar.
+  const [paintedSidebarWidth, setPaintedSidebarWidth] = useState(0);
+  useEffect(() => {
+    const sidebar = document.querySelector('[data-slot="sidebar"]');
+    if (!sidebar) {
+      setPaintedSidebarWidth(0);
+      return;
+    }
+    const measure = () => {
+      if (sidebar.isConnected) {
+        setPaintedSidebarWidth(sidebar.getBoundingClientRect().width);
+      }
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(sidebar);
+    return () => observer.disconnect();
+  }, []);
 
   const settingsWidth =
     paintedSettingsWidth > 0 ? paintedSettingsWidth : committedSettingsWidth;
+  const sidebarWidth =
+    paintedSidebarWidth > 0 ? paintedSidebarWidth : committedSidebarWidth;
+  // The panel is natively resizable, so what it renders is what docking has to
+  // reserve. Before the first measure the constant is the floor.
+  const [monitorWidth, setMonitorWidth] = useState(FLOATING_MONITOR_WIDTH);
   const { visible, suppressed, dockedBesideRunSettings } =
     getFloatingMonitorLayout({
       isOpen,
@@ -788,6 +850,7 @@ export function FloatingMonitor() {
       // or collapses to an icon rail, so neither takes the monitor's room.
       sidebarWidth: pinned ? sidebarWidth : 0,
       viewportWidth: typeof window === "undefined" ? 0 : window.innerWidth,
+      monitorWidth,
     });
   const systemInfo = useSystemInfo({ enabled: visible, pollMs: 5000 });
   const [panelKey, setPanelKey] = useState(0);
@@ -814,6 +877,7 @@ export function FloatingMonitor() {
           suppressed={suppressed}
           dockedBesideRunSettings={dockedBesideRunSettings}
           settingsWidth={settingsWidth}
+          onRenderedWidth={setMonitorWidth}
           systemInfo={systemInfo}
           onClose={() => setIsOpen(false)}
         />

@@ -362,3 +362,63 @@ test("the settings panel hides the monitor without dropping its geometry", () =>
   assert.match(source, /suppressed=\{suppressed\}/);
   assert.match(source, /suppressed && "invisible"/);
 });
+
+test("a drag that ends without a reconcile still records the position", () => {
+  const finish = source.slice(source.indexOf("function finishDrag"));
+  assert.match(
+    finish,
+    /if \(!narrowedRef\.current\) \{\s*chosenLeftRef\.current = left;/,
+  );
+});
+
+test("the sidebar's painted width is observed too", () => {
+  assert.match(source, /data-slot="sidebar"/);
+  assert.match(
+    source,
+    /paintedSidebarWidth > 0 \? paintedSidebarWidth : committedSidebarWidth/,
+  );
+});
+
+test("a suppressed monitor publishes no obstacle to the API monitor", () => {
+  assert.match(
+    source,
+    /if \(hidden\) \{\s*useMonitorFrameStore\.getState\(\)\.clearFrame\(publisher\);/,
+  );
+  assert.match(source, /if \(!hiddenRef\.current\) \{\s*useMonitorFrameStore\.getState\(\)\.setFrame/);
+});
+
+test("the frame comes back when suppression ends", () => {
+  // Visibility and aria-hidden fire no ResizeObserver, so the republish has to
+  // depend on suppression: that is what hands the withheld box back.
+  assert.match(
+    source,
+    /\}, \[layout, constraintsElement, publisher, hidden\]\);/,
+    "ending suppression must republish the withheld box",
+  );
+  assert.match(source, /if \(hidden \|\| !monitor\)|if \(!hiddenRef\.current\) \{/);
+});
+
+test("the panel observer is reattached across the responsive swap", () => {
+  // Crossing the mobile breakpoint replaces the desktop <aside> with the sheet
+  // and back, so the observed node is gone while Run settings stays open.
+  assert.match(source, /\}, \[isChatRoute, settingsPanelOpen, isMobile\]\);/);
+});
+
+test("docking reserves the width the monitor actually renders", () => {
+  assert.match(source, /monitorWidth,/);
+  assert.match(source, /onRenderedWidth=\{setMonitorWidth\}/);
+  assert.match(source, /const measure = \(\) => onRenderedWidth\(monitor\.offsetWidth\)/);
+  // A hand-resized monitor is wider than the constant, so the constant alone
+  // cannot decide whether there is room to dock.
+  const wide = {
+    isOpen: true,
+    isMobile: false,
+    isChatRoute: true,
+    settingsPanelOpen: true,
+    settingsWidth: 400,
+    sidebarWidth: 280,
+    viewportWidth: 1000,
+  };
+  assert.equal(dockedMonitorFits(wide), true);
+  assert.equal(dockedMonitorFits({ ...wide, monitorWidth: 500 }), false);
+});

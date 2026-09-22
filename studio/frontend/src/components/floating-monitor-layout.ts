@@ -26,6 +26,8 @@ export interface FloatingMonitorDockState {
   sidebarWidth: number;
   /** Viewport width; 0 or less means unknown, which skips the capacity check. */
   viewportWidth: number;
+  /** The monitor's rendered width; natively resizable, so `w-64` is a floor. */
+  monitorWidth?: number;
 }
 
 export interface FloatingMonitorLayout {
@@ -47,6 +49,7 @@ export function getFloatingMonitorLayout({
   settingsWidth,
   sidebarWidth,
   viewportWidth,
+  monitorWidth,
 }: FloatingMonitorDockState): FloatingMonitorLayout {
   // The panel is chat-only and the store survives navigation, so a stale open
   // flag on another route must not move the monitor.
@@ -57,7 +60,12 @@ export function getFloatingMonitorLayout({
   // sidebar instead of the panel.
   const dockable =
     !isMobile &&
-    dockedMonitorFits({ viewportWidth, sidebarWidth, settingsWidth });
+    dockedMonitorFits({
+      viewportWidth,
+      sidebarWidth,
+      settingsWidth,
+      monitorWidth,
+    });
   const suppressed = isOpen && runSettingsVisible && !dockable;
 
   return {
@@ -71,10 +79,12 @@ export function dockedMonitorFits({
   viewportWidth,
   sidebarWidth,
   settingsWidth,
+  monitorWidth,
 }: {
   viewportWidth: number;
   sidebarWidth: number;
   settingsWidth: number;
+  monitorWidth?: number;
 }): boolean {
   // An unmeasured window keeps the dock rather than hiding the monitor on a guess.
   if (!(viewportWidth > 0)) {
@@ -82,7 +92,14 @@ export function dockedMonitorFits({
   }
   const usable =
     viewportWidth - Math.max(0, sidebarWidth) - Math.max(0, settingsWidth);
-  return usable >= FLOATING_MONITOR_WIDTH + 2 * FLOATING_MONITOR_EDGE_INSET;
+  // A hand-resized monitor is wider than `w-64`, and the constant also scales
+  // with `--ui-space-scale`. Reserving only the constant docks it over the
+  // sidebar, so reserve what the panel actually renders.
+  const width =
+    monitorWidth === undefined || !Number.isFinite(monitorWidth)
+      ? FLOATING_MONITOR_WIDTH
+      : Math.max(monitorWidth, FLOATING_MONITOR_WIDTH);
+  return usable >= width + 2 * FLOATING_MONITOR_EDGE_INSET;
 }
 
 /**
