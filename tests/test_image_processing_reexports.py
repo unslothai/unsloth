@@ -164,3 +164,62 @@ def test_import_unsloth_does_not_pull_in_the_image_stack():
     out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True)
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.strip().splitlines()[-1] == "False", out.stdout[-2000:]
+
+
+# The tests above drive `_install_legacy_image_reexports` directly, so every one
+# of them still passes with the `fix_transformers5_image_processing_reexports()`
+# call reverted out of `_gpu_init.py`: they prove the helper works, never that
+# it is wired up. The two below close that gap and are the ones that fail when
+# the functional hunk is removed.
+
+
+def test_the_fix_is_actually_installed_on_import():
+    """`import unsloth` must leave get_class_in_module wrapped."""
+    from packaging.version import Version
+
+    if Version(transformers.__version__) < Version("5.0.0"):
+        pytest.skip("no re-exports were dropped before transformers 5")
+    from transformers import dynamic_module_utils
+
+    assert getattr(dynamic_module_utils, "_unsloth_patched_get_class_in_module", False)
+    assert hasattr(dynamic_module_utils.get_class_in_module, "__wrapped__")
+
+
+def test_remote_code_reading_siglip_helpers_loads(tmp_path):
+    """End to end through the entry point transformers really uses.
+
+    A stand-in for microsoft/Phi-4-reasoning-vision-15B's own image processing
+    file: same module, same decorator, same class-body timing. Driving
+    `get_class_in_module` rather than importing the siglip module directly is
+    the point, because the fix is deliberately lazy and only installs there.
+    """
+    import pathlib
+
+    from transformers import dynamic_module_utils
+    from transformers.utils import HF_MODULES_CACHE
+
+    siglip2 = _fresh_module(SIGLIP2)
+    if not _image_processing_reexports_are_missing(siglip2):
+        pytest.skip("this transformers still re-exports the image helpers")
+
+    package = pathlib.Path(HF_MODULES_CACHE) / "unsloth_reexport_probe"
+    package.mkdir(parents = True, exist_ok = True)
+    (package / "__init__.py").write_text("")
+    (package / "image_processing_probe.py").write_text(
+        "import transformers.models.siglip2.image_processing_siglip2 as siglip2_ips\n"
+        "\n"
+        "class ProbeImageProcessor:\n"
+        "    @siglip2_ips.filter_out_non_signature_kwargs()\n"
+        "    def preprocess(self, images, **kwargs):\n"
+        "        return siglip2_ips.to_numpy_array(images)\n"
+    )
+    try:
+        loaded = dynamic_module_utils.get_class_in_module(
+            "ProbeImageProcessor",
+            "unsloth_reexport_probe/image_processing_probe.py",
+            force_reload = True,
+        )
+        assert loaded.__name__ == "ProbeImageProcessor"
+    finally:
+        import shutil
+        shutil.rmtree(package, ignore_errors = True)
