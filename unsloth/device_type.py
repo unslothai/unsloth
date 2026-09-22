@@ -220,6 +220,17 @@ def arch_lacks_bf16(gcn_arch):
     return str(gcn_arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
 
 
+def arch_lacks_buffer_ops(gcn_arch):
+    """gfx10.1 (RDNA1: gfx1010 RX 5700 XT, gfx1011, gfx1012, gfx1013) reads the buffer resource
+    descriptor differently from gfx10.3+, and Triton's AMD backend builds descriptors for the
+    newer layout. Every Triton kernel then launches with hipSuccess and touches no memory at
+    all: no error, just untouched outputs, so a training run "works" and learns nothing real.
+    AMDGCN_USE_BUFFER_OPS=0 makes the same kernels use global loads and stores, which are
+    correct there. Verified on gfx1010; the descriptor layout is per ISA generation, so the
+    whole gfx101x family is covered. gfx103x (RDNA2) is fine and must not match."""
+    return str(gcn_arch or "").split(":", 1)[0].strip().lower().startswith("gfx101")
+
+
 def hip_visible_archs():
     """Guarded per device: one unreadable device must not discard the archs beside it, or a
     gfx10 keeps bf16 and dies in Triton (#7922). Only an unreadable count returns []."""
