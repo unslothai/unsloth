@@ -1220,6 +1220,7 @@ _TEXT_BATCH_KEYS = frozenset(
         "input_ids",
         "inputs_embeds",
         "attention_mask",
+        "token_type_ids",
         "labels",
         "position_ids",
         "past_key_values",
@@ -1476,6 +1477,10 @@ class FastBaseModel:
         text_only = False,
         # True when the caller already swapped a multimodal config for its text sub-config, so auto_config no longer describes the repo. Set by loader.py and by the block below.
         text_only_decoder = False,
+        # The caller's own text_only request. loader.py turns text_only off for a family
+        # without its own text decoder so the full wrapper loads, but the caller still
+        # wants a text-trainable model back; None means "same as text_only".
+        text_intent = None,
         # True when auto_config came from the caller. It cannot be inferred here: FastModel pops config out of kwargs before this sees them, so it looks exactly like one we resolved ourselves.
         auto_config_from_caller = False,
         fix_tokenizer = True,
@@ -1984,7 +1989,9 @@ class FastBaseModel:
                         **kwargs,
                     )
                 # Only the caller knows: a wrapper with an audio-only config has no vision_config either.
-                model = _text_trainable_core(model, text_intent = bool(text_only))
+                model = _text_trainable_core(
+                    model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
+                )
                 _inherit_gradient_checkpointing_support(model)
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
                 offload_embedding = _resolve_offload_embedding(

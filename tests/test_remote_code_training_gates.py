@@ -384,3 +384,25 @@ def test_model_built_on_gradient_checkpointing_layer_is_recognised():
     assert _inherit_gradient_checkpointing_support(model) is True
     model.gradient_checkpointing_enable()
     assert all(layer.gradient_checkpointing for layer in model.layers)
+
+
+def test_the_loader_carries_the_callers_text_intent_past_its_own_normalisation():
+    """loader.py turns text_only off for a family without its own text decoder so the full
+    wrapper loads, and used to forward that normalised value as the intent: a text_only
+    request for such a model then kept a wrapper whose forward needs pixel_values. The
+    caller's own request travels separately."""
+    import inspect
+    from unsloth.models import loader, vision
+
+    assert "text_intent" in inspect.signature(vision.FastBaseModel.from_pretrained).parameters
+    source = inspect.getsource(loader.FastModel.from_pretrained)
+    assert "text_intent = bool(text_only)" in source
+    assert "text_only = load_text_only" in source
+
+
+def test_standard_tokenizer_fields_count_as_text_inputs():
+    """A wrapper whose forward requires token_type_ids can take a text batch: the Trainer
+    supplies it, so it is no reason to unwrap."""
+    from unsloth.models.vision import _TEXT_BATCH_KEYS
+
+    assert "token_type_ids" in _TEXT_BATCH_KEYS
