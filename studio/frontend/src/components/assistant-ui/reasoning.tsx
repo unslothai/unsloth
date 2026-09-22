@@ -260,8 +260,9 @@ function ReasoningContent({
   streaming,
   ...props
 }: ComponentProps<typeof CollapsibleContent> & { streaming?: boolean }) {
+  // Colour and size live on ReasoningText: the folded-round path skips this wrapper.
   const shared = cn(
-    "aui-reasoning-content relative overflow-hidden text-[#0d0d0d] dark:text-foreground outline-none",
+    "aui-reasoning-content relative overflow-hidden outline-none",
     "group/collapsible-content ease-out",
     "data-[state=closed]:pointer-events-none",
   );
@@ -325,9 +326,10 @@ function ReasoningText({
       data-slot="reasoning-text"
       data-streaming={streaming ? "" : undefined}
       className={cn(
-        // Reads like the answer: same size and colour, flush with the header, no cap and no
-        // fade. The thread's own follow-scroll tracks it while it streams.
-        "aui-reasoning-text relative z-0 pt-4 pb-0 leading-relaxed",
+        // Same muted colour and size as the header above it, so only the answer is at full
+        // foreground. Flush with the header, no cap and no fade; the thread's own
+        // follow-scroll tracks it while it streams.
+        "aui-reasoning-text relative z-0 pt-4 pb-0 text-sm text-muted-foreground leading-relaxed",
         "[&_p]:my-0 [&_p+p]:mt-4 [&_ul]:my-4 [&_ol]:my-4 [&_pre]:my-4",
         !virtualized &&
           cn(

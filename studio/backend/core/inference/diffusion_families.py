@@ -128,6 +128,12 @@ class DiffusionFamily:
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id). Layerwise-fp8 only: the cast is
     # deterministic, so the artifact is bit-identical while skipping the dense TE download.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # The text-encoder scheme an UNSET request resolves to on this family, or None to keep the released bf16 encoder.
+    # Opt-in per family rather than implied by ``te_prequant_repos``, because hosting an artifact says the cast is
+    # reproducible, not that its conditioning is good enough to hand someone who asked for nothing. These encoders are
+    # different models (T5, CLIP, Qwen3-VL, Gemma) and fp8 tolerance does not transfer between them, so a family joins
+    # this list only once the fp8-vs-bf16 delta has been measured on it.
+    te_quant_auto: Optional[str] = None
     # Native (sd.cpp) single-file assets, used only on the no-GPU sd.cpp engine. The transformer GGUF is shared with
     # diffusers; sd-cli also needs a (repo_id, filename) VAE + text encoder(s), each with a trailing SdCppModelFiles
     # field name.
@@ -375,6 +381,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # Qwen3-VL 8B, pre-cast. Independent of the DiT scheme, as on every other family.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-2.1-FP8"),),
+        # The encoder is the BIG component here, not the denoiser: Qwen3-VL-8B is 16.33 GiB dense against 6.76 GiB for
+        # the INT8 transformer, so a quantised denoiser alone still costs ~26 GB and the hosted pre-cast encoder is
+        # what makes the family fit a 24 GB card. Measured on this family at 1024/40 steps: 23.74 -> 16.16 GiB resident
+        # and 11.6 -> 1.5 s to load the encoder, with per-image render time unchanged.
+        te_quant_auto = "fp8",
         cfg_kwarg = "true_cfg_scale",
         # 2.1 is UNIFIED: one pipeline, and QwenImage21Pipeline.__call__ takes ``image`` as condition
         # images alongside the prompt, so this is the FLUX.2 shape rather than the Qwen-Image-Edit

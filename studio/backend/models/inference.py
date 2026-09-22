@@ -3777,9 +3777,14 @@ class DiffusionLoadRequest(BaseModel):
         "default (also regional torch.compile where eligible), "
         "max (also TF32 + fused QKV).",
     )
-    text_encoder_quant: Optional[Literal["fp8", "fp8_dynamic", "int8", "nvfp4"]] = Field(
+    text_encoder_quant: Optional[
+        Literal["auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"]
+    ] = Field(
         None,
-        description = "Quantise the companion text encoder(s): fp8 (layerwise cast, ~2x smaller, "
+        description = "Quantise the companion text encoder(s). Unset or 'auto' lets the family "
+        "choose (Qwen-Image-2.1 takes its hosted pre-cast fp8 encoder, 8.75 GiB against 16.33 "
+        "dense); 'none'/'off' pins the released bf16 encoder. Explicit: fp8 (layerwise cast, "
+        "~2x smaller, "
         "CUDA cc>=8.9), fp8_dynamic (torchao compute fp8 on the tensor cores, ~2x + faster, "
         "cc>=8.9), int8 (torchao compute int8 with per-family keep-bf16 layers; falls back to "
         "fp8 where no schedule exists; cc>=8.0), or nvfp4 (~4x smaller, Blackwell sm_100+). A "
