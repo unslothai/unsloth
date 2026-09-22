@@ -77,9 +77,17 @@ def _run(
     # secret out of the run body and into `env: DOCKER_API_KEY`, read with
     # `os.environ`, so rewriting the body alone hands the script an environment it
     # cannot run in and the request goes out with an empty payload.
+    # Only the secret this step is supposed to read is expanded. Standing in for any
+    # `secrets.*` would make the harness agree with a workflow that names the wrong
+    # one: `${{ secrets.TYPO }}` would still produce a valid payload here, while
+    # Actions would hand the real step an empty value. Anything else is left for the
+    # assertion below to reject by name.
     for name, value in (step.get("env") or {}).items():
-        env[name] = re.sub(r"\$\{\{\s*secrets\.\w+\s*\}\}", SECRET, str(value))
-        assert "${{" not in env[name], f"unexpanded expression in the step's env {name}"
+        env[name] = re.sub(r"\$\{\{\s*secrets\.DOCKER_API_KEY\s*\}\}", SECRET, str(value))
+        assert "${{" not in env[name], (
+            f"the step's env {name} reads {value!r}, which is not the secret this "
+            f"harness knows how to supply"
+        )
     res = subprocess.run(
         ["bash", "-e", "-c", script],
         capture_output = True,

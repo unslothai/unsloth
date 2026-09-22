@@ -193,9 +193,17 @@ def _run_sync(
     # harness that only rewrites the body hands the script an environment it cannot
     # run in. That does not fail loudly: the body builder raises, the pipeline keeps
     # the exit status of its last command, and the request goes out empty.
+    # Only the secret this step is supposed to read is expanded. Standing in for any
+    # `secrets.*` would make the harness agree with a workflow that names the wrong
+    # one: `${{ secrets.TYPO }}` would still produce a valid payload here, while
+    # Actions would hand the real step an empty value. Anything else is left for the
+    # assertion below to reject by name.
     for name, value in (step.get("env") or {}).items():
-        env[name] = re.sub(r"\$\{\{\s*secrets\.\w+\s*\}\}", secret, str(value))
-        assert "${{" not in env[name], f"unexpanded expression in the step's env {name}"
+        env[name] = re.sub(r"\$\{\{\s*secrets\.DOCKER_API_KEY\s*\}\}", secret, str(value))
+        assert "${{" not in env[name], (
+            f"the step's env {name} reads {value!r}, which is not the secret this "
+            f"harness knows how to supply"
+        )
     res = subprocess.run(
         ["bash", "-e", "-c", script],
         capture_output = True,
