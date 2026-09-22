@@ -101,6 +101,7 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { fetchSystemInfo } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { subscribeGalleryChanged } from "@/lib/gallery-flags";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
@@ -2304,9 +2305,10 @@ export function AudioPage({
   );
 
   const handleCopyTranscript = useCallback(() => {
-    void navigator.clipboard.writeText(transcript).then(
-      () => toast.success("Transcript copied"),
-      () => toast.error("Could not copy the transcript."),
+    void copyToClipboard(transcript).then((ok) =>
+      ok
+        ? toast.success("Transcript copied")
+        : toast.error("Could not copy the transcript."),
     );
   }, [transcript]);
 
@@ -2454,10 +2456,9 @@ export function AudioPage({
   }, []);
 
   const handleCopyPrompt = useCallback(async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyToClipboard(text)) {
       toast.success("Text copied");
-    } catch {
+    } else {
       toast.error("Could not copy the text.");
     }
   }, []);
