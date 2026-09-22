@@ -63,6 +63,7 @@ claim this branch makes; a diff reported against `run1-settle` is not that claim
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import json
 import os
@@ -990,9 +991,13 @@ def _assert_same_distributions(before: dict, after: dict, message: str) -> None:
     pass that skips that step leaves the data-designer answer. Nothing else is set aside.
     """
     torn = _known_unmet_names(before) & _known_unmet_names(after)
-    assert {_dist_name(n) for n, _ in before["distributions"]} == {
-        _dist_name(n) for n, _ in after["distributions"]
-    }, f"{message}: a distribution was installed or removed"
+    # Per name, with multiplicity: a set collapses a second metadata record for an exempted name
+    # (a pip backup, a duplicate dist-info), and the version filter below would then hide it.
+    before_names = collections.Counter(_dist_name(n) for n, _ in before["distributions"])
+    after_names = collections.Counter(_dist_name(n) for n, _ in after["distributions"])
+    assert (
+        before_names == after_names
+    ), f"{message}: a distribution record was added or removed: {(before_names - after_names) + (after_names - before_names)}"
     assert [d for d in after["distributions"] if _dist_name(d[0]) not in torn] == [
         d for d in before["distributions"] if _dist_name(d[0]) not in torn
     ], f"{message} (known_unmet on both sides, not compared: {sorted(torn)})"
