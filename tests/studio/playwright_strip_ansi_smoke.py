@@ -78,7 +78,7 @@ def main() -> None:
             launch_args = chromium_launch_args() if browser_name == "chromium" else []
             browser = browser_type.launch(headless = True, args = launch_args)
             page = browser.new_page()
-            echo_browser_errors(page, info)
+            thrown = echo_browser_errors(page, info)
             try:
                 page.goto(f"{BASE}/smoke-ansi.html", wait_until = "networkidle")
                 page.screenshot(path = str(ART / "smoke-ansi.png"), full_page = True)
@@ -95,6 +95,16 @@ def main() -> None:
                     assert "[32m" not in text, f"{section} still shows SGR garbage"
             except Exception:
                 dump(page, vite)
+                # Say what the page threw, if anything. The smoke renders these components
+                # bare, outside the app's providers, so a component that grows a new context
+                # dependency takes the whole React root down and every pane below goes
+                # missing. Reported as a timeout on the first locator, that reads as a slow
+                # build; it is not. The missing provider is the thing to name.
+                if thrown:
+                    raise AssertionError(
+                        "the smoke page threw before rendering, so no pane exists to check: "
+                        + "; ".join(dict.fromkeys(thrown))
+                    )
                 raise
 
             info("all production panes rendered clean text (no ANSI escapes)")

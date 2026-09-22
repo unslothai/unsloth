@@ -196,14 +196,17 @@ function App() {
     w.__setHasText = (v: boolean) => setHasText(v);
     w.__setAwaitingApproval = (v: boolean) => setAwaitingApproval(v);
     w.__remount = () => setGeneration((g) => g + 1);
+    // The scenes drive the old boolean, which maps exactly onto the two settings they
+    // exercise: true is "collapsed", false is "auto". Always expanded has no scene here;
+    // tests/tool-activity-preference.ts covers it.
     w.__setPreference = (v: boolean) =>
-      useChatPreferencesStore.getState().setCollapseToolActivityByDefault(v);
+      useChatPreferencesStore.getState().setToolVisibility(v ? "collapsed" : "auto");
     w.__getPreference = () =>
-      useChatPreferencesStore.getState().collapseToolActivityByDefault;
+      useChatPreferencesStore.getState().toolVisibility === "collapsed";
     // The declared default, so a scene can check "landed on the default"
     // without hard-coding which default that currently is.
     w.__getDefaultPreference = () =>
-      useChatPreferencesStore.getInitialState().collapseToolActivityByDefault;
+      useChatPreferencesStore.getInitialState().toolVisibility === "collapsed";
   }, []);
 
   useEffect(() => {
@@ -215,7 +218,7 @@ function App() {
           strict,
           rtl,
           preference:
-            useChatPreferencesStore.getState().collapseToolActivityByDefault,
+            useChatPreferencesStore.getState().toolVisibility === "collapsed",
         };
       });
     });

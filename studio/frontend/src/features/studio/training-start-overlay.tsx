@@ -76,7 +76,9 @@ function useHfDownloadProgress(
 ): DownloadState {
   const phase = useTrainingRuntimeStore((s) => s.phase);
   const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
-  const [state, setState] = useState<DownloadState>(EMPTY_DOWNLOAD_STATE);
+  const [state, setState] = useState<DownloadState & { repoId?: string }>(
+    EMPTY_DOWNLOAD_STATE,
+  );
 
   const shouldPoll =
     isStarting ||
@@ -114,7 +116,7 @@ function useHfDownloadProgress(
         applied = generation;
         const next = downloadStateFromProgress(prog, latest);
         latest = next;
-        setState(next);
+        setState({ ...next, repoId });
         // only a verified snapshot stops the tick; a settled row can still be waiting on files.
         if (next.completeOnDisk) {
           finished = true;
@@ -137,7 +139,8 @@ function useHfDownloadProgress(
     };
   }, [repoId, shouldPoll, fetcher]);
 
-  return state;
+  // Never show the old repo's Ready state while the resolved repo starts polling.
+  return state.repoId === repoId ? state : EMPTY_DOWNLOAD_STATE;
 }
 
 function useModelDownloadProgress(
@@ -299,6 +302,9 @@ export function TrainingStartOverlay({
   const phase = useTrainingRuntimeStore((s) => s.phase);
   const jobId = useTrainingRuntimeStore((s) => s.jobId);
   const startModelName = useTrainingRuntimeStore((s) => s.startModelName);
+  const modelDownloadRepoId = useTrainingRuntimeStore(
+    (s) => s.modelDownloadRepoId,
+  );
   const startDatasetName = useTrainingRuntimeStore((s) => s.startDatasetName);
   const startHfToken = useTrainingRuntimeStore((s) => s.startHfToken);
   const startFromResume = useTrainingRuntimeStore((s) => s.startFromResume);
@@ -315,11 +321,13 @@ export function TrainingStartOverlay({
   const hfDatasetName = datasetSource === "huggingface" ? dataset : null;
   const hasStartResources = startModelName !== null;
   const useConfiguredResources = !isStarting && !hasStartResources;
-  const modelName = hasStartResources
-    ? startModelName
-    : useConfiguredResources
-      ? configuredModel
-      : null;
+  const modelName =
+    modelDownloadRepoId ??
+    (hasStartResources
+      ? startModelName
+      : useConfiguredResources
+        ? configuredModel
+        : null);
   const datasetName = hasStartResources
     ? startDatasetName
     : useConfiguredResources

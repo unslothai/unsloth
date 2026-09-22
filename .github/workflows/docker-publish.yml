@@ -620,6 +620,12 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Sync docker/DOCKERHUB.md to the Docker Hub page
+        # Key by env, not interpolated into the script: an expanded ${{ secrets.* }}
+        # is written into the step's temporary shell script on the runner and, in a
+        # command line, into the process argv table. Masking covers the log, not the
+        # places the value comes to rest.
+        env:
+          DOCKER_API_KEY: ${{ secrets.DOCKER_API_KEY }}
         run: |
           README=docker/DOCKERHUB.md
           test -s "$README"
@@ -629,9 +635,11 @@ jobs:
           # is not allowed", whatever its scopes. The token needs the repository
           # edit permission on ${IMAGE_NAME}.
           HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
-          TOKEN="$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
-            -H 'Content-Type: application/json' \
-            -d "{\"identifier\": \"${{ env.REGISTRY_USERNAME }}\", \"secret\": \"${{ secrets.DOCKER_API_KEY }}\"}" \
+          # Body built from the environment and handed to curl on stdin, so the key is
+          # never a command-line argument.
+          TOKEN="$(python3 -c 'import json,os,sys; sys.stdout.write(json.dumps({"identifier": os.environ["REGISTRY_USERNAME"], "secret": os.environ["DOCKER_API_KEY"]}))' \
+            | curl -sS -X POST https://hub.docker.com/v2/auth/token \
+              -H 'Content-Type: application/json' --data-binary @- \
             | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
           if [ -z "$TOKEN" ]; then
             echo "::error::Could not exchange DOCKER_API_KEY for a Hub API token; the Hub page was not updated."
@@ -706,9 +714,11 @@ jobs:
           NIGHTLY_KEEP_DAYS: "60"
         run: |
           HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
-          TOKEN="$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
-            -H 'Content-Type: application/json' \
-            -d "{\"identifier\": \"${{ env.REGISTRY_USERNAME }}\", \"secret\": \"${{ secrets.DOCKER_API_KEY }}\"}" \
+          # Body built from the environment and handed to curl on stdin, so the key is
+          # never a command-line argument.
+          TOKEN="$(python3 -c 'import json,os,sys; sys.stdout.write(json.dumps({"identifier": os.environ["REGISTRY_USERNAME"], "secret": os.environ["DOCKER_API_KEY"]}))' \
+            | curl -sS -X POST https://hub.docker.com/v2/auth/token \
+              -H 'Content-Type: application/json' --data-binary @- \
             | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
           if [ -z "$TOKEN" ]; then
             echo "::error::Could not exchange DOCKER_API_KEY for a Hub API token; handle tags of run ${{ github.run_id }} were not removed."
