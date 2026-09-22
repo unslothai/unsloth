@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -52,3 +53,29 @@ def test_quantized_or_foreign_models_keep_4bit(outputs, tmp_path):
         assert worker._resolve_lora_4bit(_mc(path), True) is True, path
     qlora = _model_dir(outputs, "qlora", adapter = {"unsloth_training_method": "qlora"})
     assert worker._resolve_lora_4bit(_mc(qlora, is_lora = True, base_model = "x"), True) is True
+
+
+def test_symlink_loop_under_outputs_keeps_4bit(outputs, monkeypatch):
+    """A looped link under outputs/ must read as "not a full fine-tune", not fault the load.
+
+    Before 3.13, resolve() reports a symlink loop as RuntimeError whatever `strict` is,
+    and RuntimeError is neither OSError nor ValueError. The call sites in this module and
+    in routes/inference.py sit outside any handler, so an escape would surface as a 500.
+    """
+    outputs.mkdir(parents = True, exist_ok = True)
+    looped, partner = outputs / "loop_a", outputs / "loop_b"
+    looped.symlink_to(partner)
+    partner.symlink_to(looped)
+    assert worker._resolve_lora_4bit(_mc(str(looped)), True) is True
+
+    # Pin the pre-3.13 spelling on every interpreter, so this stays a negative control
+    # instead of quietly passing on 3.13+ where resolve() no longer raises.
+    real_resolve = Path.resolve
+
+    def loop_raises(self, *args, **kwargs):
+        if self.name.startswith("loop_"):
+            raise RuntimeError(f"Symlink loop from {self!s}")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", loop_raises)
+    assert worker._resolve_lora_4bit(_mc(str(looped)), True) is True
