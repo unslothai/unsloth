@@ -368,10 +368,11 @@ export function DebuggingTab() {
     setFollowing(true);
   }, []);
 
+  // wrap changes the scroll height without changing the text, so it re-pins too
   useEffect(() => {
     const pane = paneRef.current;
     if (pane && pinnedRef.current) pane.scrollTop = pane.scrollHeight;
-  }, [text]);
+  }, [text, wrap]);
 
   const onScroll = useCallback(() => {
     const pane = paneRef.current;
@@ -447,6 +448,8 @@ export function DebuggingTab() {
   }, [t]);
 
   const groupedSources = useMemo(() => groupByFamily(sources), [sources]);
+  // the selected file's path, else the log root the footer falls back to showing
+  const shownPath = realpath ?? logRoot;
   const modeLabel = (candidate: RefreshMode) =>
     t(
       candidate === "live"
@@ -689,9 +692,9 @@ export function DebuggingTab() {
           <div className="flex min-w-0 flex-1 basis-48 items-center gap-1">
             <code
               className="min-w-0 truncate font-mono text-ui-11 text-muted-foreground"
-              title={realpath ?? undefined}
+              title={shownPath ?? undefined}
             >
-              {realpath ?? logRoot ?? "-"}
+              {shownPath ?? "-"}
             </code>
             <Tooltip>
               <TooltipTrigger asChild={true}>
@@ -699,8 +702,8 @@ export function DebuggingTab() {
                   size="icon-xs"
                   variant="ghost"
                   aria-label={t("settings.debugging.pathCopy")}
-                  disabled={!realpath}
-                  onClick={() => realpath && copyPath(realpath)}
+                  disabled={!shownPath}
+                  onClick={() => shownPath && copyPath(shownPath)}
                   className="text-muted-foreground"
                 >
                   <HugeiconsIcon
