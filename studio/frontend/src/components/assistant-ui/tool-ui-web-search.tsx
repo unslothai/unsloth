@@ -202,8 +202,8 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
             {/* Capped: a generated url can wrap into thousands of lines and push Allow/Deny
                 out of the viewport while the decision is being made. */}
             <ScrollPane
-              className="min-w-0 max-h-24 rounded bg-muted/50 px-2 py-1"
-              scrollerClassName="overflow-auto whitespace-pre-wrap break-all text-foreground/85"
+              className="min-w-0 rounded bg-muted/50 px-2 py-1"
+              scrollerClassName="max-h-24 overflow-auto whitespace-pre-wrap break-all text-foreground/85"
             >
               <code dir="ltr" className="break-all text-foreground/85">
                 {escapeBidiControls(url)}

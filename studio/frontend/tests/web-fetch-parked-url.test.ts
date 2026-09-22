@@ -265,19 +265,27 @@ test("the url row is height-capped so the approval controls stay reachable", () 
     1,
     "the url must sit in exactly one scroller rather than setting the card's height",
   );
-  assert.match(
-    classNameOf(pane[0].openingElement),
-    /max-h-/,
-    "the scroller needs an explicit max height, or it still grows with the url",
-  );
-  // The scroller, not the wrapper, is what has to scroll.
-  assert.match(
+  // `className` is the padded wrapper and `scrollerClassName` the inner <pre> that owns the
+  // overflow, so the cap has to sit on the scroller or the text is clipped instead of scrollable.
+  const scroller =
     attributeOf(
       pane[0].openingElement,
       "scrollerClassName",
-    )?.initializer?.getText(source) ?? "",
+    )?.initializer?.getText(source) ?? "";
+  assert.match(
+    scroller,
+    /max-h-/,
+    "the scroller needs an explicit max height, or it still grows with the url",
+  );
+  assert.match(
+    scroller,
     /overflow-auto/,
     "the capped pane must scroll, so the complete value stays reachable",
+  );
+  assert.doesNotMatch(
+    classNameOf(pane[0].openingElement),
+    /max-h-/,
+    "a cap on the wrapper leaves the scroller at full height, so its overflow never scrolls",
   );
   assert.ok(
     pane[0].getStart(source) >= row.getStart(source) &&
