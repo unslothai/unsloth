@@ -357,3 +357,63 @@ def test_the_windows_rocm_torchao_stub_is_not_safetensors_support(monkeypatch):
     # And the capability the planners ask is False for a safetensors name too, not only the pickle.
     assert restricted_prequant_load_supported("fp8", "Model-FP8.safetensors") is False
     assert restricted_prequant_load_supported("fp8", "Model-FP8.pt") is False
+
+
+def test_a_scheme_this_torchao_cannot_flatten_is_reported_before_the_build(monkeypatch):
+    """The helpers importing is not the same question as this scheme producing something they take.
+
+    Through torchao 0.17 int8 quantises to LinearActivationQuantizedTensor, which flatten refuses,
+    so the builder's container preflight passed and the failure arrived only after the download and
+    the hours of GPU quantization.
+    """
+    import torchao.quantization as tq
+    from core.inference import prequant_safetensors as ps
+
+    quantized: list = []
+    monkeypatch.setattr(tq, "quantize_", lambda mod, cfg, **kw: quantized.append(cfg))
+
+    def _refuses(state_dict):
+        raise ValueError("Unsupported tensor type: <class 'LinearActivationQuantizedTensor'>")
+
+    monkeypatch.setattr(ps, "_torchao_helpers", lambda: (_refuses, object()))
+    assert ps.scheme_is_flattenable("cfg") is False
+    assert quantized == ["cfg"], "the probe must actually quantize, not guess from a version"
+
+    # Flattens cleanly: supported.
+    monkeypatch.setattr(ps, "_torchao_helpers", lambda: (lambda sd: ({}, {}), object()))
+    assert ps.scheme_is_flattenable("cfg") is True
+
+    # An unrelated flatten failure is NOT evidence the scheme is unsupported, and a build must not
+    # be refused on it.
+    def _other(state_dict):
+        raise ValueError("something else entirely")
+
+    monkeypatch.setattr(ps, "_torchao_helpers", lambda: (_other, object()))
+    assert ps.scheme_is_flattenable("cfg") is None
+
+    # A config this torchao will not even apply is the same "no evidence" answer.
+    def _boom(mod, cfg, **kw):
+        raise RuntimeError("config needs CUDA")
+
+    monkeypatch.setattr(tq, "quantize_", _boom)
+    monkeypatch.setattr(ps, "_torchao_helpers", lambda: (_refuses, object()))
+    assert ps.scheme_is_flattenable("cfg") is None
+
+    # No helpers at all is a flat no.
+    monkeypatch.setattr(ps, "_torchao_helpers", lambda: None)
+    assert ps.scheme_is_flattenable("cfg") is False
+
+
+def test_the_real_installed_torchao_answers_the_int8_question(monkeypatch):
+    """Not a mock: the probe against the torchao actually installed, whichever way it answers."""
+    from core.inference.diffusion_transformer_quant import _make_quant_config
+    from core.inference.prequant_safetensors import scheme_is_flattenable
+
+    import torchao
+
+    answer = scheme_is_flattenable(_make_quant_config("int8"))
+    version = tuple(int(p) for p in torchao.__version__.split("+")[0].split(".")[:2])
+    if version < (0, 18):
+        assert answer is False, f"torchao {torchao.__version__} should refuse int8 flatten"
+    else:
+        assert answer is not False, f"torchao {torchao.__version__} should flatten int8"

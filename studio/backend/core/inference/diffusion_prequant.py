@@ -654,10 +654,15 @@ def cached_checkpoint_path(
     its checkpoint is sitting in the cache. Walking the chain in order keeps the anti-staleness
     property that motivated primary-only: the better name still wins whenever it is present.
 
-    ``names`` narrows the chain to a caller's own subset, for the one question this cannot answer
-    on its own: whether the cached file is one this install could actually OPEN. A cached legacy
-    pickle is a real hit for sizing and a non-answer for an install that cannot deserialize one,
-    and only the caller knows which question it is asking.
+    A name this install cannot OPEN is never a hit, in either direction. The obvious direction is a
+    cached ``.pt`` on a host whose torch or torchao cannot restrict that load; the inverse is a
+    cached ``.safetensors`` on a host without torchao's flatten helpers, which reads the pickle
+    perfectly well. Both end the same way if this answers yes: the planner commits to the prequant,
+    drops the dense shards, and ``_resolve_checkpoint_path`` then filters out the very file the
+    cache hit was about and finds the other name uncached. Asked per NAME rather than per scheme,
+    because the container is what decides it.
+
+    ``names`` narrows the chain further, to a caller's own subset.
 
     Both cache roots are searched: Unsloth pins the LIVE cache setting while an unpinned
     ``hf_hub_download`` falls back to huggingface_hub's import-time constant. Never raises."""
@@ -665,6 +670,12 @@ def cached_checkpoint_path(
     wanted = set(names) if names is not None else None
     for name in candidate_filenames_of(source):
         if wanted is not None and name not in wanted:
+            continue
+        try:
+            readable = restricted_prequant_load_supported(None, name)
+        except Exception:  # noqa: BLE001 - a pure lookup that never raises, as documented above
+            readable = True
+        if not readable:
             continue
         for root in roots:
             hit = _cached_in_root(source, root, name)

@@ -2055,3 +2055,41 @@ def test_an_unreachable_hub_is_reported_as_itself_not_blamed_on_the_last_candida
     with pytest.raises(EntryNotFoundError):
         pq._resolve_checkpoint_path(source, None, None, local_files_only = True)
     assert asked == ["Hosted-FP8.safetensors", "Hosted-FP8.pt", "transformer_fp8.pt"], asked
+
+
+def test_a_cached_name_this_install_cannot_open_is_not_a_cache_hit(monkeypatch, tmp_path):
+    """Both directions, because both end with the plan dropping the dense shards for nothing.
+
+    A cached ``.safetensors`` on a host without torchao's flatten helpers is as unusable as a cached
+    ``.pt`` on a host that cannot restrict a pickle load, and ``_resolve_checkpoint_path`` filters
+    out exactly the file the hit was about.
+    """
+    source = PrequantSource(
+        kind = "repo",
+        location = "org/hosted-fp8",
+        filename = "Hosted-FP8.safetensors",
+        fallback_filenames = ("Hosted-FP8.pt",),
+    )
+    cached = {"Hosted-FP8.safetensors": str(tmp_path / "st"), "Hosted-FP8.pt": None}
+    monkeypatch.setattr(pq, "_cached_in_root", lambda src, root, name = None: cached.get(name))
+
+    monkeypatch.setattr(
+        pq, "restricted_prequant_load_supported", lambda scheme = None, name = None: True
+    )
+    assert pq.cached_checkpoint_path(source) == str(tmp_path / "st")
+
+    # The install can read a pickle but not a safetensors artifact: the only cached name is one it
+    # could never open, so this is a miss and the dense shards stay in the plan.
+    monkeypatch.setattr(
+        pq,
+        "restricted_prequant_load_supported",
+        lambda scheme = None, name = None: not str(name).endswith(".safetensors"),
+    )
+    assert pq.cached_checkpoint_path(source) is None
+
+    # And it must still never raise, whatever the readability probe does.
+    def _boom(scheme = None, name = None):
+        raise RuntimeError("torchao exploded")
+
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", _boom)
+    assert pq.cached_checkpoint_path(source) == str(tmp_path / "st")

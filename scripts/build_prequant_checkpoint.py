@@ -203,7 +203,6 @@ def main(argv = None) -> int:
     if fam is None:
         print(f"error: unknown family '{args.family}'", flush = True)
         return 2
-    transformer_cls = getattr(diffusers, fam.transformer_class)
     # What the artifact RECORDS as its base, which is not always what this build READ. Weights staged into a local
     # directory keep that directory's name, and the loader's ``_same_base_model`` compares final path segments: a
     # checkpoint built from ./temp/qwen_image_21 records a base whose tail is "qwen_image_21", the load asks for
@@ -212,24 +211,48 @@ def main(argv = None) -> int:
     # name the model this family is for, and cannot relabel one checkpoint as another.
     recorded_base = args.base_model_id or args.base
     if args.base_model_id:
-        from core.inference.diffusion_prequant import _same_base_model
-        if not _same_base_model(recorded_base, fam.base_repo):
+        # EXACT, not the loader's ``_same_base_model``. That helper compares final path segments on
+        # purpose, so a checkpoint built from ./temp/qwen_image_21 still matches Qwen/Qwen-Image-2.1;
+        # borrowing it here would also accept ``other/Qwen-Image-2.1``, record the artifact under that
+        # namespace, and have the loader's equally tolerant comparison wave it through as the official
+        # base. What gets WRITTEN into a published file has to be the canonical id itself.
+        if recorded_base.strip() != fam.base_repo:
             print(
                 f"error: --base-model-id {recorded_base!r} is not {fam.name}'s base "
                 f"({fam.base_repo!r}); it would label this checkpoint as a different model",
                 flush = True,
             )
             return 2
+    transformer_cls = getattr(diffusers, fam.transformer_class)
     # The CONTAINER is chosen by the --out extension, so one flag picks the on-disk format, the reachable upload name
     # and the writer, and they cannot be set to disagree.
     is_safetensors_out = str(args.out).lower().endswith(".safetensors")
     if is_safetensors_out:
-        from core.inference.prequant_safetensors import safetensors_prequant_supported
+        from core.inference.prequant_safetensors import (
+            safetensors_prequant_supported,
+            scheme_is_flattenable,
+        )
+
         if not safetensors_prequant_supported():
             print(
                 "error: --out names a .safetensors checkpoint but this install cannot write one "
                 "(needs torchao >= 0.16 for torchao.prototype.safetensors.safetensors_support, "
                 "plus the safetensors package)",
+                flush = True,
+            )
+            return 2
+        # The helpers importing is not the same question as this scheme producing something they can
+        # flatten, and for int8 the two disagree through torchao 0.17. Probed here, on one tiny CPU
+        # Linear, so the answer arrives in a second instead of after the download and the hours of
+        # GPU quantization. None means the probe could not run, which is not evidence: proceed.
+        from core.inference.diffusion_transformer_quant import _make_quant_config
+
+        if scheme_is_flattenable(_make_quant_config(scheme)) is False:
+            print(
+                f"error: --out names a .safetensors checkpoint but this torchao quantises "
+                f"{scheme!r} to a legacy tensor subclass that cannot be written to safetensors. "
+                "torchao >= 0.18 produces the flattenable subclasses for every scheme Unsloth "
+                "ships. Upgrade torchao, or write this build as a .pt checkpoint.",
                 flush = True,
             )
             return 2

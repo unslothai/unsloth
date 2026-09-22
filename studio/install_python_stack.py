@@ -10527,6 +10527,19 @@ def _diffusers_main_resident(req: "Path | None" = None) -> bool:
     )
 
 
+def _diffusers_main_supersedes_release() -> bool:
+    """Whether 11c's build already stands in for the release pin, so 11b must not reinstall it.
+
+    Only when the main build is BOTH wanted and resident, AND this pass is allowed to skip work at
+    all: under UNSLOTH_STUDIO_FULL_DEPS both steps run, the release first and the commit back on
+    top, which is the same order a first install takes and the only order that ends with the tree
+    the family gate expects.
+    """
+    if _full_deps_requested():
+        return False
+    return _diffusers_main_requested() and _diffusers_main_resident()
+
+
 def _diffusers_main_step() -> None:
     """Install the pinned Diffusers commit, or leave the release pin alone.
 
@@ -10572,7 +10585,11 @@ def _diffusers_main_step() -> None:
             "will refuse with a message naming the version they want.",
         )
         return
-    if _diffusers_main_resident(req):
+    # The escape hatch reaches this skip too. UNSLOTH_STUDIO_FULL_DEPS is the documented way to
+    # repair an install whose evidence looks fine and whose payload is not, and _diffusers_main_resident
+    # is exactly such evidence: _payload_recorded_intact compares recorded sizes, so a same-size
+    # corruption reads as intact. A skip nobody can turn off is a bug nobody can work around.
+    if not _full_deps_requested() and _diffusers_main_resident(req):
         _progress("diffusers main (satisfied, skipped)")
         _record_step("diffusers-main.txt", "skipped")
         return
@@ -11367,7 +11384,7 @@ def install_python_stack() -> int:
         REQ_ROOT / "diffusers-pin.txt",
         "diffusers pin",
         no_deps = False,
-        superseded = _diffusers_main_requested() and _diffusers_main_resident(),
+        superseded = _diffusers_main_supersedes_release(),
     ):
         pip_install(
             "Installing the pinned Diffusers release",

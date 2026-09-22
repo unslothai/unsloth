@@ -562,3 +562,50 @@ def test_python_39_does_not_clone_a_build_it_can_never_install(monkeypatch):
     monkeypatch.setattr(module, "_record_step", lambda *a, **k: None)
     module._diffusers_main_step()
     assert attempted and attempted[0].name == "diffusers-main.txt"
+
+
+def test_the_full_deps_escape_hatch_reaches_both_diffusers_steps(monkeypatch):
+    """UNSLOTH_STUDIO_FULL_DEPS is the documented repair, and this was the one pin-shaped pair it
+    could not reach.
+
+    ``_diffusers_main_resident`` is exactly the kind of evidence the hatch exists to override:
+    ``_payload_recorded_intact`` compares recorded sizes, so a same-size corruption reads as intact
+    and both steps would skip, leaving nothing to repair Diffusers with.
+    """
+    module = _probe_module("install_python_stack_probe_fulldeps")
+
+    calls: list = []
+    installed: list = []
+    monkeypatch.setattr(module, "_progress", lambda label, *a, **k: calls.append(label))
+    monkeypatch.setattr(module, "_record_step", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_note", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_has_working_git", lambda: True)
+    monkeypatch.setattr(module, "_diffusers_main_resident", lambda req = None: True)
+    monkeypatch.setattr(
+        module, "pip_install_try", lambda *a, **k: (installed.append(k.get("req")), True)[1]
+    )
+    monkeypatch.delenv(module.DIFFUSERS_MAIN_ENV, raising = False)
+
+    # Without the hatch: resident means skip, and the release pin stands down.
+    monkeypatch.delenv(module._FULL_DEPS_ENV, raising = False)
+    module._diffusers_main_step()
+    assert installed == [], installed
+    assert len(calls) == 1 and "satisfied, skipped" in calls[0], calls
+    assert module._diffusers_main_supersedes_release() is True
+
+    # With it: the build is reinstalled, and the release pin runs first so the order is the one a
+    # first install takes.
+    calls.clear()
+    monkeypatch.setenv(module._FULL_DEPS_ENV, "1")
+    module._diffusers_main_step()
+    assert len(installed) == 1, installed
+    assert calls == ["diffusers main"], calls
+    assert module._diffusers_main_supersedes_release() is False
+
+    # Opting out of the main build still wins over the hatch: no source build either way.
+    calls.clear(); installed.clear()
+    monkeypatch.setenv(module.DIFFUSERS_MAIN_ENV, "0")
+    module._diffusers_main_step()
+    assert installed == [], installed
+    assert len(calls) == 1 and "opted out" in calls[0], calls
+    assert module._diffusers_main_supersedes_release() is False

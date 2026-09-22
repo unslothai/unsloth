@@ -730,3 +730,25 @@ def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
         "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1; "
         f"{module.DEFAULT_TAG} is not"
     )
+def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade():
+    """``pip install -U 'diffusers>=0.41.0'`` has no candidate while 0.41.0 is unreleased, so the
+    refusal has to name the pinned main build Studio actually installs for this class."""
+    from core.inference.diffusion_families import (
+        _PIPELINE_MIN_DIFFUSERS,
+        _UNRELEASED_MIN_DIFFUSERS,
+        _too_old_message,
+    )
+
+    message = _too_old_message("QwenImage21Pipeline", "qwen-image-2.1", "0.40.0")
+    assert "pip install -U 'diffusers>=0.41.0'" not in message
+    assert "diffusers-main.txt" in message
+    assert "has not been released yet" in message
+
+    # A released minimum keeps the ordinary remedy.
+    released = _too_old_message("Krea2Pipeline", "krea-2", "0.38.0")
+    assert "pip install -U 'diffusers>=0.39.0'" in released
+
+    # Every unreleased entry must still be a minimum some class actually declares, so a stale one
+    # cannot sit here unnoticed after its release ships.
+    declared = set(_PIPELINE_MIN_DIFFUSERS.values())
+    assert _UNRELEASED_MIN_DIFFUSERS <= declared, sorted(_UNRELEASED_MIN_DIFFUSERS - declared)
