@@ -270,3 +270,54 @@ def test_a_local_save_does_not_collect_the_resident_state_dict(
         push_to_hub = False,
     )
     assert collected == ["state_dict"], collected
+
+
+def test_the_written_tensor_names_reach_the_reconciler(save_module_any, monkeypatch, tmp_path):
+    """Reading the names back off disk is not always possible, so hand over the ones already held.
+
+    `_checkpoint_tensor_names` declines to unpickle an unindexed `pytorch_model.bin` just to list
+    names, so a `safe_serialization = False` export reconciles against "unknown" and keeps an
+    `mtp_num_hidden_layers` the weights do not carry. Whenever a state dict was built it IS the
+    thing being written, so passing its keys costs nothing and removes the blind spot.
+    """
+    import torch
+
+    seen = []
+
+    class _Model:
+        config = None
+
+        def state_dict(self):
+            return {"model.embed_tokens.weight": torch.zeros(1)}
+
+        def save_pretrained(self, directory, **kwargs):
+            os.makedirs(directory, exist_ok = True)
+
+    from unsloth_zoo import saving_utils
+
+    monkeypatch.setattr(
+        saving_utils,
+        "reconcile_mtp_config",
+        lambda directory, tensor_names = None: seen.append(tensor_names),
+        raising = False,
+    )
+    save_module_any.unsloth_generic_save(
+        _Model(),
+        None,
+        save_directory = str(tmp_path / "16bit"),
+        save_method = "merged_16bit",
+        push_to_hub = False,
+    )
+    assert seen == [["model.embed_tokens.weight"]], seen
+
+    # No state dict of its own means the names really are unknown here, and unknown must stay
+    # unknown rather than licence a guess.
+    seen.clear()
+    save_module_any.unsloth_generic_save(
+        _Model(),
+        None,
+        save_directory = str(tmp_path / "lora"),
+        save_method = "lora",
+        push_to_hub = False,
+    )
+    assert seen == [None], seen

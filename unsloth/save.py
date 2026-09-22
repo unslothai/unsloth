@@ -5349,7 +5349,10 @@ def _push_merged_to_hub_revision(save_kwargs):
             dict.fromkeys([*(card.data.tags or []), *(save_kwargs["tags"] or []), "unsloth"])
         )
         card.save(card_path)
-        return api.create_commit(
+        # The staged save prints the temp folder it wrote, which is not where the user asked the
+        # model to go and is deleted a moment later. Name the destination instead.
+        print(f"Unsloth: Uploading the merged model to '{repo_id}' ...")
+        commit = api.create_commit(
             repo_id = repo_id,
             repo_type = "model",
             operations = [
@@ -5369,6 +5372,8 @@ def _push_merged_to_hub_revision(save_kwargs):
             ),
             commit_description = save_kwargs["commit_description"],
         )
+        print(f"Saved model to https://huggingface.co/{repo_id}")
+        return commit
 
 
 @_normalize_tied_weights_keys_for_save
@@ -5452,7 +5457,14 @@ def unsloth_generic_save(
         # Guarded: an older zoo must not raise once the weights are already on disk.
         try:
             from unsloth_zoo.saving_utils import reconcile_mtp_config
-            reconcile_mtp_config(save_directory)
+            # The names we just wrote, when we know them: `_checkpoint_tensor_names` declines to
+            # unpickle an unindexed `pytorch_model.bin`, so a `safe_serialization = False` export
+            # would otherwise read back "unknown" and keep an `mtp_num_hidden_layers` the weights
+            # do not carry. Free here -- this state dict is already materialised.
+            reconcile_mtp_config(
+                save_directory,
+                tensor_names = list(state_dict.keys()) if state_dict is not None else None,
+            )
         except ImportError:
             pass
         if tokenizer is not None:
