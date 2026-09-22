@@ -89,7 +89,7 @@ import {
 // The frame -> part shaping a tool result gets, shared with the recovery replay so a reopened card is the same
 // object a watched one was.
 export { isMcpImageToolResult, type McpImageToolResult } from "../utils/tool-result-shape";
-import { isMcpImageToolResult, shapeToolResult } from "../utils/tool-result-shape";
+import { isMcpImageToolResult, shapeToolResult, type McpImageToolResult } from "../utils/tool-result-shape";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
