@@ -330,7 +330,9 @@ def test_activation_scale_survives_on_a_module_that_kept_its_fp8_weight():
     model, tensors, expected = _build()
     # q_proj keeps its own scale, so it stays fp8 and must keep its activation scale.
     model.q_proj.weight = nn.Parameter(tensors["q_proj.weight"], requires_grad = False)
-    model.q_proj.weight_scale_inv = nn.Parameter(tensors["q_proj.weight_scale_inv"], requires_grad = False)
+    model.q_proj.weight_scale_inv = nn.Parameter(
+        tensors["q_proj.weight_scale_inv"], requires_grad = False
+    )
     model.q_proj.register_buffer("input_activation_scale", torch.ones(1))
     model.experts.register_buffer("input_activation_scale", torch.ones(1))
     with tempfile.TemporaryDirectory() as d:
@@ -375,7 +377,9 @@ def test_activation_scale_cleanup_is_per_attribute():
     gate_up_proj's activation scale goes, down_proj's stays for the fp8 forward, and the
     module-level input scale stays while anything in the module is still fp8."""
     model, tensors, expected = _build()
-    model.experts.down_proj_scale_inv = nn.Parameter(tensors["experts.down_proj_scale_inv"], requires_grad = False)
+    model.experts.down_proj_scale_inv = nn.Parameter(
+        tensors["experts.down_proj_scale_inv"], requires_grad = False
+    )
     model.experts.register_buffer("gate_up_proj_activation_scale", torch.ones(1))
     model.experts.register_buffer("down_proj_activation_scale", torch.ones(1))
     model.experts.register_buffer("input_activation_scale", torch.ones(1))
@@ -408,9 +412,9 @@ def test_a_transposed_block_grid_is_turned_around_by_the_configured_block_size()
     from unsloth.models.loader_utils import _fp8_scale_grid_dequant, _orient_block_scale
 
     raw = (torch.arange(8, dtype = torch.float32).reshape(4, 2) + 1).to(_FP8_DTYPES[0])
-    scale = torch.tensor([[2.0], [4.0]])          # canonical (2, 1): rows blocks x col blocks
+    scale = torch.tensor([[2.0], [4.0]])  # canonical (2, 1): rows blocks x col blocks
     expected = _fp8_scale_grid_dequant(raw, scale, torch.float32, block_size = (2, 2))
-    stored_transposed = scale.t().contiguous()    # (1, 2)
+    stored_transposed = scale.t().contiguous()  # (1, 2)
     assert torch.equal(_orient_block_scale(stored_transposed, 4, 2, (2, 2)), scale)
     out = _fp8_scale_grid_dequant(raw, stored_transposed, torch.float32, block_size = (2, 2))
     assert torch.equal(out, expected)
@@ -426,7 +430,12 @@ def test_generic_out_of_memory_runtime_errors_defer_to_the_cpu(monkeypatch):
     calls = {"n": 0}
     original = loader_utils._fp8_scale_grid_dequant
 
-    def flaky(quantized, scale, dtype, block_size = None):
+    def flaky(
+        quantized,
+        scale,
+        dtype,
+        block_size = None,
+    ):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("HIP out of memory. Tried to allocate 2 GiB")

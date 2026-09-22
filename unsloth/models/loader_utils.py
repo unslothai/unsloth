@@ -1442,7 +1442,12 @@ def _orient_block_scale(scale, rows, cols, block_size):
     return scale
 
 
-def _fp8_scale_grid_dequant(quantized, scale, out_dtype, block_size = None):
+def _fp8_scale_grid_dequant(
+    quantized,
+    scale,
+    out_dtype,
+    block_size = None,
+):
     """Apply an fp8 checkpoint scale of any layout to one 2-D or 3-D quantized tensor: per-tensor `()` / `(1,)` / `(1, 1)`, per-expert `(E,)` / `(E, 1, 1)`, a block grid `(p, q)` or `(E, p, q)` with the block size implied by the weight shape (how transformers' own dequantize derives it). Returns None when the grid does not tile the weight, so the caller skips it instead of applying a wrong scale."""
     # MXFP8 checkpoints ship E8M0 exponents in a `torch.uint8` container: the scale is
     # `2 ** (byte - 127)`, not the byte. Casting the raw byte applies a scale up to 2**128 too
@@ -1514,7 +1519,11 @@ def _restore_parked_fp8(module, attr, device):
     assumes the planned placement."""
     try:
         stranded = module._parameters.get(attr)
-        if isinstance(stranded, torch.Tensor) and stranded.device != device and stranded.device.type == "cpu":
+        if (
+            isinstance(stranded, torch.Tensor)
+            and stranded.device != device
+            and stranded.device.type == "cpu"
+        ):
             module._parameters[attr] = torch.nn.Parameter(
                 stranded.data.to(device), requires_grad = bool(stranded.requires_grad)
             )
@@ -1548,7 +1557,11 @@ def _dequantize_leftover_fp8_params(
         block_size = None
         try:
             _qc = getattr(getattr(model, "config", None), "quantization_config", None)
-            _bs = _qc.get("weight_block_size") if isinstance(_qc, dict) else getattr(_qc, "weight_block_size", None)
+            _bs = (
+                _qc.get("weight_block_size")
+                if isinstance(_qc, dict)
+                else getattr(_qc, "weight_block_size", None)
+            )
             if _bs is not None and len(_bs) == 2:
                 block_size = (int(_bs[0]), int(_bs[1]))
         except Exception:
@@ -1557,7 +1570,12 @@ def _dequantize_leftover_fp8_params(
         if not leftover:
             return (0, 0)
         weight_map = _load_fp8_weight_map(
-            model_name, local_files_only, token, revision, subfolder, cache_dir,
+            model_name,
+            local_files_only,
+            token,
+            revision,
+            subfolder,
+            cache_dir,
             variant = variant,
         )
         if not weight_map:
@@ -1622,13 +1640,15 @@ def _dequantize_leftover_fp8_params(
         def _is_oom(error):
             # Both forms: torch's own class where it exists, and the plain RuntimeError some
             # HIP, XPU, WSL and wrapped CUDA paths raise with "out of memory" in the text.
-            return (hasattr(torch, "OutOfMemoryError") and isinstance(error, torch.OutOfMemoryError)) or (
-                isinstance(error, RuntimeError) and "out of memory" in str(error).lower()
-            )
+            return (
+                hasattr(torch, "OutOfMemoryError") and isinstance(error, torch.OutOfMemoryError)
+            ) or (isinstance(error, RuntimeError) and "out of memory" in str(error).lower())
 
         # Pass 1: dequantize on the parameter's own device. The device map was planned for the 16bit size, so a card that is full to its plan while its stacks are still fp8 has room for the result but not for the transient; such a stack is parked on the CPU (which frees its fp8 bytes) and finished in pass 2 once the rest of the card is at its final size.
         deferred = []
-        converted = set()  # (module, attr): one module can hold a converted stack and one that kept its scale
+        converted = (
+            set()
+        )  # (module, attr): one module can hold a converted stack and one that kept its scale
         for weight_key, (module, live_name, attr) in target_of_ckpt.items():
             param = getattr(module, attr, None)
             if not isinstance(param, torch.Tensor) or param.dtype not in _FP8_DTYPES:
@@ -1666,7 +1686,9 @@ def _dequantize_leftover_fp8_params(
                 if _is_oom(e):
                     device = param.device
                     quantized = param.data.to("cpu")
-                    module._parameters[attr] = torch.nn.Parameter(quantized, requires_grad = trainable)
+                    module._parameters[attr] = torch.nn.Parameter(
+                        quantized, requires_grad = trainable
+                    )
                     del param
                     deferred.append((weight_key, module, attr, device))
                     _empty_device_cache(device)
@@ -1689,7 +1711,9 @@ def _dequantize_leftover_fp8_params(
                     _restore_parked_fp8(module, attr, device)
                     continue
                 _empty_device_cache(device)
-                module._parameters[attr] = torch.nn.Parameter(out.to(device), requires_grad = trainable)
+                module._parameters[attr] = torch.nn.Parameter(
+                    out.to(device), requires_grad = trainable
+                )
                 del param, out
                 converted.add((module, attr))
                 dequantized += 1
@@ -1718,11 +1742,18 @@ def _dequantize_leftover_fp8_params(
                 by_module.setdefault(module, set()).add(attr)
             for module, attrs in by_module.items():
                 still_fp8 = [
-                    n for n, p in module._parameters.items()
+                    n
+                    for n, p in module._parameters.items()
                     if isinstance(p, torch.Tensor) and p.dtype in _FP8_DTYPES
                 ]
-                for stale in [n for n in list(module._parameters) + list(module._buffers) if n.endswith("activation_scale")]:
-                    owner = next((a for a in list(attrs) + still_fp8 if stale.startswith(a + "_")), None)
+                for stale in [
+                    n
+                    for n in list(module._parameters) + list(module._buffers)
+                    if n.endswith("activation_scale")
+                ]:
+                    owner = next(
+                        (a for a in list(attrs) + still_fp8 if stale.startswith(a + "_")), None
+                    )
                     if owner is None and still_fp8:
                         continue
                     if owner is not None and owner not in attrs:
