@@ -117,7 +117,9 @@ function NoticeStrip({
       data-testid={testId}
       className={cn(
         "flex items-start gap-2 text-xs leading-snug",
-        tone === "warning" ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
+        tone === "warning"
+          ? "text-amber-600 dark:text-amber-400"
+          : "text-muted-foreground",
       )}
     >
       {tone === "warning" ? (
@@ -532,7 +534,9 @@ export function DebuggingTab() {
                         : "text-muted-foreground hover:text-foreground",
                     )}
                   >
-                    <span className="relative z-10">{modeLabel(candidate)}</span>
+                    <span className="relative z-10">
+                      {modeLabel(candidate)}
+                    </span>
                   </button>
                 );
               })}
@@ -590,28 +594,33 @@ export function DebuggingTab() {
                     count: buffer.lines.length,
                   })}
             </span>
-            <span
-              className={cn(
-                "inline-flex h-5 items-center gap-1.5 rounded-full px-2 text-xs font-medium",
-                staleSession
-                  ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
-                  : mode === "manual"
-                    ? "bg-muted text-muted-foreground"
-                    : "bg-primary/10 text-primary",
-              )}
-            >
+            {/* a failed read is explained by the notice below; a live chip beside it would contradict it */}
+            {notice ? null : (
               <span
                 className={cn(
-                  "size-1.5 rounded-full bg-current",
-                  !staleSession && mode !== "manual" && "motion-safe:animate-pulse",
+                  "inline-flex h-5 items-center gap-1.5 rounded-full px-2 text-xs font-medium",
+                  staleSession
+                    ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                    : mode === "manual"
+                      ? "bg-muted text-muted-foreground"
+                      : "bg-primary/10 text-primary",
                 )}
-              />
-              {staleSession
-                ? t("settings.debugging.statusStale")
-                : mode === "manual"
-                  ? t("settings.debugging.statusPaused")
-                  : t("settings.debugging.statusLive")}
-            </span>
+              >
+                <span
+                  className={cn(
+                    "size-1.5 rounded-full bg-current",
+                    !staleSession &&
+                      mode !== "manual" &&
+                      "motion-safe:animate-pulse",
+                  )}
+                />
+                {staleSession
+                  ? t("settings.debugging.statusStale")
+                  : mode === "manual"
+                    ? t("settings.debugging.statusPaused")
+                    : t("settings.debugging.statusLive")}
+              </span>
+            )}
             <Tooltip>
               <TooltipTrigger asChild={true}>
                 <Button
@@ -620,12 +629,16 @@ export function DebuggingTab() {
                   aria-pressed={wrap}
                   aria-label={t("settings.debugging.wrapLines")}
                   onClick={() => setWrap((previous) => !previous)}
-                  className={cn(wrap ? "bg-muted text-foreground" : "text-muted-foreground")}
+                  className={cn(
+                    wrap ? "bg-muted text-foreground" : "text-muted-foreground",
+                  )}
                 >
                   <HugeiconsIcon icon={TextWrapIcon} />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>{t("settings.debugging.wrapLines")}</TooltipContent>
+              <TooltipContent>
+                {t("settings.debugging.wrapLines")}
+              </TooltipContent>
             </Tooltip>
           </div>
         </div>
@@ -705,12 +718,12 @@ export function DebuggingTab() {
                   onClick={() => shownPath && copyPath(shownPath)}
                   className="text-muted-foreground"
                 >
-                  <HugeiconsIcon
-                    icon={pathCopied ? Tick02Icon : Copy01Icon}
-                  />
+                  <HugeiconsIcon icon={pathCopied ? Tick02Icon : Copy01Icon} />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>{t("settings.debugging.pathCopy")}</TooltipContent>
+              <TooltipContent>
+                {t("settings.debugging.pathCopy")}
+              </TooltipContent>
             </Tooltip>
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
@@ -720,9 +733,7 @@ export function DebuggingTab() {
               onClick={() => copy(text)}
               disabled={!text}
             >
-              <HugeiconsIcon
-                icon={copied ? Tick02Icon : Copy01Icon}
-              />
+              <HugeiconsIcon icon={copied ? Tick02Icon : Copy01Icon} />
               {t("settings.debugging.copyVisible")}
             </Button>
             <Button
