@@ -925,6 +925,45 @@ def test_the_manifest_records_the_evidence_the_next_run_needs(install, settled):
     assert manifest.get("installer_python_tag"), manifest.keys()
 
 
+def _known_unmet_names(state: dict) -> set[str]:
+    """Distributions the manifest records as unmet in some audited step's closure.
+
+    closure_unmet_requirements reports a missing distribution by name and a version outside its
+    specifier as "name version"; a "<...>" entry means the audit could not run and names nothing.
+    """
+    record = (state.get("manifest") or {}).get("known_unmet") or {}
+    names: set[str] = set()
+    for entries in record.values() if isinstance(record, dict) else ():
+        for entry in entries or ():
+            text = str(entry).strip()
+            if text and not text.startswith("<"):
+                names.add(_dist_name(text.split()[0]))
+    return names
+
+
+def _dist_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _assert_same_distributions(before: dict, after: dict, message: str) -> None:
+    """Every distribution installed on both sides, and every version equal, except one that BOTH
+    manifests record as known_unmet.
+
+    Such a distribution is caught between two pins no version meets (click: sqlfluff<4 wants
+    <=8.3.0, huggingface-hub 1.23+ wants >=8.4.2), so which side it lands on is decided by the last
+    step that resolved it, not by whether a skip was equivalent. A full pass reinstalls Diffusers
+    main from a direct reference after the data-designer deps, re-resolving hub's closure, and a
+    pass that skips that step leaves the data-designer answer. Nothing else is set aside.
+    """
+    torn = _known_unmet_names(before) & _known_unmet_names(after)
+    assert {_dist_name(n) for n, _ in before["distributions"]} == {
+        _dist_name(n) for n, _ in after["distributions"]
+    }, f"{message}: a distribution was installed or removed"
+    assert [d for d in after["distributions"] if _dist_name(d[0]) not in torn] == [
+        d for d in before["distributions"] if _dist_name(d[0]) not in torn
+    ], f"{message} (known_unmet on both sides, not compared: {sorted(torn)})"
+
+
 def test_full_deps_forces_every_step_and_still_changes_nothing(install, settled):
     """The escape hatch. It must do the work -- no "(satisfied, skipped)" anywhere --
     and arrive at the same venv, which is what makes the skips safe."""
@@ -943,9 +982,11 @@ def test_full_deps_forces_every_step_and_still_changes_nothing(install, settled)
         "UNSLOTH_STUDIO_FULL_DEPS still skipped a step:\n" + run.log[-8000:]
     )
     after = snapshot(install)
-    assert after["distributions"] == before["distributions"], (
+    _assert_same_distributions(
+        before,
+        after,
         "doing every step produced a different venv from skipping the settled ones, so "
-        "at least one skip was not equivalent to the work it replaced"
+        "at least one skip was not equivalent to the work it replaced",
     )
 
 
@@ -973,7 +1014,7 @@ def _assert_install_working(
     *before*."""
     after = snapshot(install)
     if same_distributions:
-        assert after["distributions"] == before["distributions"]
+        _assert_same_distributions(before, after, "the install's packages changed")
     else:
         core = lambda dists: sorted(d for d in dists if d[0] in LOCAL_CORE)  # noqa: E731
         assert core(after["distributions"]) == core(before["distributions"])
