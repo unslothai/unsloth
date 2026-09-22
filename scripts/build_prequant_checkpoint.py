@@ -206,6 +206,7 @@ def main(argv = None) -> int:
             safetensors_prequant_supported,
             scheme_is_flattenable,
         )
+
         if not safetensors_prequant_supported():
             print(
                 "error: --out names a .safetensors checkpoint but this install cannot write one "
@@ -219,6 +220,7 @@ def main(argv = None) -> int:
         # Linear, so the answer arrives in a second instead of after the download and the hours of
         # GPU quantization. None means the probe could not run, which is not evidence: proceed.
         from core.inference.diffusion_transformer_quant import _make_quant_config
+
         if scheme_is_flattenable(_make_quant_config(scheme)) is False:
             print(
                 f"error: --out names a .safetensors checkpoint but this torchao quantises "
