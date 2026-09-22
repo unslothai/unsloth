@@ -7,6 +7,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createServer } from "vite";
 
 import { readSrc } from "./helpers/kit.ts";
 
@@ -65,7 +66,11 @@ test("capabilities are keyed by the provider's own model id", () => {
   );
   assert.match(
     pickers,
-    /connectedModelMarks\(\{\s*providerType: model\.providerType,\s*modelId: providerModelId,\s*baseUrl,/,
+    /connectedModelMarks\(\{\s*providerType: model\.providerType,\s*modelId: providerModelId,\s*baseUrl,\s*apiType: externalApiTypeById\.get\(model\.providerId\),/,
+  );
+  assert.match(
+    pickers,
+    /connectedModelMarks\(\{\s*providerType: model\.providerType,\s*modelId: parseExternalModelId\(model\.id\)\?\.modelId \?\? model\.name,\s*baseUrl: externalBaseUrlById\.get\(model\.providerId\) \?\? null,\s*apiType: externalApiTypeById\.get\(model\.providerId\),/,
   );
   // A catalogue lands after first paint, so the marks have to be re-read when it does.
   assert.match(
@@ -92,7 +97,7 @@ test("modality comes from the resolvers the app already has", () => {
   assert.doesNotMatch(marks, /detectCapabilities/);
   assert.match(
     marks,
-    /imageGen: providerSupportsBuiltinImageGeneration\(\s*providerType,\s*modelId,\s*baseUrl,\s*\),/,
+    /imageGen: providerSupportsBuiltinImageGeneration\(\s*providerType,\s*modelId,\s*baseUrl,\s*apiType,\s*\),/,
   );
   // Audio is withheld even where a catalogue publishes it as an input modality: the attachment
   // adapter resolves the active model out of `models`, which carries loaded local models only, so
@@ -115,6 +120,45 @@ test("modality comes from the resolvers the app already has", () => {
     marks,
     /vision: providerModelSupportsVision\([^)]*\) \?\?/,
   );
+});
+
+test("custom Responses rows expose image generation only on managed OpenAI hosts", async () => {
+  const vite = await createServer({
+    appType: "custom",
+    server: { middlewareMode: true, hmr: false },
+  });
+  try {
+    const { connectedModelMarks } = await vite.ssrLoadModule(
+      "/src/features/model-picker/components/model-selector/connected-model-meta.ts",
+    );
+    const marksFor = (
+      baseUrl: string,
+      apiType: "chat_completions" | "responses",
+    ) =>
+      connectedModelMarks({
+        providerType: "custom",
+        modelId: "gpt-5.5",
+        baseUrl,
+        apiType,
+      }).capabilities.imageGen;
+
+    assert.equal(marksFor("https://api.openai.com/v1", "responses"), true);
+    assert.equal(
+      marksFor("https://team.openai.azure.com/openai/v1", "responses"),
+      true,
+    );
+    assert.equal(
+      marksFor("https://api.openai.com/v1", "chat_completions"),
+      false,
+    );
+    assert.equal(marksFor("https://gateway.example/v1", "responses"), false);
+    assert.equal(
+      marksFor("https://api.openai.com.attacker.example/v1", "responses"),
+      false,
+    );
+  } finally {
+    await vite.close();
+  }
 });
 
 test("connected pins are a separate list from the On Device ones", () => {
@@ -380,7 +424,7 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   // one, and the pin effect's own guard sees no change in the stored string.
   assert.match(
     chatPage,
-    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceParams\.checkpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*\}\);\s*\}, \[activePinnedEffort,/,
+    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceParams\.checkpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*apiType: provider\?\.apiType,\s*\}\);\s*\}, \[activePinnedEffort,/,
   );
   assert.match(
     chatPage,
@@ -726,7 +770,7 @@ test("reasoning is read through the resolver the composer uses", () => {
   for (const source of [infoDialog, settingsDialog]) {
     assert.match(
       source,
-      /getExternalReasoningCapabilities\(providerType, modelId, \{\s*isReasoningProvider,\s*baseUrl,\s*\}\)/,
+      /getExternalReasoningCapabilities\(providerType, modelId, \{\s*isReasoningProvider,\s*baseUrl,\s*apiType,\s*\}\)/,
     );
     // "none" is the off switch, not a level on offer.
     assert.match(source, /\(level\) => level !== "none"/);
@@ -734,6 +778,13 @@ test("reasoning is read through the resolver the composer uses", () => {
   assert.doesNotMatch(settingsDialog, /entry\?\.reasoning \? entry\.efforts/);
   // And a self-hosted endpoint's only reasoning signal is the flag on its connection.
   assert.match(pickers, /provider\.isReasoningModel === true,/);
+  // Custom Responses connections must carry their transport into both row dialogs.
+  assert.match(
+    pickers,
+    /apiType: externalApiTypeById\.get\(model\.providerId\)/,
+  );
+  assert.match(pickers, /apiType=\{settingsModel\.apiType\}/);
+  assert.match(pickers, /apiType=\{infoModel\.apiType\}/);
 });
 
 test("a Codex connection resolves against OpenAI's catalogue", async () => {

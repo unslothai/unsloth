@@ -228,7 +228,7 @@ def test_responses_non_streaming_translation(monkeypatch):
     assert completion["object"] == "chat.completion"
     assert completion["choices"][0]["message"] == {
         "role": "assistant",
-        "content": "Hello",
+        "content": "<think>check docs</think>Hello",
         "tool_calls": [
             {
                 "id": "call_1",
@@ -255,6 +255,267 @@ def test_responses_non_streaming_translation(monkeypatch):
         "prompt_tokens_details": {"cached_tokens": 1, "cache_write_tokens": 2},
         "completion_tokens_details": {"reasoning_tokens": 1},
     }
+
+
+def test_responses_non_streaming_translation_surfaces_reasoning_without_tool_calls(monkeypatch):
+    def handle(request):
+        assert json.loads(request.content)["stream"] is False
+        return httpx.Response(
+            200,
+            json = {
+                "id": "resp_reasoning",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "summary": [
+                            {"type": "summary_text", "text": "check "},
+                            {"type": "summary_text", "text": "docs"},
+                        ],
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Hello"}],
+                    },
+                ],
+            },
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            client = ExternalProviderClient(
+                "custom",
+                "https://gateway.example/v1",
+                "test-key",
+                api_type = "responses",
+            )
+            return [
+                line
+                async for line in client.stream_chat_completion(
+                    messages = [{"role": "user", "content": "Hi"}],
+                    model = "gateway-model",
+                    stream = False,
+                )
+            ]
+
+    lines = asyncio.run(run())
+    message = json.loads(lines[0])["choices"][0]["message"]
+    assert message == {"role": "assistant", "content": "<think>check docs</think>Hello"}
+
+
+def test_responses_non_streaming_translation_rewrites_citation_markers(monkeypatch):
+    marker = "\ue200cite\ue202turn0view0\ue201"
+    alias_marker = "\ue200cite\ue202turn0view0_span\ue201"
+    list_alias_marker = "\ue200cite\ue202turn0view0_alt\ue201"
+
+    def handle(request):
+        assert json.loads(request.content)["stream"] is False
+        return httpx.Response(
+            200,
+            json = {
+                "id": "resp_cited",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": f"See {marker}.",
+                                "annotations": [
+                                    {
+                                        "type": "url_citation",
+                                        "source_id": "turn0view0",
+                                        "url": "https://example.com/source",
+                                        "title": "Source",
+                                    }
+                                ],
+                            },
+                            {
+                                "type": "output_text",
+                                "text": f" Again {alias_marker} and {list_alias_marker}.",
+                                "annotations": [
+                                    {
+                                        "type": "url_citation",
+                                        "id": "turn0view0_span",
+                                        "source_ids": ["turn0view0_alt"],
+                                        "url": "https://example.com/source",
+                                        "title": "Same source",
+                                    }
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            },
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            client = ExternalProviderClient(
+                "custom",
+                "https://gateway.example/v1",
+                "test-key",
+                api_type = "responses",
+            )
+            return [
+                line
+                async for line in client.stream_chat_completion(
+                    messages = [{"role": "user", "content": "Find a source"}],
+                    model = "gateway-model",
+                    stream = False,
+                )
+            ]
+
+    message = json.loads(asyncio.run(run())[0])["choices"][0]["message"]
+    assert message["content"] == (
+        "See [[1]](https://example.com/source). Again "
+        "[[1]](https://example.com/source) and [[1]](https://example.com/source)."
+    )
+    assert not any(char in message["content"] for char in ("\ue200", "\ue201", "\ue202"))
+
+
+def test_responses_non_streaming_rejects_image_generation_before_dispatch(monkeypatch):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        raise AssertionError("non-stream image generation must fail before upstream dispatch")
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            client = ExternalProviderClient(
+                "custom",
+                "https://api.openai.com/v1",
+                "test-key",
+                api_type = "responses",
+            )
+            return [
+                line
+                async for line in client.stream_chat_completion(
+                    messages = [{"role": "user", "content": "Draw a cat"}],
+                    model = "gpt-5.5",
+                    enabled_tools = ["image_generation"],
+                    stream = False,
+                )
+            ]
+
+    lines = asyncio.run(run())
+    assert requests == []
+    assert len(lines) == 1
+    error = json.loads(lines[0])["error"]
+    assert error["type"] == "invalid_request_error"
+    assert error["code"] == "400"
+    assert error["message"] == (
+        "image_generation is not supported for non-streaming Responses requests; "
+        "set stream=true."
+    )
+
+
+@pytest.mark.parametrize(
+    ("tools", "tool_choice", "expected_tools", "expected_tool_choice"),
+    [
+        pytest.param(None, "none", [], "none", id = "none"),
+        pytest.param(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "description": "Look something up",
+                    },
+                }
+            ],
+            {"type": "function", "function": {"name": "lookup"}},
+            [
+                {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look something up",
+                }
+            ],
+            {"type": "function", "name": "lookup"},
+            id = "forced-user-function",
+        ),
+    ],
+)
+def test_responses_non_streaming_image_generation_respects_tool_choice_suppression(
+    monkeypatch,
+    tools,
+    tool_choice,
+    expected_tools,
+    expected_tool_choice,
+):
+    requests = []
+
+    def handle(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        assert not any(
+            item.get("type") == "image_generation_call"
+            for item in body["input"]
+        )
+        assert [
+            tool
+            for tool in body.get("tools", [])
+            if tool.get("type") == "image_generation"
+        ] == []
+        assert body.get("tools", []) == expected_tools
+        assert body["tool_choice"] == expected_tool_choice
+        return httpx.Response(
+            200,
+            json = {
+                "id": "resp_text",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Hello"}],
+                    }
+                ],
+            },
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            client = ExternalProviderClient(
+                "custom",
+                "https://api.openai.com/v1",
+                "test-key",
+                api_type = "responses",
+            )
+            return [
+                line
+                async for line in client.stream_chat_completion(
+                    messages = [
+                        {"role": "user", "content": "Draw a cat"},
+                        {
+                            "role": "assistant",
+                            "content": [{"type": "image_generation_call", "id": "img_abc"}],
+                        },
+                        {"role": "user", "content": "Say hello"},
+                    ],
+                    model = "gpt-5.5",
+                    enabled_tools = ["image_generation"],
+                    tools = tools,
+                    tool_choice = tool_choice,
+                    reasoning_effort = "medium",
+                    stream = False,
+                )
+            ]
+
+    lines = asyncio.run(run())
+    assert len(requests) == 1
+    assert len(lines) == 1
+    assert json.loads(lines[0])["choices"][0]["message"]["content"] == "Hello"
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -359,6 +620,55 @@ def test_responses_non_streaming_route_returns_json(monkeypatch):
     assert entry["status"] == "completed"
 
 
+def test_responses_non_streaming_image_generation_route_returns_400_without_dispatch(
+    monkeypatch,
+):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        raise AssertionError("non-stream image generation must fail before upstream dispatch")
+
+    async def run():
+        from core.inference.api_monitor import ApiMonitor
+        from routes import inference
+
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inference, "api_monitor", monitor)
+            payload = ChatCompletionRequest(
+                messages = [{"role": "user", "content": "Draw a cat"}],
+                stream = False,
+                provider_type = "custom",
+                provider_base_url = "https://api.openai.com/v1",
+                provider_api_type = "responses",
+                external_model = "gpt-5.5",
+                enabled_tools = ["image_generation"],
+            )
+
+            async def disconnected():
+                return False
+
+            request = SimpleNamespace(
+                headers = {},
+                state = SimpleNamespace(skip_api_monitor = False),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+                is_disconnected = disconnected,
+            )
+            return await inference._proxy_to_external_provider(payload, request), monitor
+
+    (response, monitor) = asyncio.run(run())
+    assert requests == []
+    assert response.status_code == 400
+    error = json.loads(response.body)["error"]
+    assert error["type"] == "invalid_request_error"
+    assert error["code"] == "400"
+    [entry] = monitor.snapshot()
+    assert entry["status"] == "error"
+
+
 def test_responses_non_streaming_transport_error_preserves_detail(monkeypatch):
     def handle(request):
         raise httpx.ConnectError("connection refused", request = request)
@@ -397,6 +707,127 @@ def test_responses_non_streaming_transport_error_preserves_detail(monkeypatch):
     assert "connection refused" in json.loads(response.body)["error"]["message"]
 
 
+@pytest.mark.parametrize("upstream_status", [400, 401, 429, 503])
+def test_responses_non_streaming_route_preserves_upstream_error_status(
+    monkeypatch, upstream_status
+):
+    def handle(request):
+        assert json.loads(request.content)["stream"] is False
+        return httpx.Response(
+            upstream_status,
+            json = {"error": {"message": "upstream rejected request"}},
+        )
+
+    async def run():
+        from core.inference.api_monitor import ApiMonitor
+        from routes import inference
+
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            monkeypatch.setattr(inference, "api_monitor", ApiMonitor(max_entries = 3))
+            payload = ChatCompletionRequest(
+                messages = [{"role": "user", "content": "Hi"}],
+                stream = False,
+                provider_type = "custom",
+                provider_base_url = "https://gateway.example/v1",
+                provider_api_type = "responses",
+                external_model = "gateway-model",
+            )
+
+            async def disconnected():
+                return False
+
+            request = SimpleNamespace(
+                headers = {},
+                state = SimpleNamespace(skip_api_monitor = False),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+                is_disconnected = disconnected,
+            )
+            return await inference._proxy_to_external_provider(payload, request)
+
+    response = asyncio.run(run())
+    assert response.status_code == upstream_status
+    error = json.loads(response.body)["error"]
+    assert error["message"]
+    assert error["code"] == str(upstream_status)
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "expected_header"),
+    [
+        pytest.param("30", "30", id = "delay-seconds"),
+        pytest.param(
+            "Wed, 21 Oct 2099 07:28:00 GMT",
+            "Wed, 21 Oct 2099 07:28:00 GMT",
+            id = "http-date",
+        ),
+        pytest.param("Wed, 21 Oct 2099 07:28:00 +0000", None, id = "non-gmt-date"),
+        pytest.param("30\r\nX-Evil: injected", None, id = "header-injection"),
+        pytest.param("\r\n30", None, id = "leading-crlf"),
+        pytest.param("30\r\n", None, id = "trailing-crlf"),
+        pytest.param("\t30", None, id = "leading-tab"),
+        pytest.param("30\t", None, id = "trailing-tab"),
+        pytest.param("\x0030", None, id = "leading-nul"),
+        pytest.param("30\x7f", None, id = "trailing-del"),
+        pytest.param("soon", None, id = "invalid"),
+    ],
+)
+def test_responses_non_streaming_route_forwards_only_safe_retry_after(
+    monkeypatch,
+    retry_after,
+    expected_header,
+):
+    async def fake_stream_chat_completion(self, **kwargs):
+        yield json.dumps(
+            {
+                "error": {
+                    "message": "rate limited",
+                    "type": "provider_error",
+                    "code": "429",
+                    "provider": "custom",
+                    "retry_after": retry_after,
+                }
+            }
+        )
+
+    async def run():
+        from core.inference.api_monitor import ApiMonitor
+        from routes import inference
+
+        monkeypatch.setattr(
+            ExternalProviderClient,
+            "stream_chat_completion",
+            fake_stream_chat_completion,
+        )
+        monkeypatch.setattr(inference, "api_monitor", ApiMonitor(max_entries = 3))
+        payload = ChatCompletionRequest(
+            messages = [{"role": "user", "content": "Hi"}],
+            stream = False,
+            provider_type = "custom",
+            provider_base_url = "https://gateway.example/v1",
+            provider_api_type = "responses",
+            external_model = "gateway-model",
+        )
+
+        async def disconnected():
+            return False
+
+        request = SimpleNamespace(
+            headers = {},
+            state = SimpleNamespace(skip_api_monitor = False),
+            url = SimpleNamespace(path = "/v1/chat/completions"),
+            method = "POST",
+            is_disconnected = disconnected,
+        )
+        return await inference._proxy_to_external_provider(payload, request)
+
+    response = asyncio.run(run())
+    assert response.status_code == 429
+    assert json.loads(response.body)["error"]["retry_after"] == retry_after
+    assert response.headers.get("Retry-After") == expected_header
+
+
 def test_custom_responses_follow_up_preserves_reasoning_metadata():
     from routes.inference import _build_external_messages
 
@@ -433,6 +864,171 @@ def test_custom_responses_follow_up_preserves_reasoning_metadata():
         api_type = "responses",
     )
     assert built[0]["extra_content"] == extra_content
+
+
+def test_custom_responses_image_edit_parts_reach_the_provider_body(monkeypatch):
+    captured = {}
+
+    def handle(request):
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            content = (
+                b'data: {"type":"response.completed",'
+                b'"response":{"output":[],"usage":{"input_tokens":0,"output_tokens":0}}}\n\n'
+            ),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    async def run():
+        from routes import inference
+
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            payload = ChatCompletionRequest(
+                messages = [
+                    {"role": "user", "content": "Draw a cat"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "reasoning",
+                                "id": "rs_abc",
+                                "summary": [{"type": "summary_text", "text": "edit it"}],
+                                "status": "completed",
+                            },
+                            {"type": "image_generation_call", "id": "img_abc"},
+                        ],
+                    },
+                    {"role": "user", "content": "Make it blue"},
+                ],
+                stream = True,
+                provider_type = "custom",
+                provider_base_url = "https://api.openai.com/v1",
+                provider_api_type = "responses",
+                external_model = "gpt-5.5",
+                enabled_tools = ["image_generation"],
+                reasoning_effort = "medium",
+            )
+
+            async def disconnected():
+                return False
+
+            request = SimpleNamespace(
+                headers = {},
+                state = SimpleNamespace(skip_api_monitor = True),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+                is_disconnected = disconnected,
+            )
+            response = await inference._proxy_to_external_provider(payload, request)
+            return [chunk async for chunk in response.body_iterator]
+
+    chunks = asyncio.run(run())
+    assert chunks
+    replay = [
+        item
+        for item in captured["body"]["input"]
+        if item.get("type") in ("reasoning", "image_generation_call")
+    ]
+    assert replay == [
+        {
+            "type": "reasoning",
+            "id": "rs_abc",
+            "summary": [{"type": "summary_text", "text": "edit it"}],
+        },
+        {"type": "image_generation_call", "id": "img_abc"},
+    ]
+    assert {"type": "image_generation", "action": "edit"} in captured["body"]["tools"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_custom_responses_image_edit_missing_reasoning_keeps_error_format(
+    monkeypatch, stream
+):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        raise AssertionError("missing reasoning must fail before upstream dispatch")
+
+    async def run():
+        from routes import inference
+
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            payload = ChatCompletionRequest(
+                messages = [
+                    {"role": "user", "content": "Draw a cat"},
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "image_generation_call", "id": "img_abc"}],
+                    },
+                    {"role": "user", "content": "Make it blue"},
+                ],
+                stream = stream,
+                provider_type = "custom",
+                provider_base_url = "https://api.openai.com/v1",
+                provider_api_type = "responses",
+                external_model = "gpt-5.5",
+                enabled_tools = ["image_generation"],
+                reasoning_effort = "medium",
+            )
+
+            async def disconnected():
+                return False
+
+            request = SimpleNamespace(
+                headers = {},
+                state = SimpleNamespace(skip_api_monitor = True),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+                is_disconnected = disconnected,
+            )
+            response = await inference._proxy_to_external_provider(payload, request)
+            if stream:
+                return response, "".join([chunk async for chunk in response.body_iterator])
+            return response, response.body.decode()
+
+    response, body = asyncio.run(run())
+    assert requests == []
+    if stream:
+        assert response.status_code == 200
+        assert response.media_type == "text/event-stream"
+        assert body.startswith("data: {")
+        error = json.loads(body.split("\n", 1)[0].removeprefix("data: "))["error"]
+    else:
+        assert response.status_code == 400
+        assert response.media_type == "application/json"
+        error = json.loads(body)["error"]
+    assert error["code"] == "400"
+    assert "missing paired reasoning state" in error["message"]
+
+
+@pytest.mark.parametrize("supports_vision", [False, True])
+def test_custom_chat_completions_still_drops_responses_native_parts(supports_vision):
+    from routes.inference import _build_external_messages
+
+    built = _build_external_messages(
+        [
+            ChatMessage(
+                role = "assistant",
+                content = [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_abc",
+                        "summary": [],
+                    },
+                    {"type": "image_generation_call", "id": "img_abc"},
+                ],
+            ),
+            ChatMessage(role = "user", content = "Next"),
+        ],
+        supports_vision = supports_vision,
+        provider_type = "custom",
+        api_type = "chat_completions",
+    )
+    assert built == [{"role": "user", "content": "Next"}]
 
 
 def test_responses_non_streaming_failure_is_not_reported_as_completion(monkeypatch):
@@ -686,3 +1282,40 @@ def test_responses_connectivity_caps_catalog_probes(monkeypatch):
     result, probe_limit = asyncio.run(run())
     assert result.success is False
     assert probed_models == [f"model-{i}" for i in range(probe_limit)]
+
+
+def test_responses_connectivity_bounds_each_stalled_stream(monkeypatch):
+    from routes import providers as provider_routes
+
+    class StalledResponsesClient:
+        def __init__(self):
+            self.probed_models = []
+            self.closed_models = []
+
+        async def list_models(self):
+            return [{"id": "stalled-a"}, {"id": "stalled-b"}]
+
+        async def stream_chat_completion(self, *, model, **_kwargs):
+            self.probed_models.append(model)
+            try:
+                await asyncio.Event().wait()
+                yield "unreachable"
+            finally:
+                self.closed_models.append(model)
+
+    async def run():
+        client = StalledResponsesClient()
+        monkeypatch.setattr(provider_routes, "_PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS", 0.01)
+        result = await asyncio.wait_for(
+            provider_routes._test_custom_provider_connectivity(
+                client, "", api_type = "responses"
+            ),
+            timeout = 0.5,
+        )
+        return client, result
+
+    client, result = asyncio.run(run())
+    assert result.success is False
+    assert result.message == "Connection failed: Responses endpoint timed out after 0.01 seconds."
+    assert client.probed_models == ["stalled-a", "stalled-b"]
+    assert client.closed_models == ["stalled-a", "stalled-b"]

@@ -1813,6 +1813,64 @@ def test_codex_research_hops_route_saved_provider_with_run_scoped_cache(monkeypa
     assert body["tool_choice"] == "none" and body["enabled_tools"] == []
 
 
+@pytest.mark.parametrize(
+    "api_type,model,supports_reasoning,expect_sampling",
+    [
+        ("responses", "gpt-5.5", False, False),
+        ("responses", "o3-mini", False, False),
+        ("responses", "gpt-4.5-preview", False, False),
+        ("responses", "codex-mini-latest", False, False),
+        ("responses", "gpt-6-astra", False, False),
+        ("responses", "gpt-5.1-chat-latest", True, True),
+        ("responses", "gpt-5-chat", True, True),
+        ("responses", "gpt-6-other", True, True),
+        ("responses", "gateway-model", True, True),
+        ("chat_completions", "gpt-6-astra", False, True),
+    ],
+)
+def test_custom_responses_research_omits_fixed_reasoning_sampling(
+    monkeypatch,
+    api_type,
+    model,
+    supports_reasoning,
+    expect_sampling,
+):
+    sent = _install_fake_client(monkeypatch, [_response(200, body = _stream_body())])
+    monkeypatch.setattr(
+        research_runs.providers_db,
+        "get_provider",
+        lambda provider_id: {
+            "id": provider_id,
+            "provider_type": "custom",
+            "api_type": api_type,
+        },
+    )
+    supervisor = _make_supervisor(_noop_check_active)
+    run = _waiting_run(30.0)
+    inference = {
+        "model": model,
+        "providerId": "provider-1",
+        "providerType": "custom",
+        "externalModel": model,
+        "temperature": 0.23,
+        "topP": 0.61,
+    }
+    if supports_reasoning is not None:
+        inference["supportsReasoning"] = supports_reasoning
+    run["config"]["inferenceRequest"] = inference
+
+    assert asyncio.run(
+        supervisor._stream_completion(run, [{"role": "user"}], report_progress = False)
+    ) == ("report", "", "stop", None)
+    body = sent[0]["json"]
+    assert ("temperature" in body, "top_p" in body) == (
+        expect_sampling,
+        expect_sampling,
+    )
+    if expect_sampling:
+        assert (body["temperature"], body["top_p"]) == (0.23, 0.61)
+
+
 def _capture_backoff(monkeypatch) -> list:
     """Record the delays the retry loop asks for and return control immediately."""
     delays: list[float] = []

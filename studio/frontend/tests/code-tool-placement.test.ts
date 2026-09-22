@@ -23,10 +23,17 @@ import {
   codeToolCanRun,
   selectCodeToolNames,
 } from "../src/features/chat/api/code-tool-placement.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
-import { readSrc } from "./helpers/kit.ts";
+registerBundlerResolver();
+const {
+  providerHostsCodeExecution,
+  providerSupportsBuiltinCodeExecution,
+} = await import("../src/features/chat/provider-capabilities.ts");
 
 const SOURCE = readSrc("features/chat/api/chat-adapter.ts");
+const COMPOSER_SOURCE = readSrc("features/chat/shared-composer.tsx");
+const CHAT_PAGE_SOURCE = readSrc("features/chat/chat-page.tsx");
 
 // ── the rule itself ────────────────────────────────────────────────
 
@@ -52,6 +59,78 @@ test("a provider with a sandbox its MODEL cannot use runs nothing, not local cod
       providerHostsCodeExecution: true,
     }),
     { local: [], hosted: [] },
+  );
+});
+
+test("unsupported models on managed custom Responses never fall back to local code", () => {
+  for (const baseUrl of [
+    "https://api.openai.com/v1",
+    "https://team.openai.azure.com/openai/v1",
+  ]) {
+    const hostedCodeExecutionForThisTurn = providerSupportsBuiltinCodeExecution(
+      "custom", "gpt-4.1", baseUrl, "responses",
+    );
+    const providerHasSandbox = providerHostsCodeExecution(
+      "custom", baseUrl, "responses",
+    );
+    assert.equal(hostedCodeExecutionForThisTurn, false, baseUrl);
+    assert.equal(providerHasSandbox, true, baseUrl);
+    assert.equal(
+      codeToolCanRun({
+        hostedCodeExecutionForThisTurn,
+        providerHostsCodeExecution: providerHasSandbox,
+        supportsStudioTools: true,
+      }),
+      false,
+      baseUrl,
+    );
+    assert.deepEqual(
+      selectCodeToolNames({
+        codeToolsEnabled: true,
+        hostedCodeExecutionForThisTurn,
+        providerHostsCodeExecution: providerHasSandbox,
+      }),
+      { local: [], hosted: [] },
+      baseUrl,
+    );
+  }
+
+  for (const [baseUrl, apiType] of [
+    ["https://api.openai.com/v1", "chat_completions"],
+    ["https://gateway.example/v1", "responses"],
+    ["https://api.openai.com.attacker.example/v1", "responses"],
+  ] as const) {
+    const providerHasSandbox = providerHostsCodeExecution("custom", baseUrl, apiType);
+    assert.equal(providerHasSandbox, false, `${baseUrl} ${apiType}`);
+    assert.deepEqual(
+      selectCodeToolNames({
+        codeToolsEnabled: true,
+        hostedCodeExecutionForThisTurn: false,
+        providerHostsCodeExecution: providerHasSandbox,
+      }).local,
+      ["python", "terminal", "edit_file"],
+      `${baseUrl} ${apiType}`,
+    );
+  }
+  assert.equal(providerHostsCodeExecution("openai"), true);
+});
+
+test("the composer Code pill and both selection paths use endpoint-aware placement", () => {
+  assert.match(
+    COMPOSER_SOURCE,
+    /const canRunCode = isExternalModel\s+\? codeToolCanRun\(\{[\s\S]*?providerHostsCodeExecution: providerHostsCodeExecution\(\s*selectedExternalProvider\?\.providerType,\s*selectedExternalProvider\?\.baseUrl,\s*selectedExternalProvider\?\.apiType,/,
+  );
+  assert.match(
+    COMPOSER_SOURCE,
+    /const codeDisabled =\s*\(modelLoaded && \(isGeminiImageTier \|\| !canRunCode\)\)/,
+  );
+  assert.match(
+    CHAT_PAGE_SOURCE,
+    /providerHostsCodeExecution\(\s*provider\?\.providerType,\s*provider\?\.baseUrl,\s*provider\?\.apiType,/,
+  );
+  assert.match(
+    CHAT_PAGE_SOURCE,
+    /providerHostsCodeExecution\(\s*selectedProvider\?\.providerType,\s*selectedProvider\?\.baseUrl,\s*selectedProvider\?\.apiType,/,
   );
 });
 

@@ -114,6 +114,7 @@ export function externalReasoningTakesEffort(
 export function resolveExternalReasoningEffort(opts: {
   caps: ExternalReasoningCapabilities;
   providerType: string | null | undefined;
+  apiType?: "chat_completions" | "responses";
   /** The chat's level now: the clamp target, and what a model that cannot think keeps. */
   current: ReasoningEffortLevel;
   /** The level pinned on this model's picker row. Ignored when the model no longer offers it. */
@@ -121,7 +122,11 @@ export function resolveExternalReasoningEffort(opts: {
   /** Restore an existing preference without choosing a new model default. */
   restore?: boolean;
 }): ReasoningEffortLevel {
-  const { caps, providerType, current, pinned } = opts;
+  const { caps, current, pinned } = opts;
+  const providerType = effectiveExternalReasoningProviderType(
+    opts.providerType,
+    opts.apiType,
+  );
   const levels = caps.reasoningEffortLevels;
   // A style that sends no level has nothing to resolve, and moving the chat's level for it would
   // change what every other model runs at on the strength of a setting this one never sends.
@@ -472,10 +477,27 @@ function isOpenAICloudBaseUrl(baseUrl: string | null | undefined): boolean {
   }
 }
 
+function usesOpenAIHostedResponses(
+  providerType: string | null | undefined,
+  baseUrl: string | null | undefined,
+  apiType: "chat_completions" | "responses" | undefined,
+): boolean {
+  if (providerType === "openai") {
+    return isOpenAICloudBaseUrl(baseUrl);
+  }
+  return (
+    providerType === "custom" &&
+    apiType === "responses" &&
+    Boolean(baseUrl?.trim()) &&
+    isOpenAICloudBaseUrl(baseUrl)
+  );
+}
+
 export function providerSupportsBuiltinCodeExecution(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
   baseUrl?: string | null,
+  apiType?: "chat_completions" | "responses",
 ): boolean {
   const normalized = modelId?.trim().toLowerCase() ?? "";
   if (!normalized) return false;
@@ -488,8 +510,7 @@ export function providerSupportsBuiltinCodeExecution(
     return providerModelSupportsStudioTools(providerType, modelId) === true;
   }
 
-  if (providerType === "openai") {
-    if (!isOpenAICloudBaseUrl(baseUrl)) return false;
+  if (usesOpenAIHostedResponses(providerType, baseUrl, apiType)) {
     return OPENAI_CODE_EXECUTION_MODEL_PREFIXES.some((prefix) =>
       normalized.startsWith(prefix),
     );
@@ -506,15 +527,20 @@ export function providerSupportsBuiltinCodeExecution(
   return false;
 }
 
-/** Whether the provider TYPE ships its own code sandbox, model aside. Mirrors backend
- *  PROVIDER_REGISTRY `hosted_tools` code_execution. Coarser than the per-model check:
- *  it asks whether running the code locally would be a relocation. */
+/** Whether this connection has its own code sandbox, model aside. Coarser than the
+ *  per-model check: it asks whether running the code locally would be a relocation. */
 const PROVIDER_TYPES_WITH_CODE_SANDBOX = new Set(["openai", "anthropic", "gemini"]);
 
 export function providerHostsCodeExecution(
   providerType: string | null | undefined,
+  baseUrl?: string | null,
+  apiType?: "chat_completions" | "responses",
 ): boolean {
-  return PROVIDER_TYPES_WITH_CODE_SANDBOX.has(providerType ?? "");
+  return (
+    PROVIDER_TYPES_WITH_CODE_SANDBOX.has(providerType ?? "") ||
+    (providerType === "custom" &&
+      usesOpenAIHostedResponses(providerType, baseUrl, apiType))
+  );
 }
 
 /** Whether provider/model exposes OpenAI's Responses-API image_generation tool. On for
@@ -535,11 +561,11 @@ export function providerSupportsBuiltinImageGeneration(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
   baseUrl?: string | null,
+  apiType?: "chat_completions" | "responses",
 ): boolean {
   const normalized = modelId?.trim().toLowerCase() ?? "";
   if (!normalized) return false;
-  if (providerType === "openai") {
-    if (!isOpenAICloudBaseUrl(baseUrl)) return false;
+  if (usesOpenAIHostedResponses(providerType, baseUrl, apiType)) {
     return OPENAI_IMAGE_GENERATION_MODEL_PREFIXES.some((prefix) =>
       normalized.startsWith(prefix),
     );
@@ -1072,6 +1098,18 @@ export interface ExternalReasoningResolveOptions {
   isReasoningProvider?: boolean;
   /** Provider base URL; used to detect custom Gemini OAI-compat gateways. */
   baseUrl?: string | null;
+  /** Custom providers can opt into OpenAI's Responses API and its reasoning controls. */
+  apiType?: "chat_completions" | "responses";
+}
+
+export function effectiveExternalReasoningProviderType(
+  providerType: string | null | undefined,
+  apiType?: "chat_completions" | "responses",
+): string {
+  const normalizedProvider = providerType?.trim().toLowerCase() ?? "";
+  return normalizedProvider === "custom" && apiType === "responses"
+    ? "openai"
+    : normalizedProvider;
 }
 
 // vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle.
@@ -1188,7 +1226,10 @@ export function getExternalReasoningCapabilities(
   options?: ExternalReasoningResolveOptions,
 ): ExternalReasoningCapabilities {
   const normalizedModel = modelId?.trim().toLowerCase() ?? "";
-  const normalizedProvider = providerType?.trim().toLowerCase() ?? "";
+  const normalizedProvider = effectiveExternalReasoningProviderType(
+    providerType,
+    options?.apiType,
+  );
   const connectionLevel = resolveConnectionLevelReasoning(
     normalizedProvider,
     options,

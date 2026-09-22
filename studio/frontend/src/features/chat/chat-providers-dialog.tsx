@@ -150,6 +150,10 @@ function shouldAppendOpenAiVersionPath(providerType: string): boolean {
   );
 }
 
+function shouldShowProviderApiType(providerType: string): boolean {
+  return providerType === LEGACY_CUSTOM_PROVIDER_TYPE;
+}
+
 function formatModelSummary(models: string[]): string {
   if (models.length === 0) {
     return "No models enabled";
@@ -1541,9 +1545,7 @@ export function ChatProvidersSettings({
                 </div>
               ) : null}
 
-              {providerType === LEGACY_CUSTOM_PROVIDER_TYPE &&
-              (!editingProviderId ||
-                editingBackendProviderType === LEGACY_CUSTOM_PROVIDER_TYPE) ? (
+              {shouldShowProviderApiType(providerType) ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label htmlFor="provider-api-type" className="text-sm font-medium">

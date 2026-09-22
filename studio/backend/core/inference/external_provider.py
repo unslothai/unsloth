@@ -380,6 +380,49 @@ def _split_pending_citation_tail(text: str) -> tuple[str, str]:
     return text[:last_open], text[last_open:]
 
 
+def _record_openai_url_citation(
+    url_citations: list[dict[str, Any]], payload: dict[str, Any]
+) -> None:
+    """Normalize and append one Responses ``url_citation`` annotation.
+
+    API revisions have used ``source_id``, ``id``, ``locator``, and
+    ``source_ids`` for the marker aliases. Citations sharing a URL retain one
+    display index while accumulating every alias that can reference it.
+    """
+    if payload.get("type") != "url_citation":
+        return
+    url = payload.get("url")
+    if not isinstance(url, str) or not url:
+        return
+    aliases: list[str] = []
+    source_id = payload.get("source_id") or payload.get("id") or payload.get("locator")
+    if isinstance(source_id, str) and source_id:
+        aliases.append(source_id)
+    source_ids = payload.get("source_ids")
+    if isinstance(source_ids, list):
+        aliases.extend(
+            alias for alias in source_ids if isinstance(alias, str) and alias
+        )
+
+    for citation in url_citations:
+        if citation["url"] != url:
+            continue
+        existing_aliases = citation.setdefault("source_ids", [])
+        for alias in aliases:
+            if alias not in existing_aliases:
+                existing_aliases.append(alias)
+        return
+
+    url_citations.append(
+        {
+            "url": url,
+            "title": payload.get("title") or url,
+            "snippet": payload.get("snippet") or payload.get("quote") or "",
+            "source_ids": aliases,
+        }
+    )
+
+
 def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
     """Normalize an OpenAI web_search_call action into card arguments. gpt-5.x agentic search emits
     three action types discriminated by `action.type`: `search` carries queries, `open_page` a
@@ -4923,8 +4966,23 @@ class ExternalProviderClient:
         import json as _json
 
         is_openai_cloud = _is_openai_family_cloud(self.base_url)
+        _responses_tool_choice_none = (
+            isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
+        )
+        _responses_tool_choice_forced_function = (
+            isinstance(tool_choice, dict)
+            and tool_choice.get("type") == "function"
+            and isinstance(tool_choice.get("function"), dict)
+            and bool(tool_choice["function"].get("name"))
+        )
+        _responses_hosted_builtins_allowed = (
+            not _responses_tool_choice_none and not _responses_tool_choice_forced_function
+        )
         image_generation_requested = bool(
-            enabled_tools and "image_generation" in enabled_tools and is_openai_cloud
+            _responses_hosted_builtins_allowed
+            and enabled_tools
+            and "image_generation" in enabled_tools
+            and is_openai_cloud
         )
 
         # Split system messages into a single `instructions` string and translate user/assistant messages into the
@@ -5166,12 +5224,13 @@ class ExternalProviderClient:
                     filtered_replay_items.append(item)
             openai_replay_items = filtered_replay_items
             if dropped_image_replay_without_reasoning:
-                yield _error_sse_line(
+                error_line = _error_sse_line(
                     400,
                     "OpenAI image edit reference is missing paired reasoning state. "
                     "Regenerate the image, then retry the edit.",
                     self.provider_type,
                 )
+                yield error_line if stream else error_line.removeprefix("data: ")
                 return
         image_generation_has_reference = bool(
             previous_response_id
@@ -5322,18 +5381,26 @@ class ExternalProviderClient:
             if isinstance(_name, str) and _name:
                 responses_tool_choice = {"type": "function", "name": _name}
 
-        _responses_tool_choice_none = _responses_tc_string == "none"
         # A pinned user function suppresses hosted builtins (privacy + billing), matching the Gemini / Anthropic /
         # OpenRouter gates.
-        _responses_tool_choice_forced_function = (
-            isinstance(tool_choice, dict)
-            and tool_choice.get("type") == "function"
-            and isinstance(tool_choice.get("function"), dict)
-            and bool(tool_choice["function"].get("name"))
+        _responses_image_generation_enabled = (
+            _responses_hosted_builtins_allowed and image_generation_enabled_openai
         )
-        _responses_hosted_builtins_allowed = (
-            not _responses_tool_choice_none and not _responses_tool_choice_forced_function
-        )
+        if _responses_image_generation_enabled and not stream:
+            yield _json.dumps(
+                {
+                    "error": {
+                        "message": (
+                            "image_generation is not supported for non-streaming Responses "
+                            "requests; set stream=true."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "400",
+                        "provider": self.provider_type,
+                    }
+                }
+            )
+            return
 
         if (enabled_tools or responses_user_function_tools) and not _responses_tool_choice_none:
             tools_array: list[dict[str, Any]] = list(responses_user_function_tools)
@@ -5355,7 +5422,7 @@ class ExternalProviderClient:
                 else:
                     shell_env = {"type": "container_auto"}
                 tools_array.append({"type": "shell", "environment": shell_env})
-            if _responses_hosted_builtins_allowed and image_generation_enabled_openai:
+            if _responses_image_generation_enabled:
                 tools_array.append(_openai_image_generation_tool())
             if tools_array:
                 body["tools"] = tools_array
@@ -5389,7 +5456,7 @@ class ExternalProviderClient:
                     else:
                         env_attempt = {"type": "container_auto"}
                     tools_array_attempt.append({"type": "shell", "environment": env_attempt})
-                if _responses_hosted_builtins_allowed and image_generation_enabled_openai:
+                if _responses_image_generation_enabled:
                     tools_array_attempt.append(_openai_image_generation_tool())
                 if tools_array_attempt:
                     attempt_body["tools"] = tools_array_attempt
@@ -5438,10 +5505,11 @@ class ExternalProviderClient:
                             and _is_openai_container_expired_error(error_text)
                         )
                         if expired_container_4xx and not retried:
-                            yield (
-                                f"data: "
-                                f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
-                            )
+                            if stream:
+                                yield (
+                                    f"data: "
+                                    f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
+                                )
                             retried = True
                             attempt_container_id = None
                             continue
@@ -5469,13 +5537,25 @@ class ExternalProviderClient:
                             )
                             return
                         text_parts: list[str] = []
+                        reasoning_summary_parts: list[str] = []
                         refusal_parts: list[str] = []
                         tool_calls: list[dict[str, Any]] = []
                         reasoning_replay_items: list[dict[str, Any]] = []
+                        url_citations: list[dict[str, Any]] = []
                         for item in response_payload.get("output") or []:
                             if not isinstance(item, dict):
                                 continue
                             if item.get("type") == "reasoning":
+                                summary = item.get("summary")
+                                if isinstance(summary, list):
+                                    for part in summary:
+                                        if not isinstance(part, dict):
+                                            continue
+                                        if part.get("type") != "summary_text":
+                                            continue
+                                        summary_text = part.get("text")
+                                        if isinstance(summary_text, str) and summary_text:
+                                            reasoning_summary_parts.append(summary_text)
                                 reasoning_item = _sanitize_openai_reasoning_replay_item(item)
                                 if reasoning_item:
                                     reasoning_replay_items.append(reasoning_item)
@@ -5491,6 +5571,12 @@ class ExternalProviderClient:
                                         text = part.get("text")
                                         if isinstance(text, str):
                                             text_parts.append(text)
+                                        for annotation in part.get("annotations") or []:
+                                            if isinstance(annotation, dict):
+                                                _record_openai_url_citation(
+                                                    url_citations,
+                                                    annotation,
+                                                )
                                     elif part.get("type") == "refusal":
                                         refusal = part.get("refusal")
                                         if isinstance(refusal, str):
@@ -5509,13 +5595,22 @@ class ExternalProviderClient:
                                         "function": {"name": name, "arguments": arguments},
                                     }
                                 )
-
                         if not text_parts and isinstance(response_payload.get("output_text"), str):
                             text_parts.append(response_payload["output_text"])
 
+                        visible_text = "".join(text_parts)
+                        if reasoning_summary_parts:
+                            visible_text = (
+                                f"<think>{''.join(reasoning_summary_parts)}</think>{visible_text}"
+                            )
+                        visible_text = _replace_openai_citation_markers(
+                            visible_text,
+                            url_citations,
+                        )
+
                         message: dict[str, Any] = {
                             "role": "assistant",
-                            "content": "".join(text_parts) or None,
+                            "content": visible_text or None,
                         }
                         if refusal_parts:
                             message["refusal"] = "".join(refusal_parts)
@@ -5690,40 +5785,7 @@ class ExternalProviderClient:
                         return "\n--- next command ---\n".join(parts) if parts else "(no output)"
 
                     def _record_url_citation(payload: dict[str, Any]) -> None:
-                        """Append a url_citation, deduped by URL: collect every source_id alias onto
-                        the entry's ``source_ids`` so the rewriter can resolve any alias. The id
-                        lives under source_id/id/locator across API revisions."""
-                        if payload.get("type") != "url_citation":
-                            return
-                        url = payload.get("url", "")
-                        if not url:
-                            return
-                        source_id = (
-                            payload.get("source_id")
-                            or payload.get("id")
-                            or payload.get("locator")
-                            or ""
-                        )
-                        # Single pass: either backfill aliases onto an existing URL entry (and return) or fall through
-                        # to append a fresh one.
-                        for c in all_url_citations:
-                            if c["url"] != url:
-                                continue
-                            if source_id:
-                                aliases = c.setdefault("source_ids", [])
-                                if source_id not in aliases:
-                                    aliases.append(source_id)
-                            return
-                        title = payload.get("title") or url
-                        snippet = payload.get("snippet") or payload.get("quote") or ""
-                        all_url_citations.append(
-                            {
-                                "url": url,
-                                "title": title,
-                                "snippet": snippet,
-                                "source_ids": [source_id] if source_id else [],
-                            }
-                        )
+                        _record_openai_url_citation(all_url_citations, payload)
 
                     def _record_openai_reasoning_replay_item(
                         payload: Any,

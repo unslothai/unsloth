@@ -6,6 +6,7 @@ configurations and their API keys, the RSA public key used to encrypt those keys
 listing.
 """
 
+import asyncio
 import json
 import time
 import uuid
@@ -70,6 +71,7 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(dependencies = [Depends(get_current_subject)])
 
 _MAX_RESPONSES_CONNECTIVITY_MODELS = 5
+_PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS = 15.0
 
 
 def _provider_response(row: dict) -> ProviderResponse:
@@ -674,7 +676,9 @@ async def _test_custom_provider_connectivity(
                     top_p = None,
                     max_tokens = 16,
                 )
-                try:
+
+                async def consume_response_stream():
+                    nonlocal received_response, model_failure
                     async for line in response_stream:
                         if line.startswith("data: ") and line[6:].strip() != "[DONE]":
                             event = json.loads(line[6:])
@@ -683,6 +687,12 @@ async def _test_custom_provider_connectivity(
                                 model_failure = event["error"].get(
                                     "message", "Responses request failed"
                                 )
+
+                try:
+                    await asyncio.wait_for(
+                        consume_response_stream(),
+                        timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS,
+                    )
                 finally:
                     await response_stream.aclose()
                 if received_response and model_failure is None:
@@ -691,6 +701,11 @@ async def _test_custom_provider_connectivity(
                         message = "Connected successfully. Responses endpoint responded.",
                     )
                 last_failure = model_failure or "Responses endpoint returned no completion."
+            except asyncio.TimeoutError:
+                last_failure = (
+                    "Responses endpoint timed out after "
+                    f"{_PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS:g} seconds."
+                )
             except Exception as exc:
                 last_failure = safe_curated_detail(exc)
         return ProviderTestResult(
@@ -785,7 +800,7 @@ async def test_provider(
         base_url = base_url,
         api_key = api_key,
         api_type = payload.api_type,
-        timeout = 15.0,
+        timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS,
     )
 
     try:

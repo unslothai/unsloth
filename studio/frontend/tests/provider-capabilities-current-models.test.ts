@@ -16,6 +16,7 @@ const {
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinImageGeneration,
 
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
@@ -335,6 +336,51 @@ test("new Anthropic and OpenAI ids keep their max-output cap and code pill", () 
   }
   assert.equal(
     providerSupportsBuiltinCodeExecution("openai", "gpt-5.6-sol", "https://api.openai.com/v1"),
+    true,
+  );
+});
+
+test("custom Responses exposes OpenAI hosted tools only on managed cloud hosts", () => {
+  const model = "gpt-5.5";
+  for (const baseUrl of [
+    "https://api.openai.com/v1",
+    "https://team.openai.azure.com/openai/v1",
+  ]) {
+    assert.equal(
+      providerSupportsBuiltinCodeExecution("custom", model, baseUrl, "responses"),
+      true,
+      baseUrl,
+    );
+    assert.equal(
+      providerSupportsBuiltinImageGeneration("custom", model, baseUrl, "responses"),
+      true,
+      baseUrl,
+    );
+  }
+
+  for (const [baseUrl, apiType] of [
+    ["https://gateway.example/v1", "responses"],
+    ["https://api.openai.com.attacker.example/v1", "responses"],
+    ["https://evilopenai.azure.com/openai/v1", "responses"],
+    ["https://api.openai.com/v1", "chat_completions"],
+    [undefined, "responses"],
+  ] as const) {
+    assert.equal(
+      providerSupportsBuiltinCodeExecution("custom", model, baseUrl, apiType),
+      false,
+    );
+    assert.equal(
+      providerSupportsBuiltinImageGeneration("custom", model, baseUrl, apiType),
+      false,
+    );
+  }
+
+  assert.equal(
+    providerSupportsBuiltinCodeExecution("openai", model, "https://api.openai.com/v1"),
+    true,
+  );
+  assert.equal(
+    providerSupportsBuiltinImageGeneration("openai", model, "https://api.openai.com/v1"),
     true,
   );
 });

@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,48 @@ from utils.paths import studio_db_path, ensure_dir
 _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 _UNSET = object()
+
+_LEGACY_CUSTOM_PRESET_TYPES = {
+    "custom": "custom",
+    "llama.cpp": "llama_cpp",
+    "vllm": "vllm",
+    "ollama": "ollama",
+}
+
+
+def _migrate_legacy_custom_provider_types(conn: sqlite3.Connection) -> None:
+    """Align rows created before Custom had its own backend provider types.
+
+    Older Studio builds saved every OpenAI-compatible connection as ``openai``. A
+    non-OpenAI URL may still be an OpenAI reverse proxy, so only an exact built-in
+    custom/preset label is sufficient evidence to change the stored provider type.
+    """
+    updates: list[tuple[str, str]] = []
+    rows = conn.execute(
+        "SELECT id, display_name, base_url FROM llm_providers WHERE provider_type = 'openai'"
+    ).fetchall()
+    for provider_id, display_name, base_url in rows:
+        label = str(display_name or "").strip().lower()
+        url = str(base_url or "").strip()
+        try:
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+        except ValueError:
+            host = ""
+
+        # A display name is user-editable metadata. Never let it turn an OpenAI-managed
+        # endpoint into a custom connection, even if it happens to equal a preset label.
+        if host == "api.openai.com" or host.endswith(".openai.azure.com"):
+            continue
+
+        migrated_type = _LEGACY_CUSTOM_PRESET_TYPES.get(label)
+        if migrated_type is not None:
+            updates.append((migrated_type, str(provider_id)))
+
+    conn.executemany(
+        "UPDATE llm_providers SET provider_type = ? WHERE id = ?",
+        updates,
+    )
 
 
 def _encode_models_json(models: Optional[list[str]]) -> str:
@@ -79,12 +122,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE llm_providers ADD COLUMN available_models_json TEXT NOT NULL DEFAULT '[]'"
         )
-    if "api_type" not in existing_cols:
+    added_api_type = "api_type" not in existing_cols
+    if added_api_type:
         conn.execute(
             "ALTER TABLE llm_providers ADD COLUMN api_type TEXT NOT NULL DEFAULT 'chat_completions'"
         )
+        _migrate_legacy_custom_provider_types(conn)
     if "max_output_tokens" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
+    # ALTER TABLE persists independently in SQLite, but its one-time data migration does not.
+    conn.commit()
 
 
 def reset_schema_state_for_tests() -> None:

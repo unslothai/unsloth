@@ -3593,7 +3593,7 @@ from core.inference.providers import (
     provider_runs_local_tools,
     validate_provider_base_url,
 )
-from core.inference.external_provider import ExternalProviderClient
+from core.inference.external_provider import ExternalProviderClient, _is_openai_family_cloud
 from core.inference.external_tool_transport import OAICompatTransport
 from core.inference.sse_control_frames import (
     is_ui_control_sse_line,
@@ -22201,23 +22201,26 @@ def _build_external_messages(
       that flag, or a stricter MCP answer would also strip what the caller
       attached.
     - `input_document`: preserved ONLY when the provider's stream helper has
-      explicit translation logic (Anthropic + OpenAI today, see
-      ``_INPUT_DOCUMENT_PROVIDERS``). Stripped for every other provider so the
-      unknown type doesn't reach generic /chat/completions and 400.
-    - `reasoning`: OpenAI-only Responses reasoning item paired with a prior
-      tool output. Forwarded ONLY when provider_type=="openai" so follow-up
-      image edits can replay the required reasoning item.
-    - `image_generation_call`: OpenAI-only Responses image reference. Forwarded
-      ONLY when provider_type=="openai" so follow-up image edits can reference
-      prior generated images.
+      explicit translation logic (Anthropic, OpenAI, and custom Responses).
+      Stripped for every other provider so the unknown type doesn't reach
+      generic /chat/completions and 400.
+    - `reasoning`: Responses reasoning item paired with a prior tool output.
+      Forwarded for OpenAI and custom Responses so follow-up image edits can
+      replay the required reasoning item.
+    - `image_generation_call`: Responses image reference. Forwarded for OpenAI
+      and custom Responses so follow-up image edits can reference prior images.
     - `compaction`: Anthropic-only synthetic part (round-trips server-side
       compaction state). Forwarded ONLY when provider_type=="anthropic";
       stripped elsewhere so the unknown part doesn't reach generic
       /chat/completions and 400 (DeepSeek, Mistral, Gemini, Kimi, OpenRouter).
     """
-    document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS
+    document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS or (
+        provider_type == "custom" and api_type == "responses"
+    )
     anthropic = provider_type == "anthropic"
-    openai = provider_type == "openai"
+    responses_native_parts = provider_type == "openai" or (
+        provider_type == "custom" and api_type == "responses"
+    )
     # `extra_content` carries the assistant's text-part `thoughtSignature`
     # round-trip on Gemini's native streamGenerateContent endpoint. Custom
     # Gemini OpenAI-compat gateways (LiteLLM etc.) route through
@@ -22406,7 +22409,7 @@ def _build_external_messages(
                             }
                         )
                     elif (
-                        openai
+                        responses_native_parts
                         and msg.role == "assistant"
                         and (_rp := _openai_responses_part(part)) is not None
                     ):
@@ -22464,7 +22467,7 @@ def _build_external_messages(
                     if p.type == "text":
                         preserved.append({"type": "text", "text": p.text})
                     elif (
-                        openai
+                        responses_native_parts
                         and msg.role == "assistant"
                         and (_rp := _openai_responses_part(p)) is not None
                     ):
@@ -22577,6 +22580,45 @@ async def _build_external_messages_async(messages, supports_vision, **kwargs) ->
             _build_external_messages, messages, supports_vision, **kwargs
         )
     return _build_external_messages(messages, supports_vision, **kwargs)
+
+
+def _safe_retry_after_header(value: Any) -> Optional[str]:
+    """Return an RFC-compatible Retry-After value safe for an HTTP header.
+
+    The field permits either decimal delay-seconds or an HTTP date. Reject
+    control bytes, non-ASCII text, oversized values, malformed dates, and
+    non-GMT dates before copying provider-controlled data into a response
+    header.
+    """
+    if not isinstance(value, str):
+        return None
+    if (
+        len(value) > 128
+        or not value.isascii()
+        or any(ord(char) < 0x20 or ord(char) > 0x7E for char in value)
+    ):
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    if candidate.isdecimal():
+        return candidate
+
+    from datetime import timedelta
+    from email.utils import parsedate_to_datetime
+
+    try:
+        parsed = parsedate_to_datetime(candidate)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        parsed is None
+        or parsed.tzinfo is None
+        or parsed.utcoffset() != timedelta(0)
+        or not candidate.endswith(" GMT")
+    ):
+        return None
+    return candidate
 
 
 async def _proxy_to_external_provider(
@@ -23336,7 +23378,18 @@ async def _proxy_to_external_provider(
             # Hosted-only tools still ride along: Images and Fetch have their own
             # toggles and no local stand-in, so dropping them would turn a lit
             # pill into a tool the model never sees.
-            loop_hosted_tools = hosted_only_tools(provider_type, payload.enabled_tools)
+            # A custom Responses connection to OpenAI or Azure uses the same
+            # hosted tool envelope as the native OpenAI provider. Keep the
+            # endpoint check aligned with the Responses translator so an
+            # arbitrary compatible gateway is not offered cloud-only tools.
+            hosted_provider_type = (
+                "openai"
+                if provider_type == "custom"
+                and api_type == "responses"
+                and _is_openai_family_cloud(base_url)
+                else provider_type
+            )
+            loop_hosted_tools = hosted_only_tools(hosted_provider_type, payload.enabled_tools)
             gen = stream_with_studio_tools(
                 OAICompatTransport(
                     client,
@@ -23521,13 +23574,29 @@ async def _proxy_to_external_provider(
         error_message = (
             _monitor_openai_error_message(content) if isinstance(content, dict) else None
         )
+        retry_after_header = None
         if error_message:
             api_monitor.fail(monitor_id, error_message)
-            status_code = 502
+            error = content.get("error") if isinstance(content, dict) else None
+            raw_status = error.get("code") if isinstance(error, dict) else None
+            retry_after_header = _safe_retry_after_header(
+                error.get("retry_after") if isinstance(error, dict) else None
+            )
+            try:
+                upstream_status = int(raw_status)
+            except (TypeError, ValueError):
+                upstream_status = 0
+            status_code = upstream_status if 400 <= upstream_status <= 599 else 502
         else:
             api_monitor.finish(monitor_id)
             status_code = 200
-        return JSONResponse(status_code = status_code, content = content)
+        return JSONResponse(
+            status_code = status_code,
+            content = content,
+            headers = (
+                {"Retry-After": retry_after_header} if retry_after_header is not None else None
+            ),
+        )
 
     return StreamingResponse(
         _tracked_stream(),
