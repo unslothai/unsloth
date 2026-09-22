@@ -32,17 +32,20 @@ def _registry_and_block():
     return TransformerBlockRegistry, QwenImage21TransformerBlock
 
 
-def test_the_qwen_image_21_block_is_left_unregistered():
-    """Registering it as (0, None) reads right from the block's return alone and made every
-    generation of the family fail at the first step: the transformer passes a JOINT text+image
-    sequence, and the cond and uncond passes carry different text lengths, so FBCache's residual
-    comparison hits a length mismatch. Uncached costs the step-cache saving; wrongly registered
-    cannot generate at all."""
+def test_the_qwen_image_21_block_is_registered_for_step_caching():
+    """diffusers ships no metadata for ``QwenImage21TransformerBlock``, so ``enable_cache`` raised
+    "Model class ... not registered." and every load of the family rendered uncached, which is the
+    whole step-cache saving gone on a 20+ step model and only visible in a log line.
+
+    The block is single stream: it takes ``hidden_states, modulation, rotary_emb, ...`` and returns
+    the hidden states alone, hence 0 and None.
+    """
     registry, block = _registry_and_block()
 
-    assert "QwenImage21TransformerBlock" not in dc.register_unregistered_transformer_blocks()
-    with pytest.raises(ValueError, match = "not registered"):
-        registry.get(block)
+    dc.register_unregistered_transformer_blocks()
+    meta = registry.get(block)
+    assert meta.return_hidden_states_index == 0
+    assert meta.return_encoder_hidden_states_index is None
 
 
 def test_registration_is_idempotent_and_never_overwrites_diffusers_own():

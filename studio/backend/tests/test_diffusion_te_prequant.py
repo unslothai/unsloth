@@ -1049,15 +1049,10 @@ def test_every_family_default_scheme_is_one_we_actually_host_for_that_family():
         if scheme is None:
             continue
         if not any(
-            family_te_prequant_repo(fam, scheme, component)
-            for component in tpq.TE_PREQUANT_COMPONENTS
+            family_te_prequant_repo(fam, scheme, component) for component in tpq.TE_PREQUANT_COMPONENTS
         ):
-            offenders.append(
-                f"{fam.name}: te_quant_auto={scheme!r} with no hosted {scheme} encoder"
-            )
-    assert not offenders, "\n  ".join(
-        ["families default to an unhosted encoder scheme:", *offenders]
-    )
+            offenders.append(f"{fam.name}: te_quant_auto={scheme!r} with no hosted {scheme} encoder")
+    assert not offenders, "\n  ".join(["families default to an unhosted encoder scheme:", *offenders])
 
 
 def test_qwen_image_2_1_defaults_to_the_hosted_fp8_encoder():

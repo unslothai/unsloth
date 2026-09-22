@@ -2250,11 +2250,9 @@ class SdCppDiffusionBackend:
         server_binary = ensure_sd_server_binary(
             allow_install = _install_allowed() and not upgrade_pending, accelerator = accelerator
         )
-        if (
-            server_binary is not None
-            and not sd_cpp_binary_runs_family(server_binary, self._loading_family)
-            and self._loading_family is not None
-        ):
+        if server_binary is not None and not sd_cpp_binary_runs_family(
+            server_binary, self._loading_family
+        ) and self._loading_family is not None:
             # Not fatal on its own: the one-shot path resolves its own binary, which may well be a
             # newer build, and _resolve_engine refuses it if it is not.
             logger.warning(
