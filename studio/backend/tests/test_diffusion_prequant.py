@@ -2013,3 +2013,39 @@ def test_a_cached_pickle_is_not_evidence_for_a_safetensors_artifact(monkeypatch)
     # The safetensors artifact really being in the cache IS evidence.
     cached["Probe-FP8.safetensors"] = "/cache/Probe-FP8.safetensors"
     assert pq.usable_prequant_source(fam, "fp8", base_repo = "probe/Probe") is not None
+
+
+def test_an_unreachable_hub_is_reported_as_itself_not_blamed_on_the_last_candidate(monkeypatch):
+    """Online, LocalEntryNotFoundError means the Hub could not be asked, not "this name is absent".
+
+    It subclasses EntryNotFoundError, so catching the base while walking the candidate chain would
+    spend a full attempt on every remaining name and then report the LAST one's error instead of the
+    connection failure that actually happened.
+    """
+    from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
+    asked: list = []
+
+    def _dl(repo_id, filename, token = None, cache_dir = None, local_files_only = False):
+        asked.append(filename)
+        raise LocalEntryNotFoundError("connection error")
+
+    hub = types.ModuleType("huggingface_hub")
+    hub.hf_hub_download = _dl
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+
+    source = PrequantSource(
+        kind = "repo",
+        location = "org/hosted-fp8",
+        filename = "Hosted-FP8.safetensors",
+        fallback_filenames = ("Hosted-FP8.pt", "transformer_fp8.pt"),
+    )
+    with pytest.raises(LocalEntryNotFoundError):
+        pq._resolve_checkpoint_path(source, None, None)
+    assert asked == ["Hosted-FP8.safetensors"], asked
+
+    # Offline, the same exception IS the only verdict there is, so the chain must be walked.
+    asked.clear()
+    with pytest.raises(EntryNotFoundError):
+        pq._resolve_checkpoint_path(source, None, None, local_files_only = True)
+    assert asked == ["Hosted-FP8.safetensors", "Hosted-FP8.pt", "transformer_fp8.pt"], asked
