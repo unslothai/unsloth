@@ -2527,6 +2527,12 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (AUDIO_PAGE, "@[50rem]:", "pt", "60px", 2),
     (DIFFUSION_TRAIN_PANEL, "@[50rem]:", "pt", "42px", 1),
     (DIFFUSION_TRAIN_PANEL, "", "pt", "42px", 1),
+    # The sidebar row: its height, the gap it sets when pinned, and the indent a project row
+    # takes. These are hand-set one-off lengths, which is exactly the spacing that used to
+    # stay put while the labels grew, so the row clips its own text at a larger setting.
+    (APP_SIDEBAR, "", "h", "30px", 5),
+    (APP_SIDEBAR, "", "gap", "8.5px", 6),
+    (APP_SIDEBAR, "", "pl", "39px", 2),
 )
 
 # Where a class may begin: the start of the string it is written in, or the space after the
