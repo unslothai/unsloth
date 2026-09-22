@@ -182,9 +182,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   {
     canonicalId: "unsloth/Qwen-Image-2.1",
     displayName: "Qwen-Image 2.1",
-    // Text-to-image that also accepts reference images on the same call (the family's `reference`
-    // flag), rather than a separate edit pipeline the way Qwen-Image-Edit is.
-    description: "Text-to-image",
+    // One pipeline for text-to-image and editing (`unified_edit`); the Images page follows the engine's status.
+    description: "Text-to-image and image editing",
     scope: "image",
     // Same reason as the 2512 row below: the int8 half of the prequant repo is reached through
     // prequant_variant_repos and has no artifact row, so alias it to keep a pasted id finding it.

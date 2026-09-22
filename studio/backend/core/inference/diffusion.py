@@ -77,6 +77,15 @@ from .diffusion_device import (
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
 )
+from .diffusion_conditioning import (
+    LocalizedEdit,
+    check_conditioned_fields,
+    check_output_size,
+    conditioning_capabilities,
+    decode_condition_images,
+    effective_reference_resolution,
+    match_source_size,
+)
 from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
 from .diffusion_hidream import (
     HIDREAM_FAMILY_NAME,
@@ -599,14 +608,29 @@ def _image_variant_hint(
     return " ".join(parts)
 
 
-def _compile_shape_dims(workflow: str, init_pil: Any, width: int, height: int) -> tuple[int, int]:
+def _is_source_sized(workflow: str, family: Any = None) -> bool:
+    """Whether ``workflow`` takes its output size from the source image rather than width/height.
+    "edit" is source-sized only on an edit-only family (Kontext, Qwen-Image-Edit), or when
+    ``family`` is None; the unified edit (Qwen-Image-2.1) renders at the requested size."""
+    if workflow == "edit":
+        return family is None or bool(getattr(family, "edit", False))
+    return workflow in ("img2img", "inpaint", "upscale")
+
+
+def _compile_shape_dims(
+    workflow: str,
+    init_pil: Any,
+    width: int,
+    height: int,
+    family: Any = None,
+) -> tuple[int, int]:
     """The (width, height) a generation's forward ACTUALLY runs at, for static compile-cache shape
-    registration. txt2img / reference / controlnet generate at the requested slider size, but the
-    image-conditioned workflows derive the output from the (resized/snapped) input image:
+    registration. txt2img / reference / controlnet / unified edit generate at the requested size,
+    but the source-sized workflows derive the output from the (resized/snapped) input image:
     registering the slider values there would mark a shape covered that was never compiled, so
     the truly-used shape never re-dirties the bundle and warm restarts keep paying its compile.
     Mirrors the width/height kwarg derivation in generate()."""
-    if workflow in ("txt2img", "reference", "controlnet") or init_pil is None:
+    if init_pil is None or not _is_source_sized(workflow, family):
         return int(width), int(height)
     iw, ih = init_pil.size
     return int(iw), int(ih)
@@ -6929,8 +6953,9 @@ class DiffusionBackend:
         *,
         prompt: str,
         negative_prompt: Optional[str] = None,
-        width: int = 1024,
-        height: int = 1024,
+        # None on both (unified edit only) matches Image 1's aspect ratio.
+        width: Optional[int] = 1024,
+        height: Optional[int] = 1024,
         # Fallbacks; the route always sends the per-model values the UI seeds.
         steps: int = 9,
         guidance: float = 0.0,
@@ -6948,8 +6973,12 @@ class DiffusionBackend:
         strength: Optional[float] = None,
         # Upscale (hires fix): factor > 1 with an init image enlarges then re-denoises at low strength.
         upscale: Optional[float] = None,
-        # Reference (FLUX.2): additional reference images beyond init_image (a list). Ignored elsewhere.
+        # Reference / unified edit: additional images after init_image, in order. The family bounds the total.
         reference_images: Optional[list[str]] = None,
+        # Explicit "edit" / "reference"; None keeps the workflow the other arguments imply.
+        workflow: Optional[str] = None,
+        reference_resolution: Optional[int] = None,
+        localized_edit: Optional[LocalizedEdit] = None,
         loras: Optional[list[tuple[str, float]]] = None,
         # ControlNet (id, control_image_b64, control_type, strength, guidance_start, guidance_end). None = off.
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
@@ -7014,10 +7043,14 @@ class DiffusionBackend:
                 self._apply_loras(state, loras, cancel)
 
                 pipe = state.pipe
+                fam = state.family
                 init_pil = mask_pil = None
                 control_pil = None
                 cn_scale = cn_gstart = cn_gend = cn_mode = None
                 ref_extra: list = []
+                requested_workflow = workflow
+                if requested_workflow not in (None, "edit", "reference"):
+                    raise ValueError(f"Unknown workflow '{requested_workflow}'.")
                 if init_image is None:
                     if mask_image is not None:
                         raise ValueError("mask_image requires an input image (init_image).")
@@ -7025,32 +7058,66 @@ class DiffusionBackend:
                         raise ValueError("upscale requires an input image (init_image).")
                     if reference_images:
                         raise ValueError("reference_images require an input image (init_image).")
-                if reference_images and not getattr(state.family, "reference", False):
+                    if requested_workflow is not None:
+                        raise ValueError(
+                            f"The {requested_workflow} workflow requires a source image (init_image)."
+                        )
+                check_conditioned_fields(
+                    requested_workflow,
+                    fam,
+                    mask_image = mask_image,
+                    strength = strength,
+                    upscale = upscale,
+                    controlnet = controlnet,
+                    localized_edit = localized_edit,
+                )
+                if reference_images and not getattr(fam, "reference", False):
                     raise ValueError(
-                        f"Reference images are not supported for the '{state.family.name}' "
-                        "model family."
+                        f"Reference images are not supported for the '{fam.name}' model family."
                     )
-                if getattr(state.family, "edit", False):
+                conditioned = False
+                if getattr(fam, "edit", False):
+                    if requested_workflow == "reference":
+                        raise ValueError(
+                            f"The reference workflow is not supported for the '{fam.name}' "
+                            "model family."
+                        )
                     if init_image is None:
                         raise ValueError(
-                            f"{state.family.name} is an image-editing model: provide an input image."
+                            f"{fam.name} is an image-editing model: provide an input image."
                         )
                     if mask_image is not None:
                         raise ValueError(
-                            f"{state.family.name} is an image-editing model and does not "
+                            f"{fam.name} is an image-editing model and does not "
                             "support masks (mask_image)."
                         )
                     workflow = "edit"
                     init_pil = decode_b64_image(init_image, mode = "RGB")
+                elif requested_workflow == "edit":
+                    if not getattr(fam, "unified_edit", False):
+                        raise ValueError(
+                            f"Instruction editing is not supported for the '{fam.name}' "
+                            "model family."
+                        )
+                    workflow = "edit"
+                    conditioned = True
+                elif requested_workflow == "reference":
+                    if not getattr(fam, "reference", False):
+                        raise ValueError(
+                            f"The reference workflow is not supported for the '{fam.name}' "
+                            "model family."
+                        )
+                    workflow = "reference"
+                    conditioned = True
                 elif mask_image is not None and init_image is not None:
                     workflow = "inpaint"
-                    pipe = self._workflow_pipe(state, state.family.inpaint_pipeline_class, workflow)
+                    pipe = self._workflow_pipe(state, fam.inpaint_pipeline_class, workflow)
                     init_pil = decode_b64_image(init_image, mode = "RGB")
                     mask_pil = decode_b64_image(mask_image, mode = "L")
                 elif init_image is not None and upscale is not None and upscale > 1.0:
                     # Upscale (hires fix): enlarge with Lanczos, then re-run img2img at low strength to add detail.
                     workflow = "upscale"
-                    pipe = self._workflow_pipe(state, state.family.img2img_pipeline_class, workflow)
+                    pipe = self._workflow_pipe(state, fam.img2img_pipeline_class, workflow)
                     init_pil = decode_b64_image(init_image, mode = "RGB")
                     iw, ih = init_pil.size
                     # Cap the factor, then the absolute output (longest side 2048); round to a multiple of 16 (VAE
@@ -7071,21 +7138,37 @@ class DiffusionBackend:
                     init_pil = init_pil.resize((tw, th), Image.LANCZOS)
                     if strength is None:
                         strength = 0.35  # hires-fix default: preserve content, add detail
-                elif getattr(state.family, "reference", False) and init_image is not None:
-                    # FLUX.2 reference conditioning: the loaded pipe takes the reference via `image` and generates at
-                    # the REQUESTED size.
+                elif getattr(fam, "reference", False) and init_image is not None:
                     workflow = "reference"
-                    init_pil = decode_b64_image(init_image, mode = "RGB")
-                    # Additional references (FLUX.2 combines a list); capped to bound VRAM.
-                    ref_extra = [
-                        decode_b64_image(x, mode = "RGB") for x in (reference_images or [])[:3]
-                    ]
+                    conditioned = True
                 elif init_image is not None:
                     workflow = "img2img"
-                    pipe = self._workflow_pipe(state, state.family.img2img_pipeline_class, workflow)
+                    pipe = self._workflow_pipe(state, fam.img2img_pipeline_class, workflow)
                     init_pil = decode_b64_image(init_image, mode = "RGB")
                 else:
                     workflow = "txt2img"
+                ref_resolution = None
+                if conditioned:
+                    images_in = decode_condition_images(
+                        fam, init_image, reference_images, localized_edit
+                    )
+                    init_pil, ref_extra = images_in[0], images_in[1:]
+                    ref_resolution = effective_reference_resolution(fam, reference_resolution)
+                elif reference_resolution is not None:
+                    raise ValueError(
+                        "reference_resolution applies only to the reference and edit workflows."
+                    )
+                source_sized = _is_source_sized(workflow, fam)
+                if not source_sized:
+                    if width is None or height is None:
+                        if not conditioned:
+                            raise ValueError("width and height are required for this workflow.")
+                        width, height = match_source_size(
+                            fam, init_pil.size, ref_resolution or 1024
+                        )
+                    check_output_size(fam, int(width), int(height))
+                elif width is None or height is None:
+                    width = height = 1024
 
                 # ControlNet (diffusers): txt2img only. Builds the family CN pipeline around resident modules.
                 if controlnet is not None:
@@ -7141,7 +7224,7 @@ class DiffusionBackend:
                     )
                 # Snap odd-sized inputs (and the mask) to a multiple of 16 where the OUTPUT size comes from the input
                 # image.
-                if init_pil is not None and workflow in ("img2img", "inpaint", "edit"):
+                if init_pil is not None and source_sized and workflow != "upscale":
                     # img2img/inpaint take output size from the upload, so bound the longest side to 2048 (a phone
                     # photo would OOM).
                     if workflow == "img2img":
@@ -7185,15 +7268,21 @@ class DiffusionBackend:
                     # (cfg_trunc_ratio=0.25); the 1.0 default oversaturates.
                     kwargs["cfg_trunc_ratio"] = 0.25
                 if init_pil is not None:
-                    # Reference passes the whole list (FLUX.2 combines); others take the single image.
+                    # Reference / unified edit pass the whole ordered list; others take the single image.
                     kwargs["image"] = [init_pil, *ref_extra] if ref_extra else init_pil
+                    if ref_resolution is not None:
+                        if "output_resolution" not in call_params:
+                            raise ValueError(
+                                "This pipeline does not accept a reference resolution."
+                            )
+                        kwargs["output_resolution"] = ref_resolution
                     if mask_pil is not None and "mask_image" in call_params:
                         kwargs["mask_image"] = mask_pil
                     if strength is not None and "strength" in call_params:
                         kwargs["strength"] = strength
                 # width/height: txt2img uses the slider; image-conditioned pipes must use the INPUT IMAGE's size or
                 # the latents mismatch, and many drop them, so pass only when accepted.
-                if workflow in ("txt2img", "reference", "controlnet"):
+                if not source_sized:
                     # These generate at the REQUESTED size (reference/control image resized to match).
                     kwargs["width"] = width
                     kwargs["height"] = height
@@ -7231,7 +7320,7 @@ class DiffusionBackend:
                     # their output size from the input image. Same derivation the compile-cache shape registration
                     # uses further down.
                     guard_width, guard_height = _compile_shape_dims(
-                        workflow, init_pil, width, height
+                        workflow, init_pil, width, height, fam
                     )
                     guard_batch = _activation_guard_batch(chunks)
                     raise_on_image_activation_shortfall(
@@ -7251,7 +7340,17 @@ class DiffusionBackend:
                         # img2img is bounded by the Resolution control (see _fit_within), so "generate at a smaller
                         # resolution" is actionable there; the rest size from the upload alone and get the upload-side
                         # remedy.
-                        source_driven = workflow in ("inpaint", "upscale", "edit"),
+                        source_driven = source_sized and workflow != "img2img",
+                        condition_pixels = (
+                            int(
+                                (1 + len(ref_extra))
+                                * ref_resolution
+                                * ref_resolution
+                                * getattr(fam, "condition_pixel_weight", 1.0)
+                            )
+                            if ref_resolution is not None
+                            else 0
+                        ),
                         logger = logger,
                     )
                 except ValueError:
@@ -7394,7 +7493,9 @@ class DiffusionBackend:
                 try:
                     # Register the dims the forward ACTUALLY compiled with, and every distinct chunk size (a static
                     # compile makes one artifact per batch size too).
-                    reg_width, reg_height = _compile_shape_dims(workflow, init_pil, width, height)
+                    reg_width, reg_height = _compile_shape_dims(
+                        workflow, init_pil, width, height, fam
+                    )
                     static_shapes = "compiled" in (
                         state.speed_optims or ()
                     ) and compiled_shapes_are_static(state.pipe, state.speed_mode)
@@ -7446,6 +7547,8 @@ class DiffusionBackend:
                     # The workflow this generation ACTUALLY ran, so a conditioned image is not replayed as a plain
                     # Create recipe.
                     "workflow": workflow,
+                    "reference_resolution": ref_resolution,
+                    "localized_edit": localized_edit.mode if localized_edit is not None else None,
                 }
             finally:
                 with self._generation_cancel_lock:
@@ -7639,6 +7742,7 @@ class DiffusionBackend:
                 "attention_backend": None,
                 "transformer_cache": None,
                 "workflows": [],
+                "conditioning": None,
                 "supports_lora": False,
                 "supports_controlnet": False,
                 "resolved": None,
@@ -7673,6 +7777,9 @@ class DiffusionBackend:
             "resolved": state.resolved,
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
+            "conditioning": conditioning_capabilities(
+                state.family, _family_workflows(state.family)
+            ),
             "supports_lora": diffusion_lora.supports_lora(
                 engine = "diffusers",
                 family = state.family.name,
@@ -7701,6 +7808,9 @@ def _family_workflows(fam: DiffusionFamily) -> list[str]:
     # Reference families (FLUX.2) add reference conditioning via their pipeline's image arg.
     if getattr(fam, "reference", False):
         workflows.append("reference")
+    # Unified families (Qwen-Image-2.1) also follow edit instructions through that same pipeline.
+    if getattr(fam, "unified_edit", False):
+        workflows.append("edit")
     if getattr(fam, "img2img_pipeline_class", None):
         # Upscale runs on the img2img pipeline, so available exactly when img2img is.
         workflows.append("img2img")
