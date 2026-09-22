@@ -66,6 +66,32 @@ export function getSidebarItemThreadIds(item: SidebarItem): string[] {
   return item.threadIds?.length ? item.threadIds : [item.id];
 }
 
+/** A comparison is two threads with no single tip to fork from. */
+export function canForkChatRow(item: SidebarItem): boolean {
+  return item.type === "single";
+}
+
+/**
+ * Forks a chat from its last message, which is what the thread's own Fork does from the message
+ * it is on. Settings are settled first: the fork copies `settings_json` in its own transaction,
+ * so an edit still in the debounce would be left out and the copy would open on the older modes.
+ */
+export async function forkChatRow(item: SidebarItem) {
+  const { forkChatThread } = await import("../api/chat-api");
+  const { settleThreadScopedSettingsForCopy } = await import(
+    "../stores/chat-runtime-store"
+  );
+  const messages = await listStoredChatMessages(item.id);
+  const last = messages[messages.length - 1];
+  if (!last) throw new Error("This chat has no messages to fork.");
+  await settleThreadScopedSettingsForCopy(item.id);
+  return forkChatThread(item.id, {
+    messageId: last.id,
+    newThreadId: crypto.randomUUID(),
+    createdAt: Date.now(),
+  });
+}
+
 /** The sandbox sessions this chat's stored tool results name, if any. */
 export async function recordedSandboxSessionIds(
   ids: string[],

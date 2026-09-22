@@ -124,7 +124,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, ChevronUp, Moon } from "lucide-react";
+import { ArrowRightIcon, ChevronDown, ChevronUp, GitBranchIcon, Moon } from "lucide-react";
 import {
   Link,
   useNavigate,
@@ -135,10 +135,12 @@ import {
   archiveChatItem,
   ChatSearchDialog,
   clearNewChatDraft,
+  canForkChatRow,
   chatExportOptions,
   EditProjectDialog,
   OpenChatFolderUnavailableItem,
   exportConversationByFormat,
+  forkChatRow,
   getSidebarItemThreadIds,
   sandboxSessionIdsHolding,
   deleteChatProject,
@@ -2411,6 +2413,26 @@ export function AppSidebar() {
     }
   }
 
+  /** Forks a chat from the row menu and opens the copy, the way the thread's own Fork does. */
+  async function forkChatFromRow(item: SidebarItem) {
+    try {
+      const result = await forkChatRow(item);
+      setActiveThreadId(result.thread.id);
+      navigate({ to: "/chat", search: { thread: result.thread.id } });
+      if (result.containerSnapshotWarning) {
+        toast.info("Fork created", {
+          description: result.containerSnapshotWarning,
+        });
+      } else {
+        toast.success("Fork created");
+      }
+    } catch (error) {
+      toast.error("Failed to fork", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  }
+
   type RenameTarget =
     // `inline` is the row's own pill, and a chord has no row under the cursor
     // and may have none on screen at all, so it opens the dialog instead.
@@ -3470,6 +3492,16 @@ export function AppSidebar() {
                     : t("shell.selection.markUnread")}
                 </span>
               </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!canForkChatRow(item)}
+                title="Copy this chat into a new one, from its last message"
+                onSelect={() => void forkChatFromRow(item)}
+              >
+                <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+                <span>Fork</span>
+              </DropdownMenuItem>
+              {/* Rename through Fork act on the row; the rule sets off what reaches outside it. */}
+              <DropdownMenuSeparator />
               {sandboxSessionId ? (
                 isTauri ? (
                   <DropdownMenuItem

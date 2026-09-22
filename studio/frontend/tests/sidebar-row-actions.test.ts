@@ -192,3 +192,30 @@ test("the chat-folder hint names what to click instead", async () => {
     "the hint is no longer stated for both the pointer and the screen reader",
   );
 });
+
+// Forking was reachable only from a message in the open thread, so copying a chat meant opening
+// it first. The row menu does it from wherever the row is drawn.
+test("a chat row forks from its own menu", async () => {
+  const ROW_MENU = await readSrcAsync(
+    "features/chat/components/chat-row-menu.ts",
+  );
+  // Below Mark as unread, and before the rule that sets off the rest.
+  assert.match(
+    APP_SIDEBAR,
+    /t\("shell\.selection\.markUnread"\)\}\n\s*<\/span>\n\s*<\/DropdownMenuItem>\n\s*<DropdownMenuItem\n\s*disabled=\{!canForkChatRow\(item\)\}/,
+  );
+  assert.match(APP_SIDEBAR, /<span>Fork<\/span>\n\s*<\/DropdownMenuItem>\n\s*\{\/\*[^]*?\*\/\}\n\s*<DropdownMenuSeparator \/>/);
+  // A comparison has two threads and no single tip to fork from.
+  assert.match(ROW_MENU, /export function canForkChatRow[^]*?return item\.type === "single";/);
+  // The fork carries the settings on screen, not the ones the row was last written with.
+  assert.match(
+    ROW_MENU,
+    /await settleThreadScopedSettingsForCopy\(item\.id\);\n\s*return forkChatThread\(item\.id, \{/,
+  );
+  // Same last-message tip the thread's own Fork uses, and the copy is opened.
+  assert.match(ROW_MENU, /const last = messages\[messages\.length - 1\];/);
+  assert.match(
+    APP_SIDEBAR,
+    /setActiveThreadId\(result\.thread\.id\);\n\s*navigate\(\{ to: "\/chat", search: \{ thread: result\.thread\.id \} \}\);/,
+  );
+});

@@ -265,8 +265,10 @@ export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
 export { EditProjectDialog } from "./components/edit-project-dialog";
 export {
+  canForkChatRow,
   chatExportOptions,
   exportConversationByFormat,
+  forkChatRow,
   getSidebarItemThreadIds,
   recordedSandboxSessionIds,
   sandboxSessionIdsHolding,
