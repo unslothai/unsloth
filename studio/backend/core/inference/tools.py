@@ -17846,6 +17846,26 @@ def _check_signal_escape_patterns(code: str):
                 self._carry(node.target, node.value, at, node)
             self.generic_visit(node)
 
+        def _carry_loop(self, node) -> None:
+            # `for s in [requests.Session()]` binds each element of a literal container in turn.
+            if self.collecting and isinstance(node.iter, (ast.List, ast.Tuple, ast.Set)):
+                for elt in node.iter.elts:
+                    if isinstance(elt, ast.Starred):
+                        continue
+                    at = (getattr(elt, "lineno", 0), getattr(elt, "col_offset", 0))
+                    for target, value in _paired(node.target, elt):
+                        self._carry(target, value, at, elt)
+
+        def visit_For(self, node):
+            self._carry_loop(node)
+            self.generic_visit(node)
+
+        visit_AsyncFor = visit_For
+
+        def visit_comprehension(self, node):
+            self._carry_loop(node)
+            self.generic_visit(node)
+
         def visit_withitem(self, node):
             # `with requests.Session() as s` binds the session: these clients return themselves.
             if self.collecting and node.optional_vars is not None:

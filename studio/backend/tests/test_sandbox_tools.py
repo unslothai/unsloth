@@ -879,6 +879,14 @@ class TestNetworkTargetResolution:
                 f"        session.get('http://{_H}/')\nA.fetch(A(), requests.Session())",
                 id = "client_passed_to_an_unbound_method",
             ),
+            pytest.param(
+                f"import requests\nfor s in [requests.Session()]:\n    s.get('http://{_H}/')",
+                id = "client_as_loop_target",
+            ),
+            pytest.param(
+                f"import requests\n[s.get('http://{_H}/') for s in [requests.Session()]]",
+                id = "client_as_comprehension_target",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
