@@ -4,6 +4,7 @@
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   ggufVariantFromStorageKey,
+  isStandaloneGgufPath,
   modelIdFromStorageKey,
   modelStorageKey,
   normalizeGgufVariantIdentity,
@@ -1502,9 +1503,19 @@ export function resolveResidentInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
 ): ResolvedPerModelConfig {
-  const direct = resolveInitialConfig(modelId, ggufVariant);
+  // a standalone file's reported quant is a label; its settings are saved without a variant.
+  const standalone = isStandaloneGgufPath(modelId);
+  const direct = resolveInitialConfig(modelId, standalone ? null : ggufVariant);
   if (direct.remembered) {
     return direct;
+  }
+  // A loose .gguf load names no variant, so override_lookup_candidates reads the bare path
+  // then the label; a picker before #7473 keyed the label, and those records still exist.
+  if (standalone && ggufVariant) {
+    const labelled = resolveInitialConfig(modelId, ggufVariant);
+    if (labelled.remembered) {
+      return labelled;
+    }
   }
   const alias = publicModelId(modelId);
   if (alias === modelId || !alias.includes("/")) {

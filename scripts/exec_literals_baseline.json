@@ -256,6 +256,13 @@
     },
     {
       "file": "unsloth/models/rl.py",
+      "sink": "compile",
+      "digest": "47706ae142cdfec0",
+      "count": 1,
+      "reason": "Re-executes TRL's own prepare_peft_model with one branch condition corrected, matching the clause TRL itself added in 0.24.0. The source is read with inspect.getsource from the installed trl package, never from user input or a network fetch, and it is only rewritten when the exact expected branch text is present exactly once; otherwise the patch bails and leaves TRL alone. See tests/test_kbit_prep_guard.py."
+    },
+    {
+      "file": "unsloth/models/rl.py",
       "sink": "eval",
       "digest": "040bea2f53f4a4a8",
       "count": 1,
@@ -323,6 +330,13 @@
       "digest": "71b3c1011fa9a32a",
       "count": 1,
       "reason": "Re-imports TRL trainer and config classes by name, and installs the RL trainer source this file generates. The names come from this file's own tables."
+    },
+    {
+      "file": "unsloth/models/rl.py",
+      "sink": "exec",
+      "digest": "792cfde532dac568",
+      "count": 1,
+      "reason": "Re-executes TRL's own prepare_peft_model with one branch condition corrected, matching the clause TRL itself added in 0.24.0. The source is read with inspect.getsource from the installed trl package, never from user input or a network fetch, and it is only rewritten when the exact expected branch text is present exactly once; otherwise the patch bails and leaves TRL alone. See tests/test_kbit_prep_guard.py."
     },
     {
       "file": "unsloth/models/rl.py",

@@ -207,6 +207,37 @@ def _loaded_skip_modules(model_config):
     )
 
 
+def _config_uses_remote_code(config):
+    """Whether the model code lives outside transformers: an `auto_map` naming a model or
+    config class, on this config or a sub-config, or a config class out of
+    `transformers_modules`. The flag alone does not mean remote code, and skipping the
+    compiler for a native architecture costs the fast LoRA forward, the fused loss and the
+    compiled norms. No config keeps the old, conservative answer."""
+    if config is None:
+        return True
+
+    def _remote(cfg):
+        if (getattr(type(cfg), "__module__", "") or "").startswith("transformers_modules"):
+            return True
+        auto_map = getattr(cfg, "auto_map", None)
+        if isinstance(cfg, dict):
+            auto_map = cfg.get("auto_map", auto_map)
+        if not auto_map:
+            return False
+        # A custom tokenizer, processor or feature extractor is not code the compiler traces.
+        return any(str(k).startswith(("AutoModel", "AutoConfig")) for k in auto_map)
+
+    if _remote(config):
+        return True
+    for sub in ("text_config", "vision_config", "audio_config"):
+        cfg = getattr(config, sub, None)
+        if cfg is None and isinstance(config, dict):
+            cfg = config.get(sub)
+        if cfg is not None and _remote(cfg):
+            return True
+    return False
+
+
 def _config_diff(config):
     if isinstance(config, dict):
         return config
@@ -224,6 +255,40 @@ def _config_diff(config):
 def _has_sequence_classification_architecture(config):
     architectures = _config_get(config, "architectures", None) or []
     return any(str(arch).endswith("ForSequenceClassification") for arch in architectures)
+
+
+# Most to least specific, so a config mapped under several gets its own family's
+# class. Every name must also be in vision.py's _multimodal_auto_classes(), since
+# the class picked here decides processor selection (asserted by
+# test_every_class_the_resolver_can_return_takes_a_processor).
+_OMNI_AUTO_CLASS_NAMES = (
+    "AutoModelForImageTextToText",
+    "AutoModelForTextToWaveform",
+)
+
+
+def _resolve_omni_auto_model(model_config):
+    """A multimodal auto class that really maps this config, or None.
+
+    Qwen3-Omni names Qwen3OmniMoeForConditionalGeneration so it reads as a VLM,
+    but transformers registers qwen3_omni_moe only under
+    AutoModelForTextToWaveform, and asking a class with no mapping is a hard
+    load failure, not a fallback.
+    """
+    import transformers
+
+    for name in _OMNI_AUTO_CLASS_NAMES:
+        auto_class = getattr(transformers, name, None)
+        if auto_class is None:
+            continue
+        try:
+            if resolve_model_class(auto_class, model_config) is not None:
+                return auto_class
+        except Exception:
+            continue
+    # Falling back to the concrete class the checkpoint names is WRONG: it is in no
+    # auto mapping, so it leaves the processor set and downgrades to AutoTokenizer.
+    return None
 
 
 def _get_user_task_config_attrs(user_config):
@@ -408,6 +473,7 @@ class FastLanguageModel(FastLlamaModel):
         unsloth_tiled_mlp = False,
         text_only = False,
         *args,
+        on_model_resolved = None,
         **kwargs,
     ):
         quantization_config = kwargs.get("quantization_config", None)
@@ -453,6 +519,7 @@ class FastLanguageModel(FastLlamaModel):
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             delegated, tokenizer = FastModel.from_pretrained(
+                on_model_resolved = on_model_resolved,
                 model_name = model_name,
                 max_seq_length = max_seq_length,
                 dtype = dtype,
@@ -582,6 +649,9 @@ class FastLanguageModel(FastLlamaModel):
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+        # Report the loader decision before fetching this repo, including adapter bases.
+        if on_model_resolved is not None:
+            on_model_resolved(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM whose message never mentions quantization.
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
@@ -768,6 +838,9 @@ class FastLanguageModel(FastLlamaModel):
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+            # Report the loader decision before fetching this repo, including adapter bases.
+            if on_model_resolved is not None:
+                on_model_resolved(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
@@ -879,6 +952,7 @@ class FastLanguageModel(FastLlamaModel):
         # Optimized Cohere and Granite paths are disabled until their errors match.
         else:
             delegated, tokenizer = FastModel.from_pretrained(
+                on_model_resolved = on_model_resolved,
                 model_name = old_model_name,
                 max_seq_length = max_seq_length,
                 dtype = dtype,
@@ -1189,6 +1263,7 @@ class FastModel(FastBaseModel):
         target_parameters = None,  # For MoE expert parameters
         text_only = False,
         *args,
+        on_model_resolved = None,
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
@@ -1357,6 +1432,9 @@ class FastModel(FastBaseModel):
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+        # Report the loader decision before fetching this repo, including adapter bases.
+        if on_model_resolved is not None:
+            on_model_resolved(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
@@ -1693,6 +1771,9 @@ class FastModel(FastBaseModel):
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+            # Report the loader decision before fetching this repo, including adapter bases.
+            if on_model_resolved is not None:
+                on_model_resolved(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
@@ -1784,7 +1865,8 @@ class FastModel(FastBaseModel):
                 import_from_cache = False,
                 disable = False,
                 return_logits = return_logits,
-                trust_remote_code = trust_remote_code,
+                # Only real remote code is untraceable; a native architecture keeps every optimization.
+                trust_remote_code = trust_remote_code and _config_uses_remote_code(model_config),
                 unsloth_force_compile = unsloth_force_compile,
             )
         for model_type in DISABLE_SDPA_MODEL_NAMES:
@@ -1858,6 +1940,10 @@ class FastModel(FastBaseModel):
                     auto_model = AutoModel
                 else:
                     auto_model = AutoModelForVision2Seq
+                    # Only when the image-text class has no mapping, so anything that
+                    # resolves today keeps the class it resolves to now.
+                    if resolve_model_class(auto_model, model_config) is None:
+                        auto_model = _resolve_omni_auto_model(model_config) or auto_model
             else:
                 auto_model = AutoModelForCausalLM
 

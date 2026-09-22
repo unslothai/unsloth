@@ -31,7 +31,6 @@ class GgufVariantInfo:
     size_bytes: int
     display_label: Optional[str] = None
     download_size_bytes: int = 0
-    shard_count: int = 0
 
 
 GGUF_QUANT_PREFERENCE = [
@@ -74,10 +73,6 @@ GGUF_QUANT_PREFERENCE = [
 ]
 
 _GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
-_GGUF_CANONICAL_SPLIT_RE = re.compile(
-    r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$",
-    re.IGNORECASE,
-)
 _GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
@@ -107,14 +102,14 @@ def is_imatrix_filename(path: str) -> bool:
 
 
 # dspark and dflash are the same DeepSeek V4 Flash drafter: the folder it ships in and the architecture it reports.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 
 # Directories only: mtp/ and dspark/ are always a publisher's companion folder, while dflash/ is a family name a user picks for real weights.
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
 def is_mtp_drafter_path(path: str) -> bool:
-    """True for a separate-file drafter, a companion to the main model rather than a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4) and the ``dspark/`` drafters (DeepSeek V4 Flash). Repos that bake the head into the main GGUF (Qwen) have no such file, so this is False for them. Must be excluded from main-model selection everywhere mmproj is. Matched by basename prefix, or by an exact parent dir for ``_DRAFTER_DIR_KINDS``; never a substring, since the kind names double as family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports; bundles the mmproj check)."""
+    """True for a separate-file drafter, a companion to the main model rather than a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash) and the ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss). Repos that bake the head into the main GGUF (Qwen) have no such file, so this is False for them. Must be excluded from main-model selection everywhere mmproj is. Matched by basename prefix, or by an exact parent dir for ``_DRAFTER_DIR_KINDS``; never a substring, since the kind names double as family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports; bundles the mmproj check)."""
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
@@ -360,29 +355,6 @@ def _unknown_gguf_variant_key(filename: str) -> str:
 def gguf_variant_family(filename: str) -> str:
     """The shard family *filename* belongs to: its directory plus its shard-stripped name. The unit a row and a download plan describe. Every shard of one split GGUF shares a family, which is why summing sizes within a family is right; two files that do NOT share one are two different checkpoints, so summing across them is not."""
     return _unknown_gguf_variant_key(filename)
-
-
-def complete_gguf_shard_count(filenames: Sequence[str], first_filename: str) -> int:
-    """Return a complete canonical split's part count, otherwise zero."""
-    normalized_first = first_filename.replace("\\", "/")
-    first_match = _GGUF_CANONICAL_SPLIT_RE.match(normalized_first.rsplit("/", 1)[-1])
-    if first_match is None or int(first_match.group("index")) != 1:
-        return 0
-    total = int(first_match.group("total"))
-    if total < 2:
-        return 0
-
-    family = gguf_variant_family(normalized_first).casefold()
-    indices: list[int] = []
-    for filename in filenames:
-        normalized = filename.replace("\\", "/")
-        if gguf_variant_family(normalized).casefold() != family:
-            continue
-        match = _GGUF_CANONICAL_SPLIT_RE.match(normalized.rsplit("/", 1)[-1])
-        if match is None or match.group("total") != first_match.group("total"):
-            return 0
-        indices.append(int(match.group("index")))
-    return total if sorted(indices) == list(range(1, total + 1)) else 0
 
 
 def gguf_checkpoint_family(filename: str) -> Optional[str]:
@@ -1074,7 +1046,6 @@ def list_partial_gguf_variants_from_state(
             )
         )
         main_filename: Optional[str] = None
-        main_filenames: list[str] = []
         size_bytes = 0
         companion_bytes = 0
         imatrix_only = False
@@ -1096,7 +1067,6 @@ def list_partial_gguf_variants_from_state(
                     continue
                 if main_filename is None:
                     main_filename = expected.path
-                main_filenames.append(expected.path)
                 size_bytes += max(0, int(expected.size or 0))
         if main_filename is None:
             # An older build could download the imatrix as a variant of its own, so naming the synthetic file after the variant would put that interrupted row back in the menu at zero bytes. Only when NOTHING eligible was found.
@@ -1109,7 +1079,6 @@ def list_partial_gguf_variants_from_state(
                 quant = variant,
                 size_bytes = size_bytes,
                 download_size_bytes = size_bytes + companion_bytes,
-                shard_count = complete_gguf_shard_count(main_filenames, main_filename),
             )
         )
 
@@ -1215,12 +1184,7 @@ def list_gguf_variants(
         main_files.append((filename, int(getattr(sibling, "size", 0) or 0)))
 
     variants = [
-        GgufVariantInfo(
-            filename = filename,
-            quant = quant,
-            size_bytes = size,
-            shard_count = complete_gguf_shard_count([path for path, _size in main_files], filename),
-        )
+        GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
         for quant, (filename, size) in group_gguf_variant_files(main_files).items()
     ]
 
@@ -1313,12 +1277,7 @@ def list_local_gguf_variants(
         main_files.append((rel, size))
 
     variants = [
-        GgufVariantInfo(
-            filename = filename,
-            quant = quant,
-            size_bytes = size,
-            shard_count = complete_gguf_shard_count([path for path, _size in main_files], filename),
-        )
+        GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
         for quant, (filename, size) in group_gguf_variant_files(main_files).items()
     ]
     variants.sort(key = lambda variant: -variant.size_bytes)

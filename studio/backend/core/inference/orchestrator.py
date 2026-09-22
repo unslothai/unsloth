@@ -331,11 +331,9 @@ def _summed_tool_loop_stats(total, turn):
     return summed
 
 
-def _request_images(image, images):
-    """One request's images in render order; ``image`` is the older single-image spelling."""
-    if images:
-        return list(images)
-    return [image] if image is not None else []
+def _encoded_images(images, to_base64) -> list:
+    """Replayed MCP pictures arrive already PNG-encoded; a caller's decoded list does not."""
+    return [one if isinstance(one, str) else to_base64(one) for one in images or ()]
 
 
 def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
@@ -486,11 +484,19 @@ class InferenceOrchestrator:
         self._start_top_models_fetch()
         top_gguf = self._top_gguf_cache or []
         top_hub = self._top_hub_cache or []
-        # Never wait for the remote Hugging Face ranking during startup. Chat's first /api/models/list needs curated
-        # defaults immediately; the background fetch backfills extra choices on later calls.
+        # Use detected hardware here: discovery runs on the event loop.
+        from core.inference.defaults import suggestions_for_host
+        import utils.hardware.hardware as _hw_mod
+
+        # A chat-only Mac never reaches the MLX loader, so its ranking is left as fetched.
+        device = None if _hw_mod.CHAT_ONLY else _hw_mod.DEVICE
+        fetched = suggestions_for_host(top_gguf + top_hub, device)
+        # Never wait for the remote Hugging Face ranking during startup. Chat's
+        # first /api/models/list needs curated defaults immediately; the
+        # background fetch backfills extra choices on later calls.
         result: list[str] = []
         seen: set[str] = set()
-        for m in self._static_models + top_gguf + top_hub:
+        for m in self._static_models + fetched:
             if m not in seen:
                 result.append(m)
                 seen.add(m)
@@ -559,7 +565,7 @@ class InferenceOrchestrator:
         from utils.process_lifetime import is_process_shutting_down
 
         if is_process_shutting_down():
-            raise RuntimeError("Studio is shutting down; not starting an inference subprocess")
+            raise RuntimeError("Unsloth is shutting down; not starting an inference subprocess")
         from utils.native_path_leases import (
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
@@ -657,7 +663,7 @@ class InferenceOrchestrator:
                     )
             except Exception as exc:
                 logger.debug("Could not reap the raced inference worker: %s", exc)
-            raise RuntimeError("Studio is shutting down; not starting an inference subprocess")
+            raise RuntimeError("Unsloth is shutting down; not starting an inference subprocess")
         logger.info("Inference subprocess started (pid=%s)", _spawned_proc.pid)
 
     def _cancel_generation(self) -> None:
@@ -1224,8 +1230,10 @@ class InferenceOrchestrator:
     def _build_generate_cmd(
         self,
         request_id: str,
-        images_b64: list,
+        image_b64: Optional[str],
         *,
+        images_b64: Optional[list] = None,
+        image_ordinal: Optional[int] = None,
         messages: list = None,
         system_prompt: str = "",
         temperature: float = 0.7,
@@ -1254,7 +1262,9 @@ class InferenceOrchestrator:
             "request_id": request_id,
             "messages": messages or [],
             "system_prompt": system_prompt,
-            "images_base64": images_b64,
+            "image_base64": image_b64,
+            "images_base64": images_b64 or None,
+            "image_ordinal": image_ordinal,
             "temperature": temperature,
             "top_p": top_p,
             "top_k": top_k,
@@ -1456,6 +1466,8 @@ class InferenceOrchestrator:
         messages: list = None,
         system_prompt: str = "",
         image = None,
+        images: Optional[list] = None,
+        image_ordinal: Optional[int] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
@@ -1477,8 +1489,6 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
-        *,
-        images = None,
     ) -> Generator[str, None, None]:
         """Dispatched generation, sending the command without holding _gen_lock. Uses a per-request
         mailbox for tokens so two compare-mode requests can be queued at once. The subprocess
@@ -1514,11 +1524,14 @@ class InferenceOrchestrator:
 
         request_id = str(uuid.uuid4())
 
-        images_b64 = [self._pil_to_base64(one) for one in _request_images(image, images)]
+        image_b64 = self._pil_to_base64(image) if image is not None else None
+        images_b64 = _encoded_images(images, self._pil_to_base64)
 
         cmd = self._build_generate_cmd(
             request_id,
-            images_b64,
+            image_b64,
+            images_b64 = images_b64,
+            image_ordinal = image_ordinal,
             messages = messages,
             system_prompt = system_prompt,
             temperature = temperature,
@@ -2298,6 +2311,8 @@ class InferenceOrchestrator:
         messages: list,
         system_prompt: str = "",
         image = None,
+        images: Optional[list] = None,
+        image_ordinal: Optional[int] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
@@ -2318,8 +2333,6 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
-        *,
-        images = None,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess. ``tools`` / ``enable_thinking`` /
         ``reasoning_effort`` / ``preserve_thinking`` are forwarded so the template can render
@@ -2332,6 +2345,7 @@ class InferenceOrchestrator:
             system_prompt = system_prompt,
             image = image,
             images = images,
+            image_ordinal = image_ordinal,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -2360,6 +2374,7 @@ class InferenceOrchestrator:
         messages: list,
         tools: list,
         system_prompt: str = "",
+        images: Optional[list] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
@@ -2389,6 +2404,7 @@ class InferenceOrchestrator:
         stop: Optional[list] = None,
         reasoning_prefilled: bool = False,
         seed: Optional[int] = None,
+        caller_image_indexes: "tuple[int, ...]" = (),
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process, calling the worker for each
@@ -2399,6 +2415,13 @@ class InferenceOrchestrator:
 
         # None lets the backend size an unset limit once it has counted the prompt.
         max_new_tokens = max_tokens if max_tokens and max_tokens > 0 else None
+        # Only a model that reads images gets a sink; the loop leaves MCP pictures
+        # out of the prompt without one.
+        loop_images: Optional[list] = (
+            list(images or [])
+            if self.models.get(self.active_model_name, {}).get("is_vision")
+            else None
+        )
 
         # The worker's usage for the LATEST turn only. Hoisted out of the turn so the loop can size a conversation
         # search against a real prompt count, and cleared on the way in rather than on each way out, so a turn that
@@ -2419,6 +2442,7 @@ class InferenceOrchestrator:
                 messages = conv,
                 system_prompt = "",
                 image = None,
+                images = list(loop_images) if loop_images else None,
                 temperature = temperature,
                 top_p = top_p,
                 top_k = top_k,
@@ -2518,6 +2542,11 @@ class InferenceOrchestrator:
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
             generation_stats_holder = turn_stats,
+            images_sink = loop_images,
+            # Which sink entries are the caller's own attachment, so the loop's cap
+            # never evicts it. Empty when the model reads no images, since there is
+            # then no sink to protect anything in.
+            caller_image_indexes = tuple(caller_image_indexes) if loop_images else (),
         )
 
     def generate_with_adapter_control(
@@ -2554,6 +2583,8 @@ class InferenceOrchestrator:
         messages: list = None,
         system_prompt: str = "",
         image = None,
+        images: Optional[list] = None,
+        image_ordinal: Optional[int] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
@@ -2575,8 +2606,6 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
-        *,
-        images = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic: sends the command to the subprocess and yields tokens. Serialized
         by _gen_lock (one generation at a time) so concurrent readers don't consume each other's
@@ -2601,10 +2630,13 @@ class InferenceOrchestrator:
             if cancel_event is not None and cancel_event.is_set():
                 return
             request_id = str(uuid.uuid4())
-            images_b64 = [self._pil_to_base64(one) for one in _request_images(image, images)]
+            image_b64 = self._pil_to_base64(image) if image is not None else None
+            images_b64 = _encoded_images(images, self._pil_to_base64)
             cmd = self._build_generate_cmd(
                 request_id,
-                images_b64,
+                image_b64,
+                images_b64 = images_b64,
+                image_ordinal = image_ordinal,
                 messages = messages,
                 system_prompt = system_prompt,
                 temperature = temperature,

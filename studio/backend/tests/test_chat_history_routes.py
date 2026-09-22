@@ -287,9 +287,7 @@ def test_clear_history_reaps_search_thumbnails_with_a_body(monkeypatch):
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
-    monkeypatch.setattr(
-        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
-    )
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     asyncio.run(
@@ -941,9 +939,7 @@ def test_a_clear_does_not_reap_an_image_registered_while_it_was_running(tmp_path
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
-    monkeypatch.setattr(
-        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
-    )
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     studio_db.upsert_chat_thread(_clear_thread_row("before-clear"))
@@ -991,9 +987,7 @@ def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_pat
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
-    monkeypatch.setattr(
-        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
-    )
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     def clear():
@@ -1053,9 +1047,7 @@ def test_the_replay_bit_comes_from_the_clear_transaction(monkeypatch, tmp_path):
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
-    monkeypatch.setattr(
-        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
-    )
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     studio_db.upsert_chat_thread(_clear_thread_row("before-clear"))
@@ -1143,9 +1135,7 @@ def test_a_chat_created_in_the_gap_after_the_clear_keeps_its_images(monkeypatch,
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
-    monkeypatch.setattr(
-        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
-    )
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
 
     # The other tab's image, registered in the gap. Straight into the registry: this is about
     # WHEN the id becomes visible to the snapshot, not about how it got there.
@@ -1252,9 +1242,7 @@ def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeyp
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
-    monkeypatch.setattr(
-        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
-    )
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     def clear():
@@ -1316,9 +1304,7 @@ def test_a_plain_replay_with_nothing_outstanding_still_reaps_nothing(monkeypatch
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
-    monkeypatch.setattr(
-        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
-    )
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     def clear():

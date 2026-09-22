@@ -109,6 +109,19 @@ assert.equal(
 );
 // A sibling artifact of an aliased owner groups via the alias' stripped key.
 assert.equal(groupForRepoId("Qwen/Qwen-Image-2512-FP8", IMAGE_CATALOG), qwen2512);
+// A dotted version is a DIFFERENT model, not a variant of the undotted one: every 2.1 repo has to
+// land on the 2.1 group, and none of them may fall back to plain Qwen-Image, whose key is a prefix
+// of theirs.
+const qwen21 = groupForRepoId("Qwen/Qwen-Image-2.1", IMAGE_CATALOG);
+assert.ok(qwen21);
+assert.equal(qwen21.canonicalId, "unsloth/Qwen-Image-2.1");
+assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-FP8", IMAGE_CATALOG), qwen21);
+assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-INT8", IMAGE_CATALOG), qwen21);
+assert.notEqual(groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG), qwen21);
+assert.equal(
+  groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG)?.canonicalId,
+  "unsloth/Qwen-Image",
+);
 // Unknown repos pass through ungrouped.
 assert.equal(groupForRepoId("someone/some-model-GGUF", IMAGE_CATALOG), null);
 assert.equal(groupForRepoId("unsloth/Llama-3.3-70B-GGUF", VIDEO_CATALOG), null);
