@@ -16,8 +16,12 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "studio-composer-compatibility.yml"
@@ -55,18 +59,58 @@ def test_the_workflow_socket_path_fits_on_the_hosted_runners():
             assert len(path) <= SUN_PATH_MAX, f"{name}: {path} is {len(path)} bytes"
 
 
-def test_the_local_runner_puts_the_temp_dir_outside_the_checkout(tmp_path, monkeypatch):
+def _runner(monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / "tests" / "studio"))
     sys.modules.pop("run_composer_compatibility", None)
     import run_composer_compatibility as runner
 
-    monkeypatch.setattr(runner.tempfile, "tempdir", str(tmp_path))
-    first = runner.browser_tmpdir()
-    second = runner.browser_tmpdir()
-    assert first.is_dir() and second.is_dir()
-    assert first != second, "two runs must not share a temp dir"
-    for made in (first, second):
-        assert made.parent == tmp_path, "the temp dir did not follow the system temp dir"
-        assert ROOT not in made.parents, f"{made} is under the checkout"
-    # A short system temp dir is the premise; the name the runner adds must not use up the budget.
-    assert len(os.fspath(first)) - len(os.fspath(tmp_path)) < 16
+    return runner
+
+
+def _fits(path: Path) -> bool:
+    return len(os.fsencode(path)) + len(CHROME_SOCKET) <= SUN_PATH_MAX
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Chrome's singleton is a named pipe on Windows")
+def test_the_local_runner_uses_a_short_inherited_temp_dir(monkeypatch):
+    runner = _runner(monkeypatch)
+    short = Path(tempfile.mkdtemp(prefix = "s", dir = "/tmp"))
+    try:
+        monkeypatch.setattr(runner.tempfile, "tempdir", str(short))
+        first = runner.browser_tmpdir()
+        second = runner.browser_tmpdir()
+        assert first.parent == short and second.parent == short, "a short TMPDIR was not honoured"
+        assert first != second, "two runs must not share a temp dir"
+        assert _fits(first)
+    finally:
+        shutil.rmtree(short, ignore_errors = True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Chrome's singleton is a named pipe on Windows")
+def test_the_local_runner_falls_back_when_the_inherited_temp_dir_is_too_long(tmp_path, monkeypatch):
+    runner = _runner(monkeypatch)
+    deep = tmp_path / ("d" * 80)
+    deep.mkdir()
+    monkeypatch.setattr(runner.tempfile, "tempdir", str(deep))
+    made = runner.browser_tmpdir()
+    try:
+        assert _fits(made), f"{made} leaves Chrome's socket path over {SUN_PATH_MAX} bytes"
+        assert made.parent == Path("/tmp")
+        assert not any(deep.iterdir()), "the rejected temp dir was left behind"
+    finally:
+        shutil.rmtree(made, ignore_errors = True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Chrome's singleton is a named pipe on Windows")
+def test_the_local_runner_never_uses_a_temp_dir_inside_the_checkout(monkeypatch):
+    runner = _runner(monkeypatch)
+    inside = Path(tempfile.mkdtemp(prefix = ".t", dir = ROOT))
+    try:
+        monkeypatch.setattr(runner.tempfile, "tempdir", str(inside))
+        made = runner.browser_tmpdir()
+        try:
+            assert ROOT not in made.resolve().parents, f"{made} is under the checkout"
+        finally:
+            shutil.rmtree(made, ignore_errors = True)
+    finally:
+        shutil.rmtree(inside, ignore_errors = True)

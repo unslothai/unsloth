@@ -33,11 +33,26 @@ def main():
         shutil.rmtree(temp, ignore_errors = True)
 
 
+# Branded Chrome and Edge put `$TMPDIR/com.google.Chrome.XXXXXX/SingletonSocket` at launch and abort
+# when that passes the 107 usable bytes of a unix socket path.
+SUN_PATH_MAX = 107
+CHROME_SOCKET = "/com.google.Chrome.XXXXXX/SingletonSocket"
+
+
 def browser_tmpdir() -> Path:
-    """A fresh TMPDIR in the system temp dir, not under the checkout: branded Chrome and Edge put
-    a unix socket there and abort once its path passes 107 bytes, and a checkout path can be
-    arbitrarily deep."""
-    return Path(tempfile.mkdtemp(prefix = "uqv-"))
+    """A fresh TMPDIR short enough for Chrome's socket, never under the checkout.
+
+    The system temp dir is used when it fits. An inherited TMPDIR that is too long, or that sits
+    inside the checkout, falls back to /tmp, the one short path every POSIX host has."""
+    root = Path(__file__).resolve().parents[2]
+    made = Path(tempfile.mkdtemp(prefix = "uqv-"))
+    if os.name == "nt" or (
+        len(os.fsencode(made)) + len(CHROME_SOCKET) <= SUN_PATH_MAX
+        and root not in made.resolve().parents
+    ):
+        return made
+    made.rmdir()
+    return Path(tempfile.mkdtemp(prefix = "uqv-", dir = "/tmp"))
 
 
 def _run(args, root: Path, output: Path, temp: Path) -> int:
