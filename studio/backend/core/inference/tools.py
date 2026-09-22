@@ -16237,6 +16237,10 @@ def _check_signal_escape_patterns(code: str):
     # `requests.request(method, url)` and its httpx twin carry the destination second.
     _NETWORK_DESTINATION_ARG["requests.request"] = (1, ("url",))
     _NETWORK_DESTINATION_ARG["httpx.request"] = (1, ("url",))
+    # `urllib3.request(method, url, ...)` is the same shape, and it matches the broad `urllib3.`
+    # prefix, so without an entry here the fallback read argument 0 (the method) and never looked
+    # at the destination. Signature checked against the installed urllib3 2.8.0.
+    _NETWORK_DESTINATION_ARG["urllib3.request"] = (1, ("url",))
     _UPLOAD_HTTP_METHODS = (
         "requests.post",
         "requests.put",
@@ -17393,11 +17397,20 @@ def _check_signal_escape_patterns(code: str):
                             if whole and head:
                                 host = head
                         else:
-                            m = re.match(r"^\w+://([^/?#]+)", head)
+                            # Leading whitespace is stripped by the client before the URL is
+                            # parsed, so it cannot be used to hide the host: checked against
+                            # requests 2.34.2, `" https://evil.example/x"` is prepared as
+                            # `https://evil.example/x` and really is fetched. Matching the raw
+                            # literal read that as no host at all and let it through. A value that
+                            # is still unparsable after stripping is left as no host, which is
+                            # right: the client raises `MissingSchema` on it rather than reaching
+                            # anything.
+                            reading = head.lstrip()
+                            m = re.match(r"^\w+://([^/?#]+)", reading)
                             # The host ends at the first `/?#`, so a literal truncated past that point
                             # still names it in full; one truncated inside it does not
                             # (`"http://evil." + tld`).
-                            if m and (whole or head[m.end(1) :]):
+                            if m and (whole or reading[m.end(1) :]):
                                 host = m.group(1)
                         if host is None:
                             unreadable = unreadable or (fails_closed and not whole)

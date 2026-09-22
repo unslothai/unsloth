@@ -3705,6 +3705,93 @@ class TestHfUploadEnvAndSecretLeakBlock:
         )
 
 
+class TestWhitespaceCannotHideTheHost:
+    """The client strips leading whitespace before it parses the URL, so a space in front of the
+    scheme is not a different destination. Checked against requests 2.34.2: `" https://x/y"` is
+    prepared as `https://x/y` and really is fetched."""
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param(" https://evil.example/x", id = "leading_space"),
+            pytest.param("\thttps://evil.example/x", id = "leading_tab"),
+            pytest.param("\nhttps://evil.example/x", id = "leading_newline"),
+            pytest.param("\rhttps://evil.example/x", id = "leading_carriage_return"),
+            pytest.param("  \t\n https://evil.example/x", id = "several_leading_blanks"),
+            pytest.param("https://evil.example/x ", id = "trailing_space"),
+        ],
+    )
+    def test_the_host_is_still_read(self, raw):
+        _blocked(
+            "import requests\nrequests.get(%r)\n" % raw,
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param(" https://huggingface.co/x", id = "allowlisted_with_a_leading_space"),
+            pytest.param("https://huggingface.co/x ", id = "allowlisted_with_a_trailing_space"),
+        ],
+    )
+    def test_an_allowlisted_host_still_runs(self, raw):
+        _ok("import requests\nrequests.get(%r)\n" % raw)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A value that is still unparsable after stripping is not a destination: the client
+            # raises MissingSchema on it rather than reaching anything, so it must not fail closed
+            # or every `requests.request("GET", allowed)` through an ambiguous alias would refuse.
+            pytest.param('import requests\nrequests.get("not-a-url-at-all")', id = "plain_word"),
+            pytest.param(
+                "from requests import request as fetch\n"
+                "def unused():\n"
+                "    from requests import get as fetch\n"
+                'fetch("GET", "https://huggingface.co/x")',
+                id = "method_token_read_as_a_destination",
+            ),
+        ],
+    )
+    def test_a_value_that_is_not_a_url_does_not_overblock(self, code):
+        _ok(code)
+
+
+class TestUrllib3RequestCarriesItsDestinationSecond:
+    """`urllib3.request(method, url, ...)` matches the broad `urllib3.` prefix but had no
+    destination signature, so the fallback read argument 0, the method, and never looked at the
+    URL. Signature checked against the installed urllib3 2.8.0."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import urllib3\nurllib3.request("GET", "http://evil.example/x")',
+                id = "literal_destination",
+            ),
+            pytest.param(
+                'import urllib3\nu = "http://evil.example/x"\nurllib3.request("GET", u)',
+                id = "destination_in_a_name",
+            ),
+            pytest.param(
+                'import urllib3\nurllib3.request(method = "GET", url = "http://evil.example/x")',
+                id = "destination_as_a_keyword",
+            ),
+        ],
+    )
+    def test_the_hostile_host_is_seen(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_an_unreadable_destination_fails_closed(self):
+        _blocked(
+            'import urllib3, os\nurllib3.request("GET", os.environ["U"])',
+            expect_phrase = "Blocked: network destination is not a literal",
+        )
+
+    def test_an_allowlisted_host_still_runs(self):
+        _ok('import urllib3\nurllib3.request("GET", "https://huggingface.co/x")')
+
+
 class TestTheFastPathChangesNothing:
     """The screen skips its alias machinery for a tree that cannot name a network module. That is
     an argument about reachability, so these pin both halves of it: the gate says yes for every
