@@ -41,6 +41,7 @@ import {
   floatingMonitorConstraintStyle,
   getFloatingMonitorLayout,
 } from "./floating-monitor-layout";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 
 interface MonitorLayout {
   left: number;
@@ -504,6 +505,8 @@ interface FloatingMonitorPanelProps {
   onRenderedWidth: (width: number) => void;
   suppressed: boolean;
   systemInfo: ReturnType<typeof useSystemInfo>;
+  /** The live `--ui-space-scale`; the resize handle's clearance follows it. */
+  uiSpaceScale: number;
 }
 function FloatingMonitorPanel({
   dockedBesideRunSettings,
@@ -512,6 +515,7 @@ function FloatingMonitorPanel({
   settingsWidth,
   suppressed,
   systemInfo,
+  uiSpaceScale,
 }: FloatingMonitorPanelProps) {
   const t = useT();
   const [constraintsElement, setConstraintsElement] =
@@ -613,6 +617,7 @@ function FloatingMonitorPanel({
         zIndex,
         dockedBesideRunSettings,
         settingsWidth,
+        uiSpaceScale,
       })}
     >
       <motion.div
@@ -790,6 +795,7 @@ function FloatingMonitorPanel({
 }
 
 export function FloatingMonitor() {
+  const uiSpaceScale = useUiSpaceScale();
   const { isOpen, setIsOpen } = useMonitorOverlayStore();
   const settingsPanelOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -915,6 +921,7 @@ export function FloatingMonitor() {
           suppressed={suppressed}
           dockedBesideRunSettings={dockedBesideRunSettings}
           settingsWidth={settingsWidth}
+          uiSpaceScale={uiSpaceScale}
           onRenderedWidth={setMonitorWidth}
           systemInfo={systemInfo}
           onClose={() => setIsOpen(false)}

@@ -13,10 +13,28 @@
 export const FLOATING_MONITOR_EDGE_INSET = 16;
 /**
  * The settings aside's resize handle is `-left-1 w-2`, so half of its target
- * sits outside the aside. The monitor's layer paints above the aside, and
- * without this the docked edge swallows that outward half.
+ * sits outside the aside. Both are Tailwind spacing utilities, which resolve
+ * through `--spacing: calc(0.25rem * var(--ui-space-scale, 1))` (index.css),
+ * so the outward half is 4px at the 15px default UI font and 5.333px at the
+ * 20px maximum. The monitor's layer paints above the aside and would
+ * otherwise swallow that outward half, so the clearance has to be derived
+ * from the live scale rather than pinned at the default's 4px.
  */
-export const FLOATING_MONITOR_HANDLE_INSET = 4;
+export const FLOATING_MONITOR_HANDLE_HALF_WIDTH = 4;
+
+/**
+ * The outward half of the resize handle at a given `--ui-space-scale`. Both
+ * callers can hand over a non-finite or non-positive reading (the CSS variable
+ * before the appearance store paints, or a cleared store), so anything that is
+ * not a usable scale falls back to the shipped 1:1 default.
+ */
+export function floatingMonitorHandleClearance(uiSpaceScale?: number): number {
+  const scale =
+    uiSpaceScale !== undefined && Number.isFinite(uiSpaceScale) && uiSpaceScale > 0
+      ? uiSpaceScale
+      : 1;
+  return FLOATING_MONITOR_HANDLE_HALF_WIDTH * scale;
+}
 
 /** The monitor's own width, `w-64`. */
 export const FLOATING_MONITOR_WIDTH = 256;
@@ -116,12 +134,14 @@ export function dockedMonitorFits({
 export function floatingMonitorRightInset({
   dockedBesideRunSettings,
   settingsWidth,
+  uiSpaceScale = 1,
 }: {
   dockedBesideRunSettings: boolean;
   settingsWidth: number;
+  uiSpaceScale?: number;
 }): number {
   return dockedBesideRunSettings
-    ? settingsWidth + FLOATING_MONITOR_HANDLE_INSET
+    ? settingsWidth + floatingMonitorHandleClearance(uiSpaceScale)
     : FLOATING_MONITOR_EDGE_INSET;
 }
 
@@ -133,16 +153,19 @@ export function floatingMonitorConstraintStyle({
   zIndex,
   dockedBesideRunSettings,
   settingsWidth,
+  uiSpaceScale,
 }: {
   zIndex: number;
   dockedBesideRunSettings: boolean;
   settingsWidth: number;
+  uiSpaceScale?: number;
 }): { zIndex: number; right: number } {
   return {
     zIndex,
     right: floatingMonitorRightInset({
       dockedBesideRunSettings,
       settingsWidth,
+      uiSpaceScale,
     }),
   };
 }

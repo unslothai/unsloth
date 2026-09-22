@@ -29,12 +29,15 @@ import test from "node:test";
 
 import {
   FLOATING_MONITOR_EDGE_INSET,
-  FLOATING_MONITOR_HANDLE_INSET,
+  FLOATING_MONITOR_HANDLE_HALF_WIDTH,
   FLOATING_MONITOR_WIDTH,
   dockedMonitorFits,
   floatingMonitorConstraintStyle,
+  floatingMonitorHandleClearance,
   getFloatingMonitorLayout,
 } from "../src/components/floating-monitor-layout.ts";
+import { UI_FONT_SIZE_RANGE } from "../src/features/settings/stores/appearance-custom-store.ts";
+import { readSrcAsync } from "./helpers/kit.ts";
 
 const MONITOR = new URL(
   "../src/components/floating-monitor.tsx",
@@ -154,7 +157,7 @@ test("the docked constraint clears the panel at every draggable width", () => {
     // resize handle, which the monitor's layer would otherwise intercept.
     assert.equal(
       right,
-      settingsWidth + FLOATING_MONITOR_HANDLE_INSET,
+      settingsWidth + FLOATING_MONITOR_HANDLE_HALF_WIDTH,
       `the docked inset must follow the ${settingsWidth}px panel`,
     );
     const monitorRight = VIEWPORT_WIDTH - right;
@@ -171,6 +174,110 @@ test("the docked constraint clears the panel at every draggable width", () => {
         `monitor on screen`,
     );
   }
+});
+
+test("the docked clearance scales with --ui-space-scale", () => {
+  // Both the handle's `-left-1` and this clearance are Tailwind spacing
+  // utilities at the default 15px UI font, but only the handle keeps scaling
+  // when the user raises --ui-font-scale. A pinned 4px inset therefore leaves
+  // the monitor's above-panel layer over the handle's outer ~1.33px at the
+  // supported 20px maximum, along the whole shared height.
+  const { min, default: base, max } = UI_FONT_SIZE_RANGE;
+  // The shipped CSS resolves --ui-space-scale as --ui-font-scale / 0.9375
+  // (index.css), and 0.9375 is the 15px default over the 16px CSS base, so the
+  // space scale is exactly uiFontSize / 15 at every supported setting.
+  const scales = [min / base, 1, max / base];
+  for (const settingsWidth of SETTINGS_WIDTHS) {
+    for (const scale of scales) {
+      const clearance = floatingMonitorHandleClearance(scale);
+      const { right } = floatingMonitorConstraintStyle({
+        zIndex: Z_INDEX,
+        dockedBesideRunSettings: true,
+        settingsWidth,
+        uiSpaceScale: scale,
+      });
+      assert.equal(
+        right,
+        settingsWidth + clearance,
+        `a ${settingsWidth}px panel at a ${scale}x space scale must set a ` +
+          `${settingsWidth + clearance}px inset`,
+      );
+      // The handle spans the aside's edge to `clearance` outside it, so the
+      // inset has to reserve at least that much for the outward half to stay
+      // draggable rather than being swallowed by the monitor's layer.
+      assert.ok(
+        right - settingsWidth >= clearance - 1e-9,
+        `a ${settingsWidth}px panel at a ${scale}x space scale reserves only ` +
+          `${right - settingsWidth}px of the ${clearance}px the handle needs`,
+      );
+    }
+  }
+  // Above the 15px default the clearance really is bigger than the constant,
+  // which is what makes the fixed version wrong rather than merely tight.
+  assert.ok(
+    floatingMonitorHandleClearance(max / base) >
+      FLOATING_MONITOR_HANDLE_HALF_WIDTH,
+    "a 20px UI font must reserve more than the default 4px half-width",
+  );
+  assert.equal(
+    floatingMonitorHandleClearance(max / base),
+    (4 * max) / base,
+    "the clearance is the half-width carried by the live space scale",
+  );
+  // And the default still resolves to the shipped 4px, so the docked geometry
+  // at the default UI font is unchanged.
+  assert.equal(
+    floatingMonitorHandleClearance(),
+    FLOATING_MONITOR_HANDLE_HALF_WIDTH,
+  );
+  assert.equal(floatingMonitorHandleClearance(0), 4);
+  assert.equal(floatingMonitorHandleClearance(Number.NaN), 4);
+});
+
+test("the clearance follows the shipped space scale, not a second constant", async () => {
+  // The derivation is only right while the two shipped facts hold: Tailwind's
+  // --spacing multiplies by --ui-space-scale (so `-left-1`/`w-2` move with the
+  // UI font), and the monitor reads that same live scale. Anything pinned here
+  // would drift the moment either side of that pair changed.
+  const css = await readSrcAsync("index.css");
+  assert.match(
+    css,
+    /--spacing:\s*calc\(0\.25rem \* var\(--ui-space-scale, 1\)\)/,
+    "Tailwind spacing must keep scaling, or the 4px half-width is a constant after all",
+  );
+  assert.match(
+    css,
+    /--ui-space-scale:\s*calc\(var\(--ui-font-scale, 1\) \/ 0\.9375\)/,
+    "--ui-space-scale must stay the UI font scale normalised at the 15px default",
+  );
+
+  // The handle's real geometry, so `half of w-2` stays the authored fact.
+  const handle = await readSrcAsync("components/ui/panel-resize-handle.tsx");
+  assert.match(handle, /absolute inset-y-0 z-30 hidden w-2[^"]*"/);
+  assert.match(handle, /edge === "left" \? "-left-1" : "-right-1"/);
+
+  // The JS twin has to agree, and the monitor has to be the reader.
+  const hook = await readSrcAsync("hooks/use-ui-space-scale.ts");
+  assert.match(hook, /uiFontSize \?\? UI_FONT_SIZE_RANGE\.default/);
+  assert.match(hook, /UI_FONT_SIZE_RANGE\.default/);
+  assert.match(
+    source,
+    /import \{ useUiSpaceScale \} from "@\/hooks\/use-ui-space-scale"/,
+    "the monitor must read the live space scale",
+  );
+  assert.match(source, /const uiSpaceScale = useUiSpaceScale\(\)/);
+  assert.match(
+    source,
+    /floatingMonitorConstraintStyle\(\{[\s\S]*uiSpaceScale,/,
+    "that scale has to reach the constraint container",
+  );
+
+  // And the container may not go back to a pinned inset.
+  assert.doesNotMatch(
+    source,
+    /RIGHT_INSET_|HANDLE_INSET\s*[:=]\s*\d/,
+    "the docked clearance must not be a second, hand-maintained constant",
+  );
 });
 
 test("a stored 248-560px panel width reaches the monitor's constraint", async () => {
@@ -207,9 +314,9 @@ test("a stored 248-560px panel width reaches the monitor's constraint", async ()
       });
       assert.equal(
         right,
-        settingsWidth + FLOATING_MONITOR_HANDLE_INSET,
+        settingsWidth + FLOATING_MONITOR_HANDLE_HALF_WIDTH,
         `the ${settingsWidth}px panel must set a ` +
-          `${settingsWidth + FLOATING_MONITOR_HANDLE_INSET}px inset`,
+          `${settingsWidth + FLOATING_MONITOR_HANDLE_HALF_WIDTH}px inset`,
       );
     }
   } finally {
