@@ -1322,16 +1322,29 @@ def test_notes_repair_the_shared_previews_width_reset():
 def test_only_the_notes_region_scrolls(banner):
     """The dismiss control sits inside the card, so the card must not scroll."""
     src = banner.read_text(encoding = "utf-8")
-    # The painted surface: capped, clipping, and able to give up height itself
-    # so that the region inside it is the one that scrolls.
-    _assert_classes(
-        _card_surface(src),
-        "flex",
-        "max-h-[calc(100dvh_-_2rem)]",
-        "min-h-0",
-        "flex-col",
-        "overflow-hidden",
-    )
+    surface = _card_surface(src)
+    # The painted surface: capped, and a column, so the region inside it is the
+    # one that scrolls.
+    _assert_classes(surface, "flex", "max-h-[calc(100dvh_-_2rem)]", "flex-col")
+    # Neither card scrolls. Asserted as the absence of a scrolling overflow
+    # rather than as the presence of `overflow-hidden`, because those are two
+    # different claims: the browser card now clips nothing at all, and reading
+    # the clip as the no-scroll guarantee is what tied this contract to a
+    # mechanism instead of to what it is for.
+    assert not re.search(
+        r"(?<![\w-])overflow-(?:y-)?(?:auto|scroll)(?![\w-])", surface
+    ), "the card scrolls, so its dismiss control can leave the viewport"
+    if banner == WEB_BANNER:
+        # This surface floors itself at header + notes + actions, which is only
+        # true while it declares neither of the two things that set a flex
+        # item's automatic minimum size to zero. Either one back and the rail
+        # squeezes the card until the action row is cut.
+        for zeroes_the_floor in ("min-h-0", "overflow-hidden"):
+            assert (
+                zeroes_the_floor not in surface.split()
+            ), f"{zeroes_the_floor} puts the browser card's floor back to nothing"
+    else:
+        _assert_classes(surface, "min-h-0", "overflow-hidden")
     layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
     _assert_classes(
         _class_const(layout, "UPDATE_NOTES_ROOT_CLASS"),
@@ -1547,19 +1560,12 @@ def test_code_span_closers_ignore_backslashes():
     assert '!== "`" || escaped(' in calls[0]
 
 
-# The card's incompressible height, a fixed part plus a part that follows
-# Settings > Appearance rather than one number measured at the default 15px: at
-# the 20px maximum the action row wraps at every card width. The two cards have
-# their own constants because the desktop one carries an extra status line;
-# scaling one whole box for both asked 256px where 209 was needed, and a floor
-# nothing can meet makes the stack cover the composer for no gain.
-_SCALED_FLOOR_WEB = "min-h-[calc(109px+80px*var(--ui-font-scale,1))]"
-# Below 384px the action pair wraps onto its own row and the card needs a
-# whole extra one: 259px at the 20px setting where the wide card needs 209.
-# Named as the utility alone and asserted under `max-[383px]` through
-# `_applies`, because the floor also carries a `has-[...]` gate since #10229
-# and a run of variants has no fixed order.
-_NARROW_FLOOR_WEB = "min-h-[calc(139px+96px*var(--ui-font-scale,1))]"
+# The desktop card's incompressible height, a fixed part plus a part that
+# follows Settings > Appearance rather than one number measured at the default
+# 15px: at the 20px maximum the action row wraps at every card width. The
+# browser card used to carry the same pair of constants and now floors itself
+# off its own content instead (see _assert_floors_itself); this one still names
+# the height, and the same staleness is waiting for it.
 _SCALED_FLOOR_TAURI = "min-h-[calc(117px+93px*var(--ui-font-scale,1))]"
 _NARROW_FLOOR_TAURI = "min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
 _NARROW = "max-[383px]"
@@ -1667,6 +1673,37 @@ def _assert_floored(source: str, scaled: str, narrow: str, card: str) -> None:
         root, narrow, _NOTES_GATE, _NARROW
     ), f"the {card} card's floor misses the narrow card's extra button row"
     # With no notes rendered there is no floor, so this is what holds the row.
+    assert _only_under(root, "shrink-0"), f"the rail can squeeze the {card} card with no notes open"
+    assert _only_under(
+        root, "shrink", _NOTES_GATE
+    ), f"the {card} card cannot give up its notes' height, so the rail clips its buttons"
+    assert not _applies(
+        root, "min-h-0"
+    ), f"min-h-0 lets the rail squeeze the {card} card past its floor"
+
+
+def _assert_floors_itself(source: str, card: str) -> None:
+    """The card keeps room for its header and buttons without naming a height.
+
+    The written-out floor it replaces was a constant against one type size, and
+    #11458 made the spacing inside the card follow the interface font size too,
+    so at the 20px setting the constant came to 209px while the content needed
+    about 301px and the action row was cut. A measured floor cannot go stale
+    that way, but it only exists while the surface declares neither `min-h-0`
+    nor `overflow-hidden`: each of those sets a flex item's automatic minimum
+    size to zero, which is what made a hand-written floor necessary at all.
+    """
+    root = _card_slot(source)
+    surface = _card_surface(source)
+    for zeroes_the_floor in ("min-h-0", "overflow-hidden"):
+        assert (
+            zeroes_the_floor not in surface.split()
+        ), f"{zeroes_the_floor} leaves the {card} card with no floor at all"
+    assert not re.search(
+        r"(?<![\w-])min-h-\[", surface + root
+    ), f"the {card} card names a height again, which goes stale at the next type size"
+    # Unchanged from the written-floor days: the rail may only take the height
+    # the notes are there to give up.
     assert _only_under(root, "shrink-0"), f"the rail can squeeze the {card} card with no notes open"
     assert _only_under(
         root, "shrink", _NOTES_GATE
@@ -1868,9 +1905,9 @@ def test_the_overlay_stack_fits_the_viewport():
     # The download list scrolls internally, so it can give up height.
     assert "flex min-h-0" in panel
     # The update card cannot: its header and buttons are fixed and only its
-    # notes yield, so it floors instead.
-    web = WEB_BANNER.read_text(encoding = "utf-8")
-    _assert_floored(web, _SCALED_FLOOR_WEB, _NARROW_FLOOR_WEB, "browser")
+    # notes yield, so it floors instead. The browser card floors itself off its
+    # own content; the desktop card still states the floor as a constant.
+    _assert_floors_itself(WEB_BANNER.read_text(encoding = "utf-8"), "browser")
     # Those floors can add up to more than the cap at a large type size, so the
     # rail scrolls. Without this the overflow lands below the bottom of the
     # screen with no way to reach it.
