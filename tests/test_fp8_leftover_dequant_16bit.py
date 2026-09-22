@@ -334,3 +334,31 @@ def test_activation_scale_survives_on_a_module_that_kept_its_fp8_weight():
     assert model.q_proj.weight.dtype in _FP8_DTYPES
     assert hasattr(model.q_proj, "input_activation_scale")
     assert not hasattr(model.experts, "input_activation_scale")
+
+
+def test_per_tensor_scale_on_a_3d_stack_is_chunked(monkeypatch):
+    """A static per-tensor checkpoint is the case this code exists for, and it is 3-D. The
+    per-tensor fast path materialised the whole stack in fp32 (8x its fp8 bytes) before the
+    chunk budget could apply; only the block-grid branch was ever chunked."""
+    from unsloth.models import loader_utils
+
+    E, M, N = 8, 32, 32
+    # Budget of exactly two experts, so a chunked pass is visibly different from one that is not.
+    monkeypatch.setattr(loader_utils, "_FP8_LEFTOVER_MAX_CHUNK", 2 * M * N)
+    torch.manual_seed(4)
+    q = torch.randn(E, M, N).to(_FP8)
+    seen = []
+    real_to = torch.Tensor.to
+
+    def spy(self, *args, **kwargs):
+        if args and args[0] is torch.float32 and self.dtype == _FP8:
+            seen.append(self.shape[0])
+        return real_to(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "to", spy, raising = True)
+    out = loader_utils._fp8_scale_grid_dequant(q, torch.tensor([0.25]), torch.bfloat16)
+    monkeypatch.undo()
+    assert torch.equal(out, (q.float() * 0.25).to(torch.bfloat16))
+    assert seen, "no fp32 cast observed"
+    # Never the whole stack at once: that is the transient the OOM fallback exists to dodge.
+    assert max(seen) == 2, (seen, E)

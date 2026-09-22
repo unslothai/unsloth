@@ -1420,11 +1420,23 @@ def _empty_device_cache(device):
 
 def _fp8_scale_grid_dequant(quantized, scale, out_dtype):
     """Apply an fp8 checkpoint scale of any layout to one 2-D or 3-D quantized tensor: per-tensor `()` / `(1,)` / `(1, 1)`, per-expert `(E,)` / `(E, 1, 1)`, a block grid `(p, q)` or `(E, p, q)` with the block size implied by the weight shape (how transformers' own dequantize derives it). Returns None when the grid does not tile the weight, so the caller skips it instead of applying a wrong scale."""
-    scale = scale.to(torch.float32)
+    # MXFP8 checkpoints ship E8M0 exponents in a `torch.uint8` container: the scale is
+    # `2 ** (byte - 127)`, not the byte. Casting the raw byte applies a scale up to 2**128 too
+    # large. transformers unpacks it the same way in `Fp8Dequantize._dequantize_one`.
+    if scale.dtype == torch.uint8:
+        scale = (scale.to(torch.float32) - 127.0).exp2()
+    else:
+        scale = scale.to(torch.float32)
     q_shape = tuple(quantized.shape)
-    # Per-tensor.
+    # Per-tensor. A 3-D expert stack goes through the chunked branch below instead: a static
+    # per-tensor checkpoint is exactly the case this function exists for, and materializing a
+    # whole stack in fp32 costs 8x its fp8 bytes at once (measured), which is what drives the
+    # OOM fallback onto the CPU.
     if scale.numel() == 1:
-        return (quantized.to(torch.float32) * scale.reshape(())).to(out_dtype)
+        if quantized.ndim == 3:
+            scale = scale.reshape(()).expand(q_shape[0], 1, 1)
+        else:
+            return (quantized.to(torch.float32) * scale.reshape(())).to(out_dtype)
     if quantized.ndim == 2:
         if scale.ndim != 2:
             if scale.ndim == 1 and scale.numel() == q_shape[0]:
@@ -1627,6 +1639,22 @@ def _dequantize_leftover_fp8_params(
             except Exception as e:
                 failed += 1
                 last_error = f"{weight_key}: {type(e).__name__}: {e}"
+                # Pass 1 parked this stack on the CPU to free its device bytes. If pass 2 could
+                # not finish it, put it back where the device map planned it: a parameter left
+                # on the CPU turns the fp8 dtype error into a device mismatch on the first
+                # forward and breaks anything that assumes the planned placement.
+                try:
+                    stranded = module._parameters.get(attr)
+                    if (
+                        isinstance(stranded, torch.Tensor)
+                        and stranded.device != device
+                        and stranded.device.type == "cpu"
+                    ):
+                        module._parameters[attr] = torch.nn.Parameter(
+                            stranded.data.to(device), requires_grad = False
+                        )
+                except Exception:
+                    pass
                 continue
         for shard_file in shard_cache.values():
             close = getattr(shard_file, "__exit__", None)
