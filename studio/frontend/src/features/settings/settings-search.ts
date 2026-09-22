@@ -245,7 +245,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.debugging.logSection",
     "settings.debugging.source",
     "settings.debugging.path",
-    "settings.debugging.refreshSection",
     "settings.debugging.mode",
     "settings.debugging.keywords",
   ],
