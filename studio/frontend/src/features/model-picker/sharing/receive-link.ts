@@ -27,6 +27,7 @@ import {
 
 const acceptNativeIntent = createDeepLinkIntentGate(2_000);
 const nativeScheme = /^unsloth:/i;
+const runConfigHash = /^#run(?:\?|$)/;
 // Only the startup URL is eligible; hash changes during this session are ignored.
 let startupUrl = typeof window === "undefined" ? "" : window.location.href;
 const recoveryKey = "unsloth.run-config-login.v1";
@@ -163,7 +164,7 @@ export function receiveStartupRunConfigUrl(): void {
     if (parsed.kind !== "unrelated") {
       const url = new URL(window.location.href);
       if (
-        /^#run(?:\?|$)/.test(url.hash) &&
+        runConfigHash.test(url.hash) &&
         new URLSearchParams(url.hash.slice(4)).toString() ===
           new URLSearchParams(new URL(initial).hash.slice(4)).toString()
       ) {

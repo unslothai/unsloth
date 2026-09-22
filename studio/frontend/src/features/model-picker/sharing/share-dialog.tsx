@@ -119,6 +119,7 @@ export function ShareRunConfigDialog({
           .filter(
             ({ key, valid }) =>
               valid &&
+              (key !== "chatTemplateOverride" || config[key] !== "") &&
               (key === "llamaExtraArgs"
                 ? (config.llamaExtraArgs?.length ?? 0) > 0
                 : JSON.stringify(config[key]) !==

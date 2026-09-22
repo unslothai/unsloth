@@ -54,7 +54,7 @@ function text(node: unknown): string {
     : "";
 }
 
-test("sharing empty arguments preserves recipient arguments unless explicitly selected", () => {
+test("sharing empty arguments and templates preserves recipient overrides unless explicitly selected", () => {
   const checkbox = Symbol("checkbox");
   const textarea = Symbol("textarea");
   let states: unknown[] = [];
@@ -118,10 +118,15 @@ test("sharing empty arguments preserves recipient arguments unless explicitly se
   const recipient = {
     ...DEFAULT_PER_MODEL_CONFIG,
     llamaExtraArgs: ["--threads", "8"],
+    chatTemplateOverride: "{{ messages }}",
   };
   for (const llamaExtraArgs of [undefined, null, [], ["--threads", "4"]]) {
     states = [];
-    const config = { ...DEFAULT_PER_MODEL_CONFIG, llamaExtraArgs };
+    const config = {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      llamaExtraArgs,
+      chatTemplateOverride: "",
+    };
     const render = () => {
       cursor = 0;
       return elements(
@@ -149,6 +154,27 @@ test("sharing empty arguments preserves recipient arguments unless explicitly se
       return mergeSharedRunConfig(recipient, parsed.value.config, true);
     };
     const tree = render();
+    const templateChoice = tree.find(
+      (element) =>
+        element.type === checkbox &&
+        element.props.id === "share-chatTemplateOverride",
+    );
+    assert.ok(templateChoice);
+    assert.equal(templateChoice.props.checked, false);
+    assert.equal(
+      text(
+        tree.find(
+          (element) => element.props.id === "share-chatTemplateOverride-detail",
+        ),
+      ),
+      "Default",
+    );
+    assert.equal(
+      importedConfig(tree).chatTemplateOverride,
+      recipient.chatTemplateOverride,
+    );
+    (templateChoice.props.onCheckedChange as (checked: boolean) => void)(true);
+    assert.equal(importedConfig(render()).chatTemplateOverride, "");
     const choice = tree.find(
       (element) =>
         element.type === checkbox &&
