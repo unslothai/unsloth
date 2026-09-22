@@ -231,6 +231,21 @@ def _fill_missing_loss(cls):
     return True
 
 
+def _rebind_accelerate_hook(model):
+    """Point an accelerate hook attached during loading at the repaired forward.
+
+    `device_map` loading wraps `model.forward` before the shims run and keeps the
+    bound original as `model._old_forward`, so a class-level repair would never
+    be reached from `model(...)`.
+    """
+    if getattr(type(model), "_unsloth_original_forward", None) is None:
+        return
+    if "_old_forward" not in vars(model):
+        return
+    import types
+    model._old_forward = types.MethodType(type(model).forward, model)
+
+
 def apply_remote_code_shims(model):
     """Repair the checkpoint-defined classes in `model`. Returns the repaired class names."""
     from transformers import PreTrainedModel
@@ -250,6 +265,7 @@ def apply_remote_code_shims(model):
         repaired.append(f"{cls.__name__}.get_output_embeddings")
     if _is_remote_code(cls) and _fill_missing_loss(cls):
         repaired.append(f"{cls.__name__}.forward")
+    _rebind_accelerate_hook(model)
     if repaired:
         print("Unsloth: Repaired remote modeling code so it trains: " + ", ".join(repaired) + ".")
     return repaired

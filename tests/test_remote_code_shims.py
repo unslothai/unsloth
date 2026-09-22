@@ -130,3 +130,17 @@ def test_transformers_own_classes_are_not_touched():
     assert apply_remote_code_shims(model) == []
     assert not hasattr(LlamaForCausalLM, "_unsloth_original_forward")
     assert not accessor_requires_arguments(LlamaForCausalLM.get_input_embeddings)
+
+
+def test_the_repaired_forward_is_reached_through_an_accelerate_hook():
+    """device_map loading hooks forward before the shims run (Step-3.7 in 16-bit)."""
+    accelerate = pytest.importorskip("accelerate")
+    from accelerate.hooks import add_hook_to_module, ModelHook
+    from unsloth.models.remote_code_shims import apply_remote_code_shims
+    torch.manual_seed(0)
+    model = Outer(TinyConfig())
+    add_hook_to_module(model, ModelHook())
+    apply_remote_code_shims(model)
+    ids = torch.randint(0, 32, (2, 6))
+    out = model(input_ids = ids, labels = ids)
+    assert out.loss is not None and torch.isfinite(out.loss)
