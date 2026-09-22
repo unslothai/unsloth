@@ -199,6 +199,35 @@ test("a download asks the disk on the way past", () => {
   assert.match(check, /return null;/);
 });
 
+test("a model load asks the disk too, because the backend downloads inside it", () => {
+  // The download manager is not the only way bytes reach the cache, so requestStart is not the
+  // whole funnel. Selecting an uncached model in Chat calls loadModel, and the BACKEND fetches
+  // the repo inside that one request (_maybe_auto_download_model in routes/inference.py): no
+  // download job is created, so neither requestStart nor the poll loop's finalize ever runs.
+  // Left to the mount reading alone, a load that fills the disk warns nobody until the next
+  // Hub operation, which is exactly the user this notice is for.
+  const api = readFileSync(
+    new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(api, /import \{ checkDiskSpace \}/);
+
+  const load = api.slice(api.indexOf("export async function loadModel"));
+  const body = load.slice(0, load.indexOf("\nexport "));
+  // Before the request, throttled: picking through several models costs one reading.
+  assert.match(body, /void checkDiskSpace\(\);/);
+  // And after it, forced, for the reason finalize is forced: the reading has to be taken after
+  // the write, and unforced it is swallowed by the interval or handed the pre-load figure.
+  assert.match(body, /void checkDiskSpace\(\{ force: true \}\);/);
+  // In a finally: a load that FAILED is the likeliest one to have filled the disk doing it.
+  assert.ok(
+    body.indexOf("} finally {") < body.indexOf("void checkDiskSpace({ force: true })"),
+    "the post-load reading must be in the finally, so a failed load still reports",
+  );
+  // void, never awaited: a disk reading must not gate or delay a model load.
+  assert.doesNotMatch(body, /await checkDiskSpace/);
+});
+
 test("the disk route does one syscall and no directory walk", () => {
   const main = readFileSync(
     new URL("../../backend/main.py", import.meta.url),
