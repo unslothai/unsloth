@@ -105,9 +105,17 @@ def test_dict_shaped_configs_are_handled():
     assert f({"text_config": {"auto_map": {"AutoModel": "modeling_x.XModel"}}}) is True
 
 
-@pytest.mark.skipif(
-    not __import__("torch").cuda.is_available(), reason = "needs a GPU to load a 4-bit model"
-)
+def _cuda_is_available():
+    # Importing torch in the decorator itself turns this skip into a collection error on
+    # a runner that does not ship torch, taking the whole module with it.
+    try:
+        import torch
+    except ImportError:
+        return False
+    return torch.cuda.is_available()
+
+
+@pytest.mark.skipif(not _cuda_is_available(), reason = "needs a GPU to load a 4-bit model")
 def test_native_model_with_trust_remote_code_keeps_fast_lora(tmp_path, monkeypatch):
     """The arm that fails without the fix: PEFT's Linear4bit forward is left in place."""
     monkeypatch.chdir(tmp_path)  # fresh unsloth_compiled_cache
