@@ -490,6 +490,26 @@ from utils.gguf_archs import (
 
 logger = get_logger(__name__)
 
+
+def _normalize_extra_args_source(model_identifier: str, hf_variant: Optional[str]) -> tuple[str, Optional[str]]:
+    """Normalize the (model_identifier, hf_variant) pair stored in
+    ``_extra_args_source`` so that HF cache snapshot paths
+    (``.../models--org--name/snapshots/<sha>``) are resolved to their
+    repo id (``org/name``). This prevents the same physical GGUF from
+    being treated as two different models when one load used a snapshot
+    path and a subsequent JIT auto-switch load used the repo id.
+
+    Windows backslashes are normalised to forward slashes before parsing.
+    """
+    from core.inference.model_ids import hf_cache_repo_id
+
+    normalised = str(model_identifier).replace("\\", "/")
+    repo = hf_cache_repo_id(normalised)
+    if repo is not None:
+        model_identifier = repo.strip()
+    return (model_identifier, hf_variant)
+
+
 # Floor for a GGUF TTS read, scaled by requested tokens at the call site. This backend
 # decodes in seconds; the subprocess one needs minutes, so they do not share a base.
 _GGUF_AUDIO_READ_TIMEOUT = 300.0
@@ -18178,7 +18198,7 @@ class LlamaCppBackend:
                 # No spec block to drop here, so launched IS requested; rebind so a
                 # prior GGUF load's record cannot outlive it.
                 self._requested_extra_args = list(extra_args)
-                self._extra_args_source = (model_identifier, hf_variant)
+                self._extra_args_source = _normalize_extra_args_source(model_identifier, hf_variant)
             # The visual server logs "MAXTOK=<N>" with the context budget it actually resolved
             # (auto-sized to VRAM). Read it back so the UI context bar shows the real budget.
             chosen = maxtok
@@ -30405,7 +30425,7 @@ class LlamaCppBackend:
                         if _gpu_ids_own_device_flags
                         else list(_pv_requested)
                     )
-                    self._extra_args_source = (model_identifier, hf_variant)
+                    self._extra_args_source = _normalize_extra_args_source(model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
