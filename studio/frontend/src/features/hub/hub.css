@@ -485,7 +485,7 @@
      dark surface; in the light theme it falls through to the base .hub-chip
      style, which is already theme-aware. */
   html.dark .hub-page .hub-trending-card .hub-chip {
-    background-color: rgb(255 255 255 / 0.12);
+    background-color: rgb(255 255 255 / calc(0.12 * var(--contrast-wash-gain, 1)));
     color: rgb(255 255 255 / 0.82);
   }
 

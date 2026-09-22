@@ -182,6 +182,9 @@ test("a light wash follows the slider as its dark twin does", () => {
   // shorthand, so all four spellings are swept.
   const FIXED_WASH =
     /(bg-foreground\/(\[[\d.]+\]|\d+)|bg-(white|black)\/(\[0?\.\d+\]|\d+))/;
+  // A stylesheet can also write the wash out longhand, with no class in sight.
+  const RAW_WASH =
+    /background(-color)?:\s*rgba?\([\d\s,]+[\s,\/]+0?\.\d+\s*\)/;
   // Two fills are not chrome: the dark button's own surface, and the snippet
   // highlight that sits beside amber and red siblings on no curve at all.
   const NOT_CHROME = new Set([
@@ -206,7 +209,10 @@ test("a light wash follows the slider as its dark twin does", () => {
     const source = readSrc(file);
     return source
       .split("\n")
-      .some((line) => FIXED_WASH.test(line) && !SCRIM.test(line));
+      .some(
+        (line) =>
+          (FIXED_WASH.test(line) || RAW_WASH.test(line)) && !SCRIM.test(line),
+      );
   });
   assert.deepEqual(hits, [], "these washes ignore the contrast setting");
 

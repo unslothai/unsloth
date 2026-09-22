@@ -2556,7 +2556,7 @@ html[data-chat-font] .aui-root {
 			[data-slot="dropdown-menu-item"],
 			[data-slot="dropdown-menu-sub-trigger"]
 		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
-		background-color: rgba(0, 0, 0, 0.06) !important;
+		background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1))) !important;
 	}
 
 	/* Dark hover: the accent nearly matches the surface, so use a clear overlay. */
@@ -2564,7 +2564,7 @@ html[data-chat-font] .aui-root {
 			[data-slot="dropdown-menu-item"],
 			[data-slot="dropdown-menu-sub-trigger"]
 		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
-		background-color: rgba(255, 255, 255, 0.1) !important;
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1))) !important;
 	}
 
 	/* Hover tints only the background; the item and every descendant (text, icons,
