@@ -69,6 +69,8 @@ def support_reason(engine: str = "vllm", gpu_id: int | None = None) -> str | Non
             ],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 5,
         )
         rows = [line.split(",") for line in result.stdout.strip().splitlines()]
@@ -99,7 +101,7 @@ def engine_lease(engine: str, *, exclusive: bool = False):
 
     root = engine_root()
     root.mkdir(parents = True, exist_ok = True)
-    with (root / f"{engine}.lock").open("a") as handle:
+    with (root / f"{engine}.lock").open("a", encoding = "utf-8") as handle:
         try:
             fcntl.flock(handle, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
         except BlockingIOError:

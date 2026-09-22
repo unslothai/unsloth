@@ -256,6 +256,8 @@ def gpu_memory_fraction(gpu_ids: list[int]) -> float:
             ],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 5,
             check = True,
         )
