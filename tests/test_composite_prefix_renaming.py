@@ -500,6 +500,47 @@ def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch, for
     ), "a module holding the pre-zoo function was left bound to the unscoped mapping"
 
 
+def test_a_third_party_wrapper_is_kept_in_the_chain(forced_install):
+    """A library that wrapped this function first must keep running after we install.
+
+    An unconditional `original.__wrapped__` took one level off the chain, and any wrapper
+    that plays by the rules publishes `__wrapped__` through functools.wraps, so the level
+    removed was THEIRS: measured on transformers 5.5.4, the third-party wrapper stopped
+    being called at all, and the alias sweep then spread the replacement to every module
+    holding it. Ours goes on top instead, and the already-installed test reads the chain.
+    """
+    import functools
+
+    conversion_mapping = _conversion_mapping()
+    # From the unwrapped function, so an earlier test's wrapper is not what gets wrapped here,
+    # and without the flags functools.wraps copies out of its target's __dict__ -- inheriting
+    # this repair's own mark would make the installer decline and prove nothing.
+    live = _unpatched_mapping_fn()
+    calls = []
+
+    @functools.wraps(live)
+    def third_party(*args, **kwargs):
+        calls.append(1)
+        return live(*args, **kwargs)
+
+    third_party.__dict__.pop(_COMPOSITE_PREFIX_RENAMING_FLAG, None)
+    conversion_mapping.get_model_conversion_mapping = third_party
+    forced_install.fix_transformers_composite_prefix_renaming()
+
+    patched = conversion_mapping.get_model_conversion_mapping
+    assert getattr(patched, _COMPOSITE_PREFIX_RENAMING_FLAG, False), "the repair declined"
+    assert patched.__wrapped__ is third_party, "the third-party wrapper was discarded"
+
+    # And a second install underneath someone else's wrapper must not stack another copy.
+    @functools.wraps(patched)
+    def someone_else(*args, **kwargs):
+        return patched(*args, **kwargs)
+
+    conversion_mapping.get_model_conversion_mapping = someone_else
+    forced_install.fix_transformers_composite_prefix_renaming()
+    assert conversion_mapping.get_model_conversion_mapping is someone_else
+
+
 def test_a_vllm_module_holding_its_own_copy_is_rebound(monkeypatch, forced_install):
     """vLLM's Transformers backend imports this function by value, at import time.
 
@@ -669,7 +710,10 @@ def test_both_probes_see_the_repair_under_the_real_moe_wrapper(monkeypatch):
     moe = pytest.importorskip("unsloth_zoo.temporary_patches.moe_utils_bnb4bit")
     if not hasattr(moe, "patch_bnb4bit_model_conversion_mapping"):
         pytest.skip("this unsloth_zoo has no MoE conversion-mapping patch")
-    import unsloth.import_fixes as import_fixes
+    # The module this file already imported from: a fresh `import unsloth.import_fixes`
+    # re-runs `unsloth/__init__`, which needs unsloth_zoo installed (measured: 9 collection
+    # errors on a torch 2.6.0 floor environment without it).
+    import_fixes = sys.modules[_transformers_rescopes_submodule_prefix_renamings.__module__]
 
     def zoo_repair(*args, **kwargs):
         pass
@@ -694,7 +738,10 @@ def test_both_probes_see_the_repair_under_the_real_moe_wrapper(monkeypatch):
 
 def test_the_chain_walk_is_bounded(monkeypatch):
     conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
-    import unsloth.import_fixes as import_fixes
+    # The module this file already imported from: a fresh `import unsloth.import_fixes`
+    # re-runs `unsloth/__init__`, which needs unsloth_zoo installed (measured: 9 collection
+    # errors on a torch 2.6.0 floor environment without it).
+    import_fixes = sys.modules[_transformers_rescopes_submodule_prefix_renamings.__module__]
 
     def a():
         pass

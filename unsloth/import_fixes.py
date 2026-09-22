@@ -932,6 +932,22 @@ def _composite_prefix_renaming_repaired():
     return False
 
 
+def _own_composite_prefix_renaming_installed(function):
+    """Is THIS repair already somewhere in the chain hanging off `function`?
+
+    Through the chain rather than on the top object, because another library may have wrapped
+    us since we installed, and a top-only test would then stack a second copy of this repair
+    that walks every submodule again for nothing. Same bound as the zoo check.
+    """
+    seen = 0
+    while function is not None and seen < 8:
+        if getattr(function, _COMPOSITE_PREFIX_RENAMING_FLAG, False):
+            return True
+        function = _next_in_wrapper_chain(function)
+        seen += 1
+    return False
+
+
 def _zoo_composite_prefix_renaming_installed():
     """Has unsloth_zoo's copy of this repair already wrapped the function?
 
@@ -1237,11 +1253,15 @@ def fix_transformers_composite_prefix_renaming():
         return
     # The mark travels on the wrapper, so a reload of conversion_mapping -- which puts the
     # upstream function back in a namespace any flag we set would survive -- re-patches rather
-    # than being skipped.
-    if getattr(original, _COMPOSITE_PREFIX_RENAMING_FLAG, False):
+    # than being skipped. Read through the chain, because another library may have wrapped us
+    # since, and wrapping ourselves twice costs a second walk of every submodule per load.
+    if _own_composite_prefix_renaming_installed(original):
         return
-    # Probe and wrap the ORIGINAL, never a wrapper of ours that lost its mark.
-    original = getattr(original, "__wrapped__", original)
+    # Wrap whatever is live, never `original.__wrapped__`. An unconditional unwrap took one
+    # level off the chain, and any third-party wrapper that plays by the rules and uses
+    # functools.wraps publishes `__wrapped__`, so that level was THEIRS: measured on
+    # transformers 5.5.4, such a wrapper stopped being called entirely, and the alias sweep
+    # then spread the replacement to every module holding it.
 
     @functools.wraps(original)
     def get_model_conversion_mapping(*args, **kwargs):
