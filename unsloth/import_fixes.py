@@ -1233,8 +1233,17 @@ def fix_transformers_composite_prefix_renaming():
         # get_model_conversion_mapping` holds the original object, not the attribute:
         # transformers.modeling_utils and transformers.integrations.peft do, and so does peft
         # itself. Modules that import it later pick the patched one up from the module above.
-        for module in list(sys.modules.values()):
+        # Only the packages that import this name from transformers. The binding test
+        # below cannot be an identity test (see the comment on it), so without a module
+        # restriction the sweep would replace ANY callable called
+        # `get_model_conversion_mapping`, including one a notebook or a plugin defined
+        # for itself before importing unsloth.
+        owning_packages = ("transformers", "peft", "unsloth_zoo", "unsloth")
+        for module_name, module in list(sys.modules.items()):
             if module is None or module is conversion_mapping:
+                continue
+            root = module_name.partition(".")[0]
+            if root not in owning_packages:
                 continue
             namespace = getattr(module, "__dict__", None)
             if not isinstance(namespace, dict):

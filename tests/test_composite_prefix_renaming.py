@@ -442,7 +442,7 @@ def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch):
     monkeypatch.setattr(conversion_mapping, "get_model_conversion_mapping", zoo_wrapper)
 
     # A module that imported the function BEFORE zoo wrapped, so it holds `pristine`.
-    early = types.ModuleType("_unsloth_test_early_importer")
+    early = types.ModuleType("transformers._unsloth_test_early_importer")
     early.get_model_conversion_mapping = pristine
     monkeypatch.setitem(sys.modules, early.__name__, early)
 
@@ -454,3 +454,30 @@ def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch):
     assert early.get_model_conversion_mapping is patched, (
         "a module holding the pre-zoo function was left bound to the unscoped mapping"
     )
+
+
+def test_an_unrelated_module_keeps_its_own_same_named_function(monkeypatch):
+    """The sweep must not touch a helper somebody else happens to call the same thing.
+
+    The binding test cannot be an identity test, because unsloth_zoo wraps without
+    `__wrapped__` and the pre-zoo upstream function matches neither object. Without a
+    module restriction that breadth would replace any callable named
+    `get_model_conversion_mapping`, including one a notebook or plugin defined for itself
+    before importing unsloth.
+    """
+    import sys
+    import types
+
+    import unsloth.import_fixes as import_fixes
+
+    def mine(*args, **kwargs):
+        return "mine"
+
+    outsider = types.ModuleType("some_user_notebook_helper")
+    outsider.get_model_conversion_mapping = mine
+    monkeypatch.setitem(sys.modules, outsider.__name__, outsider)
+
+    import_fixes.fix_transformers_composite_prefix_renaming()
+
+    assert outsider.get_model_conversion_mapping is mine
+    assert outsider.get_model_conversion_mapping() == "mine"
