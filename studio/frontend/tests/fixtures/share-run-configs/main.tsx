@@ -37,7 +37,12 @@ localStorage.setItem("unsloth_auth_token", "sharing-browser-fixture");
 localStorage.setItem("unsloth_model_selector_section", "downloaded");
 useChatRuntimeStore.setState((state) => ({
   settingsHydrated: true,
-  params: { ...state.params, checkpoint: "owner/Native" },
+  params: {
+    ...state.params,
+    checkpoint: new URLSearchParams(window.location.search).has("choose-model")
+      ? ""
+      : "owner/Native",
+  },
   activeLoadId: "/cache/native",
   loadedIsGguf: false,
   activeThreadId: "existing-thread",

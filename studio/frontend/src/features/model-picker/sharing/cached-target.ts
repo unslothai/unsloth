@@ -12,12 +12,15 @@ import {
   fetchInventorySource,
   ggufVariantsMatch,
   hubTokenHeader,
+  listGgufVariants,
   residentModelIdMatches,
   useDeviceInventoryStore,
 } from "@/features/hub";
 import type { resolveRunConfigTarget } from "./target";
 
 type RunConfigTarget = NonNullable<ReturnType<typeof resolveRunConfigTarget>>;
+
+export class RunConfigResolutionError extends Error {}
 
 export async function resolveCachedRunConfigTarget(
   target: RunConfigTarget,
@@ -57,9 +60,6 @@ export async function resolveCachedRunConfigTarget(
     options.signal,
   );
   options.signal.throwIfAborted();
-  let failure: unknown = [cached, local].find(
-    (result) => result.status === "rejected",
-  )?.reason;
   const candidates = [
     ...(cached.status === "fulfilled" ? cached.value : [])
       .filter(
@@ -112,9 +112,8 @@ export async function resolveCachedRunConfigTarget(
           return response.json();
         },
       );
-    } catch (error) {
+    } catch {
       options.signal.throwIfAborted();
-      failure = error;
       continue;
     }
     const requested = target.meta.ggufVariant ?? listing.default_variant;
@@ -138,8 +137,44 @@ export async function resolveCachedRunConfigTarget(
       };
     }
   }
-  if (failure) {
-    throw failure;
+  if (
+    !target.meta.isGguf ||
+    (target.meta.ggufVariant &&
+      !target.meta.ggufVariant.toLowerCase().endsWith(".gguf"))
+  ) {
+    return target;
   }
-  return target;
+  let listing: GgufVariantsResponse;
+  try {
+    listing = await listGgufVariants(target.id, options.hfToken, {
+      signal: options.signal,
+    });
+  } catch (error) {
+    options.signal.throwIfAborted();
+    throw new RunConfigResolutionError(
+      "Could not look up the shared GGUF model. Check your connection and access to the Hugging Face model, then reopen the link.",
+      { cause: error },
+    );
+  }
+  options.signal.throwIfAborted();
+  const requested = target.meta.ggufVariant ?? listing.default_variant;
+  const variant = listing.variants.find((entry) =>
+    target.meta.ggufVariant
+      ? requested === entry.filename
+      : ggufVariantsMatch(requested, entry.quant),
+  );
+  if (!variant) {
+    throw new RunConfigResolutionError(
+      "The shared GGUF variant is unavailable for this model. Ask the sender for an updated link.",
+    );
+  }
+  return {
+    ...target,
+    meta: {
+      ...target.meta,
+      ggufVariant: variant.quant,
+      ggufFilename: variant.filename,
+      isDownloaded: variant.downloaded === true && !variant.partial,
+    },
+  };
 }

@@ -8,7 +8,10 @@ import {
   clearModelConfigHandoff,
   requestModelConfigHandoff,
 } from "../model-config/model-config-handoff";
-import { resolveCachedRunConfigTarget } from "./cached-target";
+import {
+  RunConfigResolutionError,
+  resolveCachedRunConfigTarget,
+} from "./cached-target";
 import { type RunConfigRequest, runConfigInbox } from "./inbox";
 import { resolveRunConfigTarget } from "./target";
 
@@ -139,6 +142,7 @@ export function openRunConfigTarget({
     return;
   }
   const controller = new AbortController();
+  const loadingToast = toast.loading("Resolving shared model…");
   resolveCachedRunConfigTarget(target, {
     hfToken,
     inventoryVersion,
@@ -153,7 +157,7 @@ export function openRunConfigTarget({
       }
       runConfigInbox.submit({ ...pending, target: resolved });
     })
-    .catch(() => {
+    .catch((error: unknown) => {
       if (
         controller.signal.aborted ||
         runConfigInbox.getSnapshot() !== pending
@@ -162,8 +166,14 @@ export function openRunConfigTarget({
       }
       runConfigInbox.clear(pending.id);
       toast.error(
-        "Could not check local model availability. Reopen the link to try again.",
+        error instanceof RunConfigResolutionError
+          ? error.message
+          : "Could not resolve the shared model. Reopen the link to try again.",
       );
-    });
-  return () => controller.abort();
+    })
+    .finally(() => toast.dismiss(loadingToast));
+  return () => {
+    controller.abort();
+    toast.dismiss(loadingToast);
+  };
 }

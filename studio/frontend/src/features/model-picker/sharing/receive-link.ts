@@ -141,11 +141,11 @@ export function receiveStartupRunConfigUrl(): void {
     const parsed = parseRunConfigLink(initial);
     if (parsed.kind !== "unrelated") {
       const url = new URL(initial);
-      if (
-        url.searchParams.get("run") === "1" &&
-        window.location.href === initial
-      ) {
-        url.searchParams.delete("run");
+      if (window.location.href === initial) {
+        if (url.searchParams.get("run") === "1") {
+          url.searchParams.delete("run");
+        }
+        url.hash = "";
         window.history.replaceState(window.history.state, "", url.href);
       }
       receiveParsedLink(parsed, true);

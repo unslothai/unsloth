@@ -22,7 +22,7 @@ export type RunConfigLinkResult =
   | { kind: "invalid"; error: string }
   | { kind: "valid"; value: SharedRunConfig };
 
-const repoSegment = /^[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?$/;
+const repoSegment = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 const variantSegment = /^[A-Za-z0-9_][A-Za-z0-9._ -]*$/;
 const windowsDevice = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9]) *(?:\.|$)/i;
 const malformedEscape = /%(?![0-9a-f]{2})/i;
@@ -296,6 +296,7 @@ function browserLink(params: URLSearchParams, address: string): string {
     throw new Error("Use an HTTP or HTTPS Studio address.");
   }
   url.pathname = "/chat";
+  // Force document navigation from /chat: link intake ignores same-document hash changes.
   url.search = "?run=1";
   url.hash = `run?${params}`;
   return url.href;

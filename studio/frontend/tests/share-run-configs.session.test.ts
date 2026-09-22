@@ -35,6 +35,16 @@ function harness({ url = "http://localhost/chat", desktop = false } = {}) {
   };
   Object.assign(globalThis, { sessionStorage });
   window.location.href = url;
+  const historyState = { key: "existing-entry" };
+  Object.assign(window, {
+    history: {
+      state: historyState,
+      replaceState: (state: unknown, _title: string, href: string) => {
+        assert.equal(state, historyState);
+        window.location.href = href;
+      },
+    },
+  });
   let signedIn = false;
   let nextId = 0;
   const errors: string[] = [];
@@ -102,7 +112,6 @@ test("login recovery survives the account purge and document replacement exactly
     app.signIn();
     assert.equal(app.recovery.size, 1);
     before.dispose();
-    window.location.href = "http://localhost/chat";
     const after = app.loadDocument();
     after.receiver.receiveStartupRunConfigUrl();
     assert.equal(after.inbox.getSnapshot()?.value.config.nParallel, 3);
@@ -181,6 +190,7 @@ test("startup imports the captured URL once even after a router redirect or anch
     const doc = app.loadDocument();
     window.location.href = current;
     doc.receiver.receiveStartupRunConfigUrl();
+    assert.equal(window.location.href, current);
     const pending = doc.inbox.getSnapshot();
     assert.equal(pending?.value.config.nParallel, 3);
     assert.equal(pending?.replaceHistory, true);
@@ -191,6 +201,49 @@ test("startup imports the captured URL once even after a router redirect or anch
     assert.deepEqual(app.errors, []);
     doc.dispose();
   }
+});
+
+test("startup consumes valid and invalid fragments so dismissal and reload cannot replay them", () => {
+  for (const query of [
+    "?run=1&keep=value",
+    "?keep=value",
+    "?run=2&keep=value",
+  ]) {
+    for (const fragment of ["#run?nParallel=3", "#run?unknown=true", "#run"]) {
+      const app = harness({ url: `http://localhost/chat${query}${fragment}` });
+      app.signIn();
+      const doc = app.loadDocument();
+      doc.receiver.receiveStartupRunConfigUrl();
+      assert.equal(
+        window.location.href,
+        `http://localhost/chat${query.replace("run=1&", "")}`,
+      );
+      const pending = doc.inbox.getSnapshot();
+      if (fragment.includes("unknown")) {
+        assert.equal(pending, null);
+        assert.equal(app.errors.length, 1);
+      } else {
+        assert.ok(pending);
+        doc.inbox.clear(pending.id);
+        assert.deepEqual(app.errors, []);
+      }
+      doc.dispose();
+      const reloaded = app.loadDocument();
+      reloaded.receiver.receiveStartupRunConfigUrl();
+      assert.equal(reloaded.inbox.getSnapshot(), null);
+      reloaded.dispose();
+    }
+  }
+});
+
+test("unrelated startup fragments and query parameters are left intact", () => {
+  const url = "http://localhost/chat?run=1&keep=value#unrelated";
+  const app = harness({ url });
+  const doc = app.loadDocument();
+  doc.receiver.receiveStartupRunConfigUrl();
+  assert.equal(window.location.href, url);
+  assert.equal(doc.inbox.getSnapshot(), null);
+  doc.dispose();
 });
 
 test("anchors added before or after startup intake cannot create an import", () => {

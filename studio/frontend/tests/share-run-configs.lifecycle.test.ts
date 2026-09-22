@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type * as CachedTarget from "../src/features/model-picker/sharing/cached-target.ts";
 import type * as Lifecycle from "../src/features/model-picker/sharing/link-lifecycle.ts";
 import {
   installLocalStorageFake,
@@ -18,8 +19,13 @@ const { createRunConfigInbox } = await import(
 const { modelConfigDraftKey } = await import(
   "../src/features/model-picker/model-config/model-config-draft.ts"
 );
-const { resolveRunConfigTarget } = await import(
-  "./helpers/sharing-target.ts"
+const { resolveRunConfigTarget } = await import("./helpers/sharing-target.ts");
+const { RunConfigResolutionError } = loadWithStubs<typeof CachedTarget>(
+  new URL(
+    "../src/features/model-picker/sharing/cached-target.ts",
+    import.meta.url,
+  ),
+  { "@/features/auth": {}, "@/features/chat": {}, "@/features/hub": {} },
 );
 
 type Target = NonNullable<ReturnType<typeof resolveRunConfigTarget>>;
@@ -44,6 +50,8 @@ function harness() {
   assert.ok(pending);
   const calls: unknown[] = [];
   const errors: string[] = [];
+  const loading = new Map<number, string>();
+  let nextToastId = 0;
   const lookups: {
     target: Target;
     signal: AbortSignal;
@@ -76,7 +84,15 @@ function harness() {
         useChatRuntimeStore: { getState: () => runtime },
       },
       "@/lib/toast": {
-        toast: { error: (message: string) => errors.push(message) },
+        toast: {
+          error: (message: string) => errors.push(message),
+          loading: (message: string) => {
+            const id = ++nextToastId;
+            loading.set(id, message);
+            return id;
+          },
+          dismiss: (id: number) => loading.delete(id),
+        },
       },
       "../model-config/model-config-draft": {
         modelConfigDraftKey,
@@ -93,6 +109,7 @@ function harness() {
         },
       },
       "./cached-target": {
+        RunConfigResolutionError,
         resolveCachedRunConfigTarget: (
           target: Target,
           options: { signal: AbortSignal },
@@ -157,6 +174,7 @@ function harness() {
     inbox,
     calls,
     errors,
+    loading,
     lookups,
     navigationResult,
     navigation,
@@ -209,6 +227,7 @@ for (const reason of [
     assert.equal(app.openRunConfigTarget(app.open), undefined);
     assert.deepEqual(app.calls, []);
     assert.deepEqual(app.lookups, []);
+    assert.equal(app.loading.size, 0);
   });
 }
 
@@ -232,10 +251,12 @@ for (const reason of [
 test("availability binds the canonical draft before handing off the editor", async () => {
   const app = harness();
   app.openRunConfigTarget(app.open);
+  assert.deepEqual([...app.loading.values()], ["Resolving shared model…"]);
   assert.equal(app.inbox.getSnapshot()?.draftKey, undefined);
   assert.deepEqual(app.calls, []);
   app.lookups[0].result.resolve(app.target);
   await settle();
+  assert.equal(app.loading.size, 0);
   assert.deepEqual(app.calls, []);
   app.openRunConfigTarget({ ...app.open, pending: app.inbox.getSnapshot() });
   assert.deepEqual(app.calls, [
@@ -287,6 +308,7 @@ for (const failure of [false, true]) {
     const app = harness();
     const cancel = app.openRunConfigTarget(app.open);
     cancel?.();
+    assert.equal(app.loading.size, 0);
     assert.equal(app.lookups[0].signal.aborted, true);
     app.openRunConfigTarget(app.open);
     if (failure) app.lookups[0].result.reject(new Error("stale"));
@@ -294,10 +316,12 @@ for (const failure of [false, true]) {
     await settle();
     assert.deepEqual(app.calls, []);
     assert.deepEqual(app.errors, []);
+    assert.deepEqual([...app.loading.values()], ["Resolving shared model…"]);
     app.lookups[1].result.resolve(app.target);
     await settle();
     assert.equal(app.calls.length, 0);
     assert.equal(app.inbox.getSnapshot()?.target, app.target);
+    assert.equal(app.loading.size, 0);
   });
 
   test(`newer links survive stale availability ${failure ? "failures" : "successes"}`, async () => {
@@ -316,16 +340,31 @@ for (const failure of [false, true]) {
   });
 }
 
-test("availability failures cancel with feedback and never hand off an uncached fallback", async () => {
-  const app = harness();
-  app.navigateRunConfig(app.nav);
-  app.openRunConfigTarget({ ...app.open, location: app.nav.location });
-  app.lookups[0].result.reject(new Error("offline local backend"));
-  await settle();
-  assert.equal(app.inbox.getSnapshot(), null);
-  assert.equal(app.errors.length, 1);
-  assert.deepEqual(app.calls, []);
-});
+for (const error of [
+  new Error("Private backend details"),
+  new RunConfigResolutionError(
+    "Could not look up the shared GGUF model. Check your connection and access to the Hugging Face model, then reopen the link.",
+  ),
+  new RunConfigResolutionError(
+    "The shared GGUF variant is unavailable for this model. Ask the sender for an updated link.",
+  ),
+]) {
+  test(`unresolved model failures cancel with safe feedback: ${error.message}`, async () => {
+    const app = harness();
+    app.navigateRunConfig(app.nav);
+    app.openRunConfigTarget({ ...app.open, location: app.nav.location });
+    app.lookups[0].result.reject(error);
+    await settle();
+    assert.equal(app.inbox.getSnapshot(), null);
+    assert.deepEqual(app.errors, [
+      error instanceof RunConfigResolutionError
+        ? error.message
+        : "Could not resolve the shared model. Reopen the link to try again.",
+    ]);
+    assert.equal(app.loading.size, 0);
+    assert.deepEqual(app.calls, []);
+  });
+}
 
 for (const superseded of [false, true]) {
   test(`navigation failure only clears its own import: superseded=${superseded}`, async () => {

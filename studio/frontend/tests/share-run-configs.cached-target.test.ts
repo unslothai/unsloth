@@ -9,7 +9,7 @@ import type {
   GgufVariantDetail,
   LocalModelInfo,
 } from "../src/features/hub/inventory/api.ts";
-import type { resolveCachedRunConfigTarget as Resolver } from "../src/features/model-picker/sharing/cached-target.ts";
+import type * as CachedTarget from "../src/features/model-picker/sharing/cached-target.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -34,9 +34,7 @@ const { buildLocalInventoryRows } = await import(
 const { ggufVariantsMatch, residentModelIdMatches } = await import(
   "../src/features/hub/lib/model-identity.ts"
 );
-const { resolveRunConfigTarget } = await import(
-  "./helpers/sharing-target.ts"
-);
+const { resolveRunConfigTarget } = await import("./helpers/sharing-target.ts");
 const { modelConfigTarget } = await import(
   "../src/features/model-picker/model-config/model-config-handoff.ts"
 );
@@ -72,6 +70,9 @@ function harness({
   cachedModels = [],
   localModels = [],
   variants = [quant],
+  hubVariants = [{ ...quant, downloaded: false }],
+  defaultVariant = hubVariants[0]?.quant ?? null,
+  hubError = false,
   listingsByRepo,
   status = 200,
   inventoryError = false,
@@ -84,6 +85,9 @@ function harness({
   cachedModels?: CachedModelRepo[];
   localModels?: LocalModelInfo[];
   variants?: GgufVariantDetail[];
+  hubVariants?: GgufVariantDetail[];
+  defaultVariant?: string | null;
+  hubError?: boolean;
   listingsByRepo?: Record<string, GgufVariantDetail[]>;
   status?: number;
   inventoryError?: boolean;
@@ -94,9 +98,12 @@ function harness({
 } = {}) {
   const scans: string[] = [];
   const requests: URL[] = [];
-  const { resolveCachedRunConfigTarget } = loadWithStubs<{
-    resolveCachedRunConfigTarget: typeof Resolver;
-  }>(
+  const hubRequests: {
+    repoId: string;
+    hfToken?: string;
+    signal?: AbortSignal;
+  }[] = [];
+  const cachedTarget = loadWithStubs<typeof CachedTarget>(
     new URL(
       "../src/features/model-picker/sharing/cached-target.ts",
       import.meta.url,
@@ -128,6 +135,17 @@ function harness({
         buildLocalInventoryRows,
         ggufVariantsMatch,
         hubTokenHeader,
+        listGgufVariants: async (
+          repoId: string,
+          hfToken?: string,
+          options?: { signal?: AbortSignal },
+        ) => {
+          hubRequests.push({ repoId, hfToken, signal: options?.signal });
+          if (variantDelayMs)
+            await new Promise((resolve) => setTimeout(resolve, variantDelayMs));
+          if (hubError) throw new Error("Hub listing unavailable");
+          return { variants: hubVariants, default_variant: defaultVariant };
+        },
         residentModelIdMatches,
         useDeviceInventoryStore: {
           getState: () =>
@@ -155,10 +173,20 @@ function harness({
     },
   );
   return {
+    RunConfigResolutionError: cachedTarget.RunConfigResolutionError,
     scans,
     requests,
-    resolve: (input = target, signal = new AbortController().signal) =>
-      resolveCachedRunConfigTarget(input, { inventoryVersion: 0, signal }),
+    hubRequests,
+    resolve: (
+      input = target,
+      signal = new AbortController().signal,
+      hfToken?: string,
+    ) =>
+      cachedTarget.resolveCachedRunConfigTarget(input, {
+        inventoryVersion: 0,
+        signal,
+        hfToken,
+      }),
   };
 }
 
@@ -186,6 +214,7 @@ test("recipient-selected local files, native folders and Ollama references need 
     assert.equal(wantsDownloadManagerStaging({ id, ...resolved.meta }), false);
     assert.deepEqual(app.scans, []);
     assert.deepEqual(app.requests, []);
+    assert.deepEqual(app.hubRequests, []);
   }
 });
 
@@ -215,6 +244,7 @@ for (const loadId of [
     assert.equal(app.requests[0].searchParams.get("repo_id"), loadId);
     assert.equal(app.requests[0].searchParams.get("local_path"), loadId);
     assert.equal(target.meta.isDownloaded, undefined);
+    assert.deepEqual(app.hubRequests, []);
   });
 
   test(`status-discovered models retain their checkpoint path without a separate load ID: ${loadId}`, async () => {
@@ -359,9 +389,9 @@ test("an exact GGUF filename is checked without substituting a same-quant siblin
   const cachedGguf = [
     { repo_id: model, load_id: "/cache/pinned", size_bytes: 1024 },
   ];
-  assert.equal(
-    await harness({ cachedGguf }).resolve(filenameTarget),
-    filenameTarget,
+  await assert.rejects(
+    harness({ cachedGguf }).resolve(filenameTarget),
+    /The shared GGUF variant is unavailable/,
   );
   const app = harness({
     cachedGguf,
@@ -464,18 +494,16 @@ test("a variant change cannot inherit the active path or native file token", () 
   assert.equal(other?.meta.isDownloaded, undefined);
 });
 
-test("inventory errors, variant errors and cancellation cannot produce an uncached handoff", async () => {
-  await assert.rejects(
-    harness({ inventoryError: true }).resolve(),
-    /Inventory unavailable/,
-  );
-  await assert.rejects(
-    harness({
-      cachedGguf: [{ repo_id: model, size_bytes: 1024 }],
-      status: 503,
-    }).resolve(),
-    /Could not check/,
-  );
+test("failed local variant listings preserve canonical Hub targets for review", async () => {
+  const app = harness({
+    cachedGguf: [{ repo_id: model, size_bytes: 1024 }],
+    status: 503,
+  });
+  assert.equal(await app.resolve(), target);
+  assert.deepEqual(app.hubRequests, []);
+});
+
+test("cancellation cannot produce a handoff", async () => {
   const controller = new AbortController();
   controller.abort();
   const app = harness({ cachedGguf: [{ repo_id: model, size_bytes: 1024 }] });
@@ -483,6 +511,7 @@ test("inventory errors, variant errors and cancellation cannot produce an uncach
     name: "AbortError",
   });
   assert.deepEqual(app.requests, []);
+  assert.deepEqual(app.hubRequests, []);
 });
 
 for (const source of ["lmstudio", "custom", "ollama"] as const) {
@@ -543,12 +572,158 @@ test("failed variant listings cannot hide a later complete snapshot", async () =
   assert.equal((await app.resolve()).meta.loadId, "/cache/available");
 });
 
-test("incomplete availability after a failed scan still rejects instead of staging a download", async () => {
+test("failed inventory scans preserve native and canonical GGUF Hub targets for review", async () => {
+  for (const sourceErrors of [
+    ["localModels"],
+    ["cachedModels", "cachedGguf"],
+    ["localModels", "cachedModels", "cachedGguf"],
+  ]) {
+    for (const input of [
+      target,
+      {
+        id: "owner/Native",
+        meta: { ...target.meta, isGguf: false, ggufVariant: undefined },
+      },
+    ]) {
+      const app = harness({ sourceErrors });
+      assert.equal(await app.resolve(input), input);
+      assert.equal(input.meta.isDownloaded, undefined);
+      assert.deepEqual(app.requests, []);
+      assert.deepEqual(app.hubRequests, []);
+    }
+  }
+});
+
+for (const identity of [
+  { quant: "Q4_K_M", filename: "model-Q4_K_M.gguf" },
+  { quant: "chosen/Q4_K_M", filename: "chosen/model-Q4_K_M.gguf" },
+  {
+    quant: "chosen/model-Q4_K_M",
+    filename: "chosen/model-Q4_K_M-00001-of-00002.gguf",
+  },
+]) {
+  test(`uncached filename links resolve the exact download identity: ${identity.quant}`, async () => {
+    const app = harness({
+      hubVariants: [{ ...quant, ...identity, downloaded: false }],
+    });
+    const signal = new AbortController().signal;
+    const resolved = await app.resolve(
+      {
+        ...target,
+        meta: { ...target.meta, ggufVariant: identity.filename },
+      },
+      signal,
+      "recipient-token",
+    );
+    const handoff = modelConfigTarget(resolved.id, resolved.meta);
+    assert.equal(handoff.id, model);
+    assert.equal(handoff.ggufVariant, identity.quant);
+    assert.equal(handoff.meta.ggufFilename, identity.filename);
+    assert.equal(resolved.meta.isDownloaded, false);
+    assert.equal(
+      wantsDownloadManagerStaging({ id: resolved.id, ...resolved.meta }),
+      true,
+    );
+    assert.deepEqual(app.hubRequests, [
+      { repoId: model, hfToken: "recipient-token", signal },
+    ]);
+  });
+}
+
+test("GGUF links without a variant use the listing's default before download staging", async () => {
+  const app = harness({
+    hubVariants: [
+      { ...quant, downloaded: false },
+      {
+        ...quant,
+        quant: "Q8_0",
+        filename: "model-Q8_0.gguf",
+        downloaded: false,
+      },
+    ],
+    defaultVariant: "Q8_0",
+  });
+  const resolved = await app.resolve({
+    ...target,
+    meta: { ...target.meta, ggufVariant: undefined },
+  });
+  assert.equal(resolved.meta.ggufVariant, "Q8_0");
+  assert.equal(resolved.meta.ggufFilename, "model-Q8_0.gguf");
+  assert.equal(resolved.meta.isDownloaded, false);
+});
+
+test("cached default GGUF variants do not need a Hub lookup", async () => {
+  const app = harness({
+    cachedGguf: [{ repo_id: model, size_bytes: 1024 }],
+    hubError: true,
+  });
+  const resolved = await app.resolve({
+    ...target,
+    meta: { ...target.meta, ggufVariant: undefined },
+  });
+  assert.equal(resolved.meta.ggufVariant, quant.quant);
+  assert.equal(resolved.meta.isDownloaded, true);
+  assert.deepEqual(app.hubRequests, []);
+});
+
+test("failed inventory scans still allow GGUF filename resolution", async () => {
+  for (const [variant, downloaded] of [
+    [{ ...quant, downloaded: false }, false],
+    [quant, true],
+    [{ ...quant, partial: true }, false],
+  ] as const) {
+    const app = harness({ inventoryError: true, hubVariants: [variant] });
+    const resolved = await app.resolve({
+      ...target,
+      meta: { ...target.meta, ggufVariant: quant.filename },
+    });
+    assert.equal(resolved.meta.ggufVariant, quant.quant);
+    assert.equal(resolved.meta.isDownloaded, downloaded);
+  }
+});
+
+test("unresolved GGUF filenames and missing defaults never reach download staging", async () => {
+  for (const ggufVariant of [quant.filename, undefined]) {
+    const input = { ...target, meta: { ...target.meta, ggufVariant } };
+    const offline = harness({ hubError: true });
+    await assert.rejects(offline.resolve(input), {
+      constructor: offline.RunConfigResolutionError,
+      message:
+        "Could not look up the shared GGUF model. Check your connection and access to the Hugging Face model, then reopen the link.",
+      cause: new Error("Hub listing unavailable"),
+    });
+    const missing = harness({ hubVariants: [] });
+    await assert.rejects(missing.resolve(input), {
+      constructor: missing.RunConfigResolutionError,
+      message:
+        "The shared GGUF variant is unavailable for this model. Ask the sender for an updated link.",
+    });
+  }
   await assert.rejects(
-    harness({ sourceErrors: ["localModels"] }).resolve(),
-    /Inventory unavailable/,
+    harness({ defaultVariant: null }).resolve({
+      ...target,
+      meta: { ...target.meta, ggufVariant: undefined },
+    }),
+    /The shared GGUF variant is unavailable/,
   );
 });
+
+for (const hubError of [false, true]) {
+  test(`cancelling a Hub variant lookup preserves the abort: failure=${hubError}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const app = harness({ variantDelayMs: 1_000, hubError });
+    const controller = new AbortController();
+    const pending = app.resolve(
+      { ...target, meta: { ...target.meta, ggufVariant: quant.filename } },
+      controller.signal,
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(app.hubRequests[0].signal, controller.signal);
+    controller.abort();
+    t.mock.timers.tick(1_000);
+    await assert.rejects(pending, { name: "AbortError" });
+  });
+}
 
 test("inventory scans and each variant listing have independent timeout budgets", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });

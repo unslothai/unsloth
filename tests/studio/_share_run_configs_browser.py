@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
 from playwright.sync_api import expect, sync_playwright
@@ -78,6 +78,7 @@ def run_shared_run_config_checks():
 def _checks(browser, base):
     context = browser.new_context(reduced_motion = "reduce")
     page = context.new_page()
+    resolving = page.get_by_text("Resolving shared model…", exact = True)
     errors = []
     requests = []
     page.on("pageerror", lambda error: errors.append(str(error)))
@@ -89,7 +90,19 @@ def _checks(browser, base):
             route.abort()
         elif url.path.startswith("/api/hub/"):
             requests.append(url.path)
-            route.fulfill(status = 503, json = {"detail": "Inventory unavailable"})
+            if url.path == "/api/hub/gguf-variants" and parse_qs(url.query).get("repo_id") == ["owner/Uncached-GGUF"]:
+                expect(resolving).to_have_count(1)
+                expect(resolving).to_be_visible()
+                assert page.evaluate("window.sharingTest.snapshot().loaded") is None
+                route.fulfill(status = 200, json = {
+                    "repo_id": "owner/Uncached-GGUF",
+                    "variants": [{"quant": "chosen/Q4_K_M", "filename": "chosen/model-Q4_K_M.gguf",
+                                  "size_bytes": 1024, "downloaded": False}],
+                    "default_variant": "chosen/Q4_K_M",
+                    "has_vision": False,
+                })
+            else:
+                route.fulfill(status = 503, json = {"detail": "Inventory unavailable"})
         elif url.path.startswith("/api/"):
             requests.append(url.path)
             payload = {"overrides": {}} if url.path.endswith("/overrides") else {}
@@ -111,7 +124,7 @@ def _checks(browser, base):
     assert page.evaluate("window.sharingTest.snapshot()") == before
 
     link = page.evaluate("window.sharingTest.link({isGguf:true, config:{customContextLength:4096}})")
-    assert urlparse(link).query == "run=1"
+    assert urlparse(link).query == "run=1", "Startup-only link intake needs a new document from /chat"
     page.evaluate("""url => {
       window.documentBeforeLink = true;
       const anchor = document.createElement('a');
@@ -146,12 +159,16 @@ def _checks(browser, base):
 
     page.goto(base + "/hub")
     page.wait_for_function("window.sharingTest !== undefined")
-    before = page.evaluate("window.sharingTest.snapshot()")
     page.evaluate("window.sharingTest.receive({model:'owner/Unavailable',config:{customContextLength:2048}})")
-    expect(page.get_by_text("Could not check local model availability. Reopen the link to try again.", exact = True)).to_be_visible()
-    assert page.url == base + "/hub"
-    assert page.evaluate("window.sharingTest.snapshot()") == before
+    expect(page.get_by_text("Settings changed by link (1)", exact = True)).to_be_visible()
+    expect(editor).to_be_visible()
+    state = page.evaluate("window.sharingTest.snapshot()")
+    assert state == {"thread": None, "project": None, "incognito": False, "pending": None, "loaded": None}, state
+    assert urlparse(page.url).path == "/chat"
     assert any(path.startswith("/api/hub/") for path in requests)
+    assert not any(path.startswith(("/api/hub/download", "/api/inference/load")) for path in requests), requests
+    page.keyboard.press("Escape")
+    expect(editor).not_to_be_visible()
     page.get_by_role("button", name = "Share local settings", exact = True).click()
     share = page.get_by_role("dialog", name = "Share run settings", exact = True)
     expect(share.get_by_role("checkbox", name = "Model format", exact = True)).not_to_be_checked()
@@ -164,6 +181,48 @@ def _checks(browser, base):
     share.get_by_label("Open in", exact = True).click()
     page.get_by_role("option", name = "This Studio web address", exact = True).click()
     expect(share.get_by_role("status")).to_have_count(0)
+
+    for variant in ["chosen/model-Q4_K_M.gguf", None]:
+        page.goto(base + "/hub")
+        page.wait_for_function("window.sharingTest !== undefined")
+        value = {"model": "owner/Uncached-GGUF", "config": {"nParallel": 3}}
+        if variant is not None:
+            value["ggufVariant"] = variant
+        page.evaluate("value => window.sharingTest.receive(value)", value)
+        expect(page.get_by_text("Settings changed by link (1)", exact = True)).to_be_visible()
+        expect(resolving).to_have_count(0)
+        expect(editor).to_be_visible()
+        assert page.evaluate("window.sharingTest.snapshot().loaded") is None
+        editor.get_by_role("button", name = "Load model", exact = True).click()
+        page.wait_for_function("window.sharingTest.snapshot().loaded !== null")
+        loaded = page.evaluate("window.sharingTest.snapshot().loaded")
+        assert loaded["meta"]["ggufVariant"] == "chosen/Q4_K_M", loaded
+        assert loaded["meta"]["ggufFilename"] == "chosen/model-Q4_K_M.gguf", loaded
+        assert loaded["meta"]["isDownloaded"] is False, loaded
+
+    page.goto(base + "/hub")
+    page.wait_for_function("window.sharingTest !== undefined")
+    before = page.evaluate("window.sharingTest.snapshot()")
+    page.evaluate("window.sharingTest.receive({model:'owner/Offline-GGUF',config:{nParallel:3}})")
+    expect(page.get_by_text(
+        "Could not look up the shared GGUF model. Check your connection and access to the Hugging Face model, then reopen the link.",
+        exact = True,
+    )).to_be_visible()
+    expect(resolving).to_have_count(0)
+    expect(editor).not_to_be_visible()
+    assert page.url == base + "/hub"
+    assert page.evaluate("window.sharingTest.snapshot()") == before
+
+    page.goto(base + "/chat?run=1&choose-model=1#run?nParallel=3")
+    chooser = page.get_by_role("dialog", name = "Choose a model", exact = True)
+    expect(chooser).to_be_visible()
+    assert page.url == base + "/chat?choose-model=1"
+    page.keyboard.press("Escape")
+    expect(chooser).not_to_be_visible()
+    page.reload()
+    page.wait_for_function("window.sharingTest !== undefined")
+    expect(chooser).not_to_be_visible()
+    assert page.evaluate("window.sharingTest.snapshot().pending") is None
     assert errors == [], errors
     context.close()
 
