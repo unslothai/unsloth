@@ -624,6 +624,14 @@ def capture_rng_state(streams: Optional[dict[str, Any]] = None) -> dict[str, Any
                 # (which only requires torch_cpu) offered it and the restore then left the CUDA generator freshly
                 # seeded, silently changing every latent and timestep draw.
                 tensors = {}
+        elif _xpu_available():
+            # The flow trainers draw randn_like on the training device, so an XPU run's noise stream lives in the XPU
+            # generator; capturing only torch_cpu resumed it from a fresh seed. Same all-or-nothing rule as CUDA.
+            try:
+                for i, state in enumerate(torch.xpu.get_rng_state_all()):
+                    tensors[f"torch_xpu_{i}"] = state
+            except Exception:  # noqa: BLE001 -- one device erroring loses the whole capture
+                tensors = {}
     except Exception:  # noqa: BLE001 -- torch RNG capture is best-effort
         tensors = {}
     return {"json": payload, "tensors": tensors}
@@ -685,8 +693,26 @@ def restore_rng_state(
                 if state is None:
                     continue
                 torch.cuda.set_rng_state(state.cpu().to(torch.uint8), i)
+        elif _xpu_available():
+            # Per device for the same reason as CUDA above: set_rng_state_all needs one state per visible device.
+            for i in range(torch.xpu.device_count()):
+                state = tensors.get(f"torch_xpu_{i}")
+                if state is None:
+                    continue
+                torch.xpu.set_rng_state(state.cpu().to(torch.uint8), i)
     except Exception:  # noqa: BLE001 -- best-effort restore, never fatal
         pass
+
+
+def _xpu_available() -> bool:
+    """Guarded like ``resolve_train_device``'s probe: an uninitialised driver must not turn a
+    best-effort RNG capture into a raise."""
+    try:
+        import torch
+        fn = getattr(getattr(torch, "xpu", None), "is_available", None)
+        return bool(fn()) if callable(fn) else False
+    except Exception:  # noqa: BLE001 -- probe failure -> no XPU generator to capture
+        return False
 
 
 def _random_state_to_json(state: Any) -> Optional[list[Any]]:

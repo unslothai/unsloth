@@ -667,27 +667,37 @@ def resolve_train_device() -> str:
     return "cpu"
 
 
-def native_bf16_supported_xpu() -> bool:
-    """NATIVE bf16 on the live XPU, the counterpart of ``native_bf16_supported``. Never raises.
+def xpu_native_bf16_probe() -> Optional[bool]:
+    """Native-bf16 on the live XPU, or None when the capability cannot be determined. Never raises.
 
     ``is_bf16_supported()`` defaults to ``including_emulation=True`` and short-circuits before
     reading ``has_bfloat16_conversions``, so the bare call answers True for EVERY available XPU:
-    the same emulation trap ``native_bf16_supported`` avoids on the CUDA side. Ask explicitly."""
+    the same emulation trap ``native_bf16_supported`` avoids on the CUDA side. Ask explicitly.
+
+    Tri-state because the two callers need different halves. ``get_device_properties()`` raises when
+    no device is really there, and collapsing that to False made the PRE-EVICTION preflight refuse
+    nf4 on any host whose XPU cannot be interrogated, which is a probe failing CLOSED."""
     import torch  # noqa: PLC0415
 
     fn = getattr(getattr(torch, "xpu", None), "is_bf16_supported", None)
     if not callable(fn):
-        return False
+        return None
     try:
         return bool(fn(including_emulation = False))
     except TypeError:
         # A torch predating the including_emulation parameter: its answer is the only one there is.
         try:
             return bool(fn())
-        except Exception:  # noqa: BLE001 -- probe failure -> treat as unsupported
-            return False
-    except Exception:  # noqa: BLE001 -- probe failure -> treat as unsupported
-        return False
+        except Exception:  # noqa: BLE001 -- unprobeable
+            return None
+    except Exception:  # noqa: BLE001 -- unprobeable
+        return None
+
+
+def native_bf16_supported_xpu() -> bool:
+    """``xpu_native_bf16_probe`` collapsed for the trainer child, which runs ON the device: there an
+    unprobeable capability is a refusal, matching ``native_bf16_supported`` on the CUDA side."""
+    return xpu_native_bf16_probe() is True
 
 
 def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
@@ -706,6 +716,16 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
             return (
                 "This trainer requires a bfloat16-capable GPU (Ampere or newer); this CUDA "
                 "device does not support bf16. Train the DiT families on a newer GPU."
+            )
+        # dit_accelerator_missing_reason accepts any available XPU, so without this the route
+        # admitted an emulation-only XPU, evicted the resident models, and only then hit the
+        # trainer's own guard: the eviction ordering this function exists to protect. Only a
+        # DEFINITE no rejects here; an unprobeable XPU is left to the child, since a preflight that
+        # fails closed would refuse hosts that train fine.
+        if resolve_train_device() == "xpu" and xpu_native_bf16_probe() is False:
+            return (
+                "This trainer requires a bfloat16-capable GPU; this XPU device does not "
+                "support bf16 natively. Train the DiT families on a newer GPU."
             )
     except Exception:  # noqa: BLE001 -- torch probe failure must not block a start
         return None

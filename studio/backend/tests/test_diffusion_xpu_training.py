@@ -223,6 +223,71 @@ def test_every_phase_boundary_frees_the_selected_accelerator(module):
     assert xpu_frees == cuda_frees
 
 
+def test_an_emulation_only_xpu_is_refused_before_the_route_evicts_anything(host):
+    """The route calls this BEFORE teardown; dit_accelerator_missing_reason accepts any available
+    XPU, so a child-only guard evicted the user's models and then failed."""
+    from core.training.diffusion_train_common import bf16_unsupported_reason
+
+    host(
+        cuda = False,
+        xpu = _fake_xpu(
+            is_available = lambda: True,
+            is_bf16_supported = lambda including_emulation = True: bool(including_emulation),
+        ),
+    )
+    reason = bf16_unsupported_reason("krea-2")
+    assert reason and "bf16 natively" in reason
+    host(
+        cuda = False,
+        xpu = _fake_xpu(
+            is_available = lambda: True,
+            is_bf16_supported = lambda including_emulation = True: True,
+        ),
+    )
+    assert bf16_unsupported_reason("krea-2") is None
+
+
+def test_an_unprobeable_xpu_is_left_to_the_child_not_refused_up_front(host):
+    """The preflight runs before teardown on a host whose XPU may not be interrogable at all, so an
+    undeterminable capability must fail OPEN. Collapsing it to "unsupported" refused nf4 on every
+    such host (caught by test_training_precision_preflight_error)."""
+    from core.training.diffusion_train_common import (
+        bf16_unsupported_reason,
+        native_bf16_supported_xpu,
+        xpu_native_bf16_probe,
+    )
+
+    def _unprobeable(including_emulation = True):
+        raise RuntimeError("no device properties")
+
+    host(cuda = False, xpu = _fake_xpu(is_available = lambda: True, is_bf16_supported = _unprobeable))
+    assert xpu_native_bf16_probe() is None
+    assert bf16_unsupported_reason("krea-2") is None   # route proceeds
+    assert native_bf16_supported_xpu() is False        # child still refuses, on the device itself
+
+
+def test_an_xpu_run_captures_and_restores_its_own_noise_generator(host, monkeypatch):
+    """The loops draw randn_like on the training device, so an XPU run's per-step noise lives in the
+    XPU generator; capturing only torch_cpu resumed it from a fresh seed."""
+    from core.training.diffusion_checkpoint import capture_rng_state, restore_rng_state
+
+    seen = {"set": []}
+    states = [torch.tensor([7, 7, 7], dtype = torch.uint8)]
+    fake = _fake_xpu(
+        is_available = lambda: True,
+        device_count = lambda: 1,
+        get_rng_state_all = lambda: states,
+        set_rng_state = lambda st, i: seen["set"].append((i, st.tolist())),
+    )
+    host(cuda = False, xpu = fake)
+
+    captured = capture_rng_state()
+    assert "torch_xpu_0" in captured["tensors"]
+
+    restore_rng_state(captured["json"], captured["tensors"])
+    assert seen["set"] == [(0, [7, 7, 7])]
+
+
 def test_an_xpu_flow_run_records_the_bf16_it_actually_trains_in(host):
     """identity_for_config stores this and a resume is refused when it disagrees, so a CUDA-only
     rule would record "no" for a run the loop trained in bf16."""
