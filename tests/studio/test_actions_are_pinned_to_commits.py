@@ -52,8 +52,15 @@ GITHUB = REPO / ".github"
 # Deliberately a text scan rather than a YAML walk: `uses:` can appear inside a workflow,
 # a composite action, or a reusable-workflow call, and at several nesting depths, and the
 # question here is purely lexical.
+#
+# The key itself is matched in every spelling YAML accepts for it, not just the bare
+# token. `- "uses": actions/checkout@v4` and `uses : owner/action@main` are both read as
+# a `uses` field by Actions, and a scanner that recognised only `uses:` would have let a
+# mutable tag through under either -- a bypass costing one pair of quotes, in a guard whose
+# whole job is to refuse mutable tags. Matching the key loosely cannot produce a false
+# positive on its own, because the value still has to parse as `owner/repo@ref`.
 _USES = re.compile(
-    r"""^\s*-?\s*uses:\s*['"]?(?P<ref>(?P<repo>[A-Za-z0-9][\w.-]*/[\w.-]+(?:/[\w.\-/]+)?)@(?P<rev>[\w.\-/]+))""",
+    r"""^\s*-?\s*['"]?uses['"]?\s*:\s*['"]?(?P<ref>(?P<repo>[A-Za-z0-9][\w.-]*/[\w.-]+(?:/[\w.\-/]+)?)@(?P<rev>[\w.\-/]+))""",
     re.MULTILINE,
 )
 _SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -125,6 +132,35 @@ def test_the_sha_predicate_reads_the_revision():
     ]
     for rev, expected in cases:
         assert bool(_SHA.match(rev)) is expected, f"_SHA.match({rev!r})"
+
+
+def test_the_scan_reads_every_spelling_of_the_uses_key():
+    """A guard that recognises one spelling of its own key is a guard with a keyhole.
+
+    YAML accepts a quoted key and whitespace before the colon, and Actions reads both as
+    a `uses` field. Recognising only the bare `uses:` token meant `- "uses":
+    actions/checkout@v4` was absent from the scan entirely, so a mutable tag written that
+    way passed a test whose entire purpose is to refuse mutable tags. The cost of the
+    bypass was one pair of quotes.
+    """
+    spellings = [
+        "      - uses: actions/checkout@v4",
+        '      - "uses": actions/checkout@v4',
+        "      - 'uses': actions/checkout@v4",
+        "      - uses : actions/checkout@v4",
+        "        uses: actions/checkout@v4",
+        '      - uses: "actions/checkout@v4"',
+    ]
+    for line in spellings:
+        match = _USES.search(line)
+        assert match is not None, f"the scan does not see {line!r}"
+        assert match.group("repo") == "actions/checkout", line
+        assert match.group("rev") == "v4", line
+
+    # And the value still has to look like a reference, so loosening the key cannot make
+    # the scan match prose.
+    for line in ("  # uses: whatever we like", "      - name: uses colons: here"):
+        assert _USES.search(line) is None, f"unexpectedly matched {line!r}"
 
 
 def test_every_third_party_action_is_pinned_to_a_commit_sha():

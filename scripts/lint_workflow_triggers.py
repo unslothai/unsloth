@@ -73,17 +73,23 @@ def _extract_cache_keys(path: Path) -> list[str]:
 def _extract_restore_key_prefixes(path: Path) -> list[str]:
     """Every prefix a `restore-keys:` block offers as a fallback.
 
-    The exact-key comparison below is blind to these: `restore-keys` restores the
-    newest entry whose key STARTS WITH the prefix, so a publish workflow can adopt a
-    cache written under a completely different key without the two strings ever being
-    equal. Handles the block-scalar form, which is how every use in this repo is
-    written, and the inline form.
+    The exact-key comparison is blind to these: `restore-keys` restores the newest entry
+    whose key merely STARTS WITH the prefix, so a publish workflow can adopt an entry a
+    pull request wrote without the two keys ever being equal.
 
-    A blank line does NOT end the block. A YAML block scalar runs until the indentation
-    drops, blank lines included, and actions/cache reads the value as a newline-delimited
-    list and skips empty entries. So `safe-`, a blank line, then `shared-` really does
-    offer `shared-`; treating the blank line as the end silently dropped every prefix
-    after it, which is the half a reviewer is least likely to have looked at.
+    Two YAML details decide what the list actually contains, and getting either wrong
+    changes the answer rather than the wording.
+
+    A blank line does NOT end a literal block. It runs until the indentation drops, blank
+    lines included, and actions/cache reads the value as a newline-delimited list and
+    skips empty entries. So `safe-`, a blank line, then `shared-` really does offer
+    `shared-`, while breaking at the blank line dropped every prefix after it.
+
+    A FOLDED block (`>`) is one prefix, not several. Folding replaces the newlines with
+    spaces, so `safe-only-` then `shared-` arrives at actions/cache as the single string
+    `safe-only- shared-`, which cannot restore a `shared-` key at all. Reading each
+    physical line as its own prefix invented a fallback the runtime does not have, and
+    inventing one is a false rejection of a correct configuration.
     """
     text = path.read_text(encoding = "utf-8")
     prefixes: list[str] = []
@@ -92,15 +98,17 @@ def _extract_restore_key_prefixes(path: Path) -> list[str]:
         if inline and not block:
             prefixes.append(inline)
             continue
-        # Block scalar: take the more-indented lines that follow.
-        rest = text[m.end() :]
-        for line in rest.split("\n"):
+        collected: list[str] = []
+        for line in text[m.end():].split("\n"):
             if not line.strip():
-                continue
-            leading = len(line) - len(line.lstrip())
-            if leading <= len(indent):
-                break
-            prefixes.append(line.strip())
+                continue          # blank lines sit inside the block, they do not end it
+            if len(line) - len(line.lstrip()) <= len(indent):
+                break             # the indentation dropped: the block is over
+            collected.append(line.strip())
+        if block and block.startswith(">"):
+            # Folded: the whole block is a single space-joined scalar.
+            collected = [" ".join(collected)] if collected else []
+        prefixes.extend(collected)
     return [p for p in prefixes if p]
 
 
@@ -156,7 +164,9 @@ def _prefix_compatible(pr_head: str, publish_prefix: str) -> bool:
     return pr_head.startswith(publish_prefix) or publish_prefix.startswith(pr_head)
 
 
-def _shell_built_key_prefixes(text: str, inputs: set | None = None) -> list[str]:
+def _shell_built_key_prefixes(
+    text: str, inputs: set | None = None, all_literal: bool = True,
+) -> list[str]:
     """Literal key heads assembled in a composite action's shell, not in its YAML.
 
     The pip and uv caches build their key in a `run:` step and expose it as an output, so
@@ -186,35 +196,72 @@ def _shell_built_key_prefixes(text: str, inputs: set | None = None) -> list[str]
         r"""echo\s+["']?(?:key|prefix)=([A-Za-z0-9][A-Za-z0-9._-]*?-)(?=\$|\{)""", text
     ):
         heads.append(m.group(1))
-    if inputs:
+    if inputs and all_literal:
         return [f"{h}{v}-" for h in heads for v in sorted(inputs)]
-    return heads
+    # An unresolved call site means the broad head still has to be carried, or narrowing
+    # would silently drop the namespace that caller writes.
+    return heads + [f"{h}{v}-" for h in heads for v in sorted(inputs or ())]
 
 
 
-def _local_action_inputs(pr_paths: list, action_dir: str) -> set:
-    """The `name:`-style values PR workflows actually pass to a local action.
+def _local_action_inputs(pr_paths: list, action_dir: str) -> tuple[set, bool]:
+    """The `name:`-style values callers pass to a local action, and whether all are known.
 
     Read off the `with:` block of each `uses: ./...<action_dir>` call site. Needed because
     a namespace recorded more broadly than the real one is a false rejection: this repo's
     pip cache builds `prefix="pip-${name}-..."`, so reading the shell alone records the
     bare head `pip-`, which then collides with any publish prefix beginning `pip-`
     including a properly partitioned `pip-release-` that no pull request can write.
-    Substituting the values callers pass gives `pip-mlx-`, `pip-collect-` and so on.
+
+    The second return value is what keeps the narrowing honest. A call site passing
+    `name: ${{ matrix.cache_name }}` has no literal value here, and substituting only the
+    literals its siblings pass would DISCARD that caller's namespace: one caller with
+    `name: mlx` would reduce the recorded set to `pip-mlx-`, while the matrix call could
+    still write `pip-shared-` and a publish `restore-keys: pip-shared-` would pass. So
+    narrowing is allowed only when every reachable call site resolves to a literal, and
+    otherwise the broad head is kept alongside whatever literals were found.
+
+    Read line by line, bounded by the indentation of the step's `-` marker, because a
+    regex capturing "the indented lines that follow" runs straight past the end of the
+    step and into the rest of the file. That is not a tidiness point: with two call sites
+    in one workflow the first match swallowed the second, only the first `name:` in the
+    combined text was read, and a dynamic sibling went unnoticed -- which is precisely
+    the case the flag above exists to catch.
     """
     values: set = set()
-    pattern = re.compile(
-        r"uses:\s*['\"]?\./[\w./-]*" + re.escape(action_dir) + r"[^\n]*\n((?:[ \t]+[^\n]*\n)*)"
-    )
+    all_literal = True
+    ref = re.compile(r"uses:\s*['\"]?\./[\w./-]*" + re.escape(action_dir) + r"\s*$")
     for pth in pr_paths:
         try:
-            text = pth.read_text(encoding = "utf-8")
+            lines = pth.read_text().split("\n")
         except OSError:
             continue
-        for m in pattern.finditer(text):
-            for nm in re.finditer(r"^\s+name:\s*['\"]?([A-Za-z0-9][\w.-]*)", m.group(1), re.M):
-                values.add(nm.group(1))
-    return values
+        for i, line in enumerate(lines):
+            if not ref.search(line):
+                continue
+            marker = line.find("-")
+            bound = marker if 0 <= marker < line.find("uses:") else len(line) - len(line.lstrip())
+            found = None
+            for follow in lines[i + 1:]:
+                if not follow.strip():
+                    continue
+                if (len(follow) - len(follow.lstrip())) <= bound:
+                    break     # the step ended; anything past here belongs to another
+                hit = re.match(r"\s+name:\s*(.+?)\s*$", follow)
+                if hit is not None:
+                    found = hit.group(1)
+                    break
+            if found is None:
+                # No `name:` on this call site: the action's default applies and is not
+                # visible from here, so the namespace stays undecided.
+                all_literal = False
+                continue
+            raw = found.strip().strip("'\"")
+            if re.fullmatch(r"[A-Za-z0-9][\w.-]*", raw):
+                values.add(raw)
+            else:
+                all_literal = False
+    return values, all_literal
 
 def _pr_reachable_action_dirs(workflows_dir: Path, pr_paths: list) -> set:
     """Composite actions a PR-triggered workflow actually uses.
@@ -598,11 +645,25 @@ def main() -> int:
     composite_keys: list[str] = []
     for action_path in sorted(_pr_reachable_action_dirs(workflows_dir, pr_workflow_paths)):
         composite_keys.extend(_extract_cache_keys(action_path))
+        names, all_literal = _local_action_inputs(
+            pr_workflow_paths, action_path.parent.name
+        )
         composite_keys.extend(
-            _shell_built_key_prefixes(
-                action_path.read_text(),
-                _local_action_inputs(pr_workflow_paths, action_path.parent.name),
-            )
+            _shell_built_key_prefixes(action_path.read_text(), names, all_literal)
+        )
+
+    # The publish side delegates to local actions exactly as the pull-request side does,
+    # and reading only the top-level workflow file left that half unexamined. A publish
+    # workflow whose composite holds the `actions/cache/restore` declares its keys and its
+    # `restore-keys` in the action, so a PR writing `shared-*` against a publish-only
+    # composite restoring `shared-` passed: the prefix was never collected, and a
+    # comparison that collects nothing on one side reports success.
+    for action_path in sorted(
+        _pr_reachable_action_dirs(workflows_dir, [pth for pth, _ in publish_triggered])
+    ):
+        publish_triggered.append((action_path, _extract_cache_keys(action_path)))
+        publish_restore_prefixes.append(
+            (action_path, _extract_restore_key_prefixes(action_path))
         )
 
     # Composite keys belong in the exact comparison as well, not only the prefix one. A

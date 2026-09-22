@@ -80,9 +80,8 @@ ACTIONS = REPO / ".github" / "actions"
 CREDENTIAL_HOMES = {
     # huggingface_hub writes $HF_HOME/token and, since 0.25, $HF_HOME/stored_tokens.
     "HF_HOME": "token, stored_tokens",
-    # Both are consulted before HF_HOME by older releases still pinned in some lanes.
-    "HUGGINGFACE_HUB_CACHE": "token",
-    "TRANSFORMERS_CACHE": "token",
+    # And HF_TOKEN_PATH names the token file directly, overriding the location above.
+    "HF_TOKEN_PATH": "the token file itself",
     # npm and cargo both keep registry credentials in their config roots.
     "NPM_CONFIG_USERCONFIG": ".npmrc auth tokens",
     "CARGO_HOME": "credentials.toml",
@@ -90,6 +89,14 @@ CREDENTIAL_HOMES = {
     "AWS_SHARED_CREDENTIALS_FILE": "aws credentials",
     "GOOGLE_APPLICATION_CREDENTIALS": "service account json",
 }
+
+# HUGGINGFACE_HUB_CACHE and TRANSFORMERS_CACHE are deliberately NOT here. Both select a
+# MODEL cache, not a credential home: verified against huggingface_hub 1.32.0, where
+# HUGGINGFACE_HUB_CACHE defaults to `$HF_HOME/hub` and the token is read from
+# HF_TOKEN_PATH, default `$HF_HOME/token`, computed independently of it. So pointing
+# HUGGINGFACE_HUB_CACHE at a directory and caching that directory persists blobs and no
+# token. Listing them rejected the arrangement this module recommends everywhere else,
+# which is the kind of false failure that gets a security guard switched off.
 
 # Where those same tools keep credentials when nothing overrides them. Caching one of
 # these is the identical hazard reached WITHOUT setting any variable, which is the version
@@ -230,6 +237,94 @@ def _persisted_paths(job):
     return out
 
 
+
+def _local_action_steps(job, seen = None):
+    """Steps of the local composite actions this job uses, flattened into the job.
+
+    A composite's `run` steps execute INSIDE the calling job, with that job's
+    environment, next to that job's cache steps, so a login performed there writes a
+    token into exactly the same directory. Reading only the workflow's own `run` bodies
+    meant a job could persist its credential home, delegate the login to
+    `uses: ./.github/actions/whatever`, and pass: the workflow appears to contain no
+    login at all, and the action is scanned separately, where neither the caller's
+    environment nor its persisted paths are visible. Neither half sees the combination.
+
+    Recursive, with a seen set, since a composite may use another composite.
+    """
+    seen = set() if seen is None else seen
+    out = []
+    for step in _steps(job):
+        uses = str(step.get("uses") or "").strip().strip("'\"")
+        if not uses.startswith("./"):
+            continue
+        base = REPO / uses[2:]
+        for cand in (base, base / "action.yml", base / "action.yaml"):
+            if not cand.is_file():
+                continue
+            if cand in seen:
+                break
+            seen.add(cand)
+            try:
+                doc = yaml.safe_load(cand.read_text(encoding = "utf-8"))
+            except yaml.YAMLError:
+                break
+            if not isinstance(doc, dict):
+                break
+            runs = doc.get("runs")
+            inner = {"steps": runs["steps"]} if (
+                isinstance(runs, dict) and isinstance(runs.get("steps"), list)
+            ) else {}
+            out.extend(_steps(inner))
+            out.extend(_local_action_steps(inner, seen))
+            break
+    return out
+
+
+def _login_offenders(doc, job):
+    """Steps that log in while THEIR OWN credential home sits inside a persisted path.
+
+    Evaluated per step rather than per job, because the job-wide version rejected a safe
+    arrangement: with one step setting a cached `HF_HOME` and a later step setting a
+    different, uncached `HF_HOME` and logging in, combining every home in the job with
+    every login in the job flagged the second step even though its token cannot reach the
+    cache. The effective environment of the step that actually runs the login is what
+    decides, which is also the only thing the runtime cares about.
+    """
+    job_env = _env_of(job, doc)
+    raw = _raw_persisted(job)
+    if not raw:
+        return []
+    offenders = []
+    for step in _steps(job) + _local_action_steps(job):
+        body = str(step.get("run") or "")
+        if not body:
+            continue
+        step_env = step.get("env")
+        env = {**job_env, **({str(k): str(v) for k, v in step_env.items()}
+                             if isinstance(step_env, dict) else {})}
+        homes = {v: _expand(str(env[v]), env) for v in CREDENTIAL_HOMES if v in env}
+        if not homes:
+            continue
+        persisted = [_expand(p, env) for p in raw]
+        for var, home in sorted(homes.items()):
+            hit = next((p for p in persisted if _inside(home, p)), None)
+            if hit is None:
+                continue
+            for pattern in LOGIN_PATTERNS:
+                if re.search(pattern, body, re.IGNORECASE):
+                    offenders.append(
+                        f"{step.get('name') or step.get('uses') or 'run'}: "
+                        f"{var}={home} is inside cached {hit!r}, and this step matches "
+                        f"/{pattern}/"
+                    )
+                    break
+    return offenders
+
+
+def _raw_persisted(job):
+    """Just the persisted path strings, unexpanded."""
+    return [line for line, _step in _persisted_paths(job)]
+
 def _normalise(path: str) -> str:
     """Strip expressions and separators so a path and an env value can be compared."""
     path = re.sub(r"\$\{\{[^}]*\}\}", "", path)
@@ -312,14 +407,11 @@ def test_a_job_that_caches_its_credential_home_performs_no_login(label, var, per
     doc = yaml.safe_load(path.read_text(encoding = "utf-8"))
     job = dict(_jobs(doc)).get(jid) or {}
 
-    offenders = []
-    for step in _steps(job):
-        body = str(step.get("run") or "")
-        if not body:
-            continue
-        for pattern in LOGIN_PATTERNS:
-            if re.search(pattern, body, re.IGNORECASE):
-                offenders.append(f"{step.get('name') or step.get('uses')}: matched /{pattern}/")
+    # Per step, with that step's own environment, and including the steps of any local
+    # composite this job uses. See _login_offenders for why the job-wide version was both
+    # too broad (a later step with an uncached home) and too narrow (a login inside an
+    # action).
+    offenders = _login_offenders(doc, job)
 
     assert not offenders, (
         f"{label} sets {var}={home}, which is inside the persisted path {persisted!r}, and a "
@@ -430,3 +522,117 @@ def test_no_job_persists_a_default_credential_home():
         "owns and cache that instead, as the smoke workflows here do with "
         "`HF_HOME: ${{ github.workspace }}/hf-cache` and `path: hf-cache`."
     )
+
+
+def test_model_cache_variables_are_not_treated_as_credential_homes():
+    """HUGGINGFACE_HUB_CACHE and TRANSFORMERS_CACHE select a MODEL cache, not a token.
+
+    Listing them rejected the arrangement this module recommends everywhere else: point a
+    variable at a directory you own and cache that. Checked against the installed
+    huggingface_hub rather than asserted from memory, because the whole claim is about
+    what that library does with these names.
+    """
+    for var in ("HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE"):
+        assert var not in CREDENTIAL_HOMES, (
+            f"{var} names a model cache, not a credential home. The token is read from "
+            f"HF_TOKEN_PATH (default $HF_HOME/token), computed independently of it, so "
+            f"caching a directory {var} points at persists blobs and no token."
+        )
+    assert "HF_TOKEN_PATH" in CREDENTIAL_HOMES, (
+        "HF_TOKEN_PATH names the token file directly and overrides HF_HOME, so it is the "
+        "variable that actually has to be tracked"
+    )
+
+    hub = pytest.importorskip("huggingface_hub.constants")
+    home = str(getattr(hub, "HF_HOME", ""))
+    token = str(getattr(hub, "HF_TOKEN_PATH", ""))
+    cache = str(getattr(hub, "HUGGINGFACE_HUB_CACHE", ""))
+    assert token.startswith(home) and token.endswith("token"), (
+        f"expected the token under HF_HOME; got HF_HOME={home!r} HF_TOKEN_PATH={token!r}"
+    )
+    assert not _inside(token, cache), (
+        f"the token is supposed to sit OUTSIDE the hub cache, which is the reason "
+        f"HUGGINGFACE_HUB_CACHE is not a credential home; got {token!r} inside {cache!r}"
+    )
+
+
+def test_a_login_is_judged_against_that_step_s_own_environment():
+    """The job-wide version was both too broad and, for the safe case, simply wrong.
+
+    Combining every credential home in a job with every login in the same job flagged a
+    step that sets its own uncached `HF_HOME` and logs in there, even though its token
+    cannot reach the cache. The effective environment of the step running the login is
+    what decides, which is also all the runtime cares about.
+    """
+    safe = {"steps": [
+        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+        {"name": "warm the cache", "run": "python download.py", "env": {"HF_HOME": "hf-cache"}},
+        {"name": "log in elsewhere", "run": "hf auth login --token x",
+         "env": {"HF_HOME": "/tmp/scratch-home"}},
+    ]}
+    assert _login_offenders({}, safe) == [], (
+        "the login step points HF_HOME at an uncached directory, so its token cannot "
+        "enter the cache and it must not be a finding"
+    )
+
+    # And the same shape with the login step's own home inside the cache must fire.
+    unsafe = {"steps": [
+        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+        {"name": "log in", "run": "hf auth login --token x", "env": {"HF_HOME": "hf-cache"}},
+    ]}
+    offenders = _login_offenders({}, unsafe)
+    assert offenders, "a login whose own HF_HOME is inside the cached path must be a finding"
+    assert "hf-cache" in offenders[0] and "log in" in offenders[0], offenders
+
+    # A job-level home with a login anywhere in the job is still caught, which is the
+    # original rule and must not have been lost in making the above per-step.
+    job_level = {
+        "env": {"HF_HOME": "hf-cache"},
+        "steps": [
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+            {"name": "log in", "run": "huggingface-cli login"},
+        ],
+    }
+    assert _login_offenders({}, job_level), (
+        "a job-level credential home inside the cached path, with a login in any step, "
+        "is the case this module was written for and must still fire"
+    )
+
+
+def test_a_login_inside_a_local_composite_action_is_seen(tmp_path, monkeypatch):
+    """A composite's run steps execute in the calling job, so its logins are the job's.
+
+    Scanning only the workflow's own `run` bodies let a job persist its credential home,
+    delegate the login to `uses: ./.github/actions/whatever`, and pass: the workflow
+    contains no login, and the action is scanned separately where neither the caller's
+    environment nor its persisted paths are visible. Neither half sees the combination.
+    """
+    import sys
+
+    module = sys.modules[__name__]
+    action = tmp_path / ".github" / "actions" / "hf-login"
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: hf login\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - shell: bash\n"
+        "      run: hf auth login --token \"$HF_TOKEN\"\n"
+    )
+    monkeypatch.setattr(module, "REPO", tmp_path)
+
+    job = {
+        "env": {"HF_HOME": "hf-cache"},
+        "steps": [
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+            {"uses": "./.github/actions/hf-login"},
+        ],
+    }
+    assert _local_action_steps(job), "the composite's steps were not flattened into the job"
+    offenders = _login_offenders({}, job)
+    assert offenders, (
+        "the login happens inside the composite, and it writes into the cached HF_HOME "
+        "just the same, so it must be a finding"
+    )
+    assert "hf auth login" in offenders[0] or "login" in offenders[0], offenders

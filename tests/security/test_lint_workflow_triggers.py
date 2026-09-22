@@ -1470,3 +1470,159 @@ def test_a_shell_built_namespace_is_narrowed_by_the_inputs_callers_pass(tmp_path
         f"rejected:\n{proc.stdout}\n{proc.stderr}"
     )
     assert "pip-mlx-" in proc.stderr
+
+
+def test_a_publish_composite_that_restores_a_pr_namespace_is_caught(tmp_path):
+    """The publish side delegates to local actions too, and that half went unread.
+
+    Only the top-level publish workflow was parsed for `restore-keys`, so a publish
+    workflow whose composite owns the `actions/cache/restore` contributed no prefixes at
+    all. A pull request writing `shared-*` against a publish-only composite restoring
+    `shared-` therefore passed, and a comparison that collects nothing on one side
+    reports success rather than admitting it looked at nothing.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "publish-cache"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: publish cache\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: actions/cache/restore@v4\n"
+        "      with:\n"
+        "        path: wheels\n"
+        "        key: shared-publish-${{ runner.os }}\n"
+        "        restore-keys: |\n"
+        "          shared-\n"
+    )
+    (wf / "pr-build.yml").write_text(_pr_workflow("shared-${{ runner.os }}-abc"))
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  publish:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/publish-cache\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the publish composite's `shared-` fallback was never collected, so the "
+        f"collision was not compared:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "shared-" in proc.stderr
+
+
+def test_narrowing_keeps_the_broad_head_when_a_caller_is_dynamic(tmp_path):
+    """Substituting only the literal call sites discards the dynamic one's namespace.
+
+    With one caller passing `name: mlx` and another `name: ${{ matrix.cache_name }}`, the
+    literal set is non-empty, so narrowing replaced the broad `pip-v2-` head with
+    `pip-v2-mlx-` alone. The matrix caller can still expand to `shared`, write
+    `pip-v2-shared-abc`, and a publish `restore-keys: pip-v2-shared-` would pass. The
+    narrowing I added to remove a false REJECTION had therefore opened a false
+    ACCEPTANCE, which is the worse of the two.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "pip-cache-restore"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: pip cache restore\n"
+        "inputs:\n"
+        "  name:\n"
+        "    required: true\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - id: probe\n"
+        "      shell: bash\n"
+        "      run: |\n"
+        "        name=\"${{ inputs.name }}\"\n"
+        "        prefix=\"pip-v2-${name}-\"\n"
+        "        echo \"key=${prefix}abc\" >> \"$GITHUB_OUTPUT\"\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  literal:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/pip-cache-restore\n"
+        "        with:\n"
+        "          name: mlx\n"
+        "  dynamic:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    strategy:\n"
+        "      matrix:\n"
+        "        cache_name: [shared, other]\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/pip-cache-restore\n"
+        "        with:\n"
+        "          name: ${{ matrix.cache_name }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("pip-v2-shared-pub-${{ runner.os }}", "            pip-v2-shared-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"a dynamic call site's namespace was discarded by the narrowing, so a publish "
+        f"prefix over it passed:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "pip-v2-" in proc.stderr
+
+
+def test_a_folded_restore_keys_block_is_one_prefix_not_several(tmp_path):
+    """Folding joins the lines with spaces, so the runtime fallback is a single string.
+
+    `restore-keys: >` over `safe-only-` and `shared-` reaches actions/cache as
+    `safe-only- shared-`, which cannot restore a `shared-` key: there is no fallback
+    named `shared-` at all. Reading each physical line as its own prefix invented one,
+    and rejecting a configuration over an invented fallback is how a security lint earns
+    the reputation that gets it switched off.
+    """
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "pr-build.yml").write_text(_pr_workflow("shared-${{ runner.os }}-abc"))
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  publish:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n"
+        "          path: wheels\n"
+        "          key: safe-only-${{ runner.os }}\n"
+        "          restore-keys: >\n"
+        "            safe-only-\n"
+        "            shared-\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"a folded block is one space-joined prefix and cannot reach the `shared-` "
+        f"namespace, so this must pass:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+    # The literal form of the same block really does offer `shared-`, and must fail.
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys(
+            "safe-only-${{ runner.os }}",
+            "            safe-only-\n            shared-\n",
+        )
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"a literal block DOES offer `shared-` as a separate fallback and must be "
+        f"rejected:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "shared-" in proc.stderr
