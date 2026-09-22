@@ -313,6 +313,22 @@ test("a field arriving as a string or a non-finite number does not become a figu
   assert.equal(classifyMemoryFit(estimate.totalBytes, 24), "unknown");
 });
 
+test("the checkpoint share defaults to none and never exceeds the cache", async () => {
+  // Older backends omit the field.
+  answer(() => json(FULL));
+  assert.equal((await fetchMemoryEstimate(REQUEST)).kvCheckpointBytes, 0);
+  answer(() => json({ ...FULL, kv_checkpoint_bytes: 1024 ** 3 }));
+  assert.equal(
+    (await fetchMemoryEstimate(REQUEST)).kvCheckpointBytes,
+    1024 ** 3,
+  );
+  answer(() => json({ ...FULL, kv_checkpoint_bytes: 5 * 1024 ** 3 }));
+  assert.equal(
+    (await fetchMemoryEstimate(REQUEST)).kvCheckpointBytes,
+    FULL.kv_bytes,
+  );
+});
+
 test("a reason the panel has no copy for is dropped rather than rendered blank", async () => {
   answer(() => json({ ...FULL, available: false, reason: "brand_new_reason" }));
   assert.equal((await fetchMemoryEstimate(REQUEST)).reason, null);
