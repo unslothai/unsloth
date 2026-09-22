@@ -22,6 +22,12 @@ type AuthFetchOptions = {
   retryNetworkErrors?: boolean;
   /** Synchronous policy check run immediately before any retry sends bytes. */
   beforeRetry?: () => void;
+  /** Run once, immediately before the FIRST attempt leaves this function.
+   *
+   * The real send boundary: the account-transition gate above rejects locally, without any
+   * request going out, and a caller that announced the send before calling this then
+   * described bytes that never left. */
+  onRequestStart?: () => void;
 };
 
 let isRedirecting = false;
@@ -370,6 +376,9 @@ export async function authFetch(
 
   let response: Response;
   try {
+    // Past every local refusal above, so a caller learns the request is going out only when
+    // it actually is.
+    options?.onRequestStart?.();
     response = await fetchWithTauriNetworkRetry(
       resolvedInput,
       {

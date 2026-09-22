@@ -34,7 +34,14 @@ function chatApi(prepared: Prepared) {
     new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
     {
       "@/features/auth": {
-        authFetch: async () => {
+        authFetch: async (
+          _input: unknown,
+          _init: unknown,
+          authOptions?: { onRequestStart?: () => void },
+        ) => {
+          // Where authFetch itself announces the send: past its own local refusals, which
+          // is the boundary this contract is about.
+          authOptions?.onRequestStart?.();
           order.push("request");
           return {
             status: 200,
@@ -128,4 +135,79 @@ test("an abort that lands during token preparation never announces a request", a
     ),
   );
   assert.deepEqual(order, ["token"]);
+});
+
+
+test("a local refusal inside authFetch never announces the send", async () => {
+  // The refusal that has no request behind it at all: a peer tab is mid account switch, so
+  // authFetch throws before any bytes leave. A caller that announced the send before calling
+  // it then offered the server log for a load the backend never saw.
+  const order: string[] = [];
+  const auth = loadWithStubs<{
+    authFetch: (
+      input: string,
+      init?: RequestInit,
+      options?: { onRequestStart?: () => void },
+    ) => Promise<unknown>;
+  }>(new URL("../src/features/auth/api.ts", import.meta.url), {
+    "@/lib/account-transition": { accountTransitionPending: () => true },
+    "@/lib/api-base": { apiUrl: (path: string) => path, isTauri: false },
+    "./session": {
+      clearAuthTokens: () => {},
+      getAuthToken: () => "access-token",
+      getRefreshToken: () => null,
+      mustChangePassword: () => false,
+      setMustChangePassword: () => {},
+      storeAuthTokens: () => {},
+    },
+  });
+
+  await assert.rejects(
+    auth.authFetch("/api/inference/load", { method: "POST" }, {
+      onRequestStart: () => order.push("announced"),
+    }),
+    /switching accounts/,
+  );
+  assert.deepEqual(order, [], "announced a send that authFetch refused locally");
+});
+
+
+test("authFetch announces the send once, immediately before the transport", async () => {
+  const order: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    order.push("fetch");
+    return new Response(null, { status: 200 });
+  };
+  try {
+    const auth = loadWithStubs<{
+      authFetch: (
+        input: string,
+        init?: RequestInit,
+        options?: { onRequestStart?: () => void },
+      ) => Promise<unknown>;
+    }>(new URL("../src/features/auth/api.ts", import.meta.url), {
+      "@/lib/account-transition": { accountTransitionPending: () => false },
+      "@/lib/api-base": { apiUrl: (path: string) => path, isTauri: false },
+      "./session": {
+        clearAuthTokens: () => {},
+        getAuthToken: () => "access-token",
+        getRefreshToken: () => null,
+        mustChangePassword: () => false,
+        setMustChangePassword: () => {},
+        storeAuthTokens: () => {},
+      },
+    });
+
+    await auth.authFetch("/api/inference/load", { method: "POST" }, {
+      onRequestStart: () => order.push("announced"),
+    });
+    assert.deepEqual(
+      order,
+      ["announced", "fetch"],
+      "authFetch does not announce the send it is about to make",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

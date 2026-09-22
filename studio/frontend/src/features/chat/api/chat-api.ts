@@ -276,24 +276,29 @@ export async function loadModel(
     });
   if (options?.signal?.aborted)
     throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
-  options?.onRequestStart?.();
   // Announced after the token prompt, so a cancelled load never shows a row. The indicator
-  // otherwise had nothing to show until its next 5s poll.
+  // otherwise had nothing to show until its next 5s poll. The callback goes to authFetch
+  // rather than firing here: its own account-transition gate refuses locally, with no
+  // request going out, and firing first described bytes that never left.
   return withModelLoadNotice(
     options?.runtime ?? "chat",
     payload.model_path ?? null,
     async () => {
-      const response = await authFetch("/api/inference/load", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...payload,
-          hf_token: preparedToken.token,
-          native_path_lease: payload.nativePathLease ?? null,
-          nativePathLease: undefined,
-        }),
-        signal: options?.signal,
-      });
+      const response = await authFetch(
+        "/api/inference/load",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...payload,
+            hf_token: preparedToken.token,
+            native_path_lease: payload.nativePathLease ?? null,
+            nativePathLease: undefined,
+          }),
+          signal: options?.signal,
+        },
+        { onRequestStart: options?.onRequestStart },
+      );
       const loaded = await parseJsonOrThrow<LoadModelResponse>(response, "Model load");
       // Unconditional: absent on nearly every load, anything malformed is ignored,
       // and the model is already resident by the time this runs. Both identities are

@@ -413,9 +413,17 @@ test("leaving Audio cancels an owned TTS load without touching a pre-request pro
     // and the backend then refuses the cancellation and keeps loading.
     /const pending = pendingTtsLoad\.current;[\s\S]*pending\.controller\.abort\(\);[\s\S]*if \(pending\.requestStarted\)[\s\S]*unloadModel\(\{[\s\S]*model_path: pending\.loadTarget,[\s\S]*cancel_load_request_id: pending\.loadRequestId/,
   );
+  // The announcement is HANDED to authFetch rather than made here: its own
+  // account-transition gate refuses locally, with no request going out, so firing before
+  // that call announced bytes that never left.
   assert.match(
     chatApiSource,
-    /if \(options\?\.signal\?\.aborted\)[\s\S]*options\?\.onRequestStart\?\.\(\);[\s\S]*authFetch\("\/api\/inference\/load", \{[\s\S]*signal: options\?\.signal/,
+    /if \(options\?\.signal\?\.aborted\)[\s\S]*authFetch\([\s\S]*"\/api\/inference\/load"[\s\S]*signal: options\?\.signal[\s\S]*onRequestStart: options\?\.onRequestStart/,
+  );
+  assert.doesNotMatch(
+    chatApiSource,
+    /^\s*options\?\.onRequestStart\?\.\(\);$/m,
+    "loadModel announces the send itself again, ahead of every local refusal",
   );
 });
 
