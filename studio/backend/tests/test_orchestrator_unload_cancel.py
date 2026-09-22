@@ -3099,7 +3099,7 @@ def test_a_llama_server_spawned_as_shutdown_began_is_reaped():
     )
     body = textwrap.dedent(ast.get_source_segment(src, fn) or "")
 
-    publish = body.index("self._record_server_pid(")
+    publish = body.index("self._note_server_pid(")
     recheck = body.index("_spawn_is_stale", publish)
     kill = body.index("self._kill_process()", publish)
     assert publish < recheck < kill, (
@@ -3190,7 +3190,7 @@ def test_the_primary_llama_launch_rechecks_after_recording_the_pid():
     record = [
         n.lineno
         for n in ast.walk(fn)
-        if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "_record_server_pid"
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "_note_server_pid"
     ]
     stale = [
         n.lineno

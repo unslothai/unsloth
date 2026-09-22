@@ -508,9 +508,19 @@ class GpuMemoryShortError(RuntimeError):
         self.short_mib = short_mib
 
 
-# Backends that own a llama-server, so a load can price the VRAM the others hold. The driver's
-# free-memory figure alone lags a fresh launch and is virtualised away in some sandboxes.
-_live_backends: "weakref.WeakSet[LlamaCppBackend]" = weakref.WeakSet()
+# The backends serving side by side (the primary and any loaded alongside), so a load can price the
+# VRAM the others hold. The driver's free-memory figure alone lags a fresh launch and is virtualised
+# away in some sandboxes. Registered by the routes, never on construction: helper and test backends
+# are not serving, and atexit keeps every constructed one alive.
+_serving_backends: "weakref.WeakSet[LlamaCppBackend]" = weakref.WeakSet()
+
+
+def register_serving_backend(backend) -> None:
+    _serving_backends.add(backend)
+
+
+def unregister_serving_backend(backend) -> None:
+    _serving_backends.discard(backend)
 
 
 class GgufDownloadCancelled(RuntimeError):
@@ -7228,7 +7238,6 @@ class LlamaCppBackend:
         self._pending_plan_mib: dict[int, int] = {}
 
         if manages_processes:
-            _live_backends.add(self)
             _reaped = self._kill_orphaned_servers()
             if _reaped:
                 # Reaped VRAM frees lazily; arm the settle wait so the first load
@@ -21722,7 +21731,7 @@ class LlamaCppBackend:
             self._process = _spawned
             # Cross-session backstop for when parent-death cleanup did not run.
             # Under the lock: see _spawn_and_wait.
-            self._record_server_pid(_spawned.pid)
+            self._note_server_pid(_spawned.pid)
 
         # The stale check above and the process-wide latch are only atomic for the
         # instance run.py tears down, which sets its own flag under this same lock. A
@@ -22931,6 +22940,8 @@ class LlamaCppBackend:
                 _placement_verdict_partial = False
                 # The planner shrank the context to fit the free VRAM.
                 _ctx_capped_for_vram = False
+                # A path that never prices the launch must not commit the previous one's plan.
+                self._pending_plan_mib = {}
                 # Sized inputs for the tensor-spill planner, None when the fit never
                 # priced them. Bound before the try like _placement_verdict_partial:
                 # the except arm restores use_fit=True without rebinding
@@ -27978,7 +27989,7 @@ class LlamaCppBackend:
                             # Inside the lock: written after a sweep reaped the child,
                             # _pid_start_identity yields no start time, and the bare pid
                             # left behind is one a later launch kills blind.
-                            self._record_server_pid(_spawned.pid)
+                            self._note_server_pid(_spawned.pid)
                         # mark_process_shutting_down does not take _spawn_lock, so the
                         # check above is not atomic against it for a helper-owned
                         # backend. Without this recheck a child spawned in that gap sits
@@ -30736,7 +30747,7 @@ class LlamaCppBackend:
                 logger.info("load no longer belongs to this lifecycle; not publishing it healthy")
                 return False
             self._healthy = True
-            self._planned_vram_mib = dict(self._pending_plan_mib)
+            self._planned_vram_mib = dict(getattr(self, "_pending_plan_mib", {}))
             return True
 
     def _close_attempt_log(self) -> None:
@@ -30890,7 +30901,8 @@ class LlamaCppBackend:
                     pass
             self._process = None
             self._planned_vram_mib = {}
-            self._clear_server_pid()
+            if getattr(self, "_owns_pidfile", True):
+                self._clear_server_pid()
             # Clear healthy so a /load during the replacement's warm-up can't
             # short-circuit against the previous server's health (#5401).
             self._healthy = False
@@ -30914,13 +30926,28 @@ class LlamaCppBackend:
                 self._llama_log_fh = None
 
     def _other_planned_vram_mib(self) -> dict[int, int]:
-        """MiB per GPU the other live backends' servers hold."""
+        """MiB per GPU the other serving backends' running servers hold."""
         held: dict[int, int] = {}
-        for backend in list(_live_backends):
-            if backend is not self:
-                for idx, mib in backend._planned_vram_mib.items():
-                    held[idx] = held.get(idx, 0) + mib
+        serving = list(_serving_backends)
+        if self not in serving:
+            return held
+        for backend in serving:
+            if backend is self or not getattr(backend, "is_active", False):
+                continue
+            for idx, mib in getattr(backend, "_planned_vram_mib", {}).items():
+                held[idx] = held.get(idx, 0) + mib
         return held
+
+    def _note_server_pid(self, pid: int) -> None:
+        # The pidfile holds one server: the primary's. A server loaded alongside is still swept.
+        if getattr(self, "_owns_pidfile", True):
+            self._record_server_pid(pid)
+            return
+        try:
+            from utils.process_lifetime import adopt_pid
+            adopt_pid(pid)
+        except Exception as e:
+            logger.debug(f"Could not track llama-server for lifetime sweep: {e}")
 
     @staticmethod
     def _server_pidfile_path() -> Optional[Path]:

@@ -2171,6 +2171,9 @@ type ToolStatusEntry = {
   owner?: () => void;
 };
 
+/** ``quant`` is undefined until looked up, null for a model without one. */
+export type LoadedModelSummary = { id: string; quant?: string | null };
+
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
   /** The open chat's settings were asked for but have not arrived, so the store shows the
@@ -2207,6 +2210,8 @@ type ChatRuntimeStore = {
   /** What /api/inference/status says is resident, as opposed to what the picker selected.
    *  undefined until the first read, so the header does not flash "not loaded". */
   residentCheckpoint: string | null | undefined;
+  /** Every local model the server holds in memory, the selected one included. */
+  loadedModels: LoadedModelSummary[];
   activeModelIsLocal: boolean;
   loadedContextLength: number | null;
   maxContextLength: number | null;
@@ -3933,6 +3938,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   lastModelLoadError: null,
   activeGgufVariant: null,
   residentCheckpoint: undefined,
+  loadedModels: [],
   activeModelIsLocal: false,
   loadedContextLength: null,
   maxContextLength: null,

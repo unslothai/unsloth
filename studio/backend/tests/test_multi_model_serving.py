@@ -58,6 +58,8 @@ def backends(monkeypatch):
     monkeypatch.setattr(inf, "_extra_slots", [extra])
     monkeypatch.setattr(inf, "_evicted", {})
     monkeypatch.setattr(inf, "_primary_request", None)
+    monkeypatch.setattr(inf, "_evicted_owner", {})
+    monkeypatch.setattr(inf, "_primary_account", None)
     return primary, extra
 
 
@@ -494,14 +496,206 @@ def test_an_evicted_slot_keeps_its_conversation_kv_until_it_is_back(backends, mo
 
 
 def test_a_load_prices_the_vram_the_other_servers_hold():
+    from core.inference import llama_cpp
     from core.inference.llama_cpp import LlamaCppBackend
 
-    a, b, c = (LlamaCppBackend(manages_processes = False) for _ in range(3))
-    from core.inference import llama_cpp
-    llama_cpp._live_backends.update((a, b, c))
-    a._planned_vram_mib = {0: 12000}
-    b._planned_vram_mib = {0: 1000, 1: 500}
-    assert c._other_planned_vram_mib() == {0: 13000, 1: 500}
-    assert a._other_planned_vram_mib() == {0: 1000, 1: 500}
-    a._kill_process()
-    assert a._planned_vram_mib == {} and c._other_planned_vram_mib() == {0: 1000, 1: 500}
+    a, b, c, stray = (LlamaCppBackend(manages_processes = False) for _ in range(4))
+    for backend in (a, b, c):
+        llama_cpp.register_serving_backend(backend)
+    try:
+        a._process = b._process = stray._process = object()
+        a._planned_vram_mib = {0: 12000}
+        b._planned_vram_mib = {0: 1000, 1: 500}
+        stray._planned_vram_mib = {0: 7000}
+        assert c._other_planned_vram_mib() == {0: 13000, 1: 500}
+        assert a._other_planned_vram_mib() == {0: 1000, 1: 500}
+        assert stray._other_planned_vram_mib() == {}
+        a._kill_process()
+        assert a._planned_vram_mib == {} and c._other_planned_vram_mib() == {0: 1000, 1: 500}
+        b._process = None
+        assert c._other_planned_vram_mib() == {}
+    finally:
+        for backend in (a, b, c):
+            llama_cpp.unregister_serving_backend(backend)
+
+
+def _hold_chat_claim(monkeypatch):
+    import core.inference.llama_cpp as llama_cpp
+
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    monkeypatch.setattr(llama_cpp, "chat_load_active", lambda: False)
+
+
+def test_unloading_the_last_slot_keeps_the_claim_the_primary_holds(backends, monkeypatch):
+    primary, _ = backends
+    _hold_chat_claim(monkeypatch)
+    asyncio.run(inf._unload_model_impl(UnloadRequest(model_path = "org/B-GGUF"), "s"))
+    assert primary.is_active and inf._extra_slots == []
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+
+
+def test_a_failed_slot_load_keeps_the_claim_the_primary_holds(backends, monkeypatch):
+    primary, _ = backends
+    monkeypatch.setattr(inf, "_extra_slots", [])
+    _hold_chat_claim(monkeypatch)
+    monkeypatch.setattr(inf, "LlamaCppBackend", FakeLlama)
+    monkeypatch.setattr(inf, "InferenceOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", lambda: None)
+
+    async def failing_load(*args, **kwargs):
+        raise RuntimeError("no such repo")
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", failing_load)
+    with pytest.raises(RuntimeError):
+        asyncio.run(inf.load_model_gated(LoadRequest(model_path = "org/missing-GGUF", alongside = True), None, "s"))
+    assert primary.is_active and gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+
+
+def test_a_generation_is_tracked_on_the_slot_serving_it(backends):
+    import threading
+
+    _, extra = backends
+    event = threading.Event()
+
+    async def run():
+        await inf._route_to_extra_slot("org/B-GGUF")
+        with inf._TrackedCancel(event, "k"):
+            inside = set(extra.generations)
+        return inside
+
+    assert asyncio.run(run()) == {event} and extra.generations == set()
+
+
+def test_a_slot_still_generating_is_never_evicted(backends):
+    import threading
+
+    _, extra = backends
+    older = _slot("org/D-GGUF", last_used = 1.0)
+    inf._extra_slots.append(older)
+    older.generations.add(threading.Event())
+    assert inf._eviction_victims(None, 5000) == [extra]
+    extra.generations.add(threading.Event())
+    assert inf._eviction_victims(None, 5000) == []
+
+
+def test_unloading_a_generating_slot_is_refused_unless_forced(backends, monkeypatch):
+    import threading
+
+    from fastapi import HTTPException
+
+    _, extra = backends
+    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: True)
+    event = threading.Event()
+    extra.generations.add(event)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inf._unload_model_impl(UnloadRequest(model_path = "org/B-GGUF"), "s"))
+    assert excinfo.value.status_code == 409 and extra.llama.is_loaded and not event.is_set()
+
+    def finish_on_cancel():
+        event.wait(5)
+        extra.generations.discard(event)
+
+    threading.Thread(target = finish_on_cancel, daemon = True).start()
+    forced = UnloadRequest(model_path = "org/B-GGUF", force_cancel_active = True)
+    asyncio.run(inf._unload_model_impl(forced, "s"))
+    assert event.is_set() and not extra.llama.is_loaded and inf._extra_slots == []
+
+
+def test_a_swap_that_bypasses_load_model_gated_still_records_the_primary(backends, monkeypatch):
+    monkeypatch.setattr(inf, "current_account_id", lambda: "alice")
+    inf._evicted["org/C-GGUF"] = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    inf._note_primary_load(LoadRequest(model_path = "org/C-GGUF", hf_token = "secret"))
+    assert inf._evicted == {} and inf._primary_account == "alice"
+    assert inf._primary_request.model_path == "org/C-GGUF" and inf._primary_request.hf_token is None
+    assert "_note_primary_load(load_request)" in inspect.getsource(inf._maybe_auto_switch_model)
+    assert "_note_primary_load(request)" in inspect.getsource(inf.load_model_for_preview)
+
+
+def test_a_managed_account_neither_restores_nor_forgets_another_accounts_model(backends, monkeypatch):
+    _, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0", alongside = True)
+    inf.note_chat_evicted()
+    monkeypatch.setattr(inf.account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(inf, "current_account_id", lambda: "someone-else")
+    assert inf._evicted_request("org/B-GGUF") is None
+    inf._forget_evicted("org/B-GGUF")
+    assert list(inf._evicted) == ["org/B-GGUF:Q8_0"]
+    monkeypatch.setattr(inf, "current_account_id", lambda: "owner")
+    assert inf._evicted_request("org/B-GGUF") is not None
+
+
+def test_the_load_response_names_the_models_evicted_for_it(backends, monkeypatch):
+    from models.inference import LoadResponse
+
+    _, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    _gated_load_fakes(monkeypatch, short_fits = [1])
+    loaded = LoadResponse.model_construct(status = "loaded", model = "org/C-GGUF", display_name = "C")
+
+    async def load(request, *args, **kwargs):
+        if not request.force_alongside and not getattr(load, "raised", False):
+            from core.inference.llama_cpp import GpuMemoryShortError
+
+            load.raised = True
+            raise GpuMemoryShortError("short", short_mib = 5000)
+        llama = inf.get_llama_cpp_backend()
+        llama.model_identifier, llama.is_loaded, llama.is_active = request.model_path, True, True
+        return loaded
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+    response = asyncio.run(inf.load_model_gated(LoadRequest(model_path = "org/C-GGUF", alongside = True), None, "s"))
+    assert response.evicted == ["org/B-GGUF:Q8_0"]
+
+
+def test_a_slot_server_leaves_the_primary_pidfile_alone(monkeypatch):
+    import utils.process_lifetime as process_lifetime
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    written, cleared, adopted = [], [], []
+    monkeypatch.setattr(LlamaCppBackend, "_record_server_pid", classmethod(lambda cls, pid: written.append(pid)))
+    monkeypatch.setattr(LlamaCppBackend, "_clear_server_pid", classmethod(lambda cls: cleared.append(True)))
+    monkeypatch.setattr(process_lifetime, "adopt_pid", adopted.append)
+    slot = LlamaCppBackend(manages_processes = False)
+    slot._owns_pidfile = False
+    slot._note_server_pid(4242)
+    slot._process = object()
+    slot._kill_process()
+    assert written == [] and cleared == [] and adopted == [4242]
+    primary = LlamaCppBackend(manages_processes = False)
+    primary._note_server_pid(4343)
+    assert written == [4343]
+
+
+def test_a_primary_swap_neither_refuses_on_nor_stops_another_models_chats(backends):
+    import threading
+
+    from fastapi import HTTPException
+    from state import active_generations
+
+    _, extra = backends
+    on_slot, on_primary = threading.Event(), threading.Event()
+    extra.generations.add(on_slot)
+    with active_generations.ActiveGeneration(on_slot, thread_id = "slot-chat"):
+        assert inf._raise_or_cancel_active_generations(force = False, action = "Loading a model") == 0
+        with active_generations.ActiveGeneration(on_primary, thread_id = "primary-chat"):
+            with pytest.raises(HTTPException) as excinfo:
+                inf._raise_or_cancel_active_generations(force = False, action = "Loading a model")
+            assert excinfo.value.detail["running"] == 1
+            assert excinfo.value.detail["thread_ids"] == ["primary-chat"]
+            assert inf._raise_or_cancel_active_generations(force = True, action = "Loading a model") == 1
+    assert on_primary.is_set() and not on_slot.is_set()
+
+
+def test_a_slot_refusal_names_its_own_chats(backends):
+    import threading
+
+    from fastapi import HTTPException
+    from state import active_generations
+
+    _, extra = backends
+    event = threading.Event()
+    extra.generations.add(event)
+    with active_generations.ActiveGeneration(event, thread_id = "t1"):
+        with pytest.raises(HTTPException) as excinfo:
+            inf._raise_or_cancel_slot_generations(extra, force = False)
+    assert excinfo.value.detail["thread_ids"] == ["t1"]

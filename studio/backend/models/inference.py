@@ -1462,6 +1462,11 @@ class LoadResponse(_InferenceRuntimeFields):
         "message. Null once the user has dismissed it at this allocation, and on every "
         "load where enlarging the allocation would not help. The model still loaded.",
     )
+    evicted: list[str] = Field(
+        default_factory = list,
+        description = "Models loaded alongside that were unloaded to make room for this one. "
+        "Each reloads when a request names it.",
+    )
 
 
 class UnloadResponse(BaseModel):

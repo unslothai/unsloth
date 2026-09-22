@@ -25,7 +25,10 @@ import {
 import { isSettingsRouteAbsent } from "@/features/settings/api/settings-route-absent";
 import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
 import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
-import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
+import {
+  listOpenAIModels,
+  loadOpenAIAutoSwitchSettings,
+} from "@/features/settings";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -55,12 +58,14 @@ import {
   fetchGgufStagedMetadata,
   listLoras,
   listModels,
+  ActiveGenerationsError,
   loadModel,
   unloadModel,
   validateModel,
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import { confirmStopRunningChatsIfNeeded } from "../utils/confirm-stop-running-chats";
+import { useStopRunningChatsDialogStore } from "../stores/stop-running-chats-dialog-store";
 import {
   requestLocalPromptQueueStop,
   notifyLocalPromptQueueLoadFailed,
@@ -467,6 +472,53 @@ async function readIdleUnloadArmed(): Promise<boolean> {
   return lastIdleUnloadArmed;
 }
 
+function publishLoadedModels(ids: string[]): void {
+  const current = useChatRuntimeStore.getState().loadedModels;
+  const known = new Map(current.map((m) => [m.id, m]));
+  const next = ids.map((id) => known.get(id) ?? { id });
+  const unchanged =
+    next.length === current.length && next.every((m, i) => m === current[i]);
+  if (!unchanged) useChatRuntimeStore.setState({ loadedModels: next });
+  // Status names the models; only /v1/models carries each one's quant, so look it up once per model.
+  if (ids.length < 2 || next.every((m) => m.quant !== undefined)) return;
+  void listOpenAIModels().then(
+    (models) => {
+      // Not dropped when a newer sync started: it applies by id to whatever is loaded now.
+      const details = new Map(
+        models.filter((m) => m.loaded).map((m) => [m.id, m]),
+      );
+      useChatRuntimeStore.setState((state) => ({
+        loadedModels: state.loadedModels.map((m) =>
+          m.quant !== undefined || !details.has(m.id)
+            ? m
+            : { ...m, quant: details.get(m.id)?.quant ?? null },
+        ),
+      }));
+    },
+    () => {},
+  );
+}
+
+/** Unload a model kept alongside. The server refuses while its own chats generate, so ask then. */
+async function unloadKeptModel(modelId: string): Promise<boolean> {
+  try {
+    await unloadModel({ model_path: modelId });
+    return true;
+  } catch (error) {
+    if (!(error instanceof ActiveGenerationsError)) throw error;
+    const confirmed = await useStopRunningChatsDialogStore
+      .getState()
+      .requestConfirm({
+        count: error.running,
+        action: "Unloading this model",
+        effect: "unload",
+      });
+    if (!confirmed) return false;
+    await unloadModel({ model_path: modelId, force_cancel_active: true });
+    return true;
+  }
+}
+
 async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
@@ -516,6 +568,7 @@ async function syncInferenceStatusToStore(options?: {
     if (signal?.aborted || superseded()) return;
 
     setModels(listRes.models.map(toChatModelRow));
+    publishLoadedModels(statusRes.loaded ?? []);
 
     const statusLoading = (statusRes.loading?.length ?? 0) > 0;
     // A replacement names the outgoing model active and the incoming one loading. Adopting
@@ -1856,6 +1909,15 @@ export function useChatModelRuntime() {
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
+            if (loadResponse.evicted?.length) {
+              toast.info(
+                `Unloaded ${loadResponse.evicted.join(", ")} to make room`,
+                {
+                  description:
+                    "Select it again, or name it in an API request, to load it back.",
+                },
+              );
+            }
 
             // If cancelled while loading, do not show the model as active: it is being unloaded.
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -2645,7 +2707,20 @@ export function useChatModelRuntime() {
     ],
   );
 
-  const ejectModel = useCallback(async (): Promise<boolean> => {
+  const ejectModel = useCallback(async (modelId?: string): Promise<boolean> => {
+    if (modelId && modelId !== params.checkpoint) {
+      try {
+        if (!(await unloadKeptModel(modelId))) return false;
+        await refresh();
+        toast.success("Model unloaded", { duration: 1200 });
+        return true;
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to unload model",
+        );
+        return false;
+      }
+    }
     if (!params.checkpoint) {
       return false;
     }
@@ -2715,10 +2790,38 @@ export function useChatModelRuntime() {
     }
   }, [clearCheckpoint, params.checkpoint, refresh, setModelsError]);
 
+  const ejectAllModels = useCallback(async (): Promise<boolean> => {
+    const others = useChatRuntimeStore
+      .getState()
+      .loadedModels.map((m) => m.id)
+      .filter((id) => id !== params.checkpoint);
+    // One question for every model: the selected one's eject asks, or ask here when it is not local.
+    // The answer covers the rest, so their unloads stop their chats instead of refusing.
+    const selectedLocal =
+      Boolean(params.checkpoint) && !isExternalModelId(params.checkpoint);
+    if (selectedLocal) {
+      if (!(await ejectModel())) return false;
+    } else {
+      const decision = await confirmStopRunningChatsIfNeeded(
+        "Unloading every model",
+        "unload",
+      );
+      if (!decision.proceed) return false;
+    }
+    await Promise.allSettled(
+      others.map((id) =>
+        unloadModel({ model_path: id, force_cancel_active: true }),
+      ),
+    );
+    await refresh();
+    return true;
+  }, [ejectModel, params.checkpoint, refresh]);
+
   return {
     refresh,
     selectModel,
     ejectModel,
+    ejectAllModels,
     cancelLoading,
     loadingModel,
     loadProgress,

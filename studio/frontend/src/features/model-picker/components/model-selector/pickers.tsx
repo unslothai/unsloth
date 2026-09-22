@@ -2591,6 +2591,7 @@ export function HubModelPicker({
   section = "downloaded",
   sectionToggle,
   onEject,
+  onEjectAll,
   task,
   catalog,
   communityModelPolicy = "none",
@@ -2615,7 +2616,8 @@ export function HubModelPicker({
   /** Section shown when not searching. Search spans all sections. */
   section?: "downloaded" | "recommended" | "connected";
   sectionToggle?: ReactNode;
-  onEject?: () => void;
+  onEject?: (modelId?: string) => void;
+  onEjectAll?: () => void;
   /** Restrict results to a pipeline task; undefined = all tasks (the chat default). */
   task?: HfTaskFilter;
   /** Curated catalog for a task-scoped picker: one canonical row per model, formats as the second level. */
@@ -2641,6 +2643,7 @@ export function HubModelPicker({
   const selectedCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
   const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
   const setKeepModelsLoaded = useChatRuntimeStore((s) => s.setKeepModelsLoaded);
   // Chat only: a task picker's pipeline takes the whole GPU, so nothing stays loaded there.
   const isChatPicker = task === undefined;
@@ -2662,6 +2665,26 @@ export function HubModelPicker({
   const hfToken = useHfTokenStore((s) => s.token);
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
+  // Chat's loaded models lead both lists. On Device already lists them, so they sort to the top and
+  // are marked in place; Recommended rarely does, so there they are added as rows.
+  const loadedIdSet = useMemo(
+    () =>
+      new Set(
+        task === undefined ? loadedModels.map((m) => m.id.toLowerCase()) : [],
+      ),
+    [task, loadedModels],
+  );
+  const isKeptLoaded = (repoId: string) =>
+    loadedIdSet.has(repoId.toLowerCase());
+  const loadedRows = useMemo(() => {
+    if (task !== undefined || section !== "recommended") return [];
+    const q = debouncedQuery.trim().toLowerCase();
+    return loadedModels.filter((m) => m.id.toLowerCase().includes(q));
+  }, [task, section, debouncedQuery, loadedModels]);
+  const loadedRowIds = useMemo(
+    () => new Set(loadedRows.map((m) => m.id.toLowerCase())),
+    [loadedRows],
+  );
   // Shared Hub search stack so the picker and Hub run one implementation. Scoped to unsloth like the old listing.
   const online = useOnlineStatus();
   // Sanitize to anonymous on a malformed token, matching the Hub page.
@@ -4337,31 +4360,51 @@ export function HubModelPicker({
   }, [pinnedIds, pinnedQuants, pinnedCachedModelRows]);
 
   // Split downloaded models so non-Unsloth repos get their own "Other models" section above Fine-tuned.
+  const loadedFirst = useCallback(
+    <T extends { repo_id: string }>(rows: T[]): T[] =>
+      loadedIdSet.size === 0
+        ? rows
+        : [
+            ...rows.filter((r) => loadedIdSet.has(r.repo_id.toLowerCase())),
+            ...rows.filter((r) => !loadedIdSet.has(r.repo_id.toLowerCase())),
+          ],
+    [loadedIdSet],
+  );
   const unslothCachedGguf = useMemo(
-    () => visibleCachedGguf.filter((c) => isUnslothPublisherRepoId(c.repo_id)),
-    [visibleCachedGguf],
+    () =>
+      loadedFirst(
+        visibleCachedGguf.filter((c) => isUnslothPublisherRepoId(c.repo_id)),
+      ),
+    [visibleCachedGguf, loadedFirst],
   );
   const otherCachedGguf = useMemo(
-    () => visibleCachedGguf.filter((c) => !isUnslothPublisherRepoId(c.repo_id)),
-    [visibleCachedGguf],
+    () =>
+      loadedFirst(
+        visibleCachedGguf.filter((c) => !isUnslothPublisherRepoId(c.repo_id)),
+      ),
+    [visibleCachedGguf, loadedFirst],
   );
   const unslothCachedModelRows = useMemo(
     () =>
-      visibleCachedModelRows.filter(
-        (c) =>
-          isUnslothPublisherRepoId(c.repo_id) &&
-          !pinnedSet.has(pinKey(c.repo_id)),
+      loadedFirst(
+        visibleCachedModelRows.filter(
+          (c) =>
+            isUnslothPublisherRepoId(c.repo_id) &&
+            !pinnedSet.has(pinKey(c.repo_id)),
+        ),
       ),
-    [visibleCachedModelRows, pinnedSet],
+    [visibleCachedModelRows, pinnedSet, loadedFirst],
   );
   const otherCachedModelRows = useMemo(
     () =>
-      visibleCachedModelRows.filter(
-        (c) =>
-          !isUnslothPublisherRepoId(c.repo_id) &&
-          !pinnedSet.has(pinKey(c.repo_id)),
+      loadedFirst(
+        visibleCachedModelRows.filter(
+          (c) =>
+            !isUnslothPublisherRepoId(c.repo_id) &&
+            !pinnedSet.has(pinKey(c.repo_id)),
+        ),
       ),
-    [visibleCachedModelRows, pinnedSet],
+    [visibleCachedModelRows, pinnedSet, loadedFirst],
   );
 
   // Param counts come straight off the unsloth listings the picker already loaded, so the VRAM
@@ -4542,7 +4585,9 @@ export function HubModelPicker({
   );
 
   const hubOptionKeys = useMemo(() => {
-    const keys: string[] = [];
+    const keys: string[] = loadedRows.map((m) =>
+      makeModelOptionKey("loaded", m.id),
+    );
 
     // Pinned rows sit above the Unsloth heading on the On Device tab.
     if (
@@ -4657,12 +4702,16 @@ export function HubModelPicker({
 
     if (section === "recommended") {
       keys.push(
-        ...recommendedRows.map((r) => makeModelOptionKey("recommended", r.id)),
+        ...recommendedRows
+          .filter((r) => !loadedRowIds.has(r.id.toLowerCase()))
+          .map((r) => makeModelOptionKey("recommended", r.id)),
       );
     }
 
     return keys;
   }, [
+    loadedRows,
+    loadedRowIds,
     cachedReady,
     chatOnly,
     sortedCustomFolderModels,
@@ -5040,6 +5089,8 @@ export function HubModelPicker({
       .sort((a, b) => a.providerName.localeCompare(b.providerName));
   }, [externalModels, debouncedQuery]);
   const showConnected = section === "connected";
+  // Each loaded row ejects itself, so with several the footer's button is for the lot.
+  const ejectsAll = Boolean(onEjectAll) && loadedModels.length > 1;
   // The Connected layout uses a wider box, so it drops the search inset to keep Search Hub on the last dropdown's edge.
   const hasConnected = externalModels.length > 0;
   // The Other models section and its shortcut only show with non-Unsloth downloads.
@@ -5062,6 +5113,75 @@ export function HubModelPicker({
       hasMemoryBar ? "rounded-2xl" : "rounded-full",
       selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
     );
+
+
+  // Takes the gear's slot on a loaded row: the gear configures a load, and this one is loaded.
+  const renderEjectAction = (modelId: string) =>
+    onEject && isKeptLoaded(modelId) ? (
+      <Tooltip delayDuration={0}>
+        <TooltipTrigger asChild={true}>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onEject(modelId);
+            }}
+            aria-label={`Eject ${modelId}`}
+            className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-black/5 hover:text-red-500 dark:hover:bg-white/10"
+          >
+            <HugeiconsIcon
+              icon={RemoveCircleIcon}
+              strokeWidth={1.75}
+              className="size-3.5"
+            />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="tooltip-compact">
+          Eject
+        </TooltipContent>
+      </Tooltip>
+    ) : null;
+
+  // Recommended's own row, for a loaded model that list does not carry.
+  const renderLoadedRow = (entry: (typeof loadedModels)[number]) => {
+    const optionKey = makeModelOptionKey("loaded", entry.id);
+    const isSelected = modelIdsMatchForPicker(value, entry.id);
+    const quant = entry.quant ?? (isSelected ? activeGgufVariant : null);
+    return (
+      <div
+        key={optionKey}
+        className={downloadedRowShellClassName(isSelected)}
+      >
+        <div className="min-w-0 flex-1">
+          <ModelRow
+            label={entry.id}
+            tooltipText={entry.id}
+            hideOwner={isUnslothOwned(entry.id)}
+            alignMeta="hub"
+            meta={quant ? "GGUF" : extractParamLabel(entry.id)}
+            tags={quant ? [ggufQuantChipLabel(quant)] : undefined}
+            selected={isSelected}
+            loaded={true}
+            optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
+            onClick={() =>
+              onSelect(entry.id, {
+                source: "hub",
+                isLora: false,
+                ggufVariant: quant ?? undefined,
+                isDownloaded: true,
+                isGguf: Boolean(quant),
+              })
+            }
+            vramStatus={null}
+            className={downloadedRowButtonClassName}
+          />
+        </div>
+        <span className={ROW_ACTIONS_CLASS}>
+          {renderEjectAction(entry.id)}
+        </span>
+      </div>
+    );
+  };
 
   // A pinned quant: repo name with the quant as a grey chip, loaded in one click.
   const renderPinnedQuantRow = (entry: { repoId: string; quant: string }) => {
@@ -5252,7 +5372,7 @@ export function HubModelPicker({
             gpuGb={expanderGpuGb}
             showVision={c.has_vision || sole.hasVision}
             selected={isSelected}
-            loaded={rowState.loaded}
+            loaded={rowState.loaded || isKeptLoaded(c.repo_id)}
             alignMeta="device"
             optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
             onClick={() => onSelect(c.repo_id, selectMeta)}
@@ -5261,7 +5381,8 @@ export function HubModelPicker({
           />
         </div>
         <span className={ROW_ACTIONS_CLASS}>
-          {onConfigure && (
+          {renderEjectAction(c.repo_id)}
+          {onConfigure && !isKeptLoaded(c.repo_id) && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${c.repo_id} ${variant.quant}`}
               onConfigure={() => onConfigure(c.repo_id, selectMeta)}
@@ -5337,12 +5458,15 @@ export function HubModelPicker({
               partial={isPartialRepo}
               partialResumable={c.partial_resumable}
               selected={isSelected}
-              loaded={isRuntimeLoadedModel(
-                loadedModelId,
-                activeGgufVariant,
-                c.repo_id,
-                "required",
-              )}
+              loaded={
+                isKeptLoaded(c.repo_id) ||
+                isRuntimeLoadedModel(
+                  loadedModelId,
+                  activeGgufVariant,
+                  c.repo_id,
+                  "required",
+                )
+              }
               optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
               onClick={() => toggleGgufExpanded(c.repo_id, expanderOpen)}
               onArrowDownIntoChildren={
@@ -5464,12 +5588,15 @@ export function HubModelPicker({
             alignMeta="device"
             partial={isPartial}
             partialResumable={c.partial_resumable}
-            loaded={isRuntimeLoadedModel(
-              loadedModelId,
-              activeGgufVariant,
-              c.repo_id,
-              "none",
-            )}
+            loaded={
+              isKeptLoaded(c.repo_id) ||
+              isRuntimeLoadedModel(
+                loadedModelId,
+                activeGgufVariant,
+                c.repo_id,
+                "none",
+              )
+            }
             optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
             onClick={() =>
               onSelect(c.repo_id, {
@@ -5491,7 +5618,8 @@ export function HubModelPicker({
         <span
           className={isPartial ? ROW_ACTIONS_PINNED_CLASS : ROW_ACTIONS_CLASS}
         >
-          {onConfigure && (
+          {renderEjectAction(c.repo_id)}
+          {onConfigure && !isKeptLoaded(c.repo_id) && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${c.repo_id}`}
               onConfigure={() =>
@@ -5695,6 +5823,12 @@ export function HubModelPicker({
               onEject || isChatPicker ? "pb-[60px]" : "pb-4",
             )}
           >
+            {loadedRows.length > 0 ? (
+              <div className="pb-1.5">
+                {loadedRows.map(renderLoadedRow)}
+                <div className="mx-2.5 mt-1.5 border-t border-border/50" />
+              </div>
+            ) : null}
             {showConnected ? (
               connectedGroups.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
@@ -6606,6 +6740,7 @@ export function HubModelPicker({
                     ) : (
                       recommendedRows.map((r) => {
                         const id = r.id;
+                        if (loadedRowIds.has(id.toLowerCase())) return null;
                         const info = recommendedMeta.get(id);
                         const isG = isKnownGgufRepo(id);
                         const optionKey = makeModelOptionKey("recommended", id);
@@ -6992,12 +7127,12 @@ export function HubModelPicker({
           {onEject ? (
             <button
               type="button"
-              onClick={onEject}
+              onClick={() => (ejectsAll ? onEjectAll?.() : onEject())}
               className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--destructive)_12%,var(--popover))] dark:bg-[color-mix(in_srgb,var(--foreground)_10%,var(--sidebar))] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--destructive)_22%,var(--sidebar))]"
-              title="Eject model"
+              title={ejectsAll ? "Eject all models" : "Eject model"}
             >
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-              Eject model
+              {ejectsAll ? "Eject all" : "Eject model"}
             </button>
           ) : null}
         </div>

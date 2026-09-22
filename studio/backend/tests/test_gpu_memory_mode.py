@@ -1462,7 +1462,7 @@ def test_a_cpu_only_chat_load_does_not_take_the_gpu_arbiter():
     # The stale CHAT claim is dropped only AFTER the load: this one may be replacing a GPU-backed chat model, and releasing
     # earlier would let an image/video load allocate alongside the model not yet unloaded.
     release = load_impl.index("await asyncio.to_thread(release, CHAT)", acquire)
-    assert load_impl.index("if not chat_load_needs_gpu:", acquire) < release
+    assert load_impl.index("if replacing and not chat_load_needs_gpu:", acquire) < release
     assert load_impl.index("success = await load_with_tensor_fallback(", acquire) < release
     assert "if chat_load_needs_gpu and current_owner() != CHAT:" in load_impl
     # The already-loaded fast path re-asserts ownership too; same exemption.

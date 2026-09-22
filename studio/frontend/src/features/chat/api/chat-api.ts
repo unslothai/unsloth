@@ -441,12 +441,37 @@ export async function fetchGgufStagedMetadata(payload: {
   };
 }
 
+/** The unload was refused because chats are still generating on that model. */
+export class ActiveGenerationsError extends Error {
+  readonly running: number;
+
+  constructor(message: string, running: number) {
+    super(message);
+    this.name = "ActiveGenerationsError";
+    this.running = running;
+  }
+}
+
 export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
   const response = await authFetch("/api/inference/unload", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  if (response.status === 409) {
+    const body = (await response
+      .clone()
+      .json()
+      .catch(() => null)) as {
+      detail?: { error?: string; message?: string; running?: number };
+    } | null;
+    if (body?.detail?.error === "active_generations") {
+      throw new ActiveGenerationsError(
+        body.detail.message ?? "Chats are still generating on this model.",
+        body.detail.running ?? 1,
+      );
+    }
+  }
   await parseJsonOrThrow<unknown>(response, "Model unload");
   // Only after the unload is known to have happened: a rejected one leaves the model
   // resident and the notice true. A different model's unload leaves it standing.

@@ -105,7 +105,10 @@ interface ModelSelectorProps {
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   /** Optional task-specific resolver for companion assets a GGUF row alone cannot describe. */
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
-  onEject?: () => void;
+  onEject?: (modelId?: string) => void;
+  onEjectAll?: () => void;
+  /** Local models held in memory. With more than one, the trigger names the count, not one of them. */
+  loadedCount?: number;
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -143,9 +146,11 @@ function ModelSelectorTrigger({
   triggerLabelClassName,
   dataTour,
   onEject,
+  loadedCount = 0,
   // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
   placeholder = "Select model",
 }: {
+  loadedCount?: number;
   currentModel?: ModelOption;
   isLoaded: boolean;
   showCloudIndicator?: boolean;
@@ -157,6 +162,7 @@ function ModelSelectorTrigger({
   onEject?: () => void;
   placeholder?: string;
 }) {
+  const severalLoaded = loadedCount > 1;
   return (
     <PopoverTrigger asChild={true}>
       <button
@@ -223,7 +229,9 @@ function ModelSelectorTrigger({
               triggerLabelClassName,
             )}
           >
-            {currentModel?.name ?? placeholder}
+            {severalLoaded
+              ? `${loadedCount} models loaded`
+              : (currentModel?.name ?? placeholder)}
             {showCloudIndicator ? (
               <HugeiconsIcon
                 icon={CloudIcon}
@@ -232,14 +240,15 @@ function ModelSelectorTrigger({
               />
             ) : null}
           </span>
-          {currentModel?.description && (
+          {/* With several loaded the title is the count, so this names the one chat is sending to. */}
+          {(severalLoaded ? currentModel?.name : currentModel?.description) && (
             <span
               className={cn(
-                "shrink-0 text-xs leading-none text-muted-foreground",
+                "min-w-0 shrink truncate text-xs leading-none text-muted-foreground",
                 showCloudIndicator ? "" : "ml-2",
               )}
             >
-              {currentModel.description}
+              {severalLoaded ? currentModel?.name : currentModel?.description}
             </span>
           )}
         </span>
@@ -318,6 +327,7 @@ function ModelSelectorContent({
   onSelect,
   resolveDownloadFootprint,
   onEject,
+  onEjectAll,
   onFoldersChange,
   onBrowseHub,
   onModelsChange,
@@ -345,7 +355,8 @@ function ModelSelectorContent({
   onConfigRequestAdopted?: (requestId: string) => void;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
-  onEject?: () => void;
+  onEject?: (modelId?: string) => void;
+  onEjectAll?: () => void;
   onFoldersChange?: () => void;
   onBrowseHub?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
@@ -614,6 +625,7 @@ function ModelSelectorContent({
               onConfigure={openConfigPage}
               deleteDisabled={deleteDisabled}
               onEject={hasSelection && onEject ? onEject : undefined}
+              onEjectAll={onEjectAll}
               task={task}
               catalog={catalog}
               communityModelPolicy={communityModelPolicy}
@@ -661,6 +673,7 @@ export function ModelSelector({
   onValueChange,
   resolveDownloadFootprint,
   onEject,
+  onEjectAll,
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
@@ -679,6 +692,7 @@ export function ModelSelector({
   communityModelPolicy = "none",
   placeholder,
   loaded,
+  loadedCount,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -792,9 +806,10 @@ export function ModelSelector({
     setOpen(false);
   }
 
-  function handleEject() {
-    onEject?.();
-    setOpen(false);
+  function handleEject(modelId?: string) {
+    onEject?.(modelId);
+    // Ejecting a model kept alongside leaves the list open to act on the rest.
+    if (!modelId) setOpen(false);
   }
 
   function handleBrowseHub() {
@@ -813,7 +828,8 @@ export function ModelSelector({
         className={className}
         triggerLabelClassName={triggerLabelClassName}
         dataTour={triggerDataTour}
-        onEject={onEject ? handleEject : undefined}
+        onEject={onEject ? () => handleEject() : undefined}
+        loadedCount={loadedCount}
         placeholder={placeholder}
       />
       <ModelSelectorContent
@@ -835,6 +851,14 @@ export function ModelSelector({
         onSelect={handleSelect}
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
+        onEjectAll={
+          onEjectAll
+            ? () => {
+                onEjectAll();
+                setOpen(false);
+              }
+            : undefined
+        }
         onFoldersChange={onFoldersChange}
         // A curated task picker (Images / Video) is self-contained, so it omits this. A
         // community-enabled one (Audio) already lists past unsloth, so it keeps it.

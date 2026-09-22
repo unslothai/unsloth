@@ -213,6 +213,8 @@ export function isMultimodalResponse(
 
 export interface LoadModelResponse {
   is_mlx?: boolean;
+  /** Models loaded alongside that were unloaded to make room for this one. */
+  evicted?: string[];
   status: string;
   model: string;
   display_name: string;
