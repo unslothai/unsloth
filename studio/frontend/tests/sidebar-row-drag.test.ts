@@ -14,6 +14,7 @@ import {
   planSidebarDrop,
   rowKey,
   sectionRingKey,
+  SIDEBAR_TAIL_ID,
   STAY,
   type SidebarDragItem,
   type SidebarDropOutcome,
@@ -1071,6 +1072,77 @@ test("a sort picked while a move is in flight is not overwritten", () => {
   assert.ok(
     !/chatSort !== "manual"|pinnedSort !== "manual"/.test(commit),
     "the switch still tests the render's own sort",
+  );
+});
+
+// A folder last in Pinned runs its block to the bottom of the section, so every pixel below its
+// title is inside it and a chat aimed past the folder was filed into it. There was no "after".
+test("a chat can be dropped after a folder that ends the Pinned list", () => {
+  const workScope = projectOrderScope("work");
+  const ctx = context({
+    pinnedChatIds: new Set(),
+    orders: {
+      ...context().orders,
+      pinned: ["work"],
+      projectChats: () => ["w1", "w2"],
+    },
+  });
+  const drag = chat("r1", "recents", RECENTS_ORDER_SCOPE, null);
+  // As the folder's chat rows are drawn: the block's last row names itself as its end.
+  const lastInBlock: SidebarDropZone = {
+    ...chatRow("pinned", workScope, "w2", "work", { index: 1, count: 2 }),
+    blockEnd: { scope: workScope, id: "w2" },
+  };
+  // The lowest row of the block still means "into the folder, last", which is the other fix.
+  const intoFolder = plannedDrop(
+    planSidebarDrop(drag, lastInBlock, "bottom", ctx),
+  );
+  assert.deepEqual(intoFolder.action, { kind: "move", projectId: "work" });
+  // The section's tail is a row of its own, so "after the folder" has somewhere to aim.
+  const afterFolder = plannedDrop(
+    planSidebarDrop(
+      drag,
+      {
+        section: "pinned",
+        blockEnd: { scope: PINNED_ORDER_SCOPE, id: SIDEBAR_TAIL_ID },
+      },
+      "bottom",
+      ctx,
+    ),
+  );
+  assert.deepEqual(afterFolder.action, { kind: "pin" });
+  assert.deepEqual(afterFolder.effects.orders, [
+    { scope: PINNED_ORDER_SCOPE, ids: ["work", "r1"] },
+  ]);
+  // Its own line, not the one under the folder's last chat: same pixels would be two drops.
+  assert.deepEqual(afterFolder.cue, {
+    line: { rowKey: rowKey(PINNED_ORDER_SCOPE, SIDEBAR_TAIL_ID), edge: "bottom" },
+  });
+  assert.notDeepEqual(afterFolder.cue, intoFolder.cue);
+  // Drawn only while a row is carried, and only when a folder is what ends the list.
+  assert.match(
+    APP_SIDEBAR,
+    /const pinnedEndsInFolder =\n\s*pinnedRows\[pinnedRows\.length - 1\]\?\.kind === "project";/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /\{draggingRow && pinnedEndsInFolder && \(\n\s*<SidebarMenuItem\n\s*aria-hidden/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /dropCueClass\(PINNED_ORDER_SCOPE, SIDEBAR_TAIL_ID\),/,
+  );
+  // A folder over another folder's block still lands below that block, as it always did.
+  assert.deepEqual(
+    plannedDrop(
+      planSidebarDrop(
+        folder("home", "projects", PROJECT_ORDER_SCOPE),
+        lastInBlock,
+        "bottom",
+        ctx,
+      ),
+    ).cue,
+    { line: { rowKey: rowKey(workScope, "w2"), edge: "bottom" } },
   );
 });
 
