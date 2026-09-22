@@ -1570,6 +1570,66 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
         return False
 
 
+_ARCH_MARKER_CACHE: dict[tuple[str, int, int, str], bool] = {}
+
+
+def binary_carries_marker(binary: Optional[str], marker: Optional[str]) -> bool:
+    """Whether the sd.cpp executable at ``binary`` contains the literal ``marker``.
+
+    An architecture upstream has not implemented leaves no trace in the build, so this answers
+    "can this particular sd-cli/sd-server run that model" for a build whose version string cannot:
+    our mirror releases all name the same upstream base in their tag whatever tree was built, and a
+    binary reached through SD_CLI_PATH has no install record to consult at all.
+
+    No marker means no claim, so an unmarked family is True and nothing changes for it. An
+    unreadable binary is True as well: refusing a load because a stat failed would take the native
+    route away on a host where it works, and the old behaviour (attempt, fail, surface the error)
+    is no worse than what this replaces.
+
+    Scanned in chunks with an overlap, since the literal can straddle a boundary, and memoised on
+    (path, size, mtime) so a reinstall is noticed while repeated loads read 100+ MB once.
+    """
+    if not marker:
+        return True
+    if not binary:
+        return False
+    try:
+        st = os.stat(binary)
+        key = (str(binary), int(st.st_size), int(st.st_mtime_ns), marker)
+    except OSError:
+        return True
+    hit = _ARCH_MARKER_CACHE.get(key)
+    if hit is not None:
+        return hit
+    needle = marker.encode()
+    chunk = 8 << 20
+    found = False
+    try:
+        with open(binary, "rb") as fh:
+            tail = b""
+            while True:
+                block = fh.read(chunk)
+                if not block:
+                    break
+                if needle in tail + block:
+                    found = True
+                    break
+                tail = block[-(len(needle) - 1):] if len(needle) > 1 else b""
+    except OSError:
+        return True
+    _ARCH_MARKER_CACHE[key] = found
+    return found
+
+
+def sd_cpp_binary_runs_family(binary: Optional[str], fam: Any) -> bool:
+    """Whether the sd.cpp build at ``binary`` implements ``fam``'s architecture.
+
+    The companion to ``family_sd_cpp_supported``, which only says whether the family has assets to
+    hand sd-cli. This is the half that looks at the disk.
+    """
+    return binary_carries_marker(binary, getattr(fam, "sd_cpp_arch_marker", None))
+
+
 def _installed_accelerator_of(binary: Optional[str]) -> Optional[str]:
     """The accelerator class recorded for the managed install ``binary`` belongs to.
 
