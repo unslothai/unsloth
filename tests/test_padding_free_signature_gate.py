@@ -251,6 +251,185 @@ def test_a_string_model_that_can_take_the_metadata_is_left_alone(monkeypatch):
     assert instance.args.padding_free is True
 
 
+def _fake_config():
+    """A config just real enough for the model-type lookup the wrapper does first."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        model_type = "llama",
+        architectures = ["LlamaForCausalLM"],
+        auto_map = None,
+        is_encoder_decoder = False,
+        to_dict = lambda: {"model_type": "llama"},
+    )
+
+
+def test_the_class_behind_a_string_is_resolved_without_downloading_weights():
+    """A string names a class, and the class carries the forward the instance will.
+
+    Resolving it is what keeps the string case an ordinary silent block instead of a
+    refusal after `__init__`. `from_pretrained` is never called, so no checkpoint is
+    fetched: a config built in memory is enough.
+    """
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    from unsloth.trainer import _resolve_string_model_class
+
+    config = LlamaConfig(architectures = ["LlamaForCausalLM"])
+    assert _resolve_string_model_class("any/name", config, None) is LlamaForCausalLM
+
+    # and with no `architectures` recorded, the auto mappings answer from the config class
+    bare = LlamaConfig()
+    bare.architectures = None
+    assert _resolve_string_model_class("any/name", bare, None) is LlamaForCausalLM
+
+
+def test_an_unresolvable_string_returns_none_rather_than_guessing():
+    """None leaves the post-init backstop in charge, which is the safe answer."""
+    from transformers import LlamaConfig
+
+    from unsloth.trainer import _resolve_string_model_class
+
+    # no config at all
+    assert _resolve_string_model_class("any/name", None, None) is None
+    # not a string
+    assert _resolve_string_model_class(_NoKwargs(), LlamaConfig(), None) is None
+    # an architecture name that is not in the transformers namespace, and a config class
+    # that is in no auto mapping
+    class _UnknownConfig:
+        architectures = ["NoSuchModelForCausalLM"]
+        auto_map = None
+
+    assert _resolve_string_model_class("any/name", _UnknownConfig(), None) is None
+
+
+def test_a_resolvable_string_is_blocked_silently_instead_of_raising(monkeypatch):
+    """The whole point of resolving early: no exception, just padding-free turned off.
+
+    Before this, a string `model=` fell through to the post-init refusal even though
+    the user had configured nothing -- padding-free is auto-enabled by Unsloth, so the
+    crash was for a feature they never asked for.
+    """
+    from types import SimpleNamespace
+
+    import unsloth.trainer as trainer_module
+
+    class _StubSFTTrainer:
+        def __init__(self, model = None, args = None, **kwargs):
+            self.model = _NoKwargs() if isinstance(model, str) else model
+            self.args = args
+
+    injected = []
+    for _name in ("enable_padding_free_metadata", "enable_sample_packing"):
+        monkeypatch.setattr(trainer_module, _name, lambda model, trainer: injected.append(model))
+    monkeypatch.setattr(
+        trainer_module, "_resolve_string_model_config", lambda *a, **k: _fake_config()
+    )
+    monkeypatch.setattr(trainer_module, "_resolve_string_model_class", lambda *a, **k: _NoKwargs)
+
+    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    trainer_module._patch_sft_trainer_auto_packing(module)
+
+    config = SimpleNamespace(packing = False, padding_free = None, max_length = 512)
+    instance = module.SFTTrainer(model = "microsoft/Phi-4-reasoning-vision-15B", args = config)
+
+    assert instance.args.padding_free is False, "padding-free must be off, not fatal"
+    assert injected == [], "nothing may wrap the collator for this forward"
+
+
+def test_a_resolvable_string_that_accepts_the_metadata_keeps_padding_free(monkeypatch):
+    """The control: resolving early must not cost a normal checkpoint its padding-free."""
+    from types import SimpleNamespace
+
+    import unsloth.trainer as trainer_module
+
+    class _StubSFTTrainer:
+        def __init__(self, model = None, args = None, **kwargs):
+            self.model = _TakesKwargs() if isinstance(model, str) else model
+            self.args = args
+
+    injected = []
+    monkeypatch.setattr(
+        trainer_module,
+        "enable_padding_free_metadata",
+        lambda model, trainer: injected.append(model),
+    )
+    monkeypatch.setattr(
+        trainer_module, "_resolve_string_model_config", lambda *a, **k: _fake_config()
+    )
+    monkeypatch.setattr(trainer_module, "_resolve_string_model_class", lambda *a, **k: _TakesKwargs)
+
+    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    trainer_module._patch_sft_trainer_auto_packing(module)
+
+    config = SimpleNamespace(packing = False, padding_free = True, max_length = 512)
+    instance = module.SFTTrainer(model = "meta-llama/Llama-3.1-8B", args = config)
+
+    assert instance.args.padding_free is True
+    assert len(injected) == 1
+
+
+def test_the_warning_names_the_resolved_class_not_str(monkeypatch, caplog):
+    """`str.forward()` would name the spelling rather than the checkpoint."""
+    import logging
+    from types import SimpleNamespace
+
+    import unsloth.trainer as trainer_module
+
+    class _StubSFTTrainer:
+        def __init__(self, model = None, args = None, **kwargs):
+            self.model = _NoKwargs() if isinstance(model, str) else model
+            self.args = args
+
+    for _name in ("enable_padding_free_metadata", "enable_sample_packing"):
+        monkeypatch.setattr(trainer_module, _name, lambda model, trainer: None)
+    monkeypatch.setattr(
+        trainer_module, "_resolve_string_model_config", lambda *a, **k: _fake_config()
+    )
+    monkeypatch.setattr(trainer_module, "_resolve_string_model_class", lambda *a, **k: _NoKwargs)
+
+    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    trainer_module._patch_sft_trainer_auto_packing(module)
+
+    # packing=True so the reason chain actually emits its warning
+    config = SimpleNamespace(packing = True, padding_free = None, max_length = 512)
+    with caplog.at_level(logging.WARNING, logger = trainer_module.logger.name):
+        module.SFTTrainer(model = "microsoft/Phi-4-reasoning-vision-15B", args = config)
+
+    assert "_NoKwargs.forward()" in caplog.text
+    assert "str.forward()" not in caplog.text
+
+
+def test_a_resolver_that_explodes_falls_back_to_the_backstop(monkeypatch):
+    """Resolution is best-effort; a failure must not become the user's problem."""
+    from types import SimpleNamespace
+
+    import unsloth.trainer as trainer_module
+
+    class _StubSFTTrainer:
+        def __init__(self, model = None, args = None, **kwargs):
+            self.model = _NoKwargs() if isinstance(model, str) else model
+            self.args = args
+
+    def _explode(*a, **k):
+        raise RuntimeError("hub is down")
+
+    for _name in ("enable_padding_free_metadata", "enable_sample_packing"):
+        monkeypatch.setattr(trainer_module, _name, lambda model, trainer: None)
+    monkeypatch.setattr(
+        trainer_module, "_resolve_string_model_config", lambda *a, **k: _fake_config()
+    )
+    monkeypatch.setattr(trainer_module, "_resolve_string_model_class", _explode)
+
+    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    trainer_module._patch_sft_trainer_auto_packing(module)
+
+    config = SimpleNamespace(packing = False, padding_free = True, max_length = 512)
+    # still caught, just later and loudly, exactly as before this resolution existed
+    with pytest.raises(ValueError, match = "packed_seq_lengths"):
+        module.SFTTrainer(model = "microsoft/Phi-4-reasoning-vision-15B", args = config)
+
+
 def test_every_delegating_wrapper_is_unwrapped():
     """Their forward is variadic, so they answer yes for anything they hold.
 
