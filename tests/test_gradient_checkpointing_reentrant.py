@@ -83,26 +83,22 @@ def test_a_config_asking_for_context_fn_is_left_alone():
     # supported when use_reentrant=False" as soon as a checkpointed forward
     # runs, so pinning here would turn a working setup into a crash.
     sentinel = object()
-    config = _run_post(_Config(kwargs = {"use_reentrant": False,
-                                         "context_fn": sentinel}))
+    config = _run_post(_Config(kwargs = {"use_reentrant": False, "context_fn": sentinel}))
     assert config.gradient_checkpointing_kwargs == {
-        "use_reentrant": False, "context_fn": sentinel,
+        "use_reentrant": False,
+        "context_fn": sentinel,
     }
 
 
 def test_a_config_asking_for_debug_is_left_alone():
     config = _run_post(_Config(kwargs = {"use_reentrant": False, "debug": True}))
-    assert config.gradient_checkpointing_kwargs == {
-        "use_reentrant": False, "debug": True,
-    }
+    assert config.gradient_checkpointing_kwargs == {"use_reentrant": False, "debug": True}
 
 
 def test_a_falsy_debug_does_not_block_the_pin():
     # debug=False is the torch default, so it is not a non-reentrant request.
     config = _run_post(_Config(kwargs = {"debug": False}))
-    assert config.gradient_checkpointing_kwargs == {
-        "debug": False, "use_reentrant": True,
-    }
+    assert config.gradient_checkpointing_kwargs == {"debug": False, "use_reentrant": True}
 
 
 def test_checkpointing_off_is_left_completely_alone():
