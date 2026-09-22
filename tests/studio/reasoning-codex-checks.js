@@ -122,7 +122,7 @@ async (page) => {
   }
   await page.evaluate(() => window.__reasoning.seed({ text: "Earlier thought.\n\n".repeat(1000) + '```html\n<!doctype html><html><head><title>Fence regression</title></head><body>Game</body></html>\n```' }));
   await page.mouse.wheel(0, 100000);
-  await page.getByRole("button", { name: "Open Fence regression preview", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Open HTML preview preview", exact: true }).waitFor();
 
   const codeSource = "const bird = { x: 80, y: 140, velocity: 0 };\n".repeat(1000).trimEnd();
   await page.evaluate((source) => {
