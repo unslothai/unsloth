@@ -84,7 +84,6 @@ import {
   AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
-  DragDropVerticalIcon,
   Edit03Icon,
   FolderAddIcon,
   FolderAttachmentIcon,
@@ -124,7 +123,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, ChevronUp, Moon } from "lucide-react";
+import { ArrowRightIcon, ChevronDown, ChevronUp, GitBranchIcon, Moon } from "lucide-react";
 import {
   Link,
   useNavigate,
@@ -135,11 +134,15 @@ import {
   archiveChatItem,
   ChatSearchDialog,
   clearNewChatDraft,
+  canForkChatRow,
   chatExportOptions,
   EditProjectDialog,
   OpenChatFolderUnavailableItem,
   exportConversationByFormat,
+  forkChatRow,
+  showForkCreatedToast,
   getSidebarItemThreadIds,
+  useForkInFlight,
   sandboxSessionIdsHolding,
   deleteChatProject,
   deleteChatItem,
@@ -227,7 +230,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { createPortal } from "react-dom";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { useIsCoarsePointer } from "@/hooks/use-mobile";
@@ -1138,6 +1140,8 @@ export function AppSidebar() {
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   // The whole map, so each row can show its own spinner.
   const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
+  // Shared with the thread's own Fork, so neither surface can post a second one.
+  const forkInFlight = useForkInFlight((s) => s.forking);
   // Rows, not raw thread ids: a compare conversation runs two pane threads but is one row.
   const runningChatCount = useMemo(() => {
     const running = new Set(
@@ -1810,7 +1814,6 @@ export function AppSidebar() {
       projectChatRowIds,
     ],
   );
-  const dropHintRef = useRef<HTMLDivElement | null>(null);
   // A chat's row stays on screen while its move is written, so it can be dropped again before
   // the first move lands. Moves of one chat run one after another, and only the latest drop
   // commits its slot and pin, so an earlier drop cannot land after, or on top of, a later one.
@@ -1821,7 +1824,6 @@ export function AppSidebar() {
   const coarsePointer = useIsCoarsePointer();
   const dnd = useSidebarDrag({
     context: dropContext,
-    hintRef: dropHintRef,
     // A closed folder or section the pointer rests on opens.
     onSpringOpen: (zone) => {
       if (zone.folderId) {
@@ -1969,59 +1971,6 @@ export function AppSidebar() {
       </>
     );
   }
-
-  /** The hint beside the cursor: what the drop would do. */
-  function dropHint(plan: SidebarDropPlan): {
-    icon: typeof PinIcon;
-    text: string;
-  } {
-    switch (plan.action.kind) {
-      case "pin":
-        return { icon: PinIcon, text: t("shell.drag.pin") };
-      case "unpin":
-        return { icon: PinOffIcon, text: t("shell.drag.unpin") };
-      case "reorder":
-        return { icon: DragDropVerticalIcon, text: t("shell.drag.reorder") };
-      case "move": {
-        const projectId = plan.action.projectId;
-        if (projectId === null) {
-          return { icon: MessageCircleIcon, text: t("shell.drag.moveToRecents") };
-        }
-        const name = projects.find((project) => project.id === projectId)?.name ?? "";
-        return { icon: Folder01Icon, text: t("shell.drag.moveTo", { name }) };
-      }
-    }
-  }
-
-  /** The hint, in a portal so the sidebar cannot clip it. Positioned through the ref, hidden
-   *  between answers rather than unmounted. No inline style: a re-render would write it back
-   *  over the transform the pointer set. */
-  const dropHintPortal =
-    draggingRow && typeof document !== "undefined"
-      ? createPortal(
-          <div
-            ref={dropHintRef}
-            data-testid="sidebar-drop-hint"
-            aria-hidden
-            className={cn(
-              "pointer-events-none fixed left-0 top-0 z-[100] flex items-center gap-1.5 rounded-full border border-border bg-popover px-2.5 py-1 text-ui-12 leading-ui-16 font-medium text-popover-foreground shadow-md transition-opacity duration-100",
-              dnd.plan ? "opacity-100" : "opacity-0",
-            )}
-          >
-            {dnd.plan && (
-              <>
-                <HugeiconsIcon
-                  icon={dropHint(dnd.plan).icon}
-                  strokeWidth={1.75}
-                  className="size-3.5 shrink-0"
-                />
-                <span className="max-w-48 truncate">{dropHint(dnd.plan).text}</span>
-              </>
-            )}
-          </div>,
-          document.body,
-        )
-      : null;
 
   useEffect(() => {
     const activeVisibleThreadIdSet = new Set(
@@ -2408,6 +2357,32 @@ export function AppSidebar() {
       toast.error("Failed to archive chat", {
         description: err instanceof Error ? err.message : undefined,
       });
+    }
+  }
+
+  /** Forks a chat from the row menu and opens the copy, the way the thread's own Fork does. */
+  async function forkChatFromRow(item: SidebarItem) {
+    // Read, do not trust the render: reopening the menu and picking Fork again before the first
+    // request lands would post a second, each with its own new thread id.
+    const inFlight = useForkInFlight.getState();
+    if (inFlight.forking) return;
+    inFlight.setForking(true);
+    try {
+      const result = await forkChatRow(item);
+      setActiveThreadId(result.thread.id);
+      navigate({ to: "/chat", search: { thread: result.thread.id } });
+      showForkCreatedToast(result.containerSnapshotWarning);
+    } catch (error) {
+      // A chat still generating is a refusal, not a failure: say so without the alarm.
+      if ((error as { unslothForkRefused?: boolean } | null)?.unslothForkRefused) {
+        toast.info(error instanceof Error ? error.message : "Cannot fork this chat.");
+      } else {
+        toast.error("Failed to fork", {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
+    } finally {
+      inFlight.setForking(false);
     }
   }
 
@@ -3470,6 +3445,16 @@ export function AppSidebar() {
                     : t("shell.selection.markUnread")}
                 </span>
               </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!canForkChatRow(item) || isGenerating || forkInFlight}
+                title="Copy this chat into a new one, from its last message"
+                onSelect={() => void forkChatFromRow(item)}
+              >
+                <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+                <span>Fork</span>
+              </DropdownMenuItem>
+              {/* Rename through Fork act on the row; the rule sets off what reaches outside it. */}
+              <DropdownMenuSeparator />
               {sandboxSessionId ? (
                 isTauri ? (
                   <DropdownMenuItem
@@ -3875,7 +3860,6 @@ export function AppSidebar() {
   return (
     <>
       {slotShortcuts}
-      {dropHintPortal}
     <Sidebar
       collapsible="icon"
       collapseToZero={isTauri}

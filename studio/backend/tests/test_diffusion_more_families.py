@@ -692,7 +692,13 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
     assert len(encoders) == 1
     repo, filename, kind = encoders[0]
     assert repo == "unsloth/Qwen3-VL-8B-Instruct-GGUF"
-    assert filename == "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
+    # Which rung is the family's call, pinned by exact name in
+    # test_diffusion_compat_preflight.py::test_qwen_image_2_1_takes_the_dynamic_4bit_text_encoder.
+    # Restating it here broke when #11542 moved it to UD-Q4_K_XL. What this route needs is that
+    # the declared file is what reaches sd.cpp, and that it stays a 4-bit GGUF: the CPU RAM win
+    # is the reason the no-GPU route exists (bf16 is 16.4 GB).
+    assert filename == fam.sd_cpp_text_encoders[0][1]
+    assert filename.endswith(".gguf") and "Q4_K" in filename, filename
     assert kind == "llm"
     assert text_encoder_flags_for_family(fam.name) == ("--llm",)
 
@@ -734,7 +740,16 @@ def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
 
 def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade():
     """``pip install -U 'diffusers>=0.41.0'`` has no candidate while 0.41.0 is unreleased, so the
-    refusal has to name the pinned main build Studio actually installs for this class."""
+    refusal has to name the pinned main build Studio actually installs for this class.
+
+    And it has to name a remedy that WORKS for the cause that produces this refusal. Measured on a
+    host whose git exits non-zero: the install keeps diffusers 0.40.0, and the old text sent the
+    reader to `pip install -r diffusers-main.txt`, which resolves the same git+https requirement
+    and fails identically. The quoted zip URL needs no git, so it is the one line here that has to
+    stay true, hence the check that it names the commit the pin file actually carries."""
+    import pathlib
+    import re as _re
+
     from core.inference.diffusion_families import (
         _PIPELINE_MIN_DIFFUSERS,
         _UNRELEASED_MIN_DIFFUSERS,
@@ -743,8 +758,15 @@ def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade
 
     message = _too_old_message("QwenImage21Pipeline", "qwen-image-2.1", "0.40.0")
     assert "pip install -U 'diffusers>=0.41.0'" not in message
-    assert "diffusers-main.txt" in message
     assert "has not been released yet" in message
+    assert "git --version" in message, "the likely cause has to be checkable by the reader"
+
+    pin = pathlib.Path(__file__).resolve().parents[1] / "requirements" / "diffusers-main.txt"
+    commit = _re.search(r"@([0-9a-fA-F]{40})\b", pin.read_text(encoding = "utf-8"))
+    assert commit is not None, "the main pin must carry a full commit for the zip route to exist"
+    assert (
+        f"https://github.com/huggingface/diffusers/archive/{commit.group(1).lower()}.zip" in message
+    ), message
 
     # A released minimum keeps the ordinary remedy.
     released = _too_old_message("Krea2Pipeline", "krea-2", "0.38.0")

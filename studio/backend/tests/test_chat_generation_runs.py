@@ -123,6 +123,7 @@ def test_create_is_owner_scoped_idempotent_and_binds_placeholder(chat_home):
         "serverManaged": True,
     }
     _assert_protected({**message, "content": [{"type": "text", "text": "stale overwrite"}]})
+
     synced = studio_db.sync_chat_messages("thread-1", [], prune_missing = True)
     assert {message["id"] for message in synced} == {"user-1", "assistant-1"}
     assert runs_db.get_run("run-1", "alice") is not None
@@ -138,6 +139,63 @@ def test_create_is_owner_scoped_idempotent_and_binds_placeholder(chat_home):
         _create(owner = "bob")
     with pytest.raises(runs_db.ChatGenerationConflictError):
         _create(request = _request(max_tokens = 9))
+
+
+@pytest.mark.parametrize("admit_before_route", [True, False])
+def test_fork_refuses_durable_run_before_supervisor_registration(
+    chat_home, monkeypatch, admit_before_route
+):
+    from fastapi import HTTPException
+    from routes import chat_history
+    from state import active_generations
+
+    assert "thread-1" not in active_generations.active_thread_ids()
+    if admit_before_route:
+        _create()
+    else:
+        original_fork = chat_history.fork_chat_thread
+
+        def admit_then_fork(**kwargs):
+            _create()
+            return original_fork(**kwargs)
+
+        monkeypatch.setattr(chat_history, "fork_chat_thread", admit_then_fork)
+
+    with pytest.raises(HTTPException) as exc:
+        chat_history.fork_thread(
+            "thread-1",
+            chat_history.ChatForkRequest(newThreadId = "fork-1", createdAt = 10),
+            current_subject = "alice",
+        )
+    assert exc.value.status_code == 409
+    assert "still generating" in exc.value.detail
+    assert studio_db.get_chat_thread("fork-1") is None
+
+
+def test_fork_resolves_tip_after_concurrent_generation_completes(chat_home, monkeypatch):
+    from routes import chat_history
+
+    original_fork = chat_history.fork_chat_thread
+
+    def complete_then_fork(**kwargs):
+        _create()
+        token = runs_db.get_worker_token("run-1")
+        assert runs_db.mark_running("run-1", token)
+        message = studio_db.get_chat_message("thread-1", "assistant-1")
+        message["content"] = [{"type": "text", "text": "Finished reply"}]
+        message["metadata"].update({"generationSeq": 1, "generationStatus": "running"})
+        studio_db.upsert_chat_message(message)
+        runs_db.finish_run("run-1", worker_token = token, status = "completed")
+        return original_fork(**kwargs)
+
+    monkeypatch.setattr(chat_history, "fork_chat_thread", complete_then_fork)
+    response = chat_history.fork_thread(
+        "thread-1",
+        chat_history.ChatForkRequest(newThreadId = "fork-1", createdAt = 10),
+        current_subject = "alice",
+    )
+    assert response.thread.forkedFromMessageId == "assistant-1"
+    assert response.messages[-1].content == [{"type": "text", "text": "Finished reply"}]
 
 
 def test_shared_thread_rejects_a_second_subjects_active_generation(chat_home):
