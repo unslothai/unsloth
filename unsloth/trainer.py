@@ -1029,6 +1029,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         )
 
         # Disable padding-free for VLMs / custom collators / blocklisted models
+        forward_rejects_packing = not _forward_accepts_packing_kwargs(model)
         blocked = (
             (data_collator is not None)
             or is_processor
@@ -1038,7 +1039,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or is_encoder_decoder
             or (is_hybrid and not hybrid_varlen_active)
             or (os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1")
-            or not _forward_accepts_packing_kwargs(model)
+            or forward_rejects_packing
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
         if blocked:
@@ -1061,6 +1062,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
+            elif forward_rejects_packing:
+                # Name the real blocker: otherwise this falls through to the
+                # UNSLOTH_RETURN_LOGITS branch and points at an unset flag.
+                reason = f"{type(model).__name__}.forward() does not accept packed_seq_lengths"
             elif data_collator is None:
                 # compute_metrics, preprocess_logits_for_metrics, for_inference() and the user can all set it, so
                 # name the flag and not a setter.

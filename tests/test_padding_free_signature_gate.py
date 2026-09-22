@@ -134,3 +134,24 @@ def test_the_defect_is_real():
 def test_the_accepted_shape_really_accepts_it():
     """And the shape the gate allows really does tolerate the argument."""
     _TakesKwargs()(input_ids = torch.zeros(1, 4).long(), packed_seq_lengths = [4])
+
+
+def test_the_blocker_names_itself_in_the_warning():
+    """The reason chain must not blame an unset environment variable.
+
+    When this gate is the sole blocker and the user asked for packing=True,
+    the chain used to fall through to `reason = "UNSLOTH_RETURN_LOGITS=1"`,
+    telling the user to investigate a flag they never set.
+    """
+    import inspect as _inspect
+
+    from unsloth import trainer as trainer_module
+
+    source = _inspect.getsource(trainer_module._patch_sft_trainer_auto_packing)
+    assert "forward_rejects_packing" in source
+    # the new branch must come BEFORE the catch-all env-var branch
+    assert source.index("elif forward_rejects_packing") < source.index(
+        'reason = "UNSLOTH_RETURN_LOGITS=1"'
+    )
+    # and the predicate is evaluated once, not twice
+    assert source.count("_forward_accepts_packing_kwargs(model)") == 1
