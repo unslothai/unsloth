@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Remote code whose config shares a native class name, and per-expert submodule LoRA targets.
 
 The Nemotron-H hub checkpoints (NVIDIA-Nemotron-Labs-Teacher) ship `NemotronHConfig` and

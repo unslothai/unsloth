@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """The root dispatch hook runs where the input embedding lives.
 
 accelerate picks the root execution device as the first member of the SET of devices in the
