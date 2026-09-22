@@ -176,20 +176,76 @@ def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> t
             return ()
     except OSError:
         return ()
+    # A sibling must resolve back inside this repo dir: `is_dir()` follows symlinks
+    # (`follow_symlinks=False` is 3.13+) and only the named snapshot was authorized.
+    try:
+        repo_resolved = repo.resolve()
+        # By identity, not spelling: a sibling symlinked to the selected snapshot made one
+        # snapshot look like two, defeating the `len(roots) > 1` guard downstream.
+        selected_resolved = selected.resolve()
+    except OSError as exc:
+        logger.debug("Stopping at unresolvable repo dir %s: %s", repo, exc)
+        return ()
     siblings = []
     try:
         for path in snapshots.iterdir():
             if path == selected:
                 continue
             try:
-                if path.is_dir():
-                    siblings.append(path)
+                if not path.is_dir():
+                    continue
+                path_resolved = path.resolve()
+                if path_resolved == selected_resolved:
+                    logger.debug("Skipping companion snapshot aliasing %s: %s", selected, path)
+                    continue
+                if repo_resolved not in path_resolved.parents:
+                    logger.debug("Skipping companion snapshot outside %s: %s", repo_resolved, path)
+                    continue
+                siblings.append(path)
             except OSError as exc:
                 logger.debug("Skipping unreadable companion snapshot %s: %s", path, exc)
     except OSError as exc:
         logger.debug("Stopping at unreadable companion snapshots dir %s: %s", snapshots, exc)
     siblings.sort(key = snapshot_selection_key, reverse = True)
     return (str(selected), *(str(path) for path in siblings))
+
+
+def local_path_gguf_companion_roots(load_path: str) -> tuple[str, ...]:
+    """Companion roots for a load naming a snapshot DIRECTORY, not a repo id (#10599).
+
+    Widened only when this directory is the one a repo-level selection would hand out
+    anyway, so any other revision counts as pinned; siblings of one ``models--`` dir only.
+    """
+    from pathlib import Path
+    from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
+    from hub.utils.hf_cache_state import same_existing_path
+
+    try:
+        selected = Path(load_path)
+    except (TypeError, ValueError):
+        return ()
+    snapshots = selected.parent
+    repo = snapshots.parent
+    # Same predicate as local_gguf_companion_roots, or the two disagree on what a snapshot is.
+    if snapshots.name != "snapshots" or not repo.name.startswith("models--"):
+        return ()
+    try:
+        if not selected.is_dir():
+            return ()
+    except OSError:
+        return ()
+    try:
+        chosen = select_gguf_cache_snapshot_for_repo_dir(repo)
+    except OSError as exc:
+        logger.debug("Stopping at unreadable repo dir %s: %s", repo, exc)
+        return ()
+    # samefile, not string equality: spellings differ by symlink, or by case on Windows.
+    if chosen is None or not same_existing_path(chosen[3], selected):
+        return ()
+    roots = local_gguf_companion_roots(load_path, repo_level = True)
+    # A lone root is not inert: callers read `roots is not None` as
+    # `allow_disjoint_search_root`, defeating the guard at model_config.py:2062.
+    return roots if len(roots) > 1 else ()
 
 
 def local_gguf_companion_state(roots: tuple[str, ...]) -> tuple:

@@ -64,21 +64,38 @@ for (const [name, source] of CARDS) {
 
   test(`the ${name} card stops shrinking at its buttons`, () => {
     const stacked = classes(source, "pointer-events-auto flex ");
-    // The floor is the header and the action row. It has to follow
-    // --ui-font-scale, not be measured once at the default type size:
-    // Settings > Appearance goes to 20px, where the action row wraps at every
-    // card width and a 128px floor cuts the buttons in half. A fixed part plus
-    // a scaled one, since only some of the card moves with the setting, and
-    // scaling the whole box asked 256px where 209 was needed.
+    // The floor is the header and the action row, and the two cards reach it
+    // two different ways. The desktop card still writes it out against
+    // --ui-font-scale. The browser card stopped naming a height at all: a
+    // constant is calibrated at one type size, and #11458 made the spacing
+    // inside the card follow the setting too, so at 20px the written floor
+    // came to 209px while the content needed about 301 and the action row was
+    // cut. Its surface declares neither min-h-0 nor overflow-hidden, so its
+    // automatic minimum size is its own content and cannot go stale.
     assert.ok(
       !/\bmin-h-0\b/.test(stacked),
       "min-h-0 lets the rail squeeze the card to nothing",
     );
-    assert.match(
-      source,
-      /min-h-\[calc\(\d+px\+\d+px\*var\(--ui-font-scale,1\)\)\]/,
-      "the floor does not track the type size in the shape index.css uses",
-    );
+    if (name === "web") {
+      const surface = classes(source, "relative flex max-h-[");
+      for (const zeroesTheFloor of ["min-h-0", "overflow-hidden"]) {
+        assert.ok(
+          !surface.split(/\s+/).includes(zeroesTheFloor),
+          `${zeroesTheFloor} puts the card's floor back to nothing`,
+        );
+      }
+      assert.doesNotMatch(
+        source,
+        /min-h-\[/,
+        "the card names a height again, which goes stale at the next type size",
+      );
+    } else {
+      assert.match(
+        source,
+        /min-h-\[calc\(\d+px\+\d+px\*var\(--ui-font-scale,1\)\)\]/,
+        "the floor does not track the type size in the shape index.css uses",
+      );
+    }
     assert.ok(
       !/12rem\*var\(--ui-font-scale/.test(source),
       "the whole box is being scaled again, which over-reserves the floor",
@@ -100,11 +117,13 @@ test("a card with no notes panel does not shrink at all", () => {
       /["\s]min-h-\[calc\(/,
       `the ${name} card floors unconditionally again, around a card that may paint none of it`,
     );
-    assert.match(
-      source,
-      /has-\[\[data-slot=update-release-notes\]\]:min-h-\[calc\(/,
-      `the ${name} card's floor is not gated on its notes panel`,
-    );
+    if (name !== "web") {
+      assert.match(
+        source,
+        /has-\[\[data-slot=update-release-notes\]\]:min-h-\[calc\(/,
+        `the ${name} card's floor is not gated on its notes panel`,
+      );
+    }
     assert.match(
       source,
       /has-\[\[data-slot=update-release-notes\]\]:shrink\b/,
@@ -265,7 +284,7 @@ test("the collapsed notes summary scrolls, like the expanded notes", () => {
 });
 
 /** The two rails' class strings, anchored on the corner they are pinned to. */
-const RAIL_ANCHOR = '"pointer-events-none fixed bottom-0 right-4 ';
+const RAIL_ANCHOR = '"pointer-events-none fixed bottom-0 right-0 ';
 
 function rails(): string[] {
   const parts = PROVIDER.split(RAIL_ANCHOR);
@@ -284,11 +303,54 @@ test("the rail scrolls rather than spilling its cards", () => {
       /\boverflow-y-auto\b/,
       "a capped rail spills its cards",
     );
-    // The scroller clips at the padding box, so without room reserved there the
-    // cards lose their shadows; the negative margin puts the rail back where it
-    // was.
-    assert.match(rules, /\bpx-3\b/);
-    assert.match(rules, /-mx-3/);
+    // The scroller clips at its padding box, so the shadows' room is reserved
+    // there: in px from the constants below, never a rem utility.
+    assert.doesNotMatch(
+      rules,
+      /(^|\s)-?[mp][xlr]-/,
+      "a rem gutter is back on the rail's inline axis",
+    );
+  }
+});
+
+/** A card's dark-mode shadow, in px: `0 <y> <blur> <spread>`. */
+function darkShadow(source: string): {
+  y: number;
+  blur: number;
+  spread: number;
+} {
+  const seen = source.match(
+    /dark:shadow-\[0_(\d+)px_(\d+)px_(-?\d+)px_/,
+  );
+  assert.ok(seen, "the card has no dark-mode shadow to size the gutter from");
+  return { y: Number(seen[1]), blur: Number(seen[2]), spread: Number(seen[3]) };
+}
+
+/** A `const NAME = <n>;` in the provider. */
+function gutter(name: string): number {
+  const seen = PROVIDER.match(new RegExp(`const ${name} = (\\d+);`));
+  assert.ok(seen, `${name} is gone from the provider`);
+  return Number(seen[1]);
+}
+
+// The bug: in dark mode a card's halo ended on a hard line to its left. That
+// shadow reaches 22px, past the 12px the rail reserved, so the clip cut the
+// fade mid-gradient. Only the top and left show it; the rest is the screen edge.
+test("the rail reserves enough room for the darkest card shadow", () => {
+  for (const [name, source] of [...CARDS, ["llama", LLAMA]] as const) {
+    const { y, blur, spread } = darkShadow(source);
+    // Chromium paints the blur out to about its radius past the spread rect, so
+    // this is the halo's reach. The spread is negative, pulling it back in.
+    const reach = blur + spread;
+    assert.ok(
+      gutter("STACK_SHADOW_GUTTER_LEFT") >= reach,
+      `the ${name} card's halo is cut off on the left`,
+    );
+    // The offset carries the halo down, so less of it is left above the card.
+    assert.ok(
+      gutter("STACK_SHADOW_GUTTER_TOP") >= reach - y,
+      `the ${name} card's halo is cut off above it`,
+    );
   }
 });
 
@@ -303,8 +365,8 @@ test("the rail's block gutter costs the cards no room", () => {
     // around them, so the cards keep exactly the band they had.
     assert.match(
       rules,
-      /max-h-\[calc\(100dvh_-_8px\)\]/,
-      "the gutter is being taken out of the cards' band",
+      /max-h-\[(?:calc\()?100dvh(?:_-_\d+px\))?\]/,
+      "the rail lost the cap that pays for its gutters",
     );
     // From the constants, not pb-4/pt-2: those are rem, so at any root size but
     // 16px the cards would drift off the corner.
@@ -318,12 +380,24 @@ test("the rail's block gutter costs the cards no room", () => {
       /paddingBottom: STACK_SHADOW_GUTTER_BOTTOM/,
       "the bottom gutter can drift from the cap that pays for it",
     );
+    // Asymmetric: a gutter on the left, where a cut halo shows, and the cards'
+    // own inset on the right, where the clip is the screen edge.
+    assert.match(
+      style,
+      /paddingLeft: STACK_SHADOW_GUTTER_LEFT/,
+      "the left gutter is back on a rem utility, or gone",
+    );
+    assert.match(
+      style,
+      /paddingRight: STACK_CARD_INSET_RIGHT/,
+      "the cards' right inset is back on a rem utility, or gone",
+    );
     // Every surface offsets its shadow downwards, so flush against the clip
     // edge the bottom card loses all of it. A zero gutter is that bug again.
     assert.doesNotMatch(rules, /\bp[byt]-/, "a rem gutter is back on the rail");
   }
-  // The gutter drops the rail's box to the floor and `-mx-3` put it 4px from the right
-  // edge, so it spans the window's resize grips, which are under it on Tailwind's scale.
+  // The gutter drops the rail's box to the floor and it reaches the right edge,
+  // so it spans the window's resize grips, which are under it on Tailwind's scale.
   // All eight: a narrow window spans the rail across the north and west targets too.
   const TITLEBAR = readSrc("components/tauri/window-titlebar.tsx");
   // A z-index on the toolbar would read as protection and give none: it sits inside a

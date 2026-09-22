@@ -29,6 +29,7 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 import { useToolActivityOpen } from "./use-tool-activity-open";
+import { ScrollPane } from "./scroll-pane";
 
 interface ParsedSource {
   title: string;
@@ -247,9 +248,12 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
                   ))}
                 </div>
                 {resultText && (
-                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+                  <ScrollPane
+                    className="rounded bg-muted/50 p-2"
+                    scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
+                  >
                     {resultText}
-                  </pre>
+                  </ScrollPane>
                 )}
               </div>
             ) : sources.length > 0 ? (
@@ -284,9 +288,12 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
                 )}
               </div>
             ) : resultText ? (
-              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+              <ScrollPane
+                className="rounded bg-muted/50 p-2"
+                scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
+              >
                 {resultText}
-              </pre>
+              </ScrollPane>
             ) : null}
           </div>
         )}

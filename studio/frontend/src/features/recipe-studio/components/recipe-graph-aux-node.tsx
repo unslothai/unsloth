@@ -220,7 +220,7 @@ function AuxNodeBase({
           onChange={(event) => updateScore({ name: event.target.value })}
         />
         <Textarea
-          className="corner-squircle nodrag nowheel max-h-32 min-h-[56px] w-full resize-none overflow-y-auto text-xs"
+          className="corner-squircle nodrag nowheel max-h-32 min-h-[calc(56px*var(--ui-space-scale,1))] w-full resize-none overflow-y-auto text-xs"
           placeholder="Score description"
           value={score.description}
           disabled={executionLocked}

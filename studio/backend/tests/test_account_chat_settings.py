@@ -87,7 +87,7 @@ def client(monkeypatch):
         return 0, []
 
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
-    monkeypatch.setattr(chat_history, "_remove_conversation_archives", lambda *args, **kwargs: None)
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda *args, **kwargs: None)
     with TestClient(app) as test_client:
         yield test_client
 
@@ -365,6 +365,7 @@ OWNER_PATHS = [
         "/xet-notice/reserve": ("POST",),
         "/model-memory": ("GET", "PUT"),
         "/vram-budget": ("GET", "PUT"),
+        "/diffusion-accelerator-fallback": ("GET", "DELETE"),
         "/coding-agents": ("GET",),
         "/openai-auto-switch": ("GET", "PUT"),
         "/openai-auto-switch/overrides": ("GET", "PUT"),
