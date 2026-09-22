@@ -577,16 +577,41 @@ def _migrate_legacy_optimizer_state(
     # torch's load_state_dict takes hyperparameters from the SAVED group, so these carry
     # this run's corrected weight_decay and the checkpoint's lr, which is where the
     # schedule had reached.
-    saved_lr = {role: saved_groups[i]["lr"] for i, role in enumerate(_LEGACY_ROLE_ORDER)}
+    saved_of_role = dict(zip(_LEGACY_ROLE_ORDER, saved_groups))
     cursor, migrated_groups = 0, []
     for group, role in zip(optimizer.param_groups, group_roles):
         size = len(group["params"])
+        # The SAVED group is the base, so anything an optimizer keeps per group survives:
+        # schedule-free carries its own progress there (k, weight_sum, lr_max), and
+        # rebuilding from the fresh group would reset that while keeping the per-parameter
+        # state, leaving the two inconsistent. Only what deliberately changed is overridden.
         migrated = {key: value for key, value in group.items() if key != "params"}
-        migrated["lr"] = saved_lr[role]
+        migrated.update(
+            {key: value for key, value in saved_of_role[role].items() if key != "params"}
+        )
+        migrated["weight_decay"] = group["weight_decay"]
         migrated["params"] = list(range(cursor, cursor + size))
         migrated_groups.append(migrated)
         cursor += size
     return {"state": remapped_state, "param_groups": migrated_groups}
+
+
+def _unsloth_group_roles(optimizer):
+    """The roles recorded at construction, through any wrapper.
+
+    `accelerator.prepare` swaps `self.optimizer` for an `AcceleratedOptimizer` before
+    `create_scheduler` runs, and that wrapper defines no `__getattr__`, so asking it
+    directly returns None and the hook below would quietly do nothing on the ordinary
+    training path.
+    """
+    seen = 0
+    while optimizer is not None and seen < 8:
+        roles = optimizer.__dict__.get("_unsloth_group_roles")
+        if roles is not None:
+            return roles
+        optimizer = getattr(optimizer, "optimizer", None)
+        seen += 1
+    return None
 
 
 def _install_legacy_scheduler_resume(scheduler, optimizer):
@@ -596,7 +621,7 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
     overwrites `base_lrs` wholesale, so a two-entry list lands next to one lambda per current
     group and the next step raises from `zip(..., strict=True)`.
     """
-    roles = getattr(optimizer, "_unsloth_group_roles", None)
+    roles = _unsloth_group_roles(optimizer)
     if roles is None:
         return scheduler
     base = type(scheduler)

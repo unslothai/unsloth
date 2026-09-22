@@ -412,3 +412,66 @@ def test_the_scheduler_hook_stays_out_of_the_checkpoint():
     torch.save(optimizer.state_dict(), io.BytesIO())
     # and it is still an ordinary scheduler to everyone else
     assert isinstance(scheduler, LambdaLR)
+
+
+def test_the_scheduler_hook_survives_an_optimizer_wrapper():
+    # accelerator.prepare swaps in an AcceleratedOptimizer before create_scheduler runs.
+    # It defines no __getattr__, so asking it directly finds no roles and the hook would
+    # quietly do nothing on the ordinary training path. That property of the real class is
+    # asserted here too, so this stops passing if accelerate ever changes it.
+    torch = pytest.importorskip("torch")
+    nn = torch.nn
+    from torch.optim.lr_scheduler import LambdaLR
+    from unsloth.trainer import _install_legacy_scheduler_resume
+
+    accelerate_optimizer = pytest.importorskip("accelerate.optimizer")
+    real = accelerate_optimizer.AcceleratedOptimizer
+    assert not any(
+        "__getattr__" in cls.__dict__ for cls in real.__mro__
+    ), "AcceleratedOptimizer now delegates attributes; the unwrap may be unnecessary"
+
+    class Wrapper(torch.optim.Optimizer):
+        """The same shape as the real one: holds the optimizer, forwards nothing else."""
+
+        def __init__(self, optimizer):
+            self.optimizer = optimizer
+
+        @property
+        def param_groups(self):
+            return self.optimizer.param_groups
+
+    model = _model(torch, nn)
+    optimizer = _optimizer(torch, model, 0.1)
+    wrapped = Wrapper(optimizer)
+    assert "_unsloth_group_roles" not in wrapped.__dict__
+
+    scheduler = _install_legacy_scheduler_resume(LambdaLR(wrapped, lambda step: 1.0), wrapped)
+    assert getattr(type(scheduler), "_unsloth_legacy_resume", False), "hook silently skipped"
+
+    saved = LambdaLR(_legacy_optimizer(torch, model), lambda step: 1.0).state_dict()
+    scheduler.load_state_dict(saved)
+    assert len(scheduler.base_lrs) == len(optimizer.param_groups)
+
+
+def test_migration_keeps_optimizer_specific_group_state():
+    # Schedule-free and friends keep algorithm progress in the param group itself;
+    # rebuilding from the fresh group would reset it while keeping the per-parameter
+    # state, leaving the resumed optimizer inconsistent with itself.
+    torch = pytest.importorskip("torch")
+    nn = torch.nn
+
+    model = _lora_shaped(torch, nn)
+    old = _legacy_optimizer(torch, model)
+    for group in old.param_groups:
+        group["k"] = 17
+        group["weight_sum"] = 3.5
+    for _, param in [(n, p) for n, p in model.named_parameters() if p.requires_grad]:
+        param.grad = torch.randn_like(param)
+    old.step()
+
+    new = _optimizer(torch, model, 0.1)
+    new.load_state_dict(old.state_dict())
+    assert all(group["k"] == 17 for group in new.param_groups), new.param_groups
+    assert all(group["weight_sum"] == 3.5 for group in new.param_groups), new.param_groups
+    # but the decay is still the corrected one, not the checkpoint's 0.0
+    assert all(group["weight_decay"] == 0.1 for group in new.param_groups), new.param_groups
