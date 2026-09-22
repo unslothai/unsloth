@@ -100,7 +100,13 @@ class _PrefixKVTransformer(_MixinTransformer):
     FLUX.2 klein KV, Wan-Animate-2): its blocks see the whole joint sequence on the first step and
     the target tokens alone afterwards."""
 
-    def forward(self, hidden_states, *, kv_cache = None, kv_cache_mode = None):
+    def forward(
+        self,
+        hidden_states,
+        *,
+        kv_cache = None,
+        kv_cache_mode = None,
+    ):
         return hidden_states
 
 

@@ -195,7 +195,9 @@ def save_prequant_safetensors(path: str, *, fmt: str, state_dict: Any, metadata:
     # Root-level plain tensors go beside the flat set, not through it. Split BEFORE flatten so
     # torchao only ever sees dotted keys, and the pair stays exactly the one it supports.
     roots = _root_level_keys(state_dict)
-    quantizable = {k: v for k, v in state_dict.items() if k not in set(roots)} if roots else state_dict
+    quantizable = (
+        {k: v for k, v in state_dict.items() if k not in set(roots)} if roots else state_dict
+    )
 
     flatten, _ = helpers
     try:
@@ -284,7 +286,12 @@ def _drop_field(value: Any, name: str, removed: list) -> Any:
 
 
 def _header_without_unconstructible_fields(
-    unflatten: Any, tensors: Any, raw: dict, *, path: str, attempts: int = 8
+    unflatten: Any,
+    tensors: Any,
+    raw: dict,
+    *,
+    path: str,
+    attempts: int = 8,
 ) -> dict:
     """``raw``, minus fields THIS torchao cannot construct, when dropping them changes nothing.
 
@@ -383,7 +390,7 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
     # tensors that never needed it. Keyed off the prefix rather than the header list, so a file
     # written by a build that recorded one and not the other still reads; the list is the order.
     roots = {
-        key[len(UNSLOTH_ROOT_PREFIX):]: tensors.pop(key)
+        key[len(UNSLOTH_ROOT_PREFIX) :]: tensors.pop(key)
         for key in [k for k in tensors if k.startswith(UNSLOTH_ROOT_PREFIX)]
     }
 
