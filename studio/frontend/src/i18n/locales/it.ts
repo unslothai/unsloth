@@ -187,13 +187,6 @@ export const it = {
       moveUp: "Sposta su",
       moveDown: "Sposta giù",
     },
-    drag: {
-      reorder: "Riordina",
-      pin: "Fissa",
-      unpin: "Sblocca",
-      moveTo: "Sposta in {name}",
-      moveToRecents: "Sposta in Recenti",
-    },
     dialog: {
       deleteChat: {
         title: "Elimina la chat",

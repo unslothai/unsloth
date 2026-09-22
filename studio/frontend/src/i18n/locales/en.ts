@@ -225,13 +225,6 @@ export const en = {
       moveUp: "Move up",
       moveDown: "Move down",
     },
-    drag: {
-      reorder: "Reorder",
-      pin: "Pin",
-      unpin: "Unpin",
-      moveTo: "Move to {name}",
-      moveToRecents: "Move to Recents",
-    },
     dialog: {
       deleteChat: {
         title: "Delete chat",

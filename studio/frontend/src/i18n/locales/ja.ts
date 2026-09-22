@@ -222,13 +222,6 @@ export const ja = {
       moveUp: "上へ移動",
       moveDown: "下へ移動",
     },
-    drag: {
-      reorder: "並べ替え",
-      pin: "ピン留め",
-      unpin: "ピン留めを解除",
-      moveTo: "{name} に移動",
-      moveToRecents: "最近に移動",
-    },
     dialog: {
       deleteChat: {
         title: "チャットの削除",
