@@ -221,13 +221,30 @@ def _config_uses_remote_code(config):
     """
     if config is None:
         return True
-    if (getattr(type(config), "__module__", "") or "").startswith("transformers_modules"):
+
+    def _remote(cfg):
+        if (getattr(type(cfg), "__module__", "") or "").startswith("transformers_modules"):
+            return True
+        auto_map = getattr(cfg, "auto_map", None)
+        if isinstance(cfg, dict):
+            auto_map = cfg.get("auto_map", auto_map)
+        if not auto_map:
+            return False
+        # Only model or config classes are code the compiler would have to
+        # trace. A checkpoint can ship a custom tokenizer, processor or feature
+        # extractor through auto_map while its model is a native architecture;
+        # that must not switch the optimizations off.
+        return any(str(k).startswith(("AutoModel", "AutoConfig")) for k in auto_map)
+
+    if _remote(config):
         return True
     for sub in ("text_config", "vision_config", "audio_config"):
         cfg = getattr(config, sub, None)
-        if cfg is not None and getattr(cfg, "auto_map", None):
+        if cfg is None and isinstance(config, dict):
+            cfg = config.get(sub)
+        if cfg is not None and _remote(cfg):
             return True
-    return bool(getattr(config, "auto_map", None))
+    return False
 
 
 def _config_diff(config):

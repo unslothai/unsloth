@@ -49,6 +49,33 @@ def test_no_config_keeps_the_conservative_answer():
     assert _helper()(None) is True
 
 
+def test_tokenizer_only_auto_map_is_still_native():
+    """A custom tokenizer or processor is not model code the compiler must trace."""
+    f = _helper()
+    assert f(SimpleNamespace(auto_map={"AutoTokenizer": ["tokenization_x.XTokenizer", None]})) is False
+    assert f(SimpleNamespace(auto_map={"AutoProcessor": "processing_x.XProcessor",
+                                       "AutoImageProcessor": "image_processing_x.XImageProcessor"})) is False
+    assert f(SimpleNamespace(auto_map={"AutoTokenizer": "tokenization_x.XTokenizer",
+                                       "AutoModelForCausalLM": "modeling_x.XForCausalLM"})) is True
+
+
+def test_sub_config_from_transformers_modules_counts():
+    """The remote-class check applies to sub-configs the same way as to the root."""
+    f = _helper()
+
+    class RemoteTextConfig:
+        auto_map = None
+    RemoteTextConfig.__module__ = "transformers_modules.some_repo.configuration_x"
+    assert f(SimpleNamespace(auto_map=None, text_config=RemoteTextConfig())) is True
+
+
+def test_dict_shaped_configs_are_handled():
+    f = _helper()
+    assert f({"auto_map": None, "model_type": "gemma4"}) is False
+    assert f({"auto_map": {"AutoConfig": "configuration_x.XConfig"}}) is True
+    assert f({"text_config": {"auto_map": {"AutoModel": "modeling_x.XModel"}}}) is True
+
+
 @pytest.mark.skipif(not __import__("torch").cuda.is_available(), reason="needs a GPU to load a 4-bit model")
 def test_native_model_with_trust_remote_code_keeps_fast_lora(tmp_path, monkeypatch):
     """The arm that fails without the fix: PEFT's Linear4bit forward is left in place."""
