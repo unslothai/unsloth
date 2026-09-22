@@ -1513,3 +1513,41 @@ def test_plain_thread_has_no_fork_boundary(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread("plain"))
     assert studio_db.get_chat_thread("plain")["forkBoundaryMessageId"] is None
+
+
+def _forked_thread(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages(
+        "src", [_msg("m1", None, 1), _msg("m2", "m1", 2), _msg("m3", "m2", 3)]
+    )
+    return _fork("src", "f", 9)
+
+
+def test_pruning_the_boundary_moves_the_divider_up(tmp_path, monkeypatch):
+    """Left on a deleted row the boundary matches nothing, and the divider never comes back."""
+    _forked_thread(tmp_path, monkeypatch)
+    copied = studio_db.list_chat_messages("f")
+    studio_db.sync_chat_messages("f", copied[:-1], prune_missing = True)
+
+    survivors = [m["id"] for m in studio_db.list_chat_messages("f")]
+    assert studio_db.get_chat_thread("f")["forkBoundaryMessageId"] == survivors[-1]
+
+
+def test_pruning_every_inherited_message_clears_the_boundary(tmp_path, monkeypatch):
+    _forked_thread(tmp_path, monkeypatch)
+    studio_db.sync_chat_messages("f", [], prune_missing = True)
+
+    # Nothing was inherited any more, so there is no history for a divider to close.
+    assert studio_db.get_chat_thread("f")["forkBoundaryMessageId"] is None
+
+
+def test_pruning_an_earlier_message_leaves_the_boundary_alone(tmp_path, monkeypatch):
+    forked = _forked_thread(tmp_path, monkeypatch)
+    copied = studio_db.list_chat_messages("f")
+    studio_db.sync_chat_messages("f", copied[1:], prune_missing = True)
+
+    assert (
+        studio_db.get_chat_thread("f")["forkBoundaryMessageId"]
+        == forked["forkBoundaryMessageId"]
+    )

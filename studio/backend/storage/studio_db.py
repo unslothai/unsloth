@@ -3736,6 +3736,9 @@ def sync_chat_messages(
             for message_id, stored_parent in _parents_of(conn, thread_id, reseat_candidates).items()
             if stored_parent is not None and stored_parent in pruned
         }
+        # Same repair for the fork divider's anchor: walked from the stored chain before the
+        # delete, since afterwards the row it names is gone and the walk has nothing to follow.
+        reseat_boundary = _fork_boundary_reseat(conn, thread_id, pruned)
         _raise_if_chat_message_thread_conflicts(
             conn,
             thread_id,
@@ -3811,6 +3814,11 @@ def sync_chat_messages(
                     (thread_id, *chunk),
                 )
             _reseat_protected_messages(conn, thread_id, reseat_parents)
+            if reseat_boundary is not _NO_RESEAT:
+                conn.execute(
+                    "UPDATE chat_threads SET fork_boundary_message_id = ? WHERE id = ?",
+                    (reseat_boundary, thread_id),
+                )
             _recompute_chat_thread_updated_at(conn, thread_id)
         elif reconciled_messages:
             _bump_chat_thread_updated_at(
@@ -3843,6 +3851,25 @@ def _parents_of(conn, thread_id: str, message_ids: set) -> dict:
         ).fetchall()
         if str(row["id"]) in message_ids
     }
+
+
+# Distinct from None, which is a boundary to clear: the thread kept none of its inherited history.
+_NO_RESEAT = object()
+
+
+def _fork_boundary_reseat(conn, thread_id: str, pruned: set):
+    """Where a fork's divider moves when the message it sits under is pruned: up to the last
+    inherited message that survived, or off entirely. Left on a deleted row it matches nothing
+    and the fork's history loses its close for good. `_NO_RESEAT` means leave it alone."""
+    if not pruned:
+        return _NO_RESEAT
+    row = conn.execute(
+        "SELECT fork_boundary_message_id FROM chat_threads WHERE id = ?", (thread_id,)
+    ).fetchone()
+    boundary = row["fork_boundary_message_id"] if row is not None else None
+    if boundary is None or boundary not in pruned:
+        return _NO_RESEAT
+    return _surviving_parent_id(conn, thread_id, boundary, pruned)
 
 
 def _reseat_protected_messages(conn, thread_id: str, reseat_parents: dict) -> None:

@@ -1814,13 +1814,22 @@ const ForkContinuationRule: FC = () => {
           type="button"
           data-slot="fork-continuation-link"
           title="Open the chat this was forked from"
-          onClick={() =>
+          // Checked on the way out, not on render: the tombstone set is this tab's own, so a
+          // source deleted on another device still looks openable until something asks for it.
+          onClick={async () => {
+            const source = await getStoredChatThread(sourceThreadId).catch(
+              () => undefined,
+            );
+            if (!source) {
+              toast.info("That chat has been deleted.");
+              return;
+            }
             navigate({
               to: "/chat",
               search: { thread: sourceThreadId },
               replace: false,
-            })
-          }
+            });
+          }}
           className={cn(
             labelClass,
             "cursor-pointer rounded-sm underline decoration-transparent underline-offset-2 transition-colors hover:text-foreground hover:decoration-current focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
