@@ -1826,9 +1826,10 @@ html[data-chat-font] .aui-root {
 	.dark .menu-soft-surface,
 	.dark .menu-soft-surface-up {
 		--menu-soft-edge: rgba(255, 255, 255, 0.07);
-		/* Page colour, not pure black, so the falloff settles into the page.
+		/* Black, not the page colour: tinting a shadow with the background it
+		   falls on composites back to that background and paints nothing.
 		   Kept in step with the update banners. */
-		--menu-soft-shadow: rgba(24, 24, 24, 0.28);
+		--menu-soft-shadow: rgba(0, 0, 0, 0.28);
 		--menu-soft-offset-y: 8px;
 		--menu-soft-blur: 28px;
 		--menu-soft-spread: -6px;
@@ -1863,12 +1864,18 @@ html[data-chat-font] .aui-root {
 	   trigger icons. Small or uppercase, and much of it sits on control fills
 	   rather than the panel, where the app-wide #b0b0b0 drops to 5.2:1. Lift
 	   the token once per surface so the picker and the Hub read alike, with
-	   --foreground still a step above. */
+	   --foreground still a step above. Re-derives --muted-foreground from the
+	   lifted base on the same curve the contrast slider uses, so the setting
+	   still reaches this text; at the default the mix is the identity. */
 	.dark .unsloth-model-selector-menu,
 	.dark .hub-menu-instant,
 	.dark .hub-page {
-		--muted-foreground: #c9c9c9;
 		--panel-surface-fg-muted: #c9c9c9;
+		--muted-foreground: color-mix(
+			in oklab,
+			var(--panel-surface-fg-muted),
+			var(--contrast-target, transparent) var(--contrast-text-mix, 0%)
+		);
 	}
 
 	/* List menus: one radius in both themes, slightly tighter than --radius-lg
@@ -1896,20 +1903,21 @@ html[data-chat-font] .aui-root {
 	}
 	/* Dark: keep the chat-box dropdown shadow so menus don't merge into a
 	   same-color surface (e.g. a menu overlapping the composer). */
-	/* Translucent, not a solid fill: bare `var(--background)` painted an
-	   opaque halo around every menu. Same colour, soft-menu alpha. */
+	/* Translucent black. Bare `var(--background)` painted an opaque halo, and
+	   tinting it with the page colour composites back to the page, so the
+	   shadow disappeared on the stock theme and skewed on a custom one. */
 	.dark [data-slot="dropdown-menu-content"],
 	.dark [data-slot="dropdown-menu-sub-content"],
 	.dark [data-slot="select-content"],
 	.dark [data-slot="combobox-content"],
 	.dark [data-slot="popover-content"] {
-		box-shadow: 0 8px 28px -6px rgba(24, 24, 24, 0.5) !important;
+		box-shadow: 0 8px 28px -6px rgba(0, 0, 0, 0.5) !important;
 	}
 
-	/* Model selector: shadow in the page-bg color so it lifts off the
+	/* Model selector: tighter than the menus above so it lifts off the
 	   composer it overlaps (chatbox geometry). Account menu stays flat. */
 	.dark .unsloth-model-selector-menu {
-		box-shadow: 0 2px 8px -2px rgba(24, 24, 24, 0.5) !important;
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5) !important;
 	}
 	.dark .app-user-menu.menu-soft-surface-up {
 		box-shadow: none !important;
@@ -1926,7 +1934,7 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 	.dark .app-user-menu.menu-soft-surface-up {
-		box-shadow: 0 8px 28px -6px rgba(24, 24, 24, 0.28);
+		box-shadow: 0 8px 28px -6px rgba(0, 0, 0, 0.28);
 	}
 
 	.chat-composer-surface {
