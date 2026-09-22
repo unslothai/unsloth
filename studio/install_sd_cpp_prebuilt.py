@@ -39,7 +39,11 @@ else:
 DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned for reproducibility; UNSLOTH_SD_CPP_TAG overrides (empty tracks latest) and a missing tag falls back to latest. The -u<id> suffix is the mirror's patch set: an unpatched build aborts on the default --cfg-scale and on --vae-on-cpu, and quantizes MiniMax-H3's 1-D norms into an output uncorrelated with its own bf16 reference (leejet/stable-diffusion.cpp#1861, #1862, #1863).
-DEFAULT_TAG = "master-813-bfbef5b-u13b9d92"
+# The Qwen-Image-2.1 line: the tag STRING still resolves to the master-813 base, because that is the
+# newest upstream release our ancestry names, but this build is the mirror's current tree and carries
+# the architecture (upstream 137f7409bb, 2026-09-20). The u13b9d92 build this replaces is from
+# 2026-08-09 and cannot load it at all, so the native route for that family is only real from here.
+DEFAULT_TAG = "master-813-bfbef5b-u1d02858"
 
 REPO = DEFAULT_REPO
 

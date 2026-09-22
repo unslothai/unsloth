@@ -708,3 +708,25 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
     # companions-minus-loadable would mark the home of every denoiser as a companion and hide it.
     assert "unsloth/qwen-image-2.1-fp8" not in companions
     assert "qwen/qwen-image-2.1" not in companions
+
+
+def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
+    """The route is only real if the binary the installer pins understands the architecture.
+
+    The tag STRING cannot answer this: every mirror build resolves to the same master-813 base, so
+    the August build and the current one are indistinguishable by name. What is asserted here is the
+    pin itself, against the release verified to render this family (26.9s at 1024 on one B200,
+    Q4_K_M denoiser, bf16 VAE, Q4_K_M Qwen3-VL encoder). Bump both together or not at all.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "install_sd_cpp_prebuilt.py"
+    spec = importlib.util.spec_from_file_location("install_sd_cpp_prebuilt_pin", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.DEFAULT_TAG == "master-813-bfbef5b-u1d02858", (
+        "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1; "
+        f"{module.DEFAULT_TAG} is not"
+    )
