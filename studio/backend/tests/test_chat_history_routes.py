@@ -730,24 +730,29 @@ def test_fork_thread_404_when_branch_message_missing(monkeypatch):
     assert exc.value.status_code == 404
 
 
-def test_fork_thread_resolves_the_tip_when_no_message_is_given():
+@pytest.mark.parametrize("same_timestamp", [False, True])
+def test_fork_thread_resolves_the_tip_when_no_message_is_given(same_timestamp):
     from storage import studio_db
 
     studio_db.upsert_chat_thread(
         {"id": "src", "title": "T", "modelType": "base", "modelId": "local", "createdAt": 1}
     )
-    for message_id, created_at in (("m1", 1), ("m2", 2), ("tip", 3)):
+    for message_id, parent_id, role, created_at in (
+        ("root", None, "user", 1),
+        ("z-user", "root", "user", 2),
+        ("a-reply", "z-user", "assistant", 2 if same_timestamp else 3),
+    ):
         message = _message(message_id, "src").model_dump()
-        message["createdAt"] = created_at
+        message.update({"createdAt": created_at, "parentId": parent_id, "role": role})
         studio_db.upsert_chat_message(message)
     response = chat_history.fork_thread(
         thread_id = "src",
         payload = chat_history.ChatForkRequest(newThreadId = "new", createdAt = 4),
         current_subject = "test-user",
     )
-    assert response.thread.forkedFromMessageId == "tip"
-    assert len(response.messages) == 1
-    assert response.messages[0].content == [{"type": "text", "text": "hello"}]
+    assert response.thread.forkedFromMessageId == "a-reply"
+    assert len(response.messages) == 3
+    assert any(message.role == "assistant" for message in response.messages)
 
 
 def test_fork_thread_404_when_the_thread_has_no_messages():

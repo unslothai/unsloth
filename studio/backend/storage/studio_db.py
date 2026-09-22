@@ -3939,9 +3939,13 @@ def fork_chat_thread(
                 "This chat is still generating. Fork it once it finishes."
             )
         if branch_message_id is None:
+            # match the client's role ordering when a user and reply share a timestamp.
             branch_row = conn.execute(
                 """SELECT * FROM chat_messages WHERE thread_id = ?
-                   ORDER BY created_at DESC, id DESC LIMIT 1""",
+                   ORDER BY created_at DESC,
+                     CASE role WHEN 'system' THEN 0 WHEN 'user' THEN 1
+                               WHEN 'assistant' THEN 2 ELSE 99 END DESC,
+                     id DESC LIMIT 1""",
                 (source_thread_id,),
             ).fetchone()
         else:
