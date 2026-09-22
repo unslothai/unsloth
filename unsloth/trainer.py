@@ -1126,23 +1126,27 @@ def _patch_sft_trainer_auto_packing(trl_module):
             setattr(trainer_args, "padding_free", False)
 
         # A string `model=` has no forward to read before TRL materializes it, so the gate above
-        # fails open on it. `self.model` exists now, and `enable_padding_free_metadata` below is
-        # the only thing that injects `packed_seq_lengths`, so this is the last and cheapest
-        # point at which the same question can be asked for real. Restricted to the inputs the
-        # up-front check could not answer: re-asking for a model object that already passed would
-        # read a trainer-side wrapper instead of the checkpoint and could disable padding-free on
-        # a setup that works today.
+        # fails open on it. `self.model` exists now, and this is the last point before either
+        # branch below installs a collator wrapper, which is what injects `packed_seq_lengths`.
+        # Both branches inject it, so both have to be turned off, exactly as `blocked` does
+        # up front. Restricted to the inputs the up-front check could not answer: re-asking for
+        # a model object that already passed would read a trainer-side wrapper rather than the
+        # checkpoint and could disable packing on a setup that works today.
         if (
-            trainer_padding_free
+            (trainer_padding_free or trainer_packing)
             and _packing_gate_deferred
             and not _forward_accepts_packing_kwargs(getattr(self, "model", None))
         ):
             trainer_padding_free = False
+            trainer_packing = False
+            packing_active = False
             auto_padding_free_active = False
-            _disable_padding_free(config_arg)
-            _disable_padding_free(trainer_args)
+            for _target in (config_arg, trainer_args):
+                _disable_padding_free(_target)
+                _disable_sample_packing(_target)
             logger.info(
-                "Unsloth: Padding-free disabled; %s's forward cannot take packed_seq_lengths.",
+                "Unsloth: Packing and padding-free disabled; %s's forward cannot take "
+                "packed_seq_lengths.",
                 type(getattr(self, "model", None)).__name__,
             )
 

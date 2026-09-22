@@ -168,13 +168,15 @@ def test_the_blocker_names_itself_in_the_warning():
     assert source.count("_forward_accepts_packing_kwargs(model)") == 1
 
 
-def test_a_string_model_is_rechecked_once_trl_has_built_it(monkeypatch):
+@pytest.mark.parametrize("packing", [False, True])
+def test_a_string_model_is_rechecked_once_trl_has_built_it(monkeypatch, packing):
     """The gate fails open on a string, so the real check has to happen after init.
 
-    `enable_padding_free_metadata` is the only thing that injects
-    `packed_seq_lengths`, so skipping it for a materialized model whose forward
-    cannot take the argument is what prevents the TypeError. Driven through the
-    real wrapper with a stub `SFTTrainer.__init__`, so nothing is downloaded.
+    Both `enable_padding_free_metadata` and `enable_sample_packing` put
+    `packed_seq_lengths` into the batch, so the recheck has to turn both off;
+    clearing padding-free alone leaves the packing branch raising the same
+    TypeError. Driven through the real wrapper with a stub `SFTTrainer.__init__`,
+    so nothing is downloaded.
     """
     from types import SimpleNamespace
 
@@ -194,20 +196,18 @@ def test_a_string_model_is_rechecked_once_trl_has_built_it(monkeypatch):
             self.args = args
 
     injected = []
-    monkeypatch.setattr(
-        trainer_module,
-        "enable_padding_free_metadata",
-        lambda model, trainer: injected.append(model),
-    )
+    for _name in ("enable_padding_free_metadata", "enable_sample_packing"):
+        monkeypatch.setattr(trainer_module, _name, lambda model, trainer: injected.append(model))
     # No hub access: the config is irrelevant to the signature question.
     monkeypatch.setattr(trainer_module, "_resolve_string_model_config", lambda *a, **k: None)
 
     module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
     trainer_module._patch_sft_trainer_auto_packing(module)
 
-    config = SimpleNamespace(packing = False, padding_free = True, max_length = 512)
+    config = SimpleNamespace(packing = packing, padding_free = True, max_length = 512)
     instance = module.SFTTrainer(model = "microsoft/Phi-4-reasoning-vision-15B", args = config)
 
-    assert injected == [], "padding-free metadata must not be installed on this forward"
-    assert instance.args.padding_free is False
-    assert config.padding_free is False
+    assert injected == [], "nothing may wrap the collator for this forward"
+    for target in (config, instance.args):
+        assert target.padding_free is False
+        assert target.packing is False
