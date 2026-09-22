@@ -459,13 +459,10 @@ def _create_unsloth_optimizer(
     decay_parameter_names = None,
 ):
     lr = optimizer_kwargs["lr"]
-    # transformers keeps the decay on the param groups and only puts it in optimizer_kwargs for
-    # schedule-free and stable_adamw, so reading it from there meant the 0.0 default always won
-    # and embedding_learning_rate silently trained the whole model with no weight decay.
-    # `_create_q_galore_optimizer` below already reads `self.args.weight_decay`.
+    # transformers puts weight_decay in optimizer_kwargs only for schedule-free and stable_adamw,
+    # so reading it from there alone meant the 0.0 default always won (Trainer.create_optimizer).
     weight_decay = optimizer_kwargs.get("weight_decay", weight_decay)
-    # Biases and norm weights are excluded from decay on the path this replaces
-    # (Trainer.get_decay_parameter_names), so keep them out of it here too.
+    # Trainer.get_decay_parameter_names excludes biases and norms; the default here decays all.
     if decay_parameter_names is None:
         decay_parameter_names = [name for name, _ in model.named_parameters()]
     decay_parameter_names = set(decay_parameter_names)
@@ -501,12 +498,9 @@ def _create_unsloth_optimizer(
             "without FSDP, or drop embedding_learning_rate."
         )
 
-    # Four categories, but a LoRA run trains no bias and no norm, so the two no-decay
-    # ones come back empty, and an empty group is not free: AdafactorSchedule.get_lr
-    # reads group["params"][0] unguarded, and every extra group is one more that
-    # torch's load_state_dict insists the checkpoint have, so keeping the empty ones
-    # would stop runs started before this resuming. Dropped, as
-    # `_create_q_galore_optimizer` below already does.
+    # Empty groups are dropped (a LoRA run trains no bias and no norm, so both no-decay ones are
+    # empty): AdafactorSchedule.get_lr reads group["params"][0] unguarded, and load_state_dict
+    # rejects a checkpoint whose group count differs, which would break resume.
     optimizer_grouped_parameters = []
     for group, group_lr in (("non_embeddings", lr), ("embeddings", embedding_lr)):
         for decays in (True, False):
