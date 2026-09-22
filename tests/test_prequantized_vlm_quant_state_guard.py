@@ -80,7 +80,12 @@ def import_fixes():
 # --------------------------------------------------------------------------------------
 
 
-def _install(monkeypatch, *, conversion_mapping = None, core_model_loading = None):
+def _install(
+    monkeypatch,
+    *,
+    conversion_mapping = None,
+    core_model_loading = None,
+):
     """Put a fake `transformers` in sys.modules for the duration of one test."""
     fake = types.ModuleType("transformers")
     # A real transformers may already be imported, and `from transformers import X` falls
@@ -176,9 +181,7 @@ def _build_fixed_with_submodel_prefix(monkeypatch):
             "transformers.conversion_mapping",
             extract_weight_conversions_for_model = extract_weight_conversions_for_model,
         ),
-        core_model_loading = _module(
-            "transformers.core_model_loading", PrefixChange = PrefixChange
-        ),
+        core_model_loading = _module("transformers.core_model_loading", PrefixChange = PrefixChange),
     )
 
 
@@ -244,7 +247,11 @@ def _build_fixed_without_core_model_loading(monkeypatch):
 
 def _build_no_transformers(monkeypatch):
     """transformers is not installed."""
-    for name in ("transformers", "transformers.conversion_mapping", "transformers.core_model_loading"):
+    for name in (
+        "transformers",
+        "transformers.conversion_mapping",
+        "transformers.core_model_loading",
+    ):
         monkeypatch.setitem(sys.modules, name, None)
 
 
