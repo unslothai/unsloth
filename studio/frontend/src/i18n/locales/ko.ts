@@ -220,13 +220,6 @@ export const ko = {
       moveUp: "위로 이동",
       moveDown: "아래로 이동",
     },
-    drag: {
-      reorder: "순서 변경",
-      pin: "고정",
-      unpin: "고정 해제",
-      moveTo: "{name}(으)로 이동",
-      moveToRecents: "최근으로 이동",
-    },
     dialog: {
       deleteChat: {
         title: "채팅 삭제",

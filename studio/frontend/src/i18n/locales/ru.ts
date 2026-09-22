@@ -222,13 +222,6 @@ export const ru = {
       moveUp: "Переместить вверх",
       moveDown: "Переместить вниз",
     },
-    drag: {
-      reorder: "Переставить",
-      pin: "Закрепить",
-      unpin: "Открепить",
-      moveTo: "Переместить в {name}",
-      moveToRecents: "Переместить в Недавние",
-    },
     dialog: {
       deleteChat: {
         title: "Удалить чат",

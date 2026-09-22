@@ -417,3 +417,102 @@ def test_the_real_installed_torchao_answers_the_int8_question(monkeypatch):
         assert answer is False, f"torchao {torchao.__version__} should refuse int8 flatten"
     else:
         assert answer is not False, f"torchao {torchao.__version__} should flatten int8"
+
+
+# ── root-level plain tensors ─────────────────────────────────────────────────
+
+
+def test_a_root_level_plain_tensor_round_trips_instead_of_failing_the_build(tmp_path):
+    """z-image is not hypothetical: ``ZImageTransformer2DModel`` holds ``x_pad_token`` and
+    ``cap_pad_token`` at the root, so refusing every undotted key refused the only safetensors build
+    of a family this repo ships, and it did so AFTER the download and the GPU quantization.
+
+    torchao still never sees them: they are split out before flatten and restored after unflatten.
+    """
+    torch = pytest.importorskip("torch")
+    if not ps.safetensors_prequant_supported():
+        pytest.skip("this install cannot write safetensors pre-quant checkpoints")
+
+    state = {
+        "blocks.0.linear.weight": torch.arange(16, dtype = torch.float32).reshape(4, 4),
+        "x_pad_token": torch.tensor([1.0, 2.0, 3.0]),
+        "cap_pad_token": torch.tensor([[4.0, 5.0]]),
+    }
+    assert ps.unsupported_state_dict_keys(state) == []
+
+    path = str(tmp_path / "roots.safetensors")
+    ps.save_prequant_safetensors(path, fmt = "fp8", state_dict = state, metadata = {"scheme": "fp8"})
+    back = ps.load_prequant_safetensors(path)["state_dict"]
+
+    assert set(back) == set(state)
+    for key, value in state.items():
+        assert torch.equal(back[key], value), key
+
+
+def test_a_root_level_tensor_subclass_is_still_refused_up_front(monkeypatch):
+    """The carry-alongside trick only works for PLAIN tensors: reconstructing a subclass is exactly
+    the job of the flatten pair that cannot address a root key, so there is nothing to put it in."""
+    torch = pytest.importorskip("torch")
+
+    class _Subclass(torch.Tensor):
+        pass
+
+    state = {
+        "blocks.0.linear.weight": torch.zeros(2, 2),
+        "quantized_root": _Subclass(torch.zeros(2)),
+    }
+    assert ps.unsupported_state_dict_keys(state) == ["quantized_root"]
+
+
+# ── a checkpoint written by a NEWER torchao ──────────────────────────────────
+
+
+def test_a_field_a_newer_torchao_added_is_dropped_when_it_is_inert(monkeypatch):
+    """The live regression: torchao 0.18 records ``reduce_range`` in
+    ``QuantizeTensorToInt8Kwargs``, 0.17's constructor refuses it, and the published
+    Qwen-Image-2.1 int8 checkpoint therefore failed to load on a stock install with
+    ``Failed to create instance of QuantizeTensorToInt8Kwargs: ... unexpected keyword argument
+    'reduce_range'``. The loader reported no usable checkpoint, and the dense bf16 denoiser was
+    downloaded and quantized at runtime instead, which is the entire saving gone for a field the
+    file records as false.
+    """
+    calls: list = []
+
+    def _unflatten(tensors, header):
+        calls.append(header)
+        if "reduce_range" in header["w.weight"]:
+            raise ValueError(
+                "Failed to create instance of QuantizeTensorToInt8Kwargs: "
+                "QuantizeTensorToInt8Kwargs.__init__() got an unexpected keyword argument "
+                "'reduce_range'"
+            )
+        return {"w.weight": object()}, {}
+
+    header = {
+        "w.weight": json.dumps(
+            {"_type": "Int8Tensor", "_data": {"reduce_range": False, "block_size": [1, 4]}}
+        ),
+        ps.UNSLOTH_FORMAT_KEY: "fp8_v1",
+    }
+    pruned = ps._header_without_unconstructible_fields(
+        _unflatten, {}, header, path = "artifact.safetensors"
+    )
+    assert "reduce_range" not in pruned["w.weight"]
+    # The rest of the description survives, and our own header keys are never parsed as torchao's.
+    assert json.loads(pruned["w.weight"])["_data"]["block_size"] == [1, 4]
+    assert pruned[ps.UNSLOTH_FORMAT_KEY] == "fp8_v1"
+    assert len(calls) == 2  # the failing probe, then the retry that succeeded
+
+
+def test_a_field_carrying_a_real_setting_is_refused_rather_than_dropped():
+    """Dropping a field that is doing something would load the weights under settings the file did
+    not ask for. A refusal keeps the dense fallback, which is merely slower."""
+
+    def _unflatten(tensors, header):
+        raise ValueError("unexpected keyword argument 'reduce_range'")
+
+    header = {"w.weight": json.dumps({"_data": {"reduce_range": True}})}
+    with pytest.raises(ValueError, match = "reduce_range"):
+        ps._header_without_unconstructible_fields(
+            _unflatten, {}, header, path = "artifact.safetensors"
+        )

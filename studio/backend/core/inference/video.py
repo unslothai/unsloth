@@ -2979,7 +2979,37 @@ class VideoBackend:
             return True
         if isinstance(exc, LocalEntryNotFoundError):
             return bool(local_files_only)
-        return isinstance(exc, EntryNotFoundError)
+        if isinstance(exc, EntryNotFoundError):
+            return True
+        return VideoBackend._te_fetch_miss_by_name(exc, local_files_only = local_files_only)
+
+    # Class names the xet fallback can only hand back as TEXT. Matched on the whole leading token,
+    # so "LocalEntryNotFoundError" is never read as the remote one by a substring test.
+    _REMOTE_MISS_NAMES = frozenset({"EntryNotFoundError", "RemoteEntryNotFoundError"})
+    _LOCAL_MISS_NAMES = frozenset({"LocalEntryNotFoundError"})
+
+    @staticmethod
+    def _te_fetch_miss_by_name(exc: BaseException, *, local_files_only: bool) -> bool:
+        """The same verdict for an exception whose TYPE did not survive the download.
+
+        ``hf_hub_download_with_xet_fallback`` runs the fetch in a child process and re-raises by
+        class name, and ``unsloth_zoo`` only preserves the names it knows: huggingface_hub 1.x
+        raises ``RemoteEntryNotFoundError`` for a 404, which is not on that list, so the parent sees
+        a bare ``RuntimeError`` reading ``"RemoteEntryNotFoundError: 404 ..."``. Without this a
+        404 on the preferred safetensors name stops the walk, every ``.pt``-only repo keeps its
+        dense encoder in the base download and then fetches the ``.pt`` on top of it, which is the
+        double download the candidate list exists to avoid.
+
+        Deliberately narrow: only a RuntimeError whose message BEGINS with one of those class names,
+        which is the exact shape ``_raise_child_error`` produces.
+        """
+        if not isinstance(exc, RuntimeError):
+            return False
+        message = str(exc)
+        name = message.split(":", 1)[0].strip() if ":" in message else ""
+        if name in VideoBackend._LOCAL_MISS_NAMES:
+            return bool(local_files_only)
+        return name in VideoBackend._REMOTE_MISS_NAMES
 
     @staticmethod
     def _base_download_files(

@@ -136,19 +136,64 @@ def test_the_accepted_shape_really_accepts_it():
     _TakesKwargs()(input_ids = torch.zeros(1, 4).long(), packed_seq_lengths = [4])
 
 
-def test_the_blocker_names_itself_in_the_warning():
-    """The chain must not fall through to UNSLOTH_RETURN_LOGITS=1, a flag the user never set."""
+def test_the_blocker_names_itself_in_the_warning(monkeypatch, caplog):
+    """The chain must not fall through to UNSLOTH_RETURN_LOGITS=1, a flag the user never set.
+
+    Asserted by running the chain with the env var ALSO set, which is the only
+    arrangement where the fall-through is observable: the blocker and the catch-all
+    are both live, and the message has to name the one that is actually the cause.
+    This used to `inspect.getsource` and compare the offsets of two literals, which
+    pins one spelling of the branch rather than the behaviour, and went red on a
+    branch that merely widened the condition to `forward_rejects_packing or ...`.
+    """
+    import logging
+    from types import SimpleNamespace
+
+    import unsloth.trainer as trainer_module
+
+    class _StubSFTTrainer:
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            **kwargs,
+        ):
+            self.model = model
+            self.args = args
+
+    for _name in ("enable_padding_free_metadata", "enable_sample_packing"):
+        monkeypatch.setattr(trainer_module, _name, lambda model, trainer: None)
+    monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
+
+    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    trainer_module._patch_sft_trainer_auto_packing(module)
+
+    config = SimpleNamespace(packing = True, padding_free = None, max_length = 512)
+    with caplog.at_level(logging.WARNING, logger = trainer_module.logger.name):
+        module.SFTTrainer(model = _NoKwargs(), args = config)
+
+    assert "packing=True ignored" in caplog.text, "the reason chain never emitted"
+    assert (
+        "_NoKwargs.forward()" in caplog.text
+    ), "the model's forward is what blocks packing, so the warning has to say so"
+    assert (
+        "UNSLOTH_RETURN_LOGITS" not in caplog.text
+    ), "naming the env var blames a flag the user did not set for a model-shape blocker"
+
+
+def test_the_signature_probe_runs_once_per_call():
+    """Kept from the source-offset version of the test above.
+
+    The probe walks a forward signature and, for a string `model=`, can reach the
+    remote-code resolution behind it, so calling it again per warning is not free.
+    This is a property of the code rather than of a run, so it is still read off the
+    source, but on its own instead of riding along with a behavioural claim.
+    """
     import inspect as _inspect
 
     from unsloth import trainer as trainer_module
 
     source = _inspect.getsource(trainer_module._patch_sft_trainer_auto_packing)
-    assert "forward_rejects_packing" in source
-    # the new branch must come BEFORE the catch-all env-var branch
-    assert source.index("elif forward_rejects_packing") < source.index(
-        'reason = "UNSLOTH_RETURN_LOGITS=1"'
-    )
-    # and the predicate is evaluated once, not twice
     assert source.count("_forward_accepts_packing_kwargs(model)") == 1
 
 

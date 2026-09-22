@@ -138,7 +138,7 @@ import {
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
-import { DEFAULT_GEN, defaultsFor } from "./image-generation-defaults";
+import { DEFAULT_GEN, defaultsFor, resolutionFor } from "./image-generation-defaults";
 import { MAX_DIM, MIN_DIM, restorableSize, snapDim } from "./image-size";
 
 import {
@@ -1413,16 +1413,28 @@ export function ImagesPage({
     const recommended =
       pendingModelDefaults ??
       defaultsFor(status?.base_repo ?? status?.repo_id ?? "");
+    // Reset restores the resident build's canvas, the same one the seed above applied. A constant
+    // here would quietly undo it and put a 24 GB card back over its budget.
+    const size = resolutionFor(status?.base_repo ?? status?.repo_id ?? "", {
+      modelKind: status?.model_kind,
+      transformerQuant: status?.transformer_quant,
+    });
     return {
       negativePrompt: "",
-      width: 1024,
-      height: 1024,
+      width: size.width,
+      height: size.height,
       steps: recommended.steps,
       guidance: recommended.guidance,
       batchSize: 1,
       runs: 1,
     };
-  }, [pendingModelDefaults, status?.base_repo, status?.repo_id]);
+  }, [
+    pendingModelDefaults,
+    status?.base_repo,
+    status?.repo_id,
+    status?.model_kind,
+    status?.transformer_quant,
+  ]);
   const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
     setNegativePrompt(params.negativePrompt);
     // Same rule restoreSettings follows: a negative prompt in effect has to be visible, or the
@@ -2357,7 +2369,26 @@ export function ImagesPage({
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
-  }, [imagePresets.storedRecipe, status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
+    // The canvas is part of the resident model's defaults, not a constant: a quantised build shrinks
+    // the weights and leaves the activations alone, so on Qwen-Image-2.1 the canvas is what decides
+    // whether the load fits. Read from the ENGAGED build, so a declined quant request keeps 1024.
+    const size = resolutionFor(status?.base_repo ?? repoId, {
+      modelKind: status?.model_kind,
+      transformerQuant: status?.transformer_quant,
+    });
+    setWidth(size.width);
+    setHeight(size.height);
+    const matched = matchAspect(size.width, size.height);
+    setAspect(matched.key);
+    setPortrait(matched.portrait);
+  }, [
+    imagePresets.storedRecipe,
+    status?.loaded,
+    status?.repo_id,
+    status?.base_repo,
+    status?.model_kind,
+    status?.transformer_quant,
+  ]);
 
   // Reseed the Advanced selects from the LOADED build, so a declined request snaps to what
   // engaged and Precision never advertises a scheme the model is not running. Keyed on the
@@ -2375,9 +2406,13 @@ export function ImagesPage({
     );
     if (quant) setTransformerQuant(quant);
     const encoder = resolvedSelectValue(record.text_encoder_quant, (v) =>
-      // A declined request runs dense: "off" (or "none", older backend) is the select's Default.
-      (["auto", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const).find(
-        (o) => o === v || (o === "auto" && (v === "none" || v === "off")),
+      // The engaged value spells the dense encoder "off"; the select's option for it is "none".
+      // It maps to Dense, NOT to Default: an unset request is already caught upstream by
+      // `source === "auto"`, so reaching here with "off" means dense was pinned or a scheme was
+      // declined. Folding it into Default would snap a pinned Dense back to Default, and the next
+      // reapply would omit the field and silently take the family's scheme instead.
+      (["auto", "none", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const).find(
+        (o) => o === v || (o === "none" && v === "off"),
       ) ?? null,
     );
     if (encoder) setTextEncoderQuant(encoder);
@@ -3775,12 +3810,15 @@ export function ImagesPage({
       )}
       <AdvancedSelect
         label="Text encoder precision"
-        hint="Lower precision reduces text-encoder memory but can change image quality. Supported modes depend on the GPU and model. Default keeps the existing encoder precision; the loaded build below reports what was applied."
+        hint="Lower precision reduces text-encoder memory but can change image quality. Supported modes depend on the GPU and model. Default lets the model choose, which on Qwen-Image 2.1 means its hosted FP8 encoder (8.75 GB rather than 16.3); pick Dense (bf16) to pin the released encoder. The loaded build below reports what was applied."
         badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
         value={textEncoderQuant}
         onValueChange={(v) => setTextEncoderQuant(v as typeof textEncoderQuant)}
         options={[
           ["auto", "Default"],
+          // The opt-out. Reachable only since a family default can pick a scheme on its own: with
+          // "Default" meaning bf16 everywhere, omitting the field WAS the dense request.
+          ["none", "Dense (bf16)"],
           ["fp8", "FP8 (storage)"],
           ["fp8_dynamic", "FP8 (compute)"],
           ["int8", "INT8"],

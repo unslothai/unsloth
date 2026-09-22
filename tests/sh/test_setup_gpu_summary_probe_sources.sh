@@ -15,7 +15,23 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 SKIP=0
 
+
 {
+    # A helper the sed lines above never pulled in is not a missing binary, it is an
+    # extraction that fell behind studio/setup.sh. #11437 added _amd_prefer_discrete_gfx
+    # to the selection block and nothing extracted it, so 29 cases each died on a bare
+    # "command not found" and none of them named the cause. Say it once, plainly, the
+    # first time such a call is actually reached. Reached, not merely present: setup.sh
+    # arms this test never takes call helpers it never extracts (the NVIDIA banner, the
+    # step/substep printers), and those are not defects to fail on.
+    cat <<'GUARD'
+command_not_found_handle() {
+    printf '%s\n' "FATAL: the extracted block called '$1', which studio/setup.sh defines" >&2
+    printf '%s\n' "       but no sed line in this test pulled in. Add:" >&2
+    printf '%s\n' "         sed -n '/^$1()/,/^}/p' \"\$SETUP_SH\"" >&2
+    exit 127
+}
+GUARD
     sed -n '/^_setup_run_smi()/,/^}/p'              "$SETUP_SH"
     sed -n '/^_setup_rocminfo_gpu_records()/,/^}/p' "$SETUP_SH"
     sed -n '/^_setup_amd_smi_gpu_records()/,/^}/p'  "$SETUP_SH"
@@ -52,6 +68,21 @@ bash -n "$WORK/block.sh" || { echo "FATAL: extracted block does not parse" >&2; 
 # The same two halves, split, for the arms that reach selection without probing anything.
 sed -n '/^_setup_amd_detected=false$/,/^_setup_amd_records=""$/p' "$SETUP_SH" > "$WORK/init.sh"
 {
+    # A helper the sed lines above never pulled in is not a missing binary, it is an
+    # extraction that fell behind studio/setup.sh. #11437 added _amd_prefer_discrete_gfx
+    # to the selection block and nothing extracted it, so 29 cases each died on a bare
+    # "command not found" and none of them named the cause. Say it once, plainly, the
+    # first time such a call is actually reached. Reached, not merely present: setup.sh
+    # arms this test never takes call helpers it never extracts (the NVIDIA banner, the
+    # step/substep printers), and those are not defects to fail on.
+    cat <<'GUARD'
+command_not_found_handle() {
+    printf '%s\n' "FATAL: the extracted block called '$1', which studio/setup.sh defines" >&2
+    printf '%s\n' "       but no sed line in this test pulled in. Add:" >&2
+    printf '%s\n' "         sed -n '/^$1()/,/^}/p' \"\$SETUP_SH\"" >&2
+    exit 127
+}
+GUARD
     # The same helpers, for the same reason: this half holds the selection too.
     sed -n '/^_amd_gfx_is_shadowing_integrated()/,/^}/p'  "$SETUP_SH"
     sed -n '/^_amd_prefer_discrete_gfx()/,/^}/p'  "$SETUP_SH"

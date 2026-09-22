@@ -752,39 +752,47 @@ test("the dragged row is known before React re-renders", async () => {
   assert.ok(!/const dragged = drag;/.test(HOOK));
 });
 
-// dragleave fires for every child crossed, so one document listener clears the cue instead.
+// The desktop app's webview answers every OS drag itself and never forwards it to the page, so
+// `dragstart`, `dragover` and `drop` never fire there and a row wired to them is dead. The whole
+// gesture is pointer events, which both the browser and the desktop app deliver.
+test("the gesture is pointer events, not the HTML5 drag API", () => {
+  for (const source of [HOOK, APP_SIDEBAR]) {
+    assert.ok(!/\bdraggable\b\s*[:=]/.test(source));
+    assert.ok(!source.includes("onDragStart"));
+    assert.ok(!source.includes("onDragOver"));
+    assert.ok(!source.includes("onDragEnd"));
+    assert.ok(!source.includes("onDragLeave"));
+    assert.ok(!source.includes("dataTransfer"));
+  }
+  assert.match(HOOK, /onPointerDown: \(event: React\.PointerEvent\) => \{/);
+  assert.match(HOOK, /window\.addEventListener\("pointermove", onMove\);/);
+  assert.match(HOOK, /window\.addEventListener\("pointerup", onUp\);/);
+  // A press is only a drag once it travels, or a click on a row would never open the chat.
+  assert.match(HOOK, /export const DRAG_THRESHOLD_PX = \d+;/);
+  // Touch scrolls the list; its rows keep Move up and Move down.
+  assert.match(HOOK, /event\.pointerType === "touch"\) return;/);
+});
+
+// A zone is found by hit-testing the pointer, innermost first, so a row still answers before the
+// folder block and the section around it. Nothing under the pointer clears the cue outright,
+// which no `dragleave` has to be trusted for.
 test("a cue over nothing is cleared without trusting dragleave", () => {
-  assert.ok(!HOOK.includes("onDragLeave"));
-  assert.ok(!APP_SIDEBAR.includes("onDragLeave"));
-  assert.match(HOOK, /lastHandledEvent = event\.nativeEvent;/);
+  assert.match(HOOK, /for \(const element of document\.elementsFromPoint\(x, y\)\)/);
+  // No answer here lets the zone around it answer instead.
+  assert.match(HOOK, /if \(outcome\) return \{ hit, outcome \};\n\s*\}\n\s*return null;/);
   assert.match(
     HOOK,
-    /if \(lastHandledEvent !== event\) \{\n\s*cancelSpring\(\);\n\s*showPlan\(null\);/,
-  );
-  // No answer lets the outer zone answer; an answer marks the event rather than stopping it.
-  assert.match(
-    HOOK,
-    /if \(!next\) return;\n\s*event\.preventDefault\(\);\n\s*lastHandledEvent = event\.nativeEvent;/,
-  );
-  assert.ok(
-    !HOOK.includes("event.stopPropagation();\n          lastHandledEvent"),
-  );
-  assert.match(
-    HOOK,
-    /if \(!dragged \|\| lastHandledEvent === event\.nativeEvent\) return;/,
+    /if \(!aimed \|\| aimed\.outcome === STAY\) \{\n\s*\/\/[^\n]*\n\s*cancelSpring\(\);\n\s*showPlan\(null\);\n\s*return;\n\s*\}/,
   );
 });
 
-// Over its own row a lifted row is already home. The row claims the drag and paints nothing,
+// Over its own row a lifted row is already home: nothing is painted and the drop does nothing,
 // so the section body never gets to offer its last slot for it.
 test("a row over itself claims the drag and paints nothing", () => {
+  assert.match(HOOK, /showPlan\(aimed\.outcome\);/);
   assert.match(
     HOOK,
-    /if \(next === STAY\) \{\n\s*\/\/[^\n]*\n\s*cancelSpring\(\);\n\s*showPlan\(null\);\n\s*return;\n\s*\}/,
-  );
-  assert.match(
-    HOOK,
-    /if \(next !== STAY\) optionsRef\.current\.onDrop\(next, dragged\);/,
+    /if \(dragged && aimed && aimed\.outcome !== STAY\) \{\n\s*optionsRef\.current\.onDrop\(aimed\.outcome, dragged\);/,
   );
 });
 
@@ -878,26 +886,15 @@ test("alt and an arrow reorder a row without a pointer", async () => {
   );
 });
 
-// The hint names every kind of drop.
-test("the hint beside the cursor names every kind of drop", () => {
-  for (const key of ["reorder", "pin", "unpin", "moveTo", "moveToRecents"]) {
-    assert.ok(EN.includes(`${key}:`), `${key} is missing from the en locale`);
-  }
-  for (const use of [
-    't("shell.drag.pin")',
-    't("shell.drag.unpin")',
-    't("shell.drag.reorder")',
-    't("shell.drag.moveToRecents")',
-    't("shell.drag.moveTo", { name })',
-  ]) {
-    assert.ok(APP_SIDEBAR.includes(use), `${use} is never rendered`);
-  }
-  // In a portal, so the sidebar cannot clip it.
-  assert.match(
-    APP_SIDEBAR,
-    /draggingRow && typeof document !== "undefined"\n\s*\? createPortal\(/,
-  );
-  assert.ok(APP_SIDEBAR.includes('data-testid="sidebar-drop-hint"'));
+// The line on the landing edge and the ring around a folder already say where the row goes, so
+// no label rides along with the cursor saying it again.
+test("nothing follows the cursor while a row is carried", () => {
+  assert.ok(!APP_SIDEBAR.includes('data-testid="sidebar-drop-hint"'));
+  assert.ok(!APP_SIDEBAR.includes("createPortal"));
+  assert.ok(!APP_SIDEBAR.includes("shell.drag."));
+  assert.ok(!EN.includes("drag: {"));
+  // And the hook has no element to place: it paints the cue and nothing else.
+  assert.ok(!HOOK.includes("hintRef"));
 });
 
 // The gesture has one behaviour, not three switches: the hint shows, a reorder in a sorted list
@@ -927,7 +924,13 @@ test("a closed folder or section opens under a resting pointer", () => {
     APP_SIDEBAR,
     /if \(zone\.section === "pinned"\) setPinnedOpen\(true\);/,
   );
-  assert.match(HOOK, /if \(zoneOptions\?\.closed\) \{/);
+  // A zone carries `closed` in the DOM, and only a closed one arms the timer.
+  assert.match(HOOK, /const \{ zone, closed \} = aimed\.hit;/);
+  assert.match(
+    HOOK,
+    /if \(!closed\) \{\n\s*if \(spring\.current\?\.key !== springKey\) cancelSpring\(\);\n\s*return;\n\s*\}/,
+  );
+  assert.match(HOOK, /zoneOptions\?\.closed \? \{ zone, closed: true \} : \{ zone \}/);
 });
 
 // A chat dropped into a folder or Recents is moved, and the move can fail. Its slot in the new
@@ -970,4 +973,62 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
     APP_SIDEBAR,
     /\): Promise<boolean> \{\n\s*if \(item\.projectId === projectId\) return true;/,
   );
+});
+
+// A pointer resting on the edge of a long list sends no more moves, so scrolling driven off
+// pointermove alone took one step and stalled. The frame loop keeps it going, and re-aims: the
+// rows slide under a pointer that has not moved, so the cue would otherwise stay on the row that
+// left.
+test("the edge keeps scrolling while the pointer rests on it", () => {
+  assert.match(HOOK, /const onFrame = \(\) => \{[^]*?frame = requestAnimationFrame\(onFrame\);\n\s*if \(edgeScroll\(at\.y\)\) track\(at\.x, at\.y\);/);
+  // Started with the drag and cancelled with it, and it stops itself if the drag is gone.
+  assert.match(HOOK, /setDrag\(item\);\n\s*frame = requestAnimationFrame\(onFrame\);/);
+  assert.match(HOOK, /if \(frame\) cancelAnimationFrame\(frame\);/);
+  assert.match(HOOK, /if \(!sidebarDragSource\(\)\) \{\n\s*frame = 0;\n\s*return;\n\s*\}/);
+  // track no longer scrolls: one driver, or a move and a frame would both step the list.
+  assert.ok(!/const track = useCallback\(\n\s*\(x: number, y: number\) => \{\n\s*(auto|edge)Scroll/.test(HOOK));
+});
+
+// The window hears every pointer, not just the one that pressed the row. Without this a finger
+// could drive, and drop, a drag the mouse started, which is exactly what touch is kept out of.
+test("only the pointer that started the drag drives it", () => {
+  for (const handler of [
+    /function onMove\(moved: PointerEvent\) \{\n\s*if \(moved\.pointerId !== pointerId \|\| escaped\) return;/,
+    /function onUp\(released: PointerEvent\) \{\n\s*if \(released\.pointerId !== pointerId\) return;/,
+    /function onCancel\(aborted: PointerEvent\) \{\n\s*if \(aborted\.pointerId !== pointerId\) return;/,
+  ]) {
+    assert.match(HOOK, handler);
+  }
+  assert.match(HOOK, /if \(!event\.isPrimary\) return;/);
+  // One gesture at a time, and a stale one is abandoned rather than left to block every later
+  // drag: a release the window never saw would strand it otherwise.
+  assert.match(HOOK, /press\.current\?\.end\(\);/);
+  assert.match(HOOK, /end: \(\) => \{\n\s*detach\(\);\n\s*if \(started\) clear\(\);/);
+  assert.match(HOOK, /if \(press\.current === self\) press\.current = null;/);
+});
+
+// Escape cancels while the button is still down, and the release comes later. A click guard
+// armed at the keypress is torn down on the next tick, long before that release, so the row
+// under the pointer would open the chat the drag was cancelled out of.
+test("escape keeps the click guard until the button is released", () => {
+  assert.match(
+    HOOK,
+    /if \(pressed\.key !== "Escape" \|\| escaped\) return;\n\s*if \(!started\) \{[^]*?detach\(\);\n\s*return;\n\s*\}/,
+  );
+  // The gesture keeps its listeners: only the release detaches and swallows.
+  const onKey = HOOK.slice(
+    HOOK.indexOf("function onKey(pressed: KeyboardEvent)"),
+    HOOK.indexOf("window.addEventListener(\"pointermove\", onMove);"),
+  );
+  assert.ok(
+    !/escaped = true;[^]*?detach\(\);/.test(onKey),
+    "escape must not detach while the button is still down",
+  );
+  assert.match(onKey, /escaped = true;\n\s*clear\(\);/);
+  assert.match(
+    HOOK,
+    /swallowClick\(\);\n\s*if \(escaped\) return;/,
+  );
+  // And a cancelled drag does not come back to life on the next move.
+  assert.match(HOOK, /if \(moved\.pointerId !== pointerId \|\| escaped\) return;/);
 });

@@ -128,6 +128,12 @@ class DiffusionFamily:
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id). Layerwise-fp8 only: the cast is
     # deterministic, so the artifact is bit-identical while skipping the dense TE download.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # The text-encoder scheme an UNSET request resolves to on this family, or None to keep the released bf16 encoder.
+    # Opt-in per family rather than implied by ``te_prequant_repos``, because hosting an artifact says the cast is
+    # reproducible, not that its conditioning is good enough to hand someone who asked for nothing. These encoders are
+    # different models (T5, CLIP, Qwen3-VL, Gemma) and fp8 tolerance does not transfer between them, so a family joins
+    # this list only once the fp8-vs-bf16 delta has been measured on it.
+    te_quant_auto: Optional[str] = None
     # Native (sd.cpp) single-file assets, used only on the no-GPU sd.cpp engine. The transformer GGUF is shared with
     # diffusers; sd-cli also needs a (repo_id, filename) VAE + text encoder(s), each with a trailing SdCppModelFiles
     # field name.
@@ -375,6 +381,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         # Qwen3-VL 8B, pre-cast. Independent of the DiT scheme, as on every other family.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-2.1-FP8"),),
+        # The encoder is the BIG component here, not the denoiser: Qwen3-VL-8B is 16.33 GiB dense against 6.76 GiB for
+        # the INT8 transformer, so a quantised denoiser alone still costs ~26 GB and the hosted pre-cast encoder is
+        # what makes the family fit a 24 GB card. Measured on this family at 1024/40 steps: 23.74 -> 16.16 GiB resident
+        # and 11.6 -> 1.5 s to load the encoder, with per-image render time unchanged.
+        te_quant_auto = "fp8",
         cfg_kwarg = "true_cfg_scale",
         # 2.1 is UNIFIED: one pipeline, and QwenImage21Pipeline.__call__ takes ``image`` as condition
         # images alongside the prompt, so this is the FLUX.2 shape rather than the Qwen-Image-Edit
@@ -406,7 +417,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_vae = ("unsloth/Qwen-Image-2.1-FP8", "vae/qwen_image_2.1_vae_bf16.safetensors"),
         # Qwen3-VL 8B, not Qwen2.5-VL, and supplied through --llm rather than --qwen2vl: the
         # qwen2vl flag carries Qwen2-VL's vision preprocessing, which this encoder does not want.
-        # Q4_K_M keeps the CPU RAM win the no-GPU route exists for (bf16 is 16.4 GB, this is 4.7).
+        # UD-Q4_K_XL, the Dynamic 2.0 rung, rather than the uniform Q4_K_M: same 4-bit class and
+        # the same CPU RAM win the no-GPU route exists for (bf16 is 16.4 GB, this is 5.1 against
+        # 5.0), with the per-tensor precision the dynamic recipe assigns. Measured on this host
+        # against the 2.1-capable build, one prompt at 1024 with 20 steps and a shared seed:
+        # LPIPS 0.02894 / SSIM 0.95908 between the two, 36.5 s against 39.0 s, both coherent.
         # Text to image only, which is all this family exposes (edit is False, and there are no
         # img2img / inpaint pipelines). Upstream's docs/qwen_image_2.1.md requires a separate
         # mmproj through --llm_vision before a GGUF encoder can do image editing; turning editing
@@ -414,7 +429,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_text_encoders = (
             (
                 "unsloth/Qwen3-VL-8B-Instruct-GGUF",
-                "Qwen3-VL-8B-Instruct-Q4_K_M.gguf",
+                "Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf",
                 "llm",
             ),
         ),
@@ -1271,6 +1286,53 @@ def pipeline_class_requirement(pipeline_class: str) -> tuple[Optional[str], bool
 _UNRELEASED_MIN_DIFFUSERS = frozenset({"0.41.0"})
 
 
+_DIFFUSERS_MAIN_PIN = Path(__file__).resolve().parents[2] / "requirements" / "diffusers-main.txt"
+_DIFFUSERS_MAIN_COMMIT_RE = re.compile(
+    r"github\.com/(?P<repo>[^/\s]+/[^/@\s]+?)(?:\.git)?@(?P<commit>[0-9a-fA-F]{40})\b"
+)
+
+
+def _diffusers_main_archive_remedy() -> str:
+    """A remedy line a reader can actually run, naming the commit this build wants.
+
+    The old text said "re-run the installer, or pip install -r diffusers-main.txt". Both resolve
+    the same ``git+https`` requirement, so both fail for the one cause that produces this refusal
+    most often, a host with no working git, and the reader is sent round the loop that put them
+    here. The installer now falls back to the zip for that case, so re-running is once again real
+    advice, and the zip is quoted beside it because it is the fix that needs no git and no
+    installer run at all.
+
+    Read out of the pin file rather than hardcoded, so the commit in the message cannot drift from
+    the commit that is installed. An unreadable or unrecognised pin file degrades to advice that is
+    still true, just less specific, because a refusal that says nothing is worse than one that
+    cannot name the SHA.
+    """
+    generic = (
+        "Re-run the Unsloth installer (leaving UNSLOTH_DIFFUSERS_MAIN unset), which installs it "
+        "from a zip archive when git is missing."
+    )
+    try:
+        text = _DIFFUSERS_MAIN_PIN.read_text(encoding = "utf-8-sig")
+    except (OSError, ValueError):
+        return generic
+    for line in text.splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        found = _DIFFUSERS_MAIN_COMMIT_RE.search(stripped)
+        if found is None:
+            continue
+        url = (
+            f"https://github.com/{found.group('repo')}/archive/"
+            f"{found.group('commit').lower()}.zip"
+        )
+        return (
+            f"{generic} To install it by hand with no git at all: "
+            f'pip install "diffusers @ {url}"'
+        )
+    return generic
+
+
 def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> str:
     """The refusal text: what is missing, what is installed, and a remedy this interpreter can
     actually carry out."""
@@ -1281,12 +1343,13 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
             f"diffusers {installed}. Upgrade with: pip install -U diffusers."
         )
     if minimum in _UNRELEASED_MIN_DIFFUSERS:
+        remedy = _diffusers_main_archive_remedy()
         return (
             f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}), which has not been "
             f"released yet; this environment has diffusers {installed}. Unsloth installs a pinned "
-            "build of diffusers main for this, so re-run the Unsloth installer (and leave "
-            "UNSLOTH_DIFFUSERS_MAIN unset), or install it directly with: pip install -r "
-            "studio/backend/requirements/diffusers-main.txt"
+            "build of diffusers main for this and that build is not here, which almost always "
+            "means the install had no working git (run: git --version) or could not reach "
+            f"github.com. {remedy}"
         )
     remedy = f"Upgrade with: pip install -U 'diffusers>={minimum}'."
     if needs_py310:
