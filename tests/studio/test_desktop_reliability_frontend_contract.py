@@ -603,16 +603,17 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     source = _ui_source(TITLEBAR)
 
-    # Matched across whitespace, and against the floor rather than one spelling: #11458 made
-    # the slot `max(7rem, calc(7rem * var(--ui-space-scale, 1)))` so it grows with the UI font
-    # and never drops under the three 30px buttons, and prettier then wrapped the ternary over
-    # three lines. Both are the same 7rem at the default scale. A slot that stopped being
-    # 7rem-based, or stopped keying off this branch, still fails.
+    # Read raw, and matched across whitespace because prettier wrapped the ternary over three
+    # lines. #11458 made the slot `max(7rem, calc(7rem * var(--ui-space-scale, 1)))` so it
+    # grows with the UI font and never drops under the three 30px buttons. A bare `7rem` is
+    # not the same guarantee: the buttons' own padding and gaps still scale, so at a larger
+    # setting a fixed slot is overrun and the drag region starts inside the navigation. Both
+    # terms are pinned, since either one drifting is a slot that no longer says 7rem.
     assert re.search(
         r"showSidebarSurface && !pinned\s*\?\s*"
-        r'"(?:7rem|max\(\s*7rem\s*,\s*7rem\s*\))"'
+        r'"max\(\s*7rem\s*,\s*calc\(\s*7rem\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)\s*\)"'
         r"\s*:\s*sidebarWidth",
-        source,
+        TITLEBAR.read_text(encoding = "utf-8"),
     ), "the unpinned sidebar surface no longer sizes the titlebar navigation slot from 7rem"
     assert "style={{ width: titlebarNavigationWidth }}" in source
     assert "left: titlebarNavigationWidth" in source
@@ -2541,6 +2542,37 @@ _CLASS_STARTS = r"(?:(?<=[\s\"'`])|^)"
 # `border-foreground/10` that has lost the gain and stopped responding to the contrast
 # setting. The reader cannot tell them apart by design, so the gain is stated here.
 _COLOURS_THAT_MUST_KEEP_THEIR_GAIN = ((IMAGES_PAGE, "border", "--foreground", "10", "edge", 1),)
+
+
+# The stylesheet needs the same statement. `_spacing_rem` and the pin arithmetic read
+# `index.css` through `_ui_source`, which answers with the length at the default scale, so a
+# scale wrapper and a bare rem are the same number to every one of those contracts. These two
+# declarations are the pin's own geometry: the Tailwind gutter they are compared against
+# follows `--spacing`, so a fixed `right` or `padding-right` drifts away from it at any
+# setting other than the default, and the reach arithmetic that decides whether the pin can
+# overlap the title is done against a number the UI no longer renders.
+_CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE = (
+    ("right", "1.875rem", 1),
+    ("padding-right", "0.125rem", 1),
+)
+
+
+def test_the_sidebar_action_geometry_still_follows_the_ui_scale():
+    source = INDEX_CSS.read_text(encoding = "utf-8")
+    for prop, length, expected in _CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE:
+        scaled = len(
+            re.findall(
+                rf"(?<![\w-]){re.escape(prop)}:\s*"
+                rf"calc\(\s*{re.escape(length)}\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\);",
+                source,
+            )
+        )
+        assert scaled == expected, (
+            f"index.css states {scaled} scaled `{prop}: {length}`, not {expected}"
+        )
+        assert not re.search(
+            rf"(?<![\w-]){re.escape(prop)}:\s*{re.escape(length)}\s*;", source
+        ), f"index.css has a bare `{prop}: {length}`, which stays put while the gutter scales"
 
 
 def test_the_colours_these_contracts_read_still_carry_their_gain():
