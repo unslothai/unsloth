@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import importlib.util
 import json
 import ntpath
@@ -999,8 +1001,9 @@ def _torch_runtime_tag() -> str:
 # torch/_inductor/cpp_builder.py joins the g++ invocation with spaces and reparses it with
 # shlex.split, so a root containing a space splits in two and the build fails outright
 # ("g++: fatal error: input file .../my is the same as output file"). The quoting is PyTorch's
-# to fix; skipping the pin just returns to the temporary directory Inductor used before. Not a
-# rare shape: "C:\Users\First Last" is an ordinary Windows account name.
+# to fix; skipping the pin just returns to the temporary directory Inductor used before. Neither
+# shape is rare: "C:\Users\First Last" is an ordinary Windows account name and "/home/o'brien"
+# an ordinary POSIX one. toolchain_path_unparseable has the full character list.
 _TOOLCHAIN_PATH_KEYS = frozenset(
     {
         "TORCHINDUCTOR_CACHE_DIR",
@@ -1044,9 +1047,181 @@ def _usable_dir(value: str) -> bool:
     return True
 
 
+def toolchain_path_unparseable(value: str) -> bool:
+    """Whether a compiler command line holding *value* survives shlex.split intact.
+
+    cpp_builder pastes the path in unquoted and reparses in POSIX mode. Measured on the real
+    command shape with "/data/O'Brien/cache": plain 4 args intact, space 6 args, apostrophe
+    2 args with the quotes gone (an odd number raises ValueError instead).
+
+    A backslash is POSIX-only. On Windows it is the separator, and
+    cpp_builder.normalize_path_separator rewrites it to "/" first, so rejecting it there would
+    reject every Windows path.
+    """
+    if any(ch.isspace() for ch in value):
+        return True
+    if "'" in value or '"' in value:
+        return True
+    return os.name != "nt" and "\\" in value
+
+
 def _toolchain_unsafe(key: str, value: str) -> bool:
     """Whether pinning *key* to *value* would hand a compiler a path it cannot parse."""
-    return key in _TOOLCHAIN_PATH_KEYS and any(ch.isspace() for ch in value)
+    return key in _TOOLCHAIN_PATH_KEYS and toolchain_path_unparseable(value)
+
+
+def _private_dir(path: str) -> bool:
+    """Whether *path* is a directory only this account can write, creating it if it is absent.
+
+    The fallback lives in the SHARED temporary root under a name derived from the install, so it
+    is predictable to anyone on the host. _usable_dir alone accepted a world-writable directory
+    another local user had pre-created and published it as TORCH_EXTENSIONS_DIR, which torch
+    loads compiled .so files from: local code execution in the Studio process.
+
+    The parent is asked FIRST and for both branches, since creating the directory settles who
+    owns it and nothing about who can rename it away afterwards. lstat, not stat, or a symlink
+    planted at the name is judged by its target. Ownership is POSIX-only: on Windows the
+    temporary root is already per-account under %LOCALAPPDATA% and st_uid means nothing.
+    """
+    parent = Path(path).parent
+    try:
+        parent.mkdir(parents = True, exist_ok = True)
+    except (OSError, ValueError):
+        return False
+    if not _holding_dir_is_safe(parent):
+        return False
+    try:
+        os.mkdir(path, 0o700)
+        return True
+    except FileExistsError:
+        pass
+    except (OSError, ValueError):
+        return False
+    try:
+        info = os.lstat(path)
+    except (OSError, ValueError):
+        return False
+    if not stat_module.S_ISDIR(info.st_mode) or stat_module.S_ISLNK(info.st_mode):
+        return False
+    if os.name == "nt":
+        return True
+    if info.st_uid != os.geteuid():
+        return False
+    return not info.st_mode & (stat_module.S_IWGRP | stat_module.S_IWOTH)
+
+
+def _windows_temp_root_is_private(parent: Path) -> bool:
+    """Whether *parent* is the per-account temporary root Windows gives by default.
+
+    os.stat reports no ownership on Windows and the 0o700 given to os.mkdir buys nothing there,
+    so a redirected %TEMP% cannot be told from a private one without reading ACLs, a dependency
+    this backend does not carry. %LOCALAPPDATA%\\Temp is already per-account and ACL'd by
+    Windows, so it is the one case accepted: a redirected root gets no fallback rather than an
+    unverified one, which costs that install containment and nothing else.
+    """
+    local = os.environ.get("LOCALAPPDATA")
+    if not local:
+        return False
+    try:
+        return os.path.normcase(str(parent.resolve())) == os.path.normcase(
+            str((Path(local) / "Temp").resolve())
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _dir_is_not_swappable(directory: Path) -> bool:
+    """Whether an entry inside *directory* can be renamed away by another account."""
+    try:
+        info = os.stat(directory)
+    except (OSError, ValueError):
+        return False
+    # Both halves, and neither substitutes for the other. Ownership, because a mode is not a
+    # promise: changing it belongs to the owner, so a 0755 directory held by another ordinary
+    # account is one call away from being writable by it. Root is trusted because it can rewrite
+    # anything anyway.
+    if info.st_uid not in (0, os.geteuid()):
+        return False
+    # And the write bits, because owning a directory does not stop anyone else writing in it.
+    if not info.st_mode & (stat_module.S_IWGRP | stat_module.S_IWOTH):
+        return True
+    # Sticky narrows rename of a child to the child's owner, the DIRECTORY's owner and root, so
+    # a shared directory is usable when we or root hold it. That is why /tmp passes.
+    return bool(info.st_mode & stat_module.S_ISVTX)
+
+
+def _holding_dir_is_safe(parent: Path) -> bool:
+    """Whether another account could swap the directory we are about to trust.
+
+    Every ANCESTOR is asked, not just the immediate holder: TMPDIR=/shared/victim-tmp at 0700
+    inside a 0777 /shared looked safe, and renaming the root through /shared substitutes a tree
+    holding the predictable cache name just as well as swapping the leaf.
+
+    BOTH chains are walked, the names given and the names resolved. Resolving first discarded
+    the lexical path, so /shared/tmp-link pointing at a private directory was judged on the
+    target alone while the link itself stayed replaceable; the resolved chain still catches the
+    reverse, a link in a safe directory aimed into a shared one. Symlinked roots are not refused
+    outright, since /tmp and /var are symlinks on macOS.
+
+    On Windows there are no POSIX bits to read, so the per-account default root answers instead.
+    """
+    if os.name == "nt":
+        return _windows_temp_root_is_private(parent)
+    try:
+        chains = (Path(os.path.abspath(parent)), parent.resolve())
+    except (OSError, ValueError):
+        return False
+    for start in chains:
+        current = start
+        while True:
+            if not _dir_is_not_swappable(current):
+                return False
+            if current.parent == current:
+                break
+            current = current.parent
+    return True
+
+
+def _parseable_toolchain_fallback(key: str, intended: str) -> str | None:
+    """A cache directory the C++ builders can read, or None when even the temp root is unusable.
+
+    Keyed on the path we WANTED, so one install returns to one directory and two installs under
+    one temp root do not share a cache. The digest is hex, so the name cannot itself carry an
+    unparseable character.
+
+    The ACCOUNT is in the digest too, or two OS accounts sharing an install would derive the
+    same name, the first would create it 0700 and the rest would fail the ownership check and
+    get nothing. Hashed rather than spelled out, because a login is exactly the kind of string
+    that started this.
+    """
+    try:
+        base = tempfile.gettempdir()
+    except (OSError, ValueError):
+        return None
+    if not base or toolchain_path_unparseable(base):
+        return None
+    account = str(os.geteuid()) if hasattr(os, "geteuid") else (os.environ.get("USERNAME") or "")
+    digest = hashlib.sha256(f"{account}\0{intended}".encode("utf-8", "replace")).hexdigest()[:12]
+    candidate = str(Path(base) / f"unsloth-{key.lower().replace('_', '-')}-{digest}")
+    # The join can still reintroduce one: gettempdir() is parseable but Path may normalise.
+    return None if toolchain_path_unparseable(candidate) else candidate
+
+
+def parseable_cache_fallback(key: str, intended: str) -> str | None:
+    """A directory ready to publish for *key*, or None when no safe one can be had.
+
+    Name, holding directory, ownership and a real write probe, in that order. One entry point
+    because the diffusion cache needs exactly the same answer: it used to leave the process-wide
+    pin in place when its own per-key path was unparseable, and once startup began publishing a
+    single shared fallback that meant save_cache_artifacts serialised one shared cache into
+    every fingerprinted bundle.
+    """
+    candidate = _parseable_toolchain_fallback(key, intended)
+    if candidate is None:
+        return None
+    if not _private_dir(candidate) or not _usable_dir(candidate):
+        return None
+    return candidate
 
 
 def _setup_cache_env() -> None:
@@ -1085,13 +1260,54 @@ def _setup_cache_env() -> None:
     for key, value in defaults.items():
         # Blank counts as unset: an inherited KEY= would otherwise pin the cache to "", which puts an empty entry on
         # sys.path and sends the compiler to the system temp directory instead.
-        if not (os.environ.get(key) or "").strip():
-            # An explicit value is still honoured above: the caller chose it, and only a default
-            # we invented is ours to withhold.
+        inherited = (os.environ.get(key) or "").strip()
+        # An explicit value is the caller's, with one exception: a toolchain path the builders
+        # cannot read is not a preference that can be carried out, since the compile fails
+        # whatever was intended by it. It also arrives by routes nobody chose, because Windows
+        # persists the value to the account, so an upgrade inherits what the OLD setup wrote
+        # through any shell already open and through the desktop relaunch, which spawns the
+        # replacement from the running process. Clearing a stored copy cannot reach a process
+        # that already read it, so the refusal belongs where the path is about to be used.
+        # Process-local and destroying nothing, which is why setup.ps1 still establishes
+        # provenance before it deletes a stored value.
+        if inherited and _toolchain_unsafe(key, inherited):
+            # Seeded from the default, not the stale value, so a healed process and a clean
+            # install share one directory instead of one per stale path.
+            fallback = parseable_cache_fallback(key, value)
+            logger.debug(
+                "refusing inherited %s=%s: the C++ builders cannot paste it into a command line "
+                "unquoted; using %s",
+                key,
+                inherited,
+                fallback if fallback is not None else "no pin at all",
+            )
+            if fallback is not None:
+                os.environ[key] = fallback
+            else:
+                os.environ.pop(key, None)
+            continue
+        if not inherited:
             if _toolchain_unsafe(key, value):
+                # Unset is not automatically safe: torch's own default is
+                # <gettempdir>/torchinductor_<user>, sanitised only against [\\/:*?"<>|], so a
+                # login lands back on the character that started this. Measured against
+                # cache_dir_utils.default_cache_dir, o'brien and First Last are both refused
+                # while say"hi is sanitised into a parseable name. So publish a path the
+                # builders can read rather than hope for one.
+                fallback = parseable_cache_fallback(key, value)
+                if fallback is not None:
+                    logger.debug(
+                        "%s holds a character the C++ builders cannot paste into a command "
+                        "line unquoted; pinning %s to %s instead",
+                        value,
+                        key,
+                        fallback,
+                    )
+                    os.environ[key] = fallback
+                    continue
                 logger.debug(
-                    "leaving %s unset: %s contains whitespace, which the C++ builders "
-                    "paste into a command line unquoted",
+                    "leaving %s unset: %s holds a character the C++ builders cannot paste "
+                    "into a command line unquoted, and the temporary directory is no better",
                     key,
                     value,
                 )

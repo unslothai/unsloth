@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { atDefaultUiScale, readSrc } from "./helpers/kit.ts";
 
 const BUTTON_CLASS = /className="([^"]+)"/;
 const WHITESPACE = /\s+/;
@@ -41,8 +41,8 @@ function buttonClasses(button: string): Set<string> {
 
 test("run settings uses one aligned toggle in both states", async () => {
   const [page, panel] = await Promise.all([
-    readSrc("features/chat/chat-page.tsx"),
-    readSrc("features/chat/chat-settings-sheet.tsx"),
+    atDefaultUiScale(readSrc("features/chat/chat-page.tsx")),
+    atDefaultUiScale(readSrc("features/chat/chat-settings-sheet.tsx")),
   ]);
 
   const toggles = [
@@ -66,8 +66,8 @@ test("run settings uses one aligned toggle in both states", async () => {
 
 test("settings chrome uses the titlebar rounded-square hover shape", async () => {
   const [dialog, sidebar] = await Promise.all([
-    readSrc("features/settings/settings-dialog.tsx"),
-    readSrc("components/app-sidebar.tsx"),
+    atDefaultUiScale(readSrc("features/settings/settings-dialog.tsx")),
+    atDefaultUiScale(readSrc("components/app-sidebar.tsx")),
   ]);
 
   const dialogMain = dialog.slice(dialog.indexOf("<main"));

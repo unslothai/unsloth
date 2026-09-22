@@ -312,6 +312,7 @@ import {
   generationChunkHasSubstantiveDelta,
   generationIsSettled,
   releaseLiveGenerationRun,
+  requestParsesThinkTags,
 } from "../utils/chat-generation-recovery";
 import {
   generateAudio,
@@ -5235,6 +5236,7 @@ export function createOpenAIStreamAdapter(
       // Both this stream and a recovery follower must persist the marker, or the next reload
       // attaches another follower and blocks the composer for a further deadline.
       let generationStalled = false;
+      let parseThink = true;
       const generationCustom = () =>
         generationRunId
           ? {
@@ -5250,6 +5252,7 @@ export function createOpenAIStreamAdapter(
               ),
               generationLocallyInterrupted: generationStalled,
               serverManaged: true,
+              parseThinkTags: parseThink,
             }
           : {};
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
@@ -5376,9 +5379,20 @@ export function createOpenAIStreamAdapter(
       );
       // The parse of everything streamed so far, extended by each delta. The final merge can rewrite
       // the prefix it is handed, which an extend-only parse cannot follow, so it reparses.
-      const segmentedText = createSegmentedAssistantText({
-        trustAppends: !(continuationPartial && repairContinuation),
-      });
+      const trustAppends = !(continuationPartial && repairContinuation);
+      let segmentedText = createSegmentedAssistantText({ trustAppends });
+      // Thinking off leaves <think> as reply text, unless reasoning arrives anyway: then the
+      // reply is reparsed with the tags that wrap it.
+      const setParseThink = (next: boolean): void => {
+        if (next === parseThink) {
+          return;
+        }
+        parseThink = next;
+        segmentedText = createSegmentedAssistantText({
+          trustAppends,
+          parseThink,
+        });
+      };
       // The single place `cumulativeText` grows, so everything derived from it sees the same
       // characters in the same order.
       const appendCumulative = (text: string): void => {
@@ -5760,6 +5774,88 @@ export function createOpenAIStreamAdapter(
         return pinTextThoughtSignature(assembled);
       };
 
+      const {
+        supportsReasoning,
+        reasoningEnabled,
+        reasoningAlwaysOn,
+        reasoningStyle,
+        reasoningEffort,
+        reasoningEffortLevels,
+      } = runtime;
+      const externalReasoningCaps: ReturnType<
+        typeof getExternalReasoningCapabilities
+      > =
+        externalSelection && externalProvider
+          ? getExternalReasoningCapabilities(
+              externalProvider.providerType,
+              externalSelection.modelId,
+              {
+                isReasoningProvider: externalProvider.isReasoningModel === true,
+                baseUrl: externalProvider.baseUrl ?? null,
+              },
+            )
+          : {
+              supportsReasoning,
+              reasoningStyle,
+              reasoningAlwaysOn: false,
+              supportsReasoningOff: false,
+              reasoningEffortLevels: ["low", "medium", "high"] as const,
+            };
+      const externalReasoningEnabled =
+        !externalReasoningCaps.supportsReasoningOff ? true : reasoningEnabled;
+      type RequestReasoningEffort = Extract<
+        NonNullable<OpenAIChatCompletionsRequest["reasoning_effort"]>,
+        "none" | "minimal" | "low" | "medium" | "high" | "max" | "xhigh"
+      >;
+      type ReasoningRequestFields = Pick<
+        OpenAIChatCompletionsRequest,
+        "enable_thinking" | "reasoning_effort" | "thinking"
+      >;
+      const fallbackExternalEffort = (externalReasoningCaps
+        .reasoningEffortLevels[0] ?? "low") as RequestReasoningEffort;
+      const selectedExternalEffort: RequestReasoningEffort =
+        clampReasoningEffortToLevels(
+          reasoningEffort,
+          externalReasoningCaps.reasoningEffortLevels,
+        ) as RequestReasoningEffort;
+      // Clamp to the loaded model's advertised levels so a stale value becomes one the backend
+      // honors: gpt-oss takes low|medium|high, GLM enable_thinking_effort high|max.
+      const localReasoningEffort = clampReasoningEffortToLevels(
+        reasoningEffort,
+        reasoningEffortLevels,
+      );
+      const externalReasoningFields: ReasoningRequestFields =
+        externalReasoningCaps.supportsReasoning
+          ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
+            ? externalReasoningEnabled
+              ? { reasoning_effort: selectedExternalEffort }
+              : externalReasoningCaps.supportsReasoningOff
+                ? { reasoning_effort: "none" }
+                : { reasoning_effort: fallbackExternalEffort }
+            : {
+                thinking: {
+                  type: externalReasoningEnabled ? "enabled" : "disabled",
+                },
+              }
+          : {};
+      const localReasoningFields: ReasoningRequestFields = supportsReasoning
+        ? reasoningStyle === "enable_thinking_effort"
+          ? // GLM-5.2-style gate plus level, e.g. high|max.
+            reasoningEnabled
+            ? { enable_thinking: true, reasoning_effort: localReasoningEffort }
+            : { enable_thinking: false }
+          : reasoningStyle === "reasoning_effort"
+            ? reasoningEnabled
+              ? { reasoning_effort: localReasoningEffort }
+              : {}
+            : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
+        : {};
+      // Decided before the continuation yield below, which an abort during load saves as is.
+      setParseThink(
+        isExternalRequest
+          ? requestParsesThinkTags(externalReasoningFields)
+          : reasoningAlwaysOn || requestParsesThinkTags(localReasoningFields),
+      );
       // Yielded before the request starts: an abort during load skips the partial-content yield
       // below, saving an empty message.
       if (continuation) {
@@ -5894,15 +5990,7 @@ export function createOpenAIStreamAdapter(
           runSignal.addEventListener("abort", onAbortCancel, { once: true });
         }
 
-        const {
-          supportsReasoning,
-          reasoningEnabled,
-          reasoningStyle,
-          reasoningEffort,
-          reasoningEffortLevels,
-          supportsPreserveThinking,
-          preserveThinking,
-        } = runtime;
+        const { supportsPreserveThinking, preserveThinking } = runtime;
         const externalBackendProviderType = toExternalBackendProviderType(
           externalProvider?.providerType,
         );
@@ -5960,46 +6048,6 @@ export function createOpenAIStreamAdapter(
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
         );
-        const externalReasoningCaps: ReturnType<
-          typeof getExternalReasoningCapabilities
-        > =
-          externalSelection && externalProvider
-            ? getExternalReasoningCapabilities(
-                externalProvider.providerType,
-                externalSelection.modelId,
-                {
-                  isReasoningProvider:
-                    externalProvider.isReasoningModel === true,
-                  baseUrl: externalProvider.baseUrl ?? null,
-                },
-              )
-            : {
-                supportsReasoning,
-                reasoningStyle,
-                reasoningAlwaysOn: false,
-                supportsReasoningOff: false,
-                reasoningEffortLevels: ["low", "medium", "high"] as const,
-              };
-        type RequestReasoningEffort = Extract<
-          NonNullable<OpenAIChatCompletionsRequest["reasoning_effort"]>,
-          "none" | "minimal" | "low" | "medium" | "high" | "max" | "xhigh"
-        >;
-        const fallbackExternalEffort = (externalReasoningCaps
-          .reasoningEffortLevels[0] ?? "low") as RequestReasoningEffort;
-        const selectedExternalEffort: RequestReasoningEffort =
-          clampReasoningEffortToLevels(
-            reasoningEffort,
-            externalReasoningCaps.reasoningEffortLevels,
-          ) as RequestReasoningEffort;
-        // Clamp to the loaded model's advertised levels so a stale value becomes one the backend
-        // honors: gpt-oss takes low|medium|high, GLM enable_thinking_effort high|max.
-        // gpt-oss-style reasoning_effort gets low|medium|high, GLM-style enable_thinking_effort high|max.
-        const localReasoningEffort = clampReasoningEffortToLevels(
-          reasoningEffort,
-          reasoningEffortLevels,
-        );
-        const externalReasoningEnabled =
-          !externalReasoningCaps.supportsReasoningOff ? true : reasoningEnabled;
         const buildRequestPayload = async (
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
@@ -6317,21 +6365,7 @@ export function createOpenAIStreamAdapter(
               )
                 ? { fast_mode: true }
                 : {}),
-              ...(externalReasoningCaps.supportsReasoning
-                ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
-                  ? externalReasoningEnabled
-                    ? { reasoning_effort: selectedExternalEffort }
-                    : externalReasoningCaps.supportsReasoningOff
-                      ? { reasoning_effort: "none" }
-                      : {
-                          reasoning_effort: fallbackExternalEffort,
-                        }
-                  : {
-                      thinking: {
-                        type: externalReasoningEnabled ? "enabled" : "disabled",
-                      },
-                    }
-                : {}),
+              ...externalReasoningFields,
             };
           }
 
@@ -6368,28 +6402,7 @@ export function createOpenAIStreamAdapter(
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
-            ...(supportsReasoning
-              ? reasoningStyle === "enable_thinking_effort"
-                // GLM-5.2-style gate plus level: disabling sends enable_thinking=false, enabling sends
-                // the chosen level.
-                // Enabling sends the chosen level, e.g. high|max.
-                ?
-                  reasoningEnabled
-                  ? {
-                      enable_thinking: true,
-                      reasoning_effort: localReasoningEffort,
-                    }
-                  : { enable_thinking: false }
-                : reasoningStyle === "reasoning_effort"
-                  ? reasoningEnabled
-                    ? { reasoning_effort: localReasoningEffort }
-                    : {}
-                  : {
-                      thinking: {
-                        type: reasoningEnabled ? "enabled" : "disabled",
-                      },
-                    }
-              : {}),
+            ...localReasoningFields,
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
               : {}),
@@ -7191,8 +7204,11 @@ export function createOpenAIStreamAdapter(
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
               // Normalize structured delta.content (mistral magistral).
-              const { text: delta, structuredReasoningContinues } =
-                extractDeltaText(rawDelta);
+              const {
+                text: delta,
+                structuredReasoningContinues,
+                hasStructuredReasoning,
+              } = extractDeltaText(rawDelta);
               const deltaExtraContent = (
                 chunk.choices?.[0]?.delta as
                   | { extra_content?: unknown }
@@ -7675,6 +7691,9 @@ export function createOpenAIStreamAdapter(
                 runtime.setGeneratingStatus(null);
               }
 
+              if (reasoning || hasStructuredReasoning) {
+                setParseThink(true);
+              }
               if (reasoning) {
                 if (!reasoningContentOpen) {
                   reasoningDurationTracker.startGroup();
@@ -7694,7 +7713,8 @@ export function createOpenAIStreamAdapter(
               producedReplyText = true;
               // The trailing ${...} strip runs once on the finished reply, below the loop; nothing on this
               // path reads the buffer, so no arrival can flatten it.
-              const textEndsInsideThink = thinkTags.endsInsideThink();
+              const textEndsInsideThink =
+                parseThink && thinkTags.endsInsideThink();
               const assistantContent = liveAssistantContent();
 
               // Fallback when no server-side reasoning_summary arrives.

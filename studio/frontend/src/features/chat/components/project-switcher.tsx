@@ -12,9 +12,12 @@ import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useState } from "react";
+import { type ReactElement, useMemo, useState } from "react";
 import { useChatActive } from "../runtime-provider";
 import type { ProjectRecord } from "../types";
+
+/** Rows before "View all projects". The list arrives newest first, so these are the recent ones. */
+const RECENT_PROJECT_LIMIT = 6;
 
 export function ProjectSwitcher({
   currentProject,
@@ -34,6 +37,16 @@ export function ProjectSwitcher({
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }): ReactElement {
+  // A switcher, not the list: the rest are a click away under "View all projects".
+  const recentProjects = useMemo(() => {
+    const recent = projects.slice(0, RECENT_PROJECT_LIMIT);
+    if (!currentProject || recent.some((p) => p.id === currentProject.id)) {
+      return recent;
+    }
+    // A project's own updatedAt only moves when it is edited, so the open one is often not among
+    // the newest. It keeps its place here: without it the switcher shows no tick at all.
+    return [...recent.slice(0, RECENT_PROJECT_LIMIT - 1), currentProject];
+  }, [projects, currentProject]);
   const showLoadingRow = isLoading && projects.length === 0;
   const showEmptyRow = !isLoading && projects.length === 0;
   const label = currentProject?.name ?? (isLoading ? "Project" : "Projects");
@@ -56,7 +69,7 @@ export function ProjectSwitcher({
                 ? "Loading project"
                 : "Pick a project"
           }
-          className="-mx-1 flex h-[34px] shrink-0 items-center gap-2 rounded-full pl-3 pr-2.5 transition-colors hover:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-accent"
+          className="-mx-1 flex h-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-full pl-3 pr-2.5 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <HugeiconsIcon
             icon={Folder01Icon}
@@ -97,7 +110,7 @@ export function ProjectSwitcher({
             No projects yet
           </DropdownMenuItem>
         ) : null}
-        {projects.map((project) => {
+        {recentProjects.map((project) => {
           const isActive = currentProject?.id === project.id;
           return (
             <DropdownMenuItem
