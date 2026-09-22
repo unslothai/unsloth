@@ -13,6 +13,7 @@ export type RunConfigRequest = {
   target?: Pick<ModelConfigHandoffRequest, "id" | "meta">;
   draftKey?: string;
   replaceHistory?: boolean;
+  newChatId?: string | null;
 };
 
 export function mergeSharedRunConfig(

@@ -140,8 +140,12 @@ export function receiveStartupRunConfigUrl(): void {
   if (!isTauri) {
     const parsed = parseRunConfigLink(initial);
     if (parsed.kind !== "unrelated") {
-      const url = new URL(initial);
-      if (window.location.href === initial) {
+      const url = new URL(window.location.href);
+      if (
+        /^#run(?:\?|$)/.test(url.hash) &&
+        new URLSearchParams(url.hash.slice(4)).toString() ===
+          new URLSearchParams(new URL(initial).hash.slice(4)).toString()
+      ) {
         if (url.searchParams.get("run") === "1") {
           url.searchParams.delete("run");
         }

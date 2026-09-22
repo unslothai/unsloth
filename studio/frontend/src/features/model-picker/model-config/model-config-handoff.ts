@@ -18,6 +18,7 @@ import { adoptLegacyConfigKey } from "./per-model-config";
 
 export interface ModelConfigHandoffRequest {
   requestId: string;
+  newChatId?: string | null;
   id: string;
   displayName?: string;
   meta: ModelSelectorChangeMeta;
@@ -131,7 +132,8 @@ export function modelConfigHandoffForDestination(
     destination.threadId ||
     destination.compareId ||
     destination.projectId ||
-    request.requestId !== destination.newChatId
+    (request.newChatId === undefined ? request.requestId : request.newChatId) !==
+      (destination.newChatId ?? null)
   ) {
     return null;
   }

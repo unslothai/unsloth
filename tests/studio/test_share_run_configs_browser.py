@@ -11,20 +11,25 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
-from playwright.sync_api import expect, sync_playwright
+import pytest
+
+try:
+    from playwright.sync_api import expect, sync_playwright
+except ImportError:
+    pytest.skip("Playwright is required for the sharing browser check", allow_module_level = True)
 
 from _playwright_robust import chromium_launch_args, stop_process
 
 
-def run_shared_run_config_checks():
+def test_shared_run_config_browser():
     frontend = Path(__file__).resolve().parents[2] / "studio" / "frontend"
     npm = shutil.which("npm")
     if npm is None:
-        raise RuntimeError(
+        pytest.skip(
             "Install Node.js and npm to run the shared run settings browser check."
         )
     if not (frontend / "node_modules" / "vite" / "bin" / "vite.js").is_file():
-        raise RuntimeError(
+        pytest.skip(
             "Missing frontend dependencies. Run `npm ci --prefix studio/frontend` "
             "from the repository root before running this browser check."
         )
@@ -65,6 +70,8 @@ def run_shared_run_config_checks():
                     options["args"] = chromium_launch_args()
                 if os.environ.get("PW_EXECUTABLE_PATH"):
                     options["executable_path"] = os.environ["PW_EXECUTABLE_PATH"]
+                if not Path(options.get("executable_path", getattr(playwright, engine).executable_path)).is_file():
+                    pytest.skip(f"Install the {engine} Playwright browser to run the sharing browser check")
                 browser = getattr(playwright, engine).launch(**options)
                 try:
                     _checks(browser, base)
@@ -136,7 +143,7 @@ def _checks(browser, base):
     expect(page.get_by_text("Settings changed by link (1)", exact = True)).to_be_visible()
     assert page.evaluate("window.documentBeforeLink === undefined")
     state = page.evaluate("window.sharingTest.snapshot()")
-    assert state == {"thread": None, "project": None, "incognito": False, "pending": None, "loaded": None}, state
+    assert state == before, state
     assert not any(path.startswith("/api/hub/") for path in requests), requests
 
     editor = page.locator('[role="dialog"][aria-label^="Run settings"]')
@@ -156,6 +163,24 @@ def _checks(browser, base):
     assert loaded["meta"]["config"]["customContextLength"] == 4096, loaded
     assert loaded["id"] == "owner/Native", loaded
     assert loaded["meta"]["loadId"] == "/cache/native", loaded
+
+    for query in ["?draft=1", "?draft=1&new=existing-draft"]:
+        page.goto(base + "/chat" + query)
+        page.wait_for_function("window.sharingTest?.draft() != null")
+        page.evaluate("window.sharingTest.stageDraft()")
+        before = page.evaluate("window.sharingTest.draft()")
+        assert before["text"] == "Unsent draft"
+        assert len(before["attachments"]) == 1, before
+        assert before["attachments"][0]["name"] == "draft.txt", before
+        page.evaluate("window.sharingTest.receive({config:{nParallel:3}})")
+        expect(page.get_by_text("Settings changed by link (1)", exact = True)).to_be_visible()
+        expect(editor).to_be_visible()
+        assert page.url == base + "/chat" + query
+        assert page.evaluate("window.sharingTest.draft()") == before
+        assert page.evaluate("window.sharingTest.snapshot().incognito") is True
+        page.keyboard.press("Escape")
+        expect(editor).not_to_be_visible()
+        assert page.evaluate("window.sharingTest.draft()") == before
 
     page.goto(base + "/hub")
     page.wait_for_function("window.sharingTest !== undefined")
@@ -213,19 +238,42 @@ def _checks(browser, base):
     assert page.url == base + "/hub"
     assert page.evaluate("window.sharingTest.snapshot()") == before
 
-    page.goto(base + "/chat?run=1&choose-model=1#run?nParallel=3")
     chooser = page.get_by_role("dialog", name = "Choose a model", exact = True)
-    expect(chooser).to_be_visible()
-    assert page.url == base + "/chat?choose-model=1"
-    page.keyboard.press("Escape")
-    expect(chooser).not_to_be_visible()
+    for payload in ["nParallel=3", "selectedGpuIds=%5B0%5D", "llamaExtraArgs=%5B%22--threads%22%2C%224%22%5D"]:
+        page.goto(base + "/chat?run=1&choose-model=1#run?" + payload)
+        expect(chooser).to_be_visible()
+        assert page.url == base + "/chat?choose-model=1"
+        page.keyboard.press("Escape")
+        expect(chooser).not_to_be_visible()
+        page.reload()
+        page.wait_for_function("window.sharingTest !== undefined")
+        expect(chooser).not_to_be_visible()
+        assert page.evaluate("window.sharingTest.snapshot().pending") is None
+
+    invalid = page.get_by_text("Could not open shared run settings", exact = True)
+    for path in ["/chat", "/login"]:
+        for payload in ["selectedGpuIds=%5B1%2C1%5D", "nParallel=%7B", "nParallel=%7D"]:
+            page.goto(base + path + "?run=1#run?" + payload)
+            expect(invalid).to_be_visible()
+            assert page.url == base + path
+            assert page.evaluate("window.sharingTest.snapshot().pending") is None
+            page.reload()
+            page.wait_for_function("window.sharingTest !== undefined")
+            expect(invalid).not_to_be_visible()
+            assert page.evaluate("window.sharingTest.snapshot().pending") is None
+
+    page.goto(base + "/chat?run=1#run?model=owner/Offline-GGUF&selectedGpuIds=%5B0%5D")
+    expect(page.get_by_text(
+        "Could not look up the shared GGUF model. Check your connection and access to the Hugging Face model, then reopen the link.",
+        exact = True,
+    )).to_be_visible()
+    assert page.url == base + "/chat"
     page.reload()
     page.wait_for_function("window.sharingTest !== undefined")
-    expect(chooser).not_to_be_visible()
     assert page.evaluate("window.sharingTest.snapshot().pending") is None
     assert errors == [], errors
     context.close()
 
 
 if __name__ == "__main__":
-    run_shared_run_config_checks()
+    test_shared_run_config_browser()

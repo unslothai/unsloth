@@ -13,7 +13,6 @@ import {
 import type { ModelPickTarget } from "../components/model-selector/types";
 import { modelConfigDraftKey } from "../model-config/model-config-draft";
 import type { PerModelConfig } from "../model-config/per-model-config";
-import { SHARED_RUN_CONFIG_FOCUS_ATTRIBUTE } from "./editor-events";
 import { scheduleRunConfigImport } from "./import-config";
 import { runConfigInbox } from "./inbox";
 
@@ -73,9 +72,7 @@ export function SharedRunConfigControls({
         size="sm"
         variant="ghost"
         className="h-8"
-        {...{
-          [SHARED_RUN_CONFIG_FOCUS_ATTRIBUTE]: sharing ? "" : undefined,
-        }}
+        data-shared-run-config={sharing ? "" : undefined}
         disabled={!ready || disabled}
         onClick={() => setSharing(true)}
       >

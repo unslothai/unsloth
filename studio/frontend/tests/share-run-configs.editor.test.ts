@@ -429,7 +429,7 @@ test("settings-only chooser keeps the import while accepting recipient-local mod
   }
 });
 
-test("startup intake remains mounted while navigation UI loads only for a pending link", () => {
+test("startup intake waits for mount effects and survives strict effect replay", async () => {
   const browser = installLocalStorageFake();
   const inbox = createRunConfigInbox();
   const effects: (() => void | (() => void))[] = [];
@@ -479,7 +479,15 @@ test("startup intake remains mounted while navigation UI loads only for a pendin
     },
   );
   assert.equal(SharedRunConfigLinkHandler(), null);
+  const cancelled = effects[0]();
+  assert.equal(received, 0);
+  cancelled?.();
+  await Promise.resolve();
+  assert.equal(received, 0);
+  disposed = false;
   const cleanup = effects[0]();
+  assert.equal(received, 0);
+  await Promise.resolve();
   assert.equal(received, 1);
   for (const event of ["hashchange", "popstate"]) {
     window.location.href =

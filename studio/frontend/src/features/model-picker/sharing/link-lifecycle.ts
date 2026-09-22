@@ -28,6 +28,21 @@ type LinkContext = {
   location: { href: string; pathname: string; searchStr: string };
 };
 
+function atRunConfigDestination(
+  pending: RunConfigRequest,
+  location: LinkContext["location"],
+): boolean {
+  const search = new URLSearchParams(location.searchStr);
+  return (
+    location.pathname === "/chat" &&
+    !search.has("thread") &&
+    !search.has("compare") &&
+    !search.has("project") &&
+    search.get("new") ===
+      (pending.newChatId === undefined ? pending.id : pending.newChatId)
+  );
+}
+
 export function navigateRunConfig({
   pending,
   canOpen,
@@ -54,9 +69,7 @@ export function navigateRunConfig({
   ) {
     return;
   }
-  const atDestination =
-    location.pathname === "/chat" &&
-    new URLSearchParams(location.searchStr).get("new") === pending.id;
+  const atDestination = atRunConfigDestination(pending, location);
   if (navigation.current?.id === pending.id) {
     if (atDestination) {
       navigation.current.from = location.href;
@@ -72,7 +85,11 @@ export function navigateRunConfig({
     from: location.href,
     started: Boolean(pending.target),
   };
-  if (!pending.target || runConfigInbox.getSnapshot() !== pending) {
+  if (
+    !pending.target ||
+    atDestination ||
+    runConfigInbox.getSnapshot() !== pending
+  ) {
     return;
   }
   navigate({
@@ -114,28 +131,37 @@ export function openRunConfigTarget({
     return;
   }
   if (pending.target) {
-    if (
-      !routeReady ||
-      location.pathname !== "/chat" ||
-      new URLSearchParams(location.searchStr).get("new") !== pending.id
-    ) {
+    if (!routeReady || !atRunConfigDestination(pending, location)) {
       return;
     }
-    clearNewChatDraft();
-    const runtime = useChatRuntimeStore.getState();
-    runtime.setActiveThreadId(null);
-    runtime.setActiveProjectId(null);
-    runtime.setIncognito(false);
+    if (pending.newChatId === undefined) {
+      clearNewChatDraft();
+      const runtime = useChatRuntimeStore.getState();
+      runtime.setActiveThreadId(null);
+      runtime.setActiveProjectId(null);
+      runtime.setIncognito(false);
+    }
     runConfigInbox.bind(
       pending.id,
       modelConfigDraftKey(pending.target.id, pending.target.meta.ggufVariant),
     );
-    requestModelConfigHandoff({ requestId: pending.id, ...pending.target });
+    requestModelConfigHandoff({
+      requestId: pending.id,
+      ...(pending.newChatId !== undefined && { newChatId: pending.newChatId }),
+      ...pending.target,
+    });
     return;
   }
+  const runtime = useChatRuntimeStore.getState();
+  const search = new URLSearchParams(location.searchStr);
+  const preserveDraft =
+    location.pathname === "/chat" &&
+    !search.has("thread") &&
+    !search.has("compare") &&
+    !search.has("project");
   const target = resolveRunConfigTarget(
     pending.value,
-    useChatRuntimeStore.getState(),
+    runtime,
     pending.selectedModel,
   );
   if (!target) {
@@ -155,7 +181,11 @@ export function openRunConfigTarget({
       ) {
         return;
       }
-      runConfigInbox.submit({ ...pending, target: resolved });
+      runConfigInbox.submit({
+        ...pending,
+        target: resolved,
+        ...(preserveDraft && { newChatId: search.get("new") }),
+      });
     })
     .catch((error: unknown) => {
       if (

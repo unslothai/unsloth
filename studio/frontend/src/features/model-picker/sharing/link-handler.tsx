@@ -28,9 +28,18 @@ export function SharedRunConfigLinkHandler() {
   const [, setAuthRevision] = useState(0);
 
   useEffect(() => {
-    receiveStartupRunConfigUrl();
+    let active = true;
+    queueMicrotask(() => {
+      if (active) {
+        receiveStartupRunConfigUrl();
+      }
+    });
     const onAuth = () => setAuthRevision((revision) => revision + 1);
-    return subscribeRunConfigSession(onAuth);
+    const unsubscribe = subscribeRunConfigSession(onAuth);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
   return pending ? (

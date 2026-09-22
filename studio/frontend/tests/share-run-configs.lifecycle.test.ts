@@ -19,6 +19,9 @@ const { createRunConfigInbox } = await import(
 const { modelConfigDraftKey } = await import(
   "../src/features/model-picker/model-config/model-config-draft.ts"
 );
+const { modelConfigHandoffForDestination } = await import(
+  "../src/features/model-picker/model-config/model-config-handoff.ts"
+);
 const { resolveRunConfigTarget } = await import("./helpers/sharing-target.ts");
 const { RunConfigResolutionError } = loadWithStubs<typeof CachedTarget>(
   new URL(
@@ -169,6 +172,7 @@ function harness() {
     nav.pending = open.pending = prepared;
   };
   return {
+    runtime,
     prepare,
     ...lifecycle,
     inbox,
@@ -183,6 +187,48 @@ function harness() {
     target,
     destination,
   };
+}
+
+for (const newChatId of [null, "current-draft"]) {
+  test(`review keeps the current new chat and its draft: ${newChatId}`, async () => {
+    const app = harness();
+    app.runtime.params.checkpoint = "owner/Model-GGUF";
+    delete app.nav.pending.value.model;
+    const location = {
+      href: newChatId ? `/chat?new=${newChatId}` : "/chat",
+      pathname: "/chat",
+      searchStr: newChatId ? `?new=${newChatId}` : "",
+    };
+    const context = { location, currentModel: app.runtime.params.checkpoint };
+    app.navigateRunConfig({ ...app.nav, ...context });
+    app.openRunConfigTarget({ ...app.open, ...context });
+    app.lookups[0].result.resolve(app.target);
+    await settle();
+    const pending = app.inbox.getSnapshot();
+    assert.equal(pending?.newChatId, newChatId);
+    app.navigateRunConfig({ ...app.nav, ...context, pending });
+    app.openRunConfigTarget({ ...app.open, ...context, pending });
+    const handoff = { requestId: "first", newChatId, ...app.target };
+    assert.deepEqual(app.calls, [["handoff", handoff]]);
+    assert.equal(
+      modelConfigHandoffForDestination(handoff, { active: true, newChatId }),
+      handoff,
+    );
+    for (const destination of [
+      { active: false, newChatId },
+      { active: true, newChatId: "another-chat" },
+      { active: true, newChatId, threadId: "thread" },
+      { active: true, newChatId, compareId: "compare" },
+      { active: true, newChatId, projectId: "project" },
+    ]) {
+      assert.equal(
+        modelConfigHandoffForDestination(handoff, destination),
+        null,
+      );
+    }
+    app.inbox.clear("first");
+    assert.deepEqual(app.calls, [["handoff", handoff]]);
+  });
 }
 
 for (const replaceHistory of [false, true]) {
@@ -250,7 +296,7 @@ for (const reason of [
 
 test("availability binds the canonical draft before handing off the editor", async () => {
   const app = harness();
-  app.openRunConfigTarget(app.open);
+  app.openRunConfigTarget({ ...app.open, location: app.nav.location });
   assert.deepEqual([...app.loading.values()], ["Resolving shared model…"]);
   assert.equal(app.inbox.getSnapshot()?.draftKey, undefined);
   assert.deepEqual(app.calls, []);
@@ -282,7 +328,7 @@ test("a recipient's local model choice carries a settings-only import through na
   app.inbox.submit(pending);
   app.navigateRunConfig({ ...app.nav, pending });
   assert.deepEqual(app.calls, []);
-  app.openRunConfigTarget({ ...app.open, pending });
+  app.openRunConfigTarget({ ...app.open, pending, location: app.nav.location });
   assert.equal(app.lookups.length, 1);
   const target = app.lookups[0].target;
   assert.equal(target.id, pending.selectedModel);

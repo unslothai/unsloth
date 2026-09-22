@@ -246,6 +246,46 @@ test("unrelated startup fragments and query parameters are left intact", () => {
   doc.dispose();
 });
 
+for (const payload of [
+  "selectedGpuIds=%5B0%5D",
+  "llamaExtraArgs=%5B%22--threads%22%2C%224%22%5D",
+  "selectedGpuIds=%5B1%2C1%5D",
+  "nParallel=%7B",
+  "nParallel=%7D",
+]) {
+  test(`router decoding cannot replay startup settings: ${payload}`, () => {
+    const app = harness({
+      url: `http://localhost/chat?run=1#run?v=1&${payload}`,
+    });
+    const doc = app.loadDocument();
+    window.location.href = window.location.href.replace(
+      /%5B|%5D|%7B|%7D/gi,
+      decodeURIComponent,
+    );
+    doc.receiver.receiveStartupRunConfigUrl();
+    assert.equal(window.location.href, "http://localhost/chat");
+    const pending = doc.inbox.getSnapshot();
+    if (
+      payload === "selectedGpuIds=%5B0%5D" ||
+      payload.startsWith("llamaExtraArgs=")
+    ) {
+      assert.ok(pending);
+      doc.inbox.clear(pending.id);
+      assert.deepEqual(app.errors, []);
+    } else {
+      assert.equal(pending, null);
+      assert.equal(app.errors.length, 1);
+    }
+    const errorCount = app.errors.length;
+    doc.dispose();
+    const reloaded = app.loadDocument();
+    reloaded.receiver.receiveStartupRunConfigUrl();
+    assert.equal(reloaded.inbox.getSnapshot(), null);
+    assert.equal(app.errors.length, errorCount);
+    reloaded.dispose();
+  });
+}
+
 test("anchors added before or after startup intake cannot create an import", () => {
   for (const url of [browserRun, `${browserRun}&unknown=true`]) {
     const app = harness();
