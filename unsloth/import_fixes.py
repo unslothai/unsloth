@@ -1570,11 +1570,16 @@ def fix_transformers_is_torch_fx_available():
     for module in (import_utils, utils):
         if not hasattr(module, "is_torch_fx_available"):
             module.is_torch_fx_available = is_torch_fx_available
-    logger.info("Unsloth: Restored transformers `is_torch_fx_available` for remote modeling code written against 4.x.")
+    logger.info(
+        "Unsloth: Restored transformers `is_torch_fx_available` for remote modeling code written against 4.x."
+    )
+
+
+_no_own_ignore_keys = object()
 
 
 def _validate_rope_accepting_ignore_keys(original):
-    """``original`` wrapped to accept and drop the 5.0 ``ignore_keys`` argument, or ``None``
+    """``original`` wrapped to accept the 5.0 ``ignore_keys`` argument, or ``None``
     when it already takes it (or cannot be inspected, or is already wrapped)."""
     if original is None or getattr(original, "_unsloth_ignore_keys", False):
         return None
@@ -1587,7 +1592,12 @@ def _validate_rope_accepting_ignore_keys(original):
     # The 5.0 signature was (self, ignore_keys = None). A single positional argument is that
     # parameter only when the current validator takes no positional argument of its own.
     takes_positional = any(
-        p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
+        p.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+        )
         for p in list(parameters.values())[1:]
     )
 
@@ -1599,8 +1609,29 @@ def _validate_rope_accepting_ignore_keys(original):
         **kwargs,
     ):
         if len(args) == 1 and not kwargs and not takes_positional:
+            if ignore_keys is None:
+                ignore_keys = args[0]
             args = ()
-        return original(self, *args, **kwargs)
+        if not ignore_keys:
+            return original(self, *args, **kwargs)
+        # 5.4 did not drop the keys' meaning, it moved them onto this attribute, which the
+        # per-type validators read to keep model-specific keys out of the "Unrecognized keys"
+        # warning. Merge them in for this call only, as 5.0 to 5.3 scoped them to the call.
+        own = self.__dict__.get("ignore_keys_at_rope_validation", _no_own_ignore_keys)
+        try:
+            merged = set(getattr(self, "ignore_keys_at_rope_validation", None) or ()) | set(
+                ignore_keys
+            )
+            self.ignore_keys_at_rope_validation = merged
+        except Exception:
+            return original(self, *args, **kwargs)
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            if own is _no_own_ignore_keys:
+                self.__dict__.pop("ignore_keys_at_rope_validation", None)
+            else:
+                self.ignore_keys_at_rope_validation = own
 
     validate_rope._unsloth_ignore_keys = True
     return validate_rope

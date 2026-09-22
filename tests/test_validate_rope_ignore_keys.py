@@ -51,8 +51,10 @@ def test_validate_rope_accepts_ignore_keys_after_the_fix():
         vocab_size = 16,
     )
     # what the 5.0-era remote code does
-    config.validate_rope(ignore_keys = {"rope_type"})
-    config.validate_rope({"rope_type"})  # the 5.0 positional form
+    # A model-specific key, as DeepSeek-style remote configs pass. "rope_type" is required, so
+    # 5.0 to 5.3 themselves raise KeyError when it is ignored; it is not a valid probe.
+    config.validate_rope(ignore_keys = {"mscale", "mscale_all_dim"})
+    config.validate_rope({"mscale", "mscale_all_dim"})  # the 5.0 positional form
     config.validate_rope()
 
 
@@ -105,6 +107,8 @@ def test_a_config_with_its_own_validator_accepts_ignore_keys_too():
     fix_transformers_validate_rope_ignore_keys()
     from transformers import Phi3Config
 
+    if not hasattr(Phi3Config, "validate_rope"):
+        pytest.skip("this transformers has no validate_rope (4.x)")
     config = Phi3Config(
         hidden_size = 32,
         num_hidden_layers = 1,
@@ -112,7 +116,7 @@ def test_a_config_with_its_own_validator_accepts_ignore_keys_too():
         intermediate_size = 32,
         vocab_size = 16,
     )
-    config.validate_rope(ignore_keys = {"rope_type"})
+    config.validate_rope(ignore_keys = {"mscale", "mscale_all_dim"})
 
     class LaterConfig(Phi3Config):  # defined after the fix, like a remote configuration
         model_type = "later_phi3_for_test"
@@ -121,3 +125,49 @@ def test_a_config_with_its_own_validator_accepts_ignore_keys_too():
             return "own"
 
     assert LaterConfig.validate_rope(config, ignore_keys = {"x"}) == "own"
+
+
+def test_ignore_keys_keep_their_meaning_on_a_validator_without_the_parameter():
+    """5.4 moved ``ignore_keys`` onto ``ignore_keys_at_rope_validation``; dropping the keys
+    instead brings back the "Unrecognized keys" warning 5.0 to 5.3 suppressed for them."""
+    import logging
+
+    from transformers import LlamaConfig
+
+    fix_transformers_validate_rope_ignore_keys()
+    mixin = _mixin()
+    if not getattr(mixin.__dict__.get("validate_rope"), "_unsloth_ignore_keys", False):
+        pytest.skip("this transformers still takes ignore_keys itself")
+    config = LlamaConfig(
+        hidden_size = 8,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 8,
+        vocab_size = 16,
+        rope_scaling = {"rope_type": "linear", "factor": 2.0, "model_specific_key": 1},
+    )
+    records = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = _Collect()
+    rope_logger = logging.getLogger("transformers.modeling_rope_utils")
+    rope_logger.addHandler(handler)
+    try:
+        before = set(config.ignore_keys_at_rope_validation or ())
+        for call in (
+            lambda: config.validate_rope(ignore_keys = {"model_specific_key"}),
+            lambda: config.validate_rope({"model_specific_key"}),
+        ):
+            records.clear()
+            call()
+            assert not [m for m in records if "Unrecognized keys" in m], records
+            # scoped to the call, as the 5.0 parameter was
+            assert set(config.ignore_keys_at_rope_validation or ()) == before
+        records.clear()
+        config.validate_rope()
+        assert [m for m in records if "Unrecognized keys" in m]  # the control: the key is unknown
+    finally:
+        rope_logger.removeHandler(handler)
