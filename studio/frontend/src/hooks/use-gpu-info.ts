@@ -231,6 +231,7 @@ function toGpuDevices(
       sharedMemory: d.shared_memory === true,
       sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
       unifiedMemory: d.unified_memory === true,
+      torchKernels: d.torch_kernels !== false,
       // The XPU ban is about torch-xpu ordinals no applicator speaks, so /load
       // and /validate 400 them. A Vulkan ordinal is not one of those, so it
       // stays pickable even when this list arrives from an XPU host.

@@ -901,6 +901,78 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         self.assertIsNone(metadata["selected_gpu_ids"])
 
 
+class TestExplicitPickWithoutTorchKernels(unittest.TestCase):
+    """An explicit gpu_ids naming a ROCm card the installed torch has no kernels for is refused
+    at the route, with the card and the wheel's arch list in the message. Auto-selection has
+    skipped such cards since #8792; the explicit path let them through to the worker."""
+
+    def test_an_uncovered_card_is_rejected_with_the_arch_list(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [1]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = {1}),
+            patch(
+                "utils.hardware.hardware._describe_rocm_gpus",
+                return_value = ["GPU 1 (AMD Radeon RX 5700 XT, gfx1010)"],
+            ),
+            patch(
+                "utils.hardware.hardware._torch_kernel_arch_tokens",
+                return_value = ["gfx1030", "gfx1034"],
+            ),
+            patch("utils.hardware.hardware.auto_select_gpu_ids") as mock_auto_select,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                r"GPU 1 \(AMD Radeon RX 5700 XT, gfx1010\) cannot run this Studio's PyTorch build, "
+                r"which has kernels for gfx1030, gfx1034 only",
+            ):
+                prepare_gpu_selection([1], model_name = "unsloth/test")
+        mock_auto_select.assert_not_called()
+
+    def test_a_covered_card_beside_an_uncovered_one_is_accepted(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [0]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = {1}),
+            patch("utils.hardware.hardware.auto_select_gpu_ids") as mock_auto_select,
+        ):
+            selected, metadata = prepare_gpu_selection([0], model_name = "unsloth/test")
+        self.assertEqual(selected, [0])
+        self.assertEqual(metadata["selection_mode"], "explicit")
+        mock_auto_select.assert_not_called()
+
+    def test_a_host_where_every_card_is_covered_is_untouched(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [1]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = set()),
+        ):
+            selected, _ = prepare_gpu_selection([1], model_name = "unsloth/test")
+        self.assertEqual(selected, [1])
+
+    def test_inventory_rows_say_whether_torch_has_kernels_for_them(self):
+        result = {
+            "devices": [
+                {"index": 0, "index_kind": "physical", "name": "AMD Radeon RX6500 XT"},
+                {"index": 1, "index_kind": "physical", "name": "AMD Radeon RX 5700 XT"},
+                {"index": 0, "index_kind": "vulkan", "name": "llama.cpp sees this one too"},
+            ]
+        }
+        with patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = {1}):
+            stamped = _hw_module._with_torch_kernel_coverage(result)
+        self.assertIs(stamped, result)
+        self.assertTrue(result["devices"][0]["torch_kernels"])
+        self.assertFalse(result["devices"][1]["torch_kernels"])
+        # Vulkan ordinals are llama.cpp's space, not torch's: no verdict is offered for them.
+        self.assertNotIn("torch_kernels", result["devices"][2])
+
+    def test_an_empty_inventory_is_returned_as_is(self):
+        result = {"available": False, "devices": []}
+        with patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels") as gate:
+            self.assertIs(_hw_module._with_torch_kernel_coverage(result), result)
+        gate.assert_not_called()
+
+
 class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
     def test_training_backend_resolves_explicit_gpu_ids_before_spawn(self):
         backend = TrainingBackend()

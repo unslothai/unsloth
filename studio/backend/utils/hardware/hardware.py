@@ -5416,6 +5416,84 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
         return set()
 
 
+def _torch_kernel_arch_tokens() -> list[str]:
+    """The gfx targets the installed torch carries kernels for, or [] when torch cannot say."""
+    try:
+        import torch
+
+        return sorted(
+            {
+                str(arch).split(":")[0].strip().lower()
+                for arch in (torch.cuda.get_arch_list() or ())
+                if str(arch).strip()
+            }
+        )
+    except Exception:
+        return []
+
+
+def _describe_rocm_gpus(gpu_ids) -> list[str]:
+    """Labels like "GPU 1 (AMD Radeon RX 5700 XT, gfx1010)" per PHYSICAL id, falling back to "GPU 1" when torch cannot be asked. Best effort for an error message, never a gate."""
+    wanted = {int(gpu_id) for gpu_id in gpu_ids}
+    labels: Dict[int, str] = {}
+    try:
+        import torch
+
+        count = torch.cuda.device_count()
+        physical_ids = _get_parent_visible_gpu_spec()["numeric_ids"]
+        if physical_ids is None or count > len(physical_ids):
+            physical_ids = list(range(count))
+        for ordinal, physical in enumerate(physical_ids[:count]):
+            if physical not in wanted:
+                continue
+            props = torch.cuda.get_device_properties(ordinal)
+            arch = str(getattr(props, "gcnArchName", "") or "").split(":")[0].strip()
+            detail = ", ".join(
+                part for part in (str(getattr(props, "name", "") or ""), arch) if part
+            )
+            labels[physical] = f"GPU {physical} ({detail})" if detail else f"GPU {physical}"
+    except Exception as e:
+        logger.debug("Could not describe GPUs %s: %s", sorted(wanted), e)
+    return [labels.get(gpu_id, f"GPU {gpu_id}") for gpu_id in sorted(wanted)]
+
+
+def reject_gpu_ids_without_torch_kernels(gpu_ids) -> None:
+    """Refuse an explicit pick of a ROCm card the installed torch has no kernels for.
+
+    Auto-selection has skipped these since #8792, but an explicit ``gpu_ids`` went straight to the
+    worker, which died on its first tensor with hipErrorInvalidImage ("device kernel image is
+    invalid"). Two discrete AMD cards from different generations (an RX 6500 XT next to an
+    RX 5700 XT) look identical in the picker, and the one with more free VRAM is the one a
+    person reaches for. Raising here turns that into the same 400 an out-of-range id gets.
+    """
+    uncovered = sorted(
+        set(int(gpu_id) for gpu_id in gpu_ids) & rocm_gpu_ids_without_torch_kernels()
+    )
+    if not uncovered:
+        return
+    built_for = ", ".join(_torch_kernel_arch_tokens()) or "other GPU architectures"
+    raise ValueError(
+        f"{', '.join(_describe_rocm_gpus(uncovered))} cannot run this Studio's PyTorch build, "
+        f"which has kernels for {built_for} only. Pick another GPU, or reinstall Unsloth "
+        f"Studio for that card."
+    )
+
+
+def _with_torch_kernel_coverage(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Stamp each physical device row with ``torch_kernels``: False when the installed torch has no kernels for it. The picker and the System panel otherwise show such a card exactly like a usable one."""
+    devices = result.get("devices") or []
+    if not devices:
+        return result
+    try:
+        uncovered = rocm_gpu_ids_without_torch_kernels()
+    except Exception:
+        uncovered = set()
+    for row in devices:
+        if row.get("index_kind") == "physical" and isinstance(row.get("index"), int):
+            row["torch_kernels"] = row["index"] not in uncovered
+    return result
+
+
 def auto_select_gpu_ids(
     model_name: str,
     *,
@@ -5605,6 +5683,7 @@ def prepare_gpu_selection(
 
     if gpu_ids:
         resolved = resolve_requested_gpu_ids(gpu_ids)
+        reject_gpu_ids_without_torch_kernels(resolved)
         metadata = {
             "selection_mode": "explicit",
             "selected_gpu_ids": resolved,
@@ -5894,22 +5973,24 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                 unrepaired_smi_result.get("devices") or []
             ):
                 unrepaired_smi_result["backend"] = _backend_label(device)
-                return unrepaired_smi_result
+                return _with_torch_kernel_coverage(unrepaired_smi_result)
 
-            return {
-                "available": True,
-                "backend": _backend_label(device),
-                "backend_cuda_visible_devices": _backend_visible_devices_env(),
-                "parent_visible_gpu_ids": parent_visible_ids,
-                "devices": devices,
-                "index_kind": index_kind,
-            }
+            return _with_torch_kernel_coverage(
+                {
+                    "available": True,
+                    "backend": _backend_label(device),
+                    "backend_cuda_visible_devices": _backend_visible_devices_env(),
+                    "parent_visible_gpu_ids": parent_visible_ids,
+                    "devices": devices,
+                    "index_kind": index_kind,
+                }
+            )
 
         if unrepaired_smi_result is not None:
             # Neither source could size them, but nvidia-smi found them: reporting no GPU
             # for a host that has one is worse than an unknown capacity.
             unrepaired_smi_result["backend"] = _backend_label(device)
-            return unrepaired_smi_result
+            return _with_torch_kernel_coverage(unrepaired_smi_result)
 
         return {
             "available": False,
