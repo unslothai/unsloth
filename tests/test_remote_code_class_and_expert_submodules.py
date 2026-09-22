@@ -10,6 +10,7 @@ stopped with "does not support Flash Attention 2 yet". Their routed experts also
 level below the block (`mixer.experts.<i>.up_proj`), where the text-only LoRA regex never
 looked, so the experts trained inside the Omni wrapper but not in the standalone model.
 """
+
 import re
 import sys
 import types
@@ -27,6 +28,7 @@ def _utils():
 # --------------------------------------------------------------------------------------
 # flash attention class flag
 # --------------------------------------------------------------------------------------
+
 
 def test_old_flag_alone_is_not_flash_support_on_new_transformers():
     U = _utils()
@@ -53,6 +55,7 @@ def test_old_flag_alone_is_not_flash_support_on_new_transformers():
 def test_resolver_does_not_request_flash_for_old_flag_remote_class():
     U = _utils()
     from transformers.modeling_utils import PreTrainedModel
+
     if not hasattr(PreTrainedModel, "_supports_flash_attn"):
         pytest.skip("transformers still dispatches on _supports_flash_attn_2")
 
@@ -68,6 +71,7 @@ def test_resolver_does_not_request_flash_for_old_flag_remote_class():
 # --------------------------------------------------------------------------------------
 # remote class resolution
 # --------------------------------------------------------------------------------------
+
 
 def _install_fake_remote_modules(monkeypatch, package = "transformers_modules.fake_repo.abc123"):
     """A remote config/model pair whose config class name collides with a native one."""
@@ -102,6 +106,7 @@ def _install_fake_remote_modules(monkeypatch, package = "transformers_modules.fa
 def test_remote_config_resolves_to_remote_model_class(monkeypatch):
     U = _utils()
     from transformers import AutoModelForCausalLM
+
     config, remote_cls = _install_fake_remote_modules(monkeypatch)
     assert U.resolve_model_class(AutoModelForCausalLM, config) is remote_cls
 
@@ -112,6 +117,7 @@ def test_fetch_of_a_missing_modeling_module_uses_the_load_options(monkeypatch):
     U = _utils()
     from transformers import AutoModelForCausalLM
     import transformers.dynamic_module_utils as dmu
+
     config, _ = _install_fake_remote_modules(monkeypatch)
     monkeypatch.delitem(sys.modules, "transformers_modules.fake_repo.abc123.modeling_llama")
     seen = {}
@@ -125,14 +131,22 @@ def test_fetch_of_a_missing_modeling_module_uses_the_load_options(monkeypatch):
 
     monkeypatch.setattr(dmu, "get_class_from_dynamic_module", fake_get)
     got = U.resolve_model_class(
-        AutoModelForCausalLM, config,
-        revision = "deadbeef", code_revision = "cafe", token = "tok", cache_dir = "/c",
+        AutoModelForCausalLM,
+        config,
+        revision = "deadbeef",
+        code_revision = "cafe",
+        token = "tok",
+        cache_dir = "/c",
         local_files_only = True,
     )
     assert got is Fetched
     assert seen == dict(
-        class_ref = "modeling_llama.LlamaForCausalLM", repo_id = "fake/repo",
-        revision = "deadbeef", code_revision = "cafe", token = "tok", cache_dir = "/c",
+        class_ref = "modeling_llama.LlamaForCausalLM",
+        repo_id = "fake/repo",
+        revision = "deadbeef",
+        code_revision = "cafe",
+        token = "tok",
+        cache_dir = "/c",
         local_files_only = True,
     )
 
@@ -143,6 +157,7 @@ def test_cross_repository_auto_map_skips_the_local_sibling(monkeypatch):
     U = _utils()
     from transformers import AutoModelForCausalLM
     import transformers.dynamic_module_utils as dmu
+
     config, local_cls = _install_fake_remote_modules(monkeypatch)
     config.auto_map["AutoModelForCausalLM"] = "other/repo--modeling_llama.LlamaForCausalLM"
     seen = {}
@@ -159,15 +174,20 @@ def test_cross_repository_auto_map_skips_the_local_sibling(monkeypatch):
     assert got is Remote and got is not local_cls
     # Unsplit, with the model path: transformers decides which repository the code comes from
     # and applies a model revision only when both are the same repository.
-    assert seen == dict(class_ref = "other/repo--modeling_llama.LlamaForCausalLM", repo_id = "fake/repo")
+    assert seen == dict(
+        class_ref = "other/repo--modeling_llama.LlamaForCausalLM", repo_id = "fake/repo"
+    )
 
 
 def test_native_config_keeps_native_resolution():
     U = _utils()
     from transformers import AutoModelForCausalLM, LlamaConfig
     from transformers.models.llama.modeling_llama import LlamaForCausalLM
+
     config = LlamaConfig()
-    config.auto_map = {"AutoModelForCausalLM": "modeling_llama.LlamaForCausalLM"}  # ignored: not remote
+    config.auto_map = {
+        "AutoModelForCausalLM": "modeling_llama.LlamaForCausalLM"
+    }  # ignored: not remote
     assert U.resolve_model_class(AutoModelForCausalLM, config) is LlamaForCausalLM
 
 
@@ -175,6 +195,7 @@ def test_remote_config_without_auto_class_entry_stays_native(monkeypatch):
     U = _utils()
     from transformers import AutoModelForCausalLM
     from transformers.models.llama.modeling_llama import LlamaForCausalLM
+
     config, _ = _install_fake_remote_modules(monkeypatch)
     config.auto_map = {"AutoConfig": "configuration_llama.LlamaConfig"}
     assert U.resolve_model_class(AutoModelForCausalLM, config) is LlamaForCausalLM
@@ -183,6 +204,7 @@ def test_remote_config_without_auto_class_entry_stays_native(monkeypatch):
 # --------------------------------------------------------------------------------------
 # per-expert submodule LoRA targets
 # --------------------------------------------------------------------------------------
+
 
 class _Expert(torch.nn.Module):
     def __init__(self):
@@ -221,7 +243,9 @@ class _Layer(torch.nn.Module):
 class _Inner(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.layers = torch.nn.ModuleList([_Layer(_Mamba()), _Layer(_MoE()), _Layer(_Mamba()), _Layer(_MoE())])
+        self.layers = torch.nn.ModuleList(
+            [_Layer(_Mamba()), _Layer(_MoE()), _Layer(_Mamba()), _Layer(_MoE())]
+        )
 
 
 class _Model(torch.nn.Module):
@@ -236,6 +260,7 @@ def _text_only_regex():
     tagged branch needs a `language` / `text` component in the name and the untagged branch
     stops one level under the block, so a standalone text model's nested experts miss both."""
     import importlib
+
     stub = sys.modules.get("unsloth_zoo.peft_utils")
     if stub is not None and getattr(stub, "__file__", None) is None:
         # Another test file leaves a stub in sys.modules; the real module is wanted here.
@@ -261,9 +286,9 @@ def test_expert_submodule_leaves_and_regex_reach_every_expert():
     linears = {n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)}
     experts = {n for n in linears if ".experts." in n or ".shared_experts." in n}
     assert experts <= matched
-    assert "model.layers.1.mixer.gate" not in matched            # the router is not a Linear
+    assert "model.layers.1.mixer.gate" not in matched  # the router is not a Linear
     assert "model.layers.1.mixer.fc1_latent_proj" not in matched  # Identity, not a Linear
-    assert "model.layers.0.mixer.in_proj" in matched              # the block-level leaves stay
+    assert "model.layers.0.mixer.in_proj" in matched  # the block-level leaves stay
     assert all(isinstance(dict(model.named_modules())[n], torch.nn.Linear) for n in matched)
 
 
@@ -289,20 +314,26 @@ def test_only_a_generated_regex_is_widened_to_the_routed_experts():
     U = _utils()
     model = _Model()
     caller_regex = r".*\.shared_experts\.down_proj"
-    kept, detect, leaves = U.widen_target_regex_to_expert_submodules(model, caller_regex, caller_regex, auto_regex = False)
+    kept, detect, leaves = U.widen_target_regex_to_expert_submodules(
+        model, caller_regex, caller_regex, auto_regex = False
+    )
     assert kept == caller_regex and detect == caller_regex and leaves == []
     matched = {n for n, _ in model.named_modules() if re.fullmatch(kept, n)}
     assert matched and all(".shared_experts." in n for n in matched)
 
     generated = _text_only_regex()
-    widened, detect, leaves = U.widen_target_regex_to_expert_submodules(model, generated, generated, auto_regex = True)
+    widened, detect, leaves = U.widen_target_regex_to_expert_submodules(
+        model, generated, generated, auto_regex = True
+    )
     assert leaves == ["down_proj", "up_proj"]
     assert detect == widened != generated
     matched = {n for n, _ in model.named_modules() if re.fullmatch(widened, n)}
     assert any(".experts." in n for n in matched)
 
     # A leaf list as the detection target keeps its own identity through the widening.
-    widened, detect, leaves = U.widen_target_regex_to_expert_submodules(model, generated, ["down_proj"], auto_regex = True)
+    widened, detect, leaves = U.widen_target_regex_to_expert_submodules(
+        model, generated, ["down_proj"], auto_regex = True
+    )
     assert leaves == ["down_proj"] and detect == ["down_proj"] and widened != generated
 
 
@@ -310,7 +341,9 @@ def test_gate_and_up_expert_leaves_stay_separate():
     U = _utils()
     model = _Model()
     assert U.get_moe_expert_submodule_leaves(model, ["up_proj"]) == ["up_proj"]
-    assert U.get_moe_expert_submodule_leaves(model, ["gate_proj"]) == []  # the fixture has no gate leaf
+    assert (
+        U.get_moe_expert_submodule_leaves(model, ["gate_proj"]) == []
+    )  # the fixture has no gate leaf
     assert U.get_moe_expert_submodule_leaves(model, ["gate_up_proj"]) == ["up_proj"]
 
 

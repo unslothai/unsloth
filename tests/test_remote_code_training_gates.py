@@ -404,7 +404,6 @@ def test_standard_tokenizer_fields_count_as_text_inputs():
     """A wrapper whose forward requires token_type_ids can take a text batch: the Trainer
     supplies it, so it is no reason to unwrap."""
     from unsloth.models.vision import _TEXT_BATCH_KEYS
-
     assert "token_type_ids" in _TEXT_BATCH_KEYS
 
 
@@ -414,10 +413,22 @@ def test_a_required_cache_control_is_a_missing_text_input():
     are fine."""
     from unsloth.models.vision import _required_non_text_inputs
 
-    def needs_cache(self, input_ids, attention_mask, cache_position, labels = None):
+    def needs_cache(
+        self,
+        input_ids,
+        attention_mask,
+        cache_position,
+        labels = None,
+    ):
         pass
 
-    def plain(self, input_ids, attention_mask, labels = None, cache_position = None):
+    def plain(
+        self,
+        input_ids,
+        attention_mask,
+        labels = None,
+        cache_position = None,
+    ):
         pass
 
     assert _required_non_text_inputs(needs_cache) == ["cache_position"]

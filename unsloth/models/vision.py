@@ -1323,7 +1323,9 @@ _TEXT_BATCH_KEYS = frozenset(
 # What a text collator really puts in a batch. A required control argument (cache_position,
 # use_cache, past_key_values, return_dict) is not supplied by the Trainer, so a forward that
 # demands one without a default cannot take a text batch either.
-_COLLATOR_SUPPLIED_KEYS = frozenset(("input_ids", "attention_mask", "labels", "token_type_ids", "position_ids"))
+_COLLATOR_SUPPLIED_KEYS = frozenset(
+    ("input_ids", "attention_mask", "labels", "token_type_ids", "position_ids")
+)
 
 
 def _required_non_text_inputs(forward):
@@ -2750,9 +2752,13 @@ class FastBaseModel:
         # here is widened: one the caller wrote (`.*\.shared_experts\.down_proj`) is their scope.
         # The routed experts live in the language model, so a vision-only request
         # (finetune_language_layers = False) must not be widened onto them either.
-        target_modules, _moe_module_detect, _expert_submodule_leaves = widen_target_regex_to_expert_submodules(
-            model, target_modules, _moe_module_detect,
-            auto_regex = _target_modules_auto_regex and bool(finetune_language_layers),
+        target_modules, _moe_module_detect, _expert_submodule_leaves = (
+            widen_target_regex_to_expert_submodules(
+                model,
+                target_modules,
+                _moe_module_detect,
+                auto_regex = _target_modules_auto_regex and bool(finetune_language_layers),
+            )
         )
         if _expert_submodule_leaves:
             print(

@@ -7,6 +7,7 @@ blocks on cuda:0), so every batch went to cuda:0 first, the embedding hook carri
 on, and attention_mask stayed behind. The hub `_update_causal_mask` then raised "Expected all
 tensors to be on the same device, but found at least two devices, cuda:1 and cuda:0".
 """
+
 from types import SimpleNamespace
 
 import pytest
@@ -29,7 +30,11 @@ def _model(device_map, root_device, embedding_device):
 
 def test_root_moves_to_the_embedding_device():
     align = _helper()
-    model = _model({"model.layers.1": 2, "model.embeddings": 1, "lm_head": 2, "model.layers.0": 0}, 0, torch.device("cuda", 1))
+    model = _model(
+        {"model.layers.1": 2, "model.embeddings": 1, "lm_head": 2, "model.layers.0": 0},
+        0,
+        torch.device("cuda", 1),
+    )
     assert align(model) == torch.device("cuda", 1)
     assert model._hf_hook.execution_device == torch.device("cuda", 1)
 
@@ -65,7 +70,9 @@ def test_offloaded_or_meta_embedding_is_left_to_its_hook():
 def test_model_without_embedding_accessor_is_untouched():
     align = _helper()
     model = _model({"model.embeddings": 1, "lm_head": 0}, 0, torch.device("cuda", 1))
+
     def broken():
         raise NotImplementedError
+
     model.get_input_embeddings = broken
     assert align(model) is None

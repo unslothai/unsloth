@@ -788,7 +788,9 @@ def _model_class_supports_flash_attention(model_class):
         from transformers.modeling_utils import PreTrainedModel
     except Exception:
         PreTrainedModel = None
-    new_flag_dispatched = PreTrainedModel is not None and hasattr(PreTrainedModel, "_supports_flash_attn")
+    new_flag_dispatched = PreTrainedModel is not None and hasattr(
+        PreTrainedModel, "_supports_flash_attn"
+    )
     if new_flag_dispatched and not _flash_dispatch_reads_legacy_flag(PreTrainedModel):
         return bool(getattr(model_class, "_supports_flash_attn", False))
     return bool(
@@ -1175,6 +1177,7 @@ def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
         config_module = str(type(config).__module__)
         try:
             import importlib
+
             sibling = importlib.import_module(f"{config_module.rsplit('.', 1)[0]}.{module_name}")
             klass = getattr(sibling, class_name, None)
             if isinstance(klass, type):
@@ -1185,7 +1188,10 @@ def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
         return None
     try:
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
-        passed = {k: v for k, v in hub_kwargs.items() if k in _REMOTE_CODE_HUB_KWARGS and v is not None}
+
+        passed = {
+            k: v for k, v in hub_kwargs.items() if k in _REMOTE_CODE_HUB_KWARGS and v is not None
+        }
         # The unsplit reference with the model's own path, exactly as from_pretrained calls it:
         # transformers applies `revision` only when the code repository is the model repository.
         klass = get_class_from_dynamic_module(full_ref, repo_id, **passed)
@@ -1325,10 +1331,9 @@ def resolve_attention_implementation(
         supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
     if _is_sdpa_excluded(model_type):
         supports_sdpa = False
-    supports_flash_attention = (
-        _model_class_supports_flash_attention(model_class)
-        and not _is_flash_excluded(model_type)
-    )
+    supports_flash_attention = _model_class_supports_flash_attention(
+        model_class
+    ) and not _is_flash_excluded(model_type)
     supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
     # Before the ladder, since every branch below reads supports_flex_attention.
     prefers_flex_for_head_dim = _prefers_flex_for_head_dim(config)
@@ -5115,7 +5120,9 @@ def moe_expert_submodule_regex(leaves) -> str:
     )
 
 
-def widen_target_regex_to_expert_submodules(model, target_modules, detect_targets, auto_regex: bool):
+def widen_target_regex_to_expert_submodules(
+    model, target_modules, detect_targets, auto_regex: bool
+):
     """Add the ``experts.<i>.<leaf>`` alternative to a target regex that stops one level short of
     a per-expert submodule layout (the Nemotron-H hub code). Returns
     ``(target_modules, detect_targets, leaves)``; ``leaves`` is empty when nothing changed.
@@ -5128,7 +5135,11 @@ def widen_target_regex_to_expert_submodules(model, target_modules, detect_target
     leaves = get_moe_expert_submodule_leaves(model, detect_targets)
     if not leaves:
         return target_modules, detect_targets, []
-    if any(re.fullmatch(target_modules, name) for name, _ in model.named_modules() if ".experts." in name):
+    if any(
+        re.fullmatch(target_modules, name)
+        for name, _ in model.named_modules()
+        if ".experts." in name
+    ):
         return target_modules, detect_targets, []
     detect_was_the_regex = detect_targets is target_modules
     target_modules = f"(?:{target_modules})|(?:{moe_expert_submodule_regex(leaves)})"
