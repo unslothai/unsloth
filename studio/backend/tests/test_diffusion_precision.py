@@ -637,3 +637,22 @@ def test_a_typo_in_a_familys_own_default_is_refused_rather_than_passed_through()
     ``quantize_text_encoders`` as an unknown mode on EVERY default load of that family."""
     with pytest.raises(ValueError):
         resolve_te_quant_request(None, "fp9")
+
+
+def test_the_dense_opt_out_survives_the_image_request_schema_too():
+    """The normaliser accepting "none" is not enough: ``DiffusionLoadRequest`` is the API
+    boundary, and while its scheme list was fp8/fp8_dynamic/int8/nvfp4 only, omitting the field
+    was the ONLY way to ask for the released encoder. Once an omitted request can resolve to a
+    family scheme, that spelling stops meaning dense and the opt-out has to be sendable, or the
+    bf16 reference configuration is unreachable through the API."""
+    from pydantic import ValidationError
+
+    from models.inference import DiffusionLoadRequest
+
+    def _request(value):
+        return DiffusionLoadRequest(model_path = "Qwen/Qwen-Image-2.1", text_encoder_quant = value)
+
+    for accepted in (None, "auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"):
+        assert _request(accepted).text_encoder_quant == accepted
+    with pytest.raises(ValidationError):
+        _request("int3")
