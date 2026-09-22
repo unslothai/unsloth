@@ -1332,8 +1332,9 @@ def close_wal_keeper_for(path: str | Path) -> None:
         conn = _wal_keepers.pop(db_path, None)
         if conn is not None:
             _close_keeper(conn)
-    if conn is not None:
-        _notify_keeper_closed()
+    # Unconditionally: journal_mode=WAL declines on filesystems without shared memory, so those
+    # installs never have a keeper to close, and the caller still means "let go of this database".
+    _notify_keeper_closed()
 
 
 def close_wal_keeper() -> None:

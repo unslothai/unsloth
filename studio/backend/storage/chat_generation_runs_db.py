@@ -56,12 +56,18 @@ class _Borrowed:
             return
         object.__setattr__(self, "_released", True)
         entry = getattr(_pool, "entry", None)
-        if entry is not None and entry["key"] == self._key and entry["conn"] is self._conn:
+        if (
+            entry is not None
+            and entry["conn"] is self._conn
+            and entry["generation"] == _pool_generation
+        ):
             # A connection left mid-transaction would hand its caller's work to the next borrower.
             if self._conn.in_transaction:
                 self._conn.rollback()
             entry["busy"] = False
         else:
+            # Invalidated while this borrow was out, so releasing the file is what matters now.
+            _pool.entry = None
             self._conn.close()
 
     def __getattr__(self, name: str) -> Any:
@@ -71,9 +77,11 @@ class _Borrowed:
         setattr(self._conn, name, value)
 
 
-#: Bumped when every pooled connection is invalidated. A thread whose entry predates the current
-#: generation closes its own on the next borrow; noticing late costs a connection held longer,
-#: never a wrong answer.
+#: Every pooled entry, so a thread retiring an account can close handles it does not own. Idle ones
+#: are closed on the spot; one in use is left to its borrower, which closes rather than parks it
+#: because the generation moved. Account retirement renames the account directory, and Windows
+#: refuses that while any file under it is open, so "release it eventually" is not good enough.
+_pool_registry: list[dict[str, Any]] = []
 _pool_generation = 0
 _pool_lock = threading.Lock()
 
@@ -84,6 +92,11 @@ def _discard_pooled() -> None:
     if entry is None:
         return
     _pool.entry = None
+    with _pool_lock:
+        for index, known in enumerate(_pool_registry):
+            if known is entry:
+                del _pool_registry[index]
+                break
     try:
         entry["conn"].close()
     except Exception:
@@ -91,17 +104,25 @@ def _discard_pooled() -> None:
 
 
 def _discard_all_pooled() -> None:
-    """Invalidate every pooled connection, and close this thread's now.
+    """Close every pooled connection on every thread, idle ones immediately.
 
-    Another thread's handle cannot be closed from here (check_same_thread), so it is marked stale
-    and that thread closes it on its next borrow, still holding the database open until then. Every
-    caller needing the file released at once does so from a thread that has just used this module,
-    which is the one closed here.
+    A connection parked on an idle worker holds the database exactly as firmly as one in use, and
+    the thread that retires an account is never the worker that parked it: the SSE loop runs its
+    waits on a 32 thread pool of its own. One currently in use is left alone and closed by its
+    borrower on return, since yanking it would fail that caller's query.
     """
     global _pool_generation
     with _pool_lock:
         _pool_generation += 1
-    _discard_pooled()
+        entries = tuple(_pool_registry)
+        _pool_registry.clear()
+    for entry in entries:
+        if entry["busy"]:
+            continue
+        try:
+            entry["conn"].close()
+        except Exception:
+            pass
 
 
 def reset_connection_pool_for_tests() -> None:
@@ -151,9 +172,9 @@ def _connect() -> sqlite3.Connection:
     # alone cannot see a home that moved beneath it.
     key = current_account_id() or ""
     entry = getattr(_pool, "entry", None)
-    if entry is not None and entry["generation"] != _pool_generation and not entry["busy"]:
-        # Invalidated while this thread was elsewhere. Closing it is this thread's job.
-        _discard_pooled()
+    if entry is not None and entry["generation"] != _pool_generation:
+        # Invalidated while this thread was elsewhere; _discard_all_pooled already closed it.
+        _pool.entry = None
         entry = None
     if entry is not None and not entry["busy"]:
         if entry["key"] == key and entry["schema_ready"] is _schema_ready:
@@ -168,20 +189,28 @@ def _connect() -> sqlite3.Connection:
     # A nested _connect() on one thread (a borrowed handle is already out) keeps the old
     # behaviour of its own connection: sharing one would put two callers in one transaction.
     if entry is None:
-        _pool.entry = {
+        entry = {
             "key": key,
             "conn": conn,
             "busy": True,
             "schema_ready": _schema_ready,
             "generation": _pool_generation,
         }
+        _pool.entry = entry
+        with _pool_lock:
+            _pool_registry.append(entry)
         return _Borrowed(conn, key)
     return conn
 
 
 def _prepare_connection() -> sqlite3.Connection:
-    """The original, uncached body: a real connection with the lease migration applied."""
-    conn = get_connection()
+    """The original, uncached body: a real connection with the lease migration applied.
+
+    ``check_same_thread = False`` for the reason the WAL keeper sets it too: a pooled connection has
+    to be closable by whichever thread tears the pool down. It is still only ever handed out through
+    the thread-local that owns it, so nothing uses it from two threads at once.
+    """
+    conn = get_connection(check_same_thread = False)
     db_path = _database_path(conn)
     if db_path in _schema_ready:
         return conn

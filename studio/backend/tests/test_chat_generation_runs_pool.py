@@ -195,3 +195,50 @@ def test_append_events_still_persists_through_a_reused_connection():
     for _ in range(5):
         runs_db.append_events("r", token, [chunk] * 3)
     assert len(runs_db.list_events("r", 0)) >= 15
+
+
+def test_an_idle_connection_on_another_thread_is_closed_by_a_global_discard():
+    """Account retirement renames the account directory from a request thread, while the SSE loop
+    parks its connections on a 32 thread pool of its own. Windows refuses the rename while any file
+    underneath is open, so leaving those for their owners to close eventually is not enough."""
+    parked = {}
+
+    def park():
+        conn = runs_db._connect()
+        parked["conn"] = conn._conn
+        conn.close()
+
+    worker = threading.Thread(target = park)
+    worker.start()
+    worker.join()
+    assert parked["conn"].execute("SELECT 1").fetchone()[0] == 1
+
+    runs_db._discard_all_pooled()
+    with pytest.raises(sqlite3.ProgrammingError):
+        parked["conn"].execute("SELECT 1")
+
+
+def test_closing_the_keeper_drops_the_pool_even_when_there_was_no_keeper():
+    """journal_mode=WAL declines on filesystems without shared memory, so those installs never have
+    a keeper. Retirement still calls close_wal_keeper_for and still needs the handle released."""
+    studio_db.close_wal_keeper()
+    conn = runs_db._connect()
+    underlying = conn._conn
+    conn.close()
+    assert studio_db._wal_keepers == {}, "no keeper should be held for this test to mean anything"
+
+    studio_db.close_wal_keeper_for(studio_db.studio_db_path())
+    with pytest.raises(sqlite3.ProgrammingError):
+        underlying.execute("SELECT 1")
+
+
+def test_a_connection_in_use_during_a_global_discard_is_closed_on_return():
+    """Yanking a handle mid query would fail that caller, so the borrower closes it instead of
+    parking it back into a pool that has moved on."""
+    borrowed = runs_db._connect()
+    underlying = borrowed._conn
+    runs_db._discard_all_pooled()
+    assert underlying.execute("SELECT 1").fetchone()[0] == 1, "an in-use handle must survive"
+    borrowed.close()
+    with pytest.raises(sqlite3.ProgrammingError):
+        underlying.execute("SELECT 1")
