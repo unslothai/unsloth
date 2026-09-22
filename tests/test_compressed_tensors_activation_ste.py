@@ -14,14 +14,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""A LoRA finetune of a W8A8 compressed-tensors checkpoint must get gradients through the
-quantized activations.
+"""Gradients pass straight through compressed-tensors' W8A8 activation fake quantization.
 
-compressed-tensors' `fake_quantize` runs under `@torch.no_grad()`, so with a frozen base weight
-the Linear output of a dynamic FP8 activation scheme has no path back to its input
-(ibm-granite/granite-4.1-30b-FP8: q_proj LoRA gradients 1000x too small, loss drifting up).
-`fix_compressed_tensors_activation_quant_gradient` applies a straight-through estimator: the
-forward is the quantized one, bit for bit, and the input gradient is the unquantized one.
 Each case runs in a subprocess because the patch changes compressed-tensors module state.
 """
 

@@ -8731,13 +8731,9 @@ def disable_sentencepiece_on_windows():
     return True
 
 
-# compressed-tensors fake-quantizes activations for W8A8 schemes (FP8-dynamic, INT8) inside
-# `forward_quantize`, and its `fake_quantize` runs under `@torch.no_grad()`. Fine for inference, but
-# a LoRA finetune of such a checkpoint then loses the gradient through every quantized activation:
-# the frozen base Linear hands no gradient back to its input, so only the LoRA branch and the
-# residual stream carry it (granite-4.1-30b-FP8: q_proj LoRA grads 1000x too small, the loss drifts
-# up). A straight-through estimator keeps the quantized forward exactly and passes the gradient
-# through the quantizer as the identity, which is what Unsloth's own FP8 linears already do.
+# compressed-tensors fake-quantizes W8A8 activations under `@torch.no_grad()`, so a LoRA finetune
+# gets no gradient through a frozen base Linear's input. A straight-through estimator keeps the
+# quantized forward and passes the gradient through as the identity, like Unsloth's FP8 linears.
 _CT_FORWARD_MODULE = "compressed_tensors.quantization.lifecycle.forward"
 _CT_BY_NAME_MODULES = (
     "compressed_tensors.modeling.kvcache",
