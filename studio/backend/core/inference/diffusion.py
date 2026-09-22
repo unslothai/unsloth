@@ -90,6 +90,7 @@ from .diffusion_memory import (
     MEMORY_MODE_LOW_VRAM,
     DeviceMemory,
     OFFLOAD_NONE,
+    OFFLOAD_SEQUENTIAL,
     OFFLOAD_STREAMING,
     apply_memory_plan,
     estimate_gguf_resident_mib,
@@ -5200,7 +5201,16 @@ class DiffusionBackend:
                                 )
                                 # This in-memory rewrite needs no cache-space or hosted-checkpoint checks.
                                 estimate = (
-                                    estimate_dense_quant(fam, preview_scheme, base_repo = base)
+                                    estimate_dense_quant(
+                                        fam,
+                                        preview_scheme,
+                                        base_repo = base,
+                                        # The encoder this load actually resolved to, not the
+                                        # table's bf16 figure: since the hosted pre-cast encoders
+                                        # became the default for the families that host one, the
+                                        # two differ by half the encoder.
+                                        text_encoder_quant = text_encoder_quant,
+                                    )
                                     if preview_scheme is not None
                                     else None
                                 )
@@ -5231,16 +5241,34 @@ class DiffusionBackend:
                                             plan.offload_policy,
                                         )
                                         plan = replanned
-                            if plan.offload_policy != OFFLOAD_NONE:
+                            # Quantise UNDER offload, rather than giving it up to keep offload.
+                            #
+                            # This used to refuse every offload tier, on the stated grounds that
+                            # "torchao quantised tensors reject Module.to()". Measured, and they do
+                            # not: an int8 Linear round-trips cuda -> cpu -> cuda with max abs diff
+                            # 0.0 on L4 (sm_89) and A100 (sm_80), and Qwen-Image-2.1 renders
+                            # identically at int8 and at fp8 under both group and whole-module
+                            # offload on sm_100 (same luma to 1 decimal, peak 25.4 -> 16.4 GiB).
+                            #
+                            # The refusal was also self-defeating. Offload is picked when the DENSE
+                            # weights do not fit, so dropping quantisation there keeps the arm that
+                            # made them not fit: a card too small for bf16 got bf16 anyway, plus a
+                            # per-step host round trip. Quantising first is what lets the next load
+                            # of the same model skip offload entirely.
+                            #
+                            # Sequential stays out. It is submodule-level, already documented as
+                            # broken for GGUF through diffusers 0.39, and nothing above was measured
+                            # on it, so it keeps the old behaviour until someone runs it.
+                            if plan.offload_policy == OFFLOAD_SEQUENTIAL:
                                 logger.info(
-                                    "diffusion.transformer_quant: skipped (the memory plan picked '%s' "
-                                    "offload, which moves the transformer via Module.to())",
-                                    plan.offload_policy,
+                                    "diffusion.transformer_quant: skipped (sequential offload moves "
+                                    "the transformer submodule by submodule, which this has not been "
+                                    "measured against)"
                                 )
                                 transformer_quant_decline = (
-                                    f"the memory plan picked '{plan.offload_policy}' offload, which moves "
-                                    "the transformer via Module.to(); torchao quantised tensors reject "
-                                    "that. Pin a resident memory mode to combine the two"
+                                    "sequential offload moves the transformer submodule by "
+                                    "submodule and quantisation has not been measured against it. "
+                                    "Pin a resident or group memory mode to combine the two"
                                 )
                             else:
                                 if _has_active_lora(loras):

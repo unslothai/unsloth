@@ -565,3 +565,38 @@ def test_qwen_image_21_sizes_a_dense_quant_candidate():
     est = estimate_dense_quant(fam, "fp8", base_repo = fam.base_repo, prequant_available = True)
     assert est is not None, "no estimate means the pipeline seed is never chosen"
     assert est.prequant and est.steady_transformer_mib > 0
+
+
+def test_the_quant_estimate_sizes_the_text_encoder_from_its_own_scheme():
+    # The family table is bf16 throughout, so a family that takes its hosted pre-cast fp8 encoder
+    # was budgeted for twice the encoder it holds. On Qwen-Image-2.1 that is 8.7 GB of companions
+    # that never arrive, which is the difference between a 40 GB card planning resident and
+    # planning offload, and the offload tier used to take the transformer's quantisation with it.
+    from core.inference.diffusion_auto_policy import estimate_dense_quant
+
+    fam = _fam("qwen-image-2.1")
+    bf16 = estimate_dense_quant(fam, "int8", base_repo = "Qwen/Qwen-Image-2.1")
+    fp8 = estimate_dense_quant(
+        fam, "int8", base_repo = "Qwen/Qwen-Image-2.1", text_encoder_quant = "fp8"
+    )
+    assert bf16 is not None and fp8 is not None
+    # The denoiser half is untouched: only the encoder was mis-sized.
+    assert fp8.steady_transformer_mib == bf16.steady_transformer_mib
+    assert fp8.text_encoders_mib < bf16.text_encoders_mib
+    assert fp8.companions_mib < bf16.companions_mib
+    # Roughly the halving the hosted cast actually delivers (16.33 -> 8.75 GiB).
+    assert 0.5 <= fp8.text_encoders_mib / bf16.text_encoders_mib <= 0.6
+
+
+def test_an_unknown_text_encoder_scheme_keeps_the_bf16_figure():
+    # None, "", and a scheme with no measured factor all mean "no opinion", which has to reproduce
+    # the previous number rather than guess a smaller one and under-budget the card.
+    from core.inference.diffusion_auto_policy import estimate_dense_quant
+
+    fam = _fam("qwen-image-2.1")
+    base = estimate_dense_quant(fam, "int8", base_repo = "Qwen/Qwen-Image-2.1")
+    for scheme in (None, "", "int8", "nvfp4", "banana"):
+        got = estimate_dense_quant(
+            fam, "int8", base_repo = "Qwen/Qwen-Image-2.1", text_encoder_quant = scheme
+        )
+        assert got.text_encoders_mib == base.text_encoders_mib, scheme

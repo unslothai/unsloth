@@ -11233,8 +11233,19 @@ def test_a_pipeline_pick_refuses_an_explicit_scheme_that_did_not_engage(
     assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
 
 
-def test_a_pipeline_pick_does_not_quantise_under_offload(fake_runtime, tmp_path, monkeypatch):
-    """Offloaded pipelines stay dense because torchao tensors cannot move."""
+def test_a_pipeline_pick_quantises_under_whole_module_offload(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """Whole-module offload no longer costs the quantisation.
+
+    This asserted the opposite while the loader refused every offload tier, on the grounds that
+    torchao tensors cannot move. Measured, and they can: an int8 Linear round-trips
+    cuda -> cpu -> cuda with max abs diff 0.0 on L4 (sm_89) and A100 (sm_80), and Qwen-Image-2.1
+    renders identically at int8 and fp8 under group and whole-module offload on sm_100.
+
+    Refusing was also self-defeating: offload is chosen precisely when the dense weights do not
+    fit, so dropping quantisation there hands a too-small card the bf16 weights anyway, plus a
+    per-step host round trip."""
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch)
     real_plan = DiffusionBackend._plan_memory
@@ -11247,9 +11258,33 @@ def test_a_pipeline_pick_does_not_quantise_under_offload(fake_runtime, tmp_path,
     status = backend.load_pipeline(
         "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
     )
+    assert calls != []
+    assert status["transformer_quant"] is not None
+    backend.unload()
+
+
+def test_a_pipeline_pick_still_stays_dense_under_sequential_offload(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """Sequential offload keeps the old refusal: it moves the transformer submodule by submodule,
+    it is already documented as broken for GGUF through diffusers 0.39, and none of the evidence
+    above was gathered on it. The narrow guard is what keeps that an explicit decision rather than
+    a side effect of widening the tier above."""
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    real_plan = DiffusionBackend._plan_memory
+
+    def _sequential_plan(self, *args, **kwargs):
+        plan = real_plan(self, *args, **kwargs)
+        return dataclasses.replace(plan, offload_policy = "sequential")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _sequential_plan)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
     assert calls == []
     assert status["transformer_quant"] is None
-    assert "offload" in status["resolved"]["transformer_quant"]["reason"]
+    assert "sequential offload" in status["resolved"]["transformer_quant"]["reason"]
     backend.unload()
 
 
