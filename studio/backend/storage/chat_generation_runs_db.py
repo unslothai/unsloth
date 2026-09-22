@@ -29,26 +29,19 @@ ChatGenerationEventInput = Union[tuple[str, dict[str, Any]], tuple[str, dict[str
 _schema_ready: set[Path] = set()
 _schema_lock = threading.Lock()
 
-# One reusable connection per (thread, database), because opening one costs ~50x what the work
-# costs. Measured on this path: the whole BEGIN/INSERT/UPDATE/COMMIT of a flush is 0.018 ms on an
-# open connection, while get_connection() plus close() is 0.49 ms. A streaming generation pays that
-# on every producer flush and three times per SSE delivery turn per attached tab, so one run with
-# one tab open was spending ~28 ms/sec opening and tearing down databases to do ~0.5 ms of work.
-#
-# Keyed by the acting account, because that is what selects the database and, unlike resolving the
-# path, costs nothing: see the note in _connect for why re-resolving is not an option here.
-# Thread-local because the callers run on the asyncio to_thread pool and each thread wants its own
-# handle; see _prepare_connection for why they are nonetheless closable from any thread.
+# One reusable connection per (thread, account), because opening one costs far more than the query
+# it carries, and a streaming generation opens one per producer flush and three per SSE delivery
+# turn per attached tab. Keyed by the acting account: that is what selects the database, and unlike
+# resolving the path it costs nothing (see _connect).
 _pool = threading.local()
 
 
 class _Borrowed:
     """A cached connection whose ``close()`` returns it to the cache instead of closing it.
 
-    Every caller in this module already pairs ``_connect()`` with ``close()`` in a ``finally``, so
-    honouring that contract while keeping the handle open is what makes reuse a local change rather
-    than a rewrite of fourteen call sites. Only ``execute``, ``commit``, ``rollback`` and ``close``
-    are used here; everything else delegates.
+    Every caller already pairs ``_connect()`` with ``close()`` in a ``finally``, so honouring that
+    contract while keeping the handle open is what keeps reuse local instead of a rewrite of
+    fourteen call sites.
     """
 
     __slots__ = ("_conn", "_key", "_released")
@@ -78,10 +71,9 @@ class _Borrowed:
         setattr(self._conn, name, value)
 
 
-#: Bumped when every pooled connection is invalidated. These connections keep sqlite's default
-#: check_same_thread, so only the thread that opened one may close it; a thread whose cached entry
-#: predates the current generation closes its own on the next borrow. Reading a plain int needs no
-#: lock, and the cost of noticing late is a connection held a little longer, never a wrong answer.
+#: Bumped when every pooled connection is invalidated. A thread whose entry predates the current
+#: generation closes its own on the next borrow; noticing late costs a connection held longer,
+#: never a wrong answer.
 _pool_generation = 0
 _pool_lock = threading.Lock()
 
@@ -101,12 +93,10 @@ def _discard_pooled() -> None:
 def _discard_all_pooled() -> None:
     """Invalidate every pooled connection, and close this thread's now.
 
-    Another thread's handle cannot be closed from here, so it is marked stale and that thread closes
-    it when it next borrows. The gap matters in exactly one way and it is bounded: until then the
-    connection still holds the database open, so a caller that closed the WAL keeper to let go of
-    the file may find a worker still holding it. Every caller that needs the file released
-    immediately (shutdown, account retirement, the tests) does so from a thread that has just been
-    using this module, which is the thread whose connection is closed right here.
+    Another thread's handle cannot be closed from here (check_same_thread), so it is marked stale
+    and that thread closes it on its next borrow, still holding the database open until then. Every
+    caller needing the file released at once does so from a thread that has just used this module,
+    which is the one closed here.
     """
     global _pool_generation
     with _pool_lock:
@@ -153,16 +143,12 @@ def _connect() -> sqlite3.Connection:
     resolves to right now. Falls back to a fresh connection whenever reuse would be unsafe, so the
     cache can only ever make things faster, never change what a caller sees.
     """
-    # The acting account, NOT the resolved path: test_a_durable_run_poll_resolves_the_account_root_once
-    # and test_warm_owner_connections_do_not_resolve_database_again pin that a warm connect here
-    # resolves the account root zero times, and studio_db_path() is exactly that resolution.
-    # current_account_id() is a context variable read.
+    # NOT the resolved path: test_a_durable_run_poll_resolves_the_account_root_once and
+    # test_warm_owner_connections_do_not_resolve_database_again pin that a warm connect resolves the
+    # account root zero times, and studio_db_path() is exactly that resolution.
     #
-    # Paired with the identity of _schema_ready, which is how this suite already isolates storage
-    # modules per test: conftest's _isolate_studio_home rebinds that attribute to a fresh set for
-    # every test, so comparing the object we cached against the one bound now detects a test whose
-    # UNSLOTH_STUDIO_HOME moved under an unchanged account id, which is the one case an account key
-    # cannot see by itself.
+    # Paired with the identity of _schema_ready, which conftest rebinds per test: an account id
+    # alone cannot see a home that moved beneath it.
     key = current_account_id() or ""
     entry = getattr(_pool, "entry", None)
     if entry is not None and entry["generation"] != _pool_generation and not entry["busy"]:
