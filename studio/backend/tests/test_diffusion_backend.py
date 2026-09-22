@@ -11235,7 +11235,11 @@ def test_a_pipeline_pick_refuses_an_explicit_scheme_that_did_not_engage(
     assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
 
 
-def _offload_plan(offload_policy, budget_mib = 1_000_000):
+def _offload_plan(
+    offload_policy,
+    budget_mib = 1_000_000,
+    runtime_headroom_mib = 0,
+):
     """_plan_memory, forced to ``offload_policy`` with ``budget_mib`` of safe device budget."""
     real_plan = DiffusionBackend._plan_memory
 
@@ -11244,7 +11248,12 @@ def _offload_plan(offload_policy, budget_mib = 1_000_000):
         return dataclasses.replace(
             plan,
             offload_policy = offload_policy,
-            estimates = {**plan.estimates, "safe_device_budget_mib": budget_mib},
+            estimates = {
+                **plan.estimates,
+                "safe_device_budget_mib": budget_mib,
+                "runtime_headroom_mib": runtime_headroom_mib,
+                "base_overhead_mib": 0,
+            },
         )
 
     return _plan
@@ -11355,14 +11364,20 @@ def test_a_pipeline_pick_stays_dense_under_streamed_offload(
     backend.unload()
 
 
+@pytest.mark.parametrize(("budget_mib", "runtime_headroom_mib"), [(1, 0), (1_000_000, 1_000_000)])
 def test_a_pipeline_pick_stays_dense_when_the_quantised_transformer_exceeds_the_budget(
-    fake_runtime, tmp_path, monkeypatch
+    fake_runtime, tmp_path, monkeypatch, budget_mib, runtime_headroom_mib
 ):
-    """Whole-module offload onloads the transformer whole, and streaming cannot move torchao
-    weights, so a quantised transformer larger than the budget has nowhere to run."""
+    """Whole-module offload onloads the transformer whole, beside the forward's runtime headroom,
+    and streaming cannot move torchao weights, so a quantised transformer that does not fit with
+    that headroom has nowhere to run."""
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch)
-    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan("model", budget_mib = 1))
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        _offload_plan("model", budget_mib = budget_mib, runtime_headroom_mib = runtime_headroom_mib),
+    )
     status = backend.load_pipeline(
         "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
     )

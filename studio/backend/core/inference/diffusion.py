@@ -5256,12 +5256,15 @@ class DiffusionBackend:
                             # Only whole-module offload moves torchao weights through Studio's render: diffusers'
                             # group-offload stream cache aliases them (its .cpu() returns the live weight) and the
                             # streamless path cannot swap_tensors a compiled module's parameters. Whole-module offload
-                            # onloads the transformer alone, so the quantised transformer must fit the budget.
+                            # onloads the transformer alone, so it must fit resident by the planner's own accounting.
                             quant_budget = int(plan.estimates.get("safe_device_budget_mib") or 0)
+                            quant_overhead = int(
+                                plan.estimates.get("runtime_headroom_mib") or 0
+                            ) + int(plan.estimates.get("base_overhead_mib") or 0)
                             if plan.offload_policy != OFFLOAD_NONE and (
                                 plan.offload_policy != OFFLOAD_MODEL
                                 or estimate is None
-                                or estimate.steady_transformer_mib > quant_budget
+                                or estimate.steady_transformer_mib + quant_overhead > quant_budget
                             ):
                                 if plan.offload_policy == OFFLOAD_MODEL:
                                     transformer_quant_decline = (
