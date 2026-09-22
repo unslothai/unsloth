@@ -95,6 +95,26 @@ class _NoCtxPipe:
         return None
 
 
+class _PrefixKVTransformer(_MixinTransformer):
+    """A CacheMixin transformer that caches the prompt/condition prefix K and V (Qwen-Image-2.1,
+    FLUX.2 klein KV, Wan-Animate-2): its blocks see the whole joint sequence on the first step and
+    the target tokens alone afterwards."""
+
+    def forward(self, hidden_states, *, kv_cache = None, kv_cache_mode = None):
+        return hidden_states
+
+
+class _PrefixKVPipe(_CtxPipe):
+    """A denoise loop that drives the prefix cache: prefill once, then decode. FBCache must not
+    engage, or step 2 dies subtracting a 4096-row residual from a 4297-row one."""
+
+    def __call__(self, *args, **kwargs):
+        with self.transformer.cache_context("cond"):
+            self.transformer(None, kv_cache = object(), kv_cache_mode = "extract")
+            self.transformer(None, kv_cache = object(), kv_cache_mode = "cached")
+        return None
+
+
 def _pipe(transformer):
     return _CtxPipe(transformer)
 
@@ -193,6 +213,36 @@ def test_pipeline_without_cache_context_runs_uncached(monkeypatch):
     t = _MixinTransformer()
     assert apply_step_cache(_NoCtxPipe(t), mode = "fbcache") is None
     assert t.enabled_with is None  # enable_cache was never called
+
+
+def test_prefix_kv_transformer_runs_uncached(monkeypatch):
+    # Qwen-Image-2.1 / FLUX.2 klein KV / Wan-Animate-2 cache the prompt prefix, so the blocks see
+    # the whole joint sequence on step 0 and the target tokens alone from step 1. FBCache subtracts
+    # the stored residual elementwise, so engaging here raises "The size of tensor a (4096) must
+    # match the size of tensor b (4297)" at step 2 of a user's generation, not at load.
+    _stub_diffusers(monkeypatch)
+    t = _PrefixKVTransformer()
+    assert apply_step_cache(_PrefixKVPipe(t), mode = "fbcache") is None
+    assert t.enabled_with is None  # enable_cache was never called
+
+
+def test_prefix_kv_guard_does_not_catch_an_ordinary_transformer(monkeypatch):
+    # The control for the guard above: a CacheMixin transformer whose forward takes no
+    # kv_cache_mode (Flux, Qwen-Image) keeps a constant sequence length and must still be cached.
+    _stub_diffusers(monkeypatch)
+    t = _MixinTransformer()
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == "fbcache"
+    assert t.enabled_with is not None
+
+
+def test_prefix_kv_guard_ignores_a_parameter_the_loop_never_drives(monkeypatch):
+    # A transformer that ACCEPTS kv_cache_mode inside a pipeline that never passes one runs at a
+    # constant length, so the cache stays available. This keeps the guard on the loop's behaviour
+    # rather than on the signature alone.
+    _stub_diffusers(monkeypatch)
+    t = _PrefixKVTransformer()
+    assert apply_step_cache(_CtxPipe(t), mode = "fbcache") == "fbcache"
+    assert t.enabled_with is not None
 
 
 def test_incompatible_model_runs_uncached(monkeypatch):

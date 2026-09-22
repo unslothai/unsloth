@@ -9322,11 +9322,15 @@ def _parse_pinned_pip_config(
 def pip_install_try(
     label: str,
     *args: str,
+    req: Path | None = None,
     constrain: bool = True,
     force_pip: bool = False,
 ) -> bool:
     """Like pip_install but returns False on failure instead of exiting.
     For optional installs that have a follow-up fallback.
+
+    ``req`` goes through ``_effective_requirements`` exactly as in pip_install, so a file
+    installed through either entry point is the same file the install-manifest gate audits.
     """
     # Same reason as pip_install: this installs torch too (the Windows AMD ROCm trio),
     # so the memoized classification must not survive it.
@@ -9339,19 +9343,33 @@ def pip_install_try(
         constraint_args_pip = ["-c", str(CONSTRAINTS)]
         constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
 
+    actual_req = req
+    temp_reqs: list[Path] = []
+    if req is not None:
+        actual_req, temp_reqs = _effective_requirements(req)
+    req_args_pip: list[str] = []
+    req_args_uv: list[str] = []
+    if actual_req is not None:
+        req_args_pip = ["-r", str(actual_req)]
+        req_args_uv = ["-r", _uv_safe_path(actual_req)]
+
     if USE_UV and not force_pip:
-        cmd, env = _pinned_cmd_and_env(_build_uv_cmd(args) + constraint_args_uv)
+        cmd, env = _pinned_cmd_and_env(_build_uv_cmd(args) + constraint_args_uv + req_args_uv)
     else:
-        cmd, env = _pinned_cmd_and_env(_build_pip_cmd(args) + constraint_args_pip)
+        cmd, env = _pinned_cmd_and_env(_build_pip_cmd(args) + constraint_args_pip + req_args_pip)
 
     if VERBOSE:
         _step(_LABEL, f"{label}...", _dim)
-    result = subprocess.run(
-        cmd,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        env = env,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            env = env,
+        )
+    finally:
+        for temp_req in temp_reqs:
+            temp_req.unlink(missing_ok = True)
     if result.returncode == 0:
         # As pip_install below: `nobuild` only catches a build that reaches the log.
         if VERBOSE and result.stdout:
@@ -10306,6 +10324,7 @@ def _skip_step(
     no_deps: bool,
     constrain: bool = True,
     extra_check = None,
+    superseded: bool = False,
 ) -> bool:
     """Announce one requirements step and say whether it is already satisfied.
 
@@ -10314,12 +10333,22 @@ def _skip_step(
 
     *extra_check* is an on-disk predicate for a file importlib.metadata cannot fully answer:
     today only triton-kernels.txt, whose git ref no version reflects.
+
+    *superseded* says a LATER step has already put a different build of this distribution in
+    place, one this file's version pin cannot describe. The requirement really is unsatisfied and
+    must still not run: running it would undo the step that supersedes it, which would then redo
+    itself, so every pass reinstalls twice and no update is ever a no-op. Deliberately separate
+    from *extra_check*, which can only make an answer stricter.
     """
     key = _pass_input_key(req) or str(req)
     if not no_deps and _pass_input_key(req) is not None:
         # Registered whether or not skipped, so the first pass records what its closure cannot
         # satisfy.
         _AUDITED_STEPS[key] = req
+    if superseded:
+        _progress(f"{progress_label} (superseded, skipped)")
+        _record_step(key, "skipped")
+        return True
     satisfied = _requirements_satisfied(req, no_deps = no_deps, constrain = constrain)
     if satisfied and extra_check is not None:
         satisfied = bool(extra_check())
@@ -10460,6 +10489,131 @@ def _triton_kernels_step() -> None:
         req = req,
         constrain = False,
     )
+
+
+DIFFUSERS_MAIN_ENV = "UNSLOTH_DIFFUSERS_MAIN"
+
+# Diffusers main declares requires-python >= 3.10 while the release pin file still names 0.36.0
+# for anything older, so 3.9 is a supported install this step can never satisfy.
+DIFFUSERS_MAIN_MIN_PYTHON = (3, 10)
+
+
+def _diffusers_main_requested() -> bool:
+    """Whether this install wants the pinned Diffusers main build. Default: yes.
+
+    Opt OUT with ``UNSLOTH_DIFFUSERS_MAIN=0`` (also false/no/off). Anything else, including the
+    variable being unset, means yes, so the models that need an unreleased Diffusers work for
+    everyone without a flag. The opt-out exists for an install that must stay on the exact release
+    everything else is built against, or that cannot reach github.com but does have git.
+    """
+    value = (os.environ.get(DIFFUSERS_MAIN_ENV) or "").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def _diffusers_main_resident(req: "Path | None" = None) -> bool:
+    """Whether the pinned main build is BOTH what the file names and actually on disk.
+
+    Provenance alone is not a build, the same reason ``_triton_kernels_step`` pairs its ref check
+    with this one: ``direct_url.json`` survives inside dist-info while the package tree under it is
+    deleted or truncated, and a provenance-only answer would skip the reinstall AND, since the
+    release pin reads the same predicate to decide it has been superseded, skip the repair too.
+    Diffusers is mandatory, so that combination leaves Studio broken on every later pass rather
+    than for one. Either half failing means "install it", which is the recoverable direction.
+    """
+    if req is None:
+        req = REQ_ROOT / "diffusers-main.txt"
+    return _direct_reference_is_installed(req, "diffusers") and _payload_recorded_intact(
+        "diffusers"
+    )
+
+
+def _diffusers_main_supersedes_release() -> bool:
+    """Whether 11c's build already stands in for the release pin, so 11b must not reinstall it.
+
+    Only when the main build is BOTH wanted and resident, AND this pass is allowed to skip work at
+    all: under UNSLOTH_STUDIO_FULL_DEPS both steps run, the release first and the commit back on
+    top, which is the same order a first install takes and the only order that ends with the tree
+    the family gate expects.
+    """
+    if _full_deps_requested():
+        return False
+    return _diffusers_main_requested() and _diffusers_main_resident()
+
+
+def _diffusers_main_step() -> None:
+    """Install the pinned Diffusers commit, or leave the release pin alone.
+
+    Three things this has to get right, none of which the ordinary ``_skip_step`` path covers:
+
+    * A VERSION says nothing here. Every build of main reports 0.41.0.dev0, so the usual "is the
+      requirement satisfied" check passes against a build from any other commit, or against the
+      release the previous step just installed. ``_direct_reference_is_installed`` reads the ref out
+      of direct_url.json, which is the only place it survives, so bumping the commit in the file
+      actually reinstalls instead of silently keeping the old tree.
+    * Diffusers is MANDATORY, unlike triton_kernels, so a host that cannot do a source build must
+      not be left with a broken install. It is not: the release pin ran first and is already in
+      place, so skipping here leaves a working Studio that simply cannot load the newest model.
+      That is the whole reason this is a second step on top of the release pin rather than an
+      edit to it, now that it runs by default and therefore meets every host there is.
+    * Opting out must put the release back. Setting the variable to 0 and re-running reinstalls the
+      pin on the next pass, because the pin step's own inputs are unchanged but the resident
+      diffusers is no longer what the release pin names.
+
+    It spends exactly ONE progress slot on every path, including opting out, because the total is
+    fixed before any of this is known. An early return without a _progress leaves the bar short of
+    its own total for precisely the users who opted out.
+    """
+    if not _diffusers_main_requested():
+        _progress("diffusers main (opted out, skipped)")
+        return
+    if sys.version_info < DIFFUSERS_MAIN_MIN_PYTHON:
+        # Diffusers main needs 3.10, and the release pin file still carries a 0.36.0 line for
+        # older interpreters, so 3.9 is a supported path this can never satisfy. Unmarked, pip would
+        # clone the repository and only then reject its requires-python, and since the build can
+        # never become resident that clone repeats on every install and update forever.
+        _progress("diffusers main (skipped, needs python 3.10)")
+        return
+    req = REQ_ROOT / "diffusers-main.txt"
+    if not req.is_file():
+        _progress("diffusers main (skipped, no pin file)")
+        return
+    if not _has_working_git():
+        _progress("diffusers main (skipped, no git)")
+        _note(
+            "No working git, so this install keeps the pinned Diffusers release instead of the "
+            "pinned main build. Everything else works; models that need an unreleased Diffusers "
+            "will refuse with a message naming the version they want.",
+        )
+        return
+    # The escape hatch reaches this skip too. UNSLOTH_STUDIO_FULL_DEPS is the documented way to
+    # repair an install whose evidence looks fine and whose payload is not, and _diffusers_main_resident
+    # is exactly such evidence: _payload_recorded_intact compares recorded sizes, so a same-size
+    # corruption reads as intact. A skip nobody can turn off is a bug nobody can work around.
+    if not _full_deps_requested() and _diffusers_main_resident(req):
+        _progress("diffusers main (satisfied, skipped)")
+        _record_step("diffusers-main.txt", "skipped")
+        return
+    _progress("diffusers main")
+    _record_step("diffusers-main.txt", "ran")
+    # pip_install_try, NOT pip_install, and this is the whole reason the step is safe to run by
+    # default. pip_install exits the installer on failure, which would make a reachable github.com
+    # a hard requirement of every install: a PyPI mirror with no route out, a proxy that blocks git
+    # over https, a transient upstream outage would each turn a working install into no install at
+    # all. Diffusers is mandatory, so the failure has to be survivable, and it is exactly survivable
+    # because the release pin ran first and is still resident. Degrading costs one model.
+    if not pip_install_try(
+        "Installing the pinned Diffusers main build",
+        "--no-cache-dir",
+        req = req,
+        constrain = False,
+    ):
+        _record_step("diffusers-main.txt", "skipped")
+        _note(
+            "Could not install the pinned Diffusers main build, so this install keeps the pinned "
+            "Diffusers release. Everything else works; models that need an unreleased Diffusers "
+            f"will refuse with a message naming the version they want. Set {DIFFUSERS_MAIN_ENV}=0 "
+            "to stop trying.",
+        )
 
 
 def _recorded_direct_url(dist_name: str) -> "dict | None":
@@ -10710,9 +10864,10 @@ def install_python_stack() -> int:
     # reinstall path too, not just the two calls below
     # Clean-machine CI overlays only unsloth, not the full local source pair.
     ci_source_overlay = os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY", "")
-    # Four lettered steps beside the numbered ones: anyio repair (8b), accelerate repair
-    # (8c, Windows only), diffusers pin (11b), torchcodec (13b).
-    base_total = 13 if IS_WINDOWS else 14
+    # Five lettered steps beside the numbered ones: anyio repair (8b), accelerate repair
+    # (8c, Windows only), diffusers pin (11b), diffusers main (11c), torchcodec (13b).
+    # 11c is counted unconditionally because it spends its slot unconditionally, opt-out included.
+    base_total = 14 if IS_WINDOWS else 15
     if IS_WINDOWS:
         base_total += 1  # 8c, gated exactly as the step is
     if IS_MACOS:
@@ -11218,12 +11373,31 @@ def install_python_stack() -> int:
     #      release, and outside every skip_base / NO_TORCH branch so it reaches every path.
     #      constrain stays on: constraints.txt says nothing about diffusers today, and a
     #      future entry there should win rather than be silently bypassed here.
-    if not _skip_step(REQ_ROOT / "diffusers-pin.txt", "diffusers pin", no_deps = False):
+    #      And it stands down once 11c's build is resident. Nothing here can see that on its own: a
+    #      main build reports 0.41.0.dev0, which does not satisfy `diffusers==0.40.0`, so this step
+    #      would reinstall the release on every later pass and 11c would put the same commit back on
+    #      top of it. Two Diffusers installs per update, no update that is a no-op, and offline the
+    #      downgrade lands while the restore cannot. Only a build that is BOTH wanted and already
+    #      resident supersedes it, so opting out still reinstates the release, and a first install
+    #      still lays it down first, which is what a failed source build degrades to.
+    if not _skip_step(
+        REQ_ROOT / "diffusers-pin.txt",
+        "diffusers pin",
+        no_deps = False,
+        superseded = _diffusers_main_supersedes_release(),
+    ):
         pip_install(
             "Installing the pinned Diffusers release",
             "--no-cache-dir",
             req = REQ_ROOT / "diffusers-pin.txt",
         )
+
+    # 11c. A pinned commit of Diffusers main, for models whose support has merged upstream but has
+    #      not reached a release. ON by default; UNSLOTH_DIFFUSERS_MAIN=0 opts out. Runs immediately
+    #      after the release pin so it overwrites it, and only ever on top of it: the release is
+    #      already resident, so no git and a failed source build both degrade to a working install
+    #      rather than no install.
+    _diffusers_main_step()
 
     # 12. Patch metadata for single-env compatibility
     _finalize_ran = _dd_deps_ran or _dd_ran or _patch_metadata_is_pending()
