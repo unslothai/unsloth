@@ -903,9 +903,13 @@ test("the hint beside the cursor names every kind of drop", () => {
 // The gesture has one behaviour, not three switches: the hint shows, a reorder in a sorted list
 // switches it to Manual, and a closed folder opens under a resting pointer. Nothing to persist.
 test("drag-and-drop has no preferences of its own", () => {
-  const state = useSidebarOrganizationStore.getState() as Record<string, unknown>;
+  // `in`, not an indexed read through a cast: SidebarOrganizationState has no index
+  // signature, so `as Record<string, unknown>` is a conversion tsc rejects outright and
+  // the test never compiled. `in` needs no cast and asks the stricter question anyway,
+  // since a key that came back holding undefined is still back in the store.
+  const state: object = useSidebarOrganizationStore.getState();
   for (const key of ["dragHints", "reorderSwitchesSort", "dragOpensFolders"]) {
-    assert.equal(state[key], undefined, `${key} is back in the store`);
+    assert.ok(!(key in state), `${key} is back in the store`);
     assert.ok(!EN.includes(`${key}:`), `${key} is back in the en locale`);
   }
   assert.ok(!EN.includes("dragDrop:"));
