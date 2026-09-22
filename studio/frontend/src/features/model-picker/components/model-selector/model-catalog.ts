@@ -1329,34 +1329,56 @@ export function pickDefaultArtifact(
   )[0];
 }
 
-/** Whether ONE curated artifact loads on this device, by the rule `pickDefaultArtifact` routes with,
- *  since a row click loads that exact artifact. System RAM is not part of a discrete-GPU budget: a
- *  pipeline goes wholly on the card unless the catalog states a measured offload tier or the loader
- *  falls back to CPU, which only transcription does. A unified-memory host reports RAM and no GPU,
- *  and there the RAM is the card. Undefined where nothing can be judged. */
+/** Fit verdict and badge estimate for one curated artifact; undefined if unknown.
+ *  Uses GPU memory, or RAM for unified-memory hosts and transcription fallback.
+ *  Measured offload tiers return the catalog size without an allowance. */
+export function curatedArtifactFit(
+  repoId: string,
+  catalog: CatalogGroup[],
+  budget: DeviceBudget,
+): {
+  fits: boolean;
+  sizeGb?: number;
+  allowanceGb?: number;
+  /** Memory the allowance is 70% of, and which device it is. */
+  deviceGb?: number;
+  device?: "GPU" | "RAM";
+} | undefined {
+  const hit = artifactForRepoId(repoId, catalog);
+  if (!hit || hit.artifact.format === "gguf") return undefined;
+  const { group, artifact } = hit;
+  if (budget.gpuGb <= 0 && budget.systemRamGb <= 0) return undefined;
+  if (artifact.offloadFitTiers?.length) {
+    return {
+      fits: fitsArtifactBudget(group, artifact, budget),
+      sizeGb: artifact.approxSizeGb,
+    };
+  }
+  // Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real budget
+  // there, but the WHOLE model lands on one device: the larger of the two, not their sum. An
+  // image, video or TTS load rejects CPU offload.
+  const onRam =
+    group.task === "stt" ? budget.systemRamGb > budget.gpuGb : budget.gpuGb <= 0;
+  const deviceGb = onRam ? budget.systemRamGb : budget.gpuGb;
+  const allowanceGb = deviceGb * 0.7;
+  const sizeGb = residentSizeGb(group, artifact, budget, allowanceGb);
+  if (sizeGb === undefined) return undefined;
+  return {
+    fits: sizeGb <= allowanceGb,
+    sizeGb,
+    allowanceGb,
+    deviceGb,
+    device: onRam ? "RAM" : "GPU",
+  };
+}
+
+/** `curatedArtifactFit`'s verdict alone. */
 export function curatedArtifactFitsDevice(
   repoId: string,
   catalog: CatalogGroup[],
   budget: DeviceBudget,
 ): boolean | undefined {
-  const hit = artifactForRepoId(repoId, catalog);
-  if (!hit || hit.artifact.format === "gguf") return undefined;
-  const { group, artifact } = hit;
-  if (budget.gpuGb <= 0 && budget.systemRamGb <= 0) return undefined;
-  if (artifact.offloadFitTiers?.length) return fitsArtifactBudget(group, artifact, budget);
-  // Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real budget
-  // there, but the WHOLE model lands on one device: the larger of the two, not their sum. An
-  // image, video or TTS load rejects CPU offload.
-  const deviceGb =
-    group.task === "stt"
-      ? Math.max(budget.gpuGb, budget.systemRamGb)
-      : budget.gpuGb > 0
-        ? budget.gpuGb
-        : budget.systemRamGb;
-  const allowanceGb = deviceGb * 0.7;
-  const sizeGb = residentSizeGb(group, artifact, budget, allowanceGb);
-  if (sizeGb === undefined) return undefined;
-  return sizeGb <= allowanceGb;
+  return curatedArtifactFit(repoId, catalog, budget)?.fits;
 }
 
 /** Whether the "fit on device" toggle keeps a group, including measured offload tiers when an
