@@ -224,9 +224,9 @@ def test_the_sync_patches_the_readme_and_confirms_it(sync_job: dict, tmp_path: P
     # The body, wherever curl was handed it. Asserted as a non-empty payload first:
     # an empty request logs no identifier either, so the bare `in log` check below
     # cannot tell "authenticated as someone else" from "sent nothing at all".
-    assert f'"secret": "{DEFAULT_SECRET}"' in log, (
-        "the token request carried no body, so this proves nothing about who it authenticates as"
-    )
+    assert (
+        f'"secret": "{DEFAULT_SECRET}"' in log
+    ), "the token request carried no body, so this proves nothing about who it authenticates as"
     assert '"identifier": "unsloth"' in log, "the organization token authenticates as the org"
 
 

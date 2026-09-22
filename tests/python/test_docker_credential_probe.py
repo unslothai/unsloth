@@ -113,9 +113,9 @@ def test_the_delete_uses_the_namespace_route_the_org_token_is_allowed_on(
     ), "the legacy route answers every organization token with 403"
     # A non-empty body first: an empty request carries no identifier either, so the
     # check below cannot otherwise tell the wrong identity from no request at all.
-    assert f'"secret": "{SECRET}"' in log, (
-        "the token request carried no body, so this proves nothing about who it authenticates as"
-    )
+    assert (
+        f'"secret": "{SECRET}"' in log
+    ), "the token request carried no body, so this proves nothing about who it authenticates as"
     assert '"identifier": "unsloth"' in log
     assert "Authorization: Bearer tok" in log
 
