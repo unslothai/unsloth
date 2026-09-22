@@ -3,16 +3,9 @@
 
 """Padding-free is auto-enabled, and it hands the model `packed_seq_lengths`.
 
-A forward that declares neither that argument nor `**kwargs` raises TypeError
-on the first training step, long after the trainer was built:
-
-    Phi4ForCausalLMV.forward() got an unexpected keyword argument
-    'packed_seq_lengths'
-
-so the gate asks the signature instead of the model name. It only ever turns
-padding-free OFF where the signature positively shows it cannot work: anything
-unknown or uninspectable answers True, because refusing on an unreadable
-signature would silently disable padding-free for models that support it.
+A forward declaring neither that nor `**kwargs` raises TypeError on the first step
+(Phi4ForCausalLMV). The gate asks the signature, and only ever turns padding-free OFF
+where the signature positively shows it cannot work.
 """
 
 import pytest
@@ -23,11 +16,9 @@ from torch import nn  # noqa: E402
 try:
     from unsloth.trainer import _forward_accepts_packing_kwargs  # noqa: E402
 except ImportError:
-    # On Apple Silicon with MLX, `unsloth/__init__.py` replaces `unsloth.trainer` with a
-    # synthetic module carrying only the MLX trainer names, so `unsloth/trainer.py` never
-    # loads and every private helper in it is unreachable. Nothing to test there either:
-    # padding-free belongs to the torch trainer, and MLX training does not go through it.
-    # Skip rather than let the whole module fail collection, which aborts more than itself.
+    # On Apple Silicon with MLX, `unsloth/__init__.py` swaps `unsloth.trainer` for a shim
+    # carrying only the MLX trainer names, so these helpers are unreachable and padding-free
+    # does not apply. Skip rather than fail collection, which aborts more than itself.
     import unsloth
     if getattr(unsloth, "DEVICE_TYPE", None) != "mlx":
         raise
@@ -65,8 +56,7 @@ class _NamesPacking(nn.Module):
 
 
 class _FakePeft(nn.Module):
-    """PEFT forwards **kwargs straight through, so the wrapper always says yes
-    while the checkpoint underneath is the one that raises."""
+    """PEFT forwards **kwargs through, so the wrapper says yes for a checkpoint that does not."""
 
     def __init__(self, inner):
         super().__init__()
@@ -80,9 +70,8 @@ class _FakePeft(nn.Module):
 
 
 class _InnerDecoderTakesKwargs(nn.Module):
-    """`PreTrainedModel.base_model` is a property returning the inner decoder,
-    whose forward usually does take **kwargs. Following it answers for the
-    wrong module, so the unwrap is PEFT's `get_base_model` only."""
+    """`PreTrainedModel.base_model` reaches the inner decoder, which usually does take
+    **kwargs, so following it answers for the wrong module."""
 
     def __init__(self):
         super().__init__()
@@ -148,12 +137,7 @@ def test_the_accepted_shape_really_accepts_it():
 
 
 def test_the_blocker_names_itself_in_the_warning():
-    """The reason chain must not blame an unset environment variable.
-
-    When this gate is the sole blocker and the user asked for packing=True,
-    the chain used to fall through to `reason = "UNSLOTH_RETURN_LOGITS=1"`,
-    telling the user to investigate a flag they never set.
-    """
+    """The chain must not fall through to UNSLOTH_RETURN_LOGITS=1, a flag the user never set."""
     import inspect as _inspect
 
     from unsloth import trainer as trainer_module
@@ -170,16 +154,10 @@ def test_the_blocker_names_itself_in_the_warning():
 
 @pytest.mark.parametrize("packing", [False, True])
 def test_a_string_model_is_rechecked_once_trl_has_built_it(monkeypatch, packing):
-    """The gate fails open on a string, so the real check has to happen after init.
+    """A string the class could not be resolved for is rechecked after init, and REFUSED.
 
-    It has to REFUSE there rather than quietly turn the two off. By that point TRL
-    has built its collator from `padding_free=True` and, under packing, already
-    transformed the datasets, so clearing the flags would leave batches arriving
-    flattened while nothing names the sequence boundaries: attention and loss cross
-    examples with nothing raising. Re-running `__init__` would rebuild them but would
-    also materialize the checkpoint a second time, which is an OOM in the large-model
-    case this is for. Driven through the real wrapper with a stub
-    `SFTTrainer.__init__`, so nothing is downloaded.
+    Clearing the flags there would leave batches flattened with nothing naming the
+    boundaries; re-running `__init__` would materialize the checkpoint twice.
     """
     from types import SimpleNamespace
 
@@ -264,12 +242,7 @@ def _fake_config():
 
 
 def test_the_class_behind_a_string_is_resolved_without_downloading_weights():
-    """A string names a class, and the class carries the forward the instance will.
-
-    Resolving it is what keeps the string case an ordinary silent block instead of a
-    refusal after `__init__`. `from_pretrained` is never called, so no checkpoint is
-    fetched: a config built in memory is enough.
-    """
+    """`from_pretrained` is never called, so a config built in memory is enough."""
     from transformers import LlamaConfig, LlamaForCausalLM
 
     from unsloth.trainer import _resolve_string_model_class
@@ -284,12 +257,10 @@ def test_the_class_behind_a_string_is_resolved_without_downloading_weights():
 
 
 def test_a_native_architecture_is_answered_without_touching_remote_code():
-    """A config can carry BOTH a native `architectures` and a remote `auto_map`.
+    """Native `architectures` wins over a remote `auto_map`, so the loader is never called.
 
-    TRL resolves `getattr(transformers, config.architectures[0])` and consults
-    `auto_map` not at all, so reaching for the remote module while the native name
-    would have answered executes code nothing else in the stack would have run.
-    Native therefore wins, and the remote loader is never called.
+    TRL resolves `getattr(transformers, config.architectures[0])` and never reads
+    `auto_map`, so reaching for it first would run code nothing else would.
     """
     from types import SimpleNamespace
 
@@ -366,13 +337,9 @@ def test_the_remote_code_grant_is_read_by_membership(init_kwargs, top_level, may
 def test_the_same_auth_keys_reach_both_fetches():
     """The config fetch and the class fetch must authenticate identically.
 
-    `_resolve_string_model_config` forwards `use_auth_token` among the rest, and
-    transformers still honours it as a deprecated alias for `token` across the
-    supported range. Dropping it here would authenticate the config and not the
-    modeling file, so a private remote-code checkpoint would fail to resolve and the
-    post-init backstop would raise at a user who had configured nothing.
-    Asserted against the sibling's own key list rather than a copy of it, so the two
-    cannot drift apart silently.
+    transformers honours `use_auth_token` as a deprecated alias for `token` across the
+    supported range, so dropping it would authenticate one fetch and not the other.
+    Asserted against the sibling's own key list so the two cannot drift apart.
     """
     import inspect as _inspect
     from types import SimpleNamespace
@@ -446,12 +413,7 @@ def test_an_unresolvable_string_returns_none_rather_than_guessing():
 
 
 def test_a_resolvable_string_is_blocked_silently_instead_of_raising(monkeypatch):
-    """The whole point of resolving early: no exception, just padding-free turned off.
-
-    Before this, a string `model=` fell through to the post-init refusal even though
-    the user had configured nothing -- padding-free is auto-enabled by Unsloth, so the
-    crash was for a feature they never asked for.
-    """
+    """No exception, just padding-free turned off: the user configured nothing."""
     from types import SimpleNamespace
 
     import unsloth.trainer as trainer_module
@@ -558,14 +520,9 @@ def test_the_warning_names_the_resolved_class_not_str(monkeypatch, caplog):
 
 
 def test_a_class_that_disagrees_with_the_built_model_is_still_caught(monkeypatch):
-    """Resolving the class is a good guess, not proof about the instance.
-
-    A checkpoint can name several classes in `auto_map`, and the one resolved before
-    `__init__` is not guaranteed to be the one TRL builds. If the resolved class says
-    yes and the real model says no, clearing the deferred flag would disarm the
-    post-init check and hand the user back the first-step TypeError this gate exists
-    to prevent. So the check stays armed: a correct block already turns both flags
-    off, which is the condition it skips on, and it costs nothing there.
+    """`auto_map` can name several classes, so a resolved "yes" is not proof about the
+    instance. The post-init check stays armed; a correct block already turns both flags
+    off, which is the condition it skips on.
     """
     from types import SimpleNamespace
 
@@ -629,13 +586,10 @@ def test_a_resolver_that_explodes_falls_back_to_the_backstop(monkeypatch):
 
 
 def test_a_mixed_adapter_wrapper_is_unwrapped_to_the_checkpoint():
-    """`PeftMixedModel` has no `get_base_model`, so the PEFT unwrap stops on it.
+    """`PeftMixedModel` has no `get_base_model`, and its variadic forward only delegates.
 
-    Its own forward is `(*args, **kwargs)` and merely delegates, so reading it said
-    yes for a checkpoint that says no, padding-free stayed on, and training died on
-    the first step -- the exact failure this gate exists to prevent. Driven through
-    real PEFT rather than a stand-in, because the whole point is which attribute the
-    real wrapper exposes.
+    Driven through real PEFT rather than a stand-in, because the point is which
+    attribute the real wrapper exposes.
     """
     peft = pytest.importorskip("peft")
     transformers = pytest.importorskip("transformers")
@@ -672,13 +626,7 @@ def test_a_mixed_adapter_wrapper_is_unwrapped_to_the_checkpoint():
 
 
 def test_every_delegating_wrapper_is_unwrapped():
-    """Their forward is variadic, so they answer yes for anything they hold.
-
-    The attribute below is the checkpoint itself, not the inner decoder
-    `base_model` would reach, so following it answers for the right module.
-    Driven over the whole registered family rather than a hand-written list, so
-    a wrapper added there without a matching unwrap fails here.
-    """
+    """Driven over the whole registered family, so a wrapper added without an unwrap fails here."""
     from unsloth.trainer import _DELEGATING_MODULE_WRAPPERS
     from unsloth.trainer import _forward_accepts_packing_kwargs as gate
 
