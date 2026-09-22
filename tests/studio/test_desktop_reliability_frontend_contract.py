@@ -2526,12 +2526,20 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
 
 
 def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
+    # The utility has to be the whole utility. `h` is a substring of `min-h`, and a band
+    # respelled as `min-h-[calc(48px*...)]` is no longer a fixed band at all: it may grow
+    # past the titlebar geometry these contracts measure, while a count of the substring
+    # says nothing changed.
     for path, utility, length, expected in _LENGTHS_THAT_MUST_KEEP_THE_SCALE:
         source = path.read_text(encoding = "utf-8")
-        scaled = source.count(f"{utility}-[calc({length}*var(--ui-space-scale,1))]")
+        boundary = r"(?<![\w-])"
+        scaled = len(re.findall(
+            boundary + re.escape(f"{utility}-[calc({length}*var(--ui-space-scale,1))]"),
+            source,
+        ))
         assert (
             scaled == expected
         ), f"{path.name} states {scaled} scaled {utility}-{length}, not {expected}"
-        assert (
-            f"{utility}-[{length}]" not in source
-        ), f"{path.name} has a bare {utility}-[{length}], which stays put while its text grows"
+        assert not re.search(boundary + re.escape(f"{utility}-[{length}]"), source), (
+            f"{path.name} has a bare {utility}-[{length}], which stays put while its text grows"
+        )
