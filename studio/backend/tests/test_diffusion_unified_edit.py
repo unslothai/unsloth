@@ -457,3 +457,25 @@ def test_offloaded_vision_tower_builds_position_embeddings_on_the_compute_device
     assert _pin_vision_embedding_device(vision) == 0
     assert _pin_vision_embedding_device(object()) == 0
     assert _Vision().fast_pos_embed_interpolate(None).device == "cpu"
+
+
+@pytest.mark.parametrize(
+    "source,resolution",
+    [((4096, 256), 512), ((256, 4096), 512), ((20000, 10), 1024), ((4096, 256), 2048)],
+)
+def test_an_elongated_source_matches_to_a_size_the_request_accepts(source, resolution):
+    """4096x256 at the 512 tier rounded to 2048x128, which the API refuses (both sides >= 256).
+    The short side now stays at the minimum and the long side is capped at the family's bound."""
+    for name in ("Qwen/Qwen-Image-2.1", "Tongyi-MAI/Z-Image-Turbo"):
+        fam = detect_family(name)
+        w, h = cond.match_source_size(fam, source, resolution)
+        cond.check_output_size(fam, w, h)
+    assert cond.match_source_size(detect_family("Qwen/Qwen-Image-2.1"), (4096, 256), 512) == (
+        2752,
+        256,
+    )
+
+
+def test_an_output_side_below_the_minimum_is_refused():
+    with pytest.raises(ValueError, match = "at least 256px"):
+        cond.check_output_size(detect_family("Qwen/Qwen-Image-2.1"), 2048, 128)

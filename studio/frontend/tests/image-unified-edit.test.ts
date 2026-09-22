@@ -63,6 +63,30 @@ test("match-source sizes agree with the backend's match_source_size", () => {
   assert.equal(big.height % 32, 0);
 });
 
+test("an elongated source still matches to a size the request accepts", () => {
+  // 4096x256 at the 512 tier rounded to 2048x128, which the API refuses (both sides >= 256).
+  for (const [w, h, r] of [
+    [4096, 256, 512],
+    [256, 4096, 512],
+    [20000, 10, 1024],
+  ]) {
+    for (const limits of [LIMITS, DEFAULT_SIZE_LIMITS]) {
+      const out = matchSourceSize(w, h, r, limits);
+      assert.ok(Math.min(out.width, out.height) >= 256, JSON.stringify(out));
+      assert.ok(
+        Math.max(out.width, out.height) <= limits.maxSide,
+        JSON.stringify(out),
+      );
+      assert.equal(out.width % limits.multiple, 0);
+      assert.equal(out.height % limits.multiple, 0);
+    }
+  }
+  assert.deepEqual(matchSourceSize(4096, 256, 512, LIMITS), {
+    width: 2752,
+    height: 256,
+  });
+});
+
 test("the grid and bounds follow the loaded model, and default to the historical ones", () => {
   assert.deepEqual(sizeLimitsFrom(null), DEFAULT_SIZE_LIMITS);
   assert.equal(snapDim(1040), 1040);

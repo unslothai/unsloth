@@ -80,7 +80,7 @@ def test_the_server_request_carries_refs_and_nothing_img2img():
 def test_condition_images_flatten_alpha_over_white_and_pad_only_for_the_server():
     clear = _png(size = (64, 32), color = (0, 0, 255, 0))
     w, h, blobs = bk._native_condition_images(
-        FAM, _png(size = (64, 32)), [clear], None, None, None, pad_to_output = True
+        FAM, _png(size = (64, 32)), [clear], None, None, None, full_fidelity = False, pad_to_output = True
     )
     # Image 1's 2:1 aspect ratio at the 1024 area, the same size the diffusers engine picks.
     assert (w, h) == (1440, 736)
@@ -88,11 +88,25 @@ def test_condition_images_flatten_alpha_over_white_and_pad_only_for_the_server()
     assert ref.mode == "RGB" and ref.getpixel((32, 16)) == (255, 255, 255)
     # A reference with another aspect ratio is padded to the output's instead of being cropped.
     _w, _h, padded = bk._native_condition_images(
-        FAM, _png(size = (64, 32)), [_png(size = (32, 32))], None, 1024, 512, pad_to_output = True
+        FAM,
+        _png(size = (64, 32)),
+        [_png(size = (32, 32))],
+        None,
+        1024,
+        512,
+        full_fidelity = False,
+        pad_to_output = True,
     )
     assert _decode(padded[1]).size == (64, 32)
     _w, _h, plain = bk._native_condition_images(
-        FAM, _png(size = (64, 32)), [_png(size = (32, 32))], None, 1024, 512, pad_to_output = False
+        FAM,
+        _png(size = (64, 32)),
+        [_png(size = (32, 32))],
+        None,
+        1024,
+        512,
+        full_fidelity = False,
+        pad_to_output = False,
     )
     assert _decode(plain[1]).size == (32, 32)
 
@@ -142,7 +156,8 @@ def test_edit_is_advertised_only_with_the_projector_and_an_edit_capable_build(tm
         if expect:
             c = status["conditioning"]
             assert c["reference_resolutions"] == [] and c["alpha"] is False
-            assert any("padded with white" in n for n in c["notes"])
+            assert any("padded to its aspect ratio" in n for n in c["notes"])
+            assert any("raise Guidance above 1" in n for n in c["notes"])
 
 
 def test_oneshot_edit_stages_ordered_pngs_and_records_the_workflow(monkeypatch):
@@ -206,3 +221,61 @@ def test_native_refuses_what_it_cannot_honour(monkeypatch):
     monkeypatch.setattr(SdCppDiffusionBackend, "_native_edit_ready", lambda self, st: False)
     with pytest.raises(ValueError, match = "Image editing is not available"):
         b.generate(prompt = "p", workflow = "edit", init_image = _png(), width = 512, height = 512)
+
+
+def test_a_padded_mask_adds_no_region_and_stays_aligned_with_the_source():
+    """Padding the separate mask with white marked the added border as part of the region to
+    edit. It is padded black, by the same amount as the source, so the region stays where it was
+    drawn."""
+    mask = Image.new("L", (64, 32), 0)
+    for x in range(8):
+        for y in range(8):
+            mask.putpixel((x, y), 255)
+    buf = io.BytesIO()
+    mask.save(buf, format = "PNG")
+    _w, _h, blobs = bk._native_condition_images(
+        FAM,
+        _png(size = (64, 32), color = (9, 9, 9, 255)),
+        None,
+        LocalizedEdit("mask", base64.b64encode(buf.getvalue()).decode()),
+        512,
+        512,
+        full_fidelity = False,
+        pad_to_output = True,
+    )
+    source, padded = _decode(blobs[0]), _decode(blobs[1]).convert("L")
+    assert source.size == padded.size == (64, 64)
+    # The border the padding added is not part of the region...
+    assert padded.getpixel((32, 2)) == 0 and padded.getpixel((32, 60)) == 0
+    # ...the drawn region moved with the source, and the source border is white as before.
+    assert padded.getpixel((2, 18)) == 255 and padded.getpixel((2, 26)) == 0
+    assert source.getpixel((32, 2))[:3] == (255, 255, 255)
+    assert source.getpixel((2, 18))[:3] == (9, 9, 9)
+
+
+def test_a_full_fidelity_build_gets_the_images_as_decoded(tmp_path):
+    """A build carrying the upstream reference fixes reads alpha and keeps each image's shape, so
+    neither workaround applies and status reports alpha."""
+    clear = _png(size = (32, 32), color = (0, 0, 255, 0))
+    _w, _h, blobs = bk._native_condition_images(
+        FAM, _png(size = (64, 32)), [clear], None, 1024, 512, full_fidelity = True, pad_to_output = True
+    )
+    ref = _decode(blobs[1])
+    assert ref.mode == "RGBA" and ref.size == (32, 32) and ref.getpixel((4, 4)) == (0, 0, 255, 0)
+
+    binary = tmp_path / "sd-server"
+    binary.write_bytes(
+        b"qwen_image_2_1 "
+        + FAM.sd_cpp_edit_marker.encode()
+        + b" "
+        + bk._REFERENCE_FIDELITY_MARKER.encode()
+    )
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    b._state = _state(
+        mode = "server", server = types.SimpleNamespace(binary = str(binary), is_alive = lambda: True)
+    )
+    c = b.status()["conditioning"]
+    assert c["alpha"] is True
+    assert c["notes"] == [
+        "For transparent output on the native engine, raise Guidance above 1 (upstream uses 6)."
+    ]

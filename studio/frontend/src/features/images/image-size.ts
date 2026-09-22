@@ -62,7 +62,9 @@ export function fitSize(
 }
 
 /** Output size with the source's aspect ratio at a resolution x resolution area. Mirrors the
- *  backend's match_source_size, so the size shown is the size generated. */
+ *  backend's match_source_size, so the size shown is the size generated: a source too elongated
+ *  to keep its ratio inside [MIN_DIM, maxSide] keeps the short side at MIN_DIM and caps the long
+ *  side, so the result is always a size the request accepts. */
 export function matchSourceSize(
   sourceWidth: number,
   sourceHeight: number,
@@ -79,6 +81,17 @@ export function matchSourceSize(
     h = Math.max(m, Math.round(Math.sqrt(area / ratio) / m) * m);
     if (Math.max(w, h) <= limits.maxSide && w * h <= limits.maxPixels) break;
     area *= 0.9;
+  }
+  const shortMin = Math.ceil(MIN_DIM / m) * m;
+  const longMax = Math.floor(limits.maxSide / m) * m;
+  if (Math.min(w, h) < shortMin) {
+    let longSide = Math.round((shortMin * Math.max(ratio, 1 / ratio)) / m) * m;
+    longSide = Math.min(Math.max(longSide, shortMin), longMax);
+    while (longSide > shortMin && longSide * shortMin > limits.maxPixels)
+      longSide -= m;
+    return ratio >= 1
+      ? { width: longSide, height: shortMin }
+      : { width: shortMin, height: longSide };
   }
   return { width: w, height: h };
 }

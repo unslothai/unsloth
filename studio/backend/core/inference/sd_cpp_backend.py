@@ -1631,6 +1631,15 @@ def _native_output_image(fam: Any, im: Any) -> Any:
     return im.convert("RGB")
 
 
+# A literal only sd.cpp builds that read reference images at full fidelity carry: upstream e112ab5 (2026-09-22)
+# loads a reference with its own channel count, so an RGBA image keeps its alpha into the model, and it sits after
+# 78557f8 / e012065, which stopped sd-server from centre-cropping references to the output's aspect ratio. The pinned
+# build (master-813-bfbef5b-u1d02858) predates all three. Measured with upstream c92d73c, Q6_K and cfg 6 on an RTX
+# 3090: a transparent edit kept 47.1% of its pixels fully transparent from the RGBA reference against 24.9% from
+# the same reference flattened over white.
+_REFERENCE_FIDELITY_MARKER = "error: allocate memory for channel promotion"
+
+
 def _native_condition_images(
     fam: Any,
     init_image: str,
@@ -1639,21 +1648,24 @@ def _native_condition_images(
     width: Optional[int],
     height: Optional[int],
     *,
+    full_fidelity: bool,
     pad_to_output: bool,
 ) -> tuple[int, int, list[bytes]]:
     """(width, height, ordered PNG bytes) for one native reference / edit call.
 
     Decoded through the same helper as the diffusers engine, so the order, the image count limit,
-    the localized-edit layers and the match-source size are identical. Two differences come from the
-    pinned sd.cpp build and are applied here rather than left to it:
+    the localized-edit layers and the match-source size are identical. A build with
+    ``full_fidelity`` gets every image as decoded, alpha included. An older build gets two
+    workarounds for its own limits:
 
     - It reads reference images as RGB and pads alpha to opaque, which turns transparent pixels into
       whatever colour they happen to hold. Each image is composited over white first, the same
       flattening the model's vision encoder is trained on, so a cutout arrives as a subject on white
       rather than on noise. The alpha itself does not reach the native VAE.
-    - sd-server centre-crops every reference to the requested output's aspect ratio. On that path
-      each image whose aspect ratio differs is padded with white to the output's, so nothing is cut
-      off. sd-cli keeps aspect ratios on its own and gets the images unchanged.
+    - Its sd-server centre-crops every reference to the requested output's aspect ratio. On that
+      path (``pad_to_output``) each image whose aspect ratio differs is padded to the output's, so
+      nothing is cut off: white for images, black for a separate mask, which would otherwise gain
+      an edit region. sd-cli keeps aspect ratios on its own and gets the images unchanged.
     """
     import io
 
@@ -1670,21 +1682,27 @@ def _native_condition_images(
         width, height = match_source_size(fam, images[0].size, 1024)
     check_output_size(fam, int(width), int(height))
     target = float(width) / float(height)
+    # A separate mask is Image 2. Its padding must be black: white would mark the added border as
+    # part of the region to edit. The source is padded by the same amount, so the two stay aligned.
+    mask_index = 1 if getattr(localized_edit, "mode", None) == "mask" else None
     blobs: list[bytes] = []
-    for img in images:
-        if img.mode in ("RGBA", "LA", "P"):
+    for index, img in enumerate(images):
+        if full_fidelity:
+            img = img if img.mode in ("RGB", "RGBA") else img.convert("RGBA")
+        elif img.mode in ("RGBA", "LA", "P"):
             rgba = img.convert("RGBA")
             flat = Image.new("RGB", rgba.size, (255, 255, 255))
             flat.paste(rgba, mask = rgba.getchannel("A"))
             img = flat
         else:
             img = img.convert("RGB")
-        if pad_to_output:
+        if pad_to_output and not full_fidelity:
             iw, ih = img.size
             ratio = iw / float(ih)
             if abs(ratio - target) > 0.01 * target:
                 pw, ph = (round(ih * target), ih) if ratio < target else (iw, round(iw / target))
-                canvas = Image.new("RGB", (max(pw, iw), max(ph, ih)), (255, 255, 255))
+                fill = (0, 0, 0) if index == mask_index else (255, 255, 255)
+                canvas = Image.new("RGB", (max(pw, iw), max(ph, ih)), fill)
                 canvas.paste(img, ((canvas.width - iw) // 2, (canvas.height - ih) // 2))
                 img = canvas
         buf = io.BytesIO()
@@ -3323,6 +3341,18 @@ class SdCppDiffusionBackend:
             )
             return _with_mirrors(repos)
 
+    def _native_binary(self, state: _SdState) -> Optional[str]:
+        """The sd.cpp binary this load runs: the resident server's, else the one-shot engine's."""
+        binary = getattr(state.server, "binary", None) if state.server is not None else None
+        return binary or getattr(getattr(self, "_engine", None), "binary", None)
+
+    def _native_reference_fidelity(self, state: Optional[_SdState]) -> bool:
+        """Whether this load's build reads reference images with their alpha and their own size."""
+        if state is None:
+            return False
+        binary = self._native_binary(state)
+        return bool(binary) and binary_carries_marker(binary, _REFERENCE_FIDELITY_MARKER)
+
     def _native_edit_ready(self, state: Optional[_SdState]) -> bool:
         """Whether this load can run the unified edit workflow natively: a family that has one, its
         vision projector among the loaded files, and a build that carries the family's edit marker.
@@ -3333,9 +3363,7 @@ class SdCppDiffusionBackend:
         marker = getattr(fam, "sd_cpp_edit_marker", None)
         if not (getattr(fam, "unified_edit", False) and marker and state.files.llm_vision):
             return False
-        binary = getattr(state.server, "binary", None) if state.server is not None else None
-        if binary is None:
-            binary = getattr(getattr(self, "_engine", None), "binary", None)
+        binary = self._native_binary(state)
         if not binary:
             return False
         return binary_carries_marker(binary, marker)
@@ -3467,6 +3495,7 @@ class SdCppDiffusionBackend:
                         localized_edit,
                         width,
                         height,
+                        full_fidelity = self._native_reference_fidelity(state),
                         pad_to_output = state.mode == "server" and state.server is not None,
                     )
                 elif width is None or height is None:
@@ -4039,23 +4068,29 @@ class SdCppDiffusionBackend:
         if self._native_edit_ready(state):
             workflows += ["reference", "edit"]
         conditioning = conditioning_capabilities(state.family, workflows)
-        # The pinned build's own limits, reported rather than papered over: no separate reference detail (it sizes
-        # inputs to the output area), and input alpha flattened over white before it reaches the model.
+        # The native engine's own limits, reported rather than papered over. There is no separate reference detail
+        # (sd.cpp sizes inputs to the output area). An older build also loses input alpha and, on sd-server, the
+        # input's shape.
         conditioning["reference_resolutions"] = []
-        conditioning["alpha"] = False
-        conditioning["notes"] = (
-            [
-                "Transparent parts of input images are filled with white on the native engine.",
-                "Input images with a different shape from the output are padded with white to its "
-                "aspect ratio on the native engine.",
-            ]
-            if "edit" in workflows and state.mode == "server"
-            else (
-                ["Transparent parts of input images are filled with white on the native engine."]
-                if "edit" in workflows
-                else []
+        full_fidelity = self._native_reference_fidelity(state)
+        conditioning["alpha"] = full_fidelity
+        notes: list[str] = []
+        if "edit" in workflows:
+            if not full_fidelity:
+                notes.append(
+                    "Transparent parts of input images are filled with white on this native build."
+                )
+                if state.mode == "server":
+                    notes.append(
+                        "Input images with a different shape from the output are padded to its "
+                        "aspect ratio on this native build."
+                    )
+            # Measured with upstream c92d73c and Q6_K: a transparent edit kept 3.7% of its pixels transparent at
+            # guidance 1 and 47.1% at 6, the value upstream's own examples use.
+            notes.append(
+                "For transparent output on the native engine, raise Guidance above 1 (upstream uses 6)."
             )
-        )
+        conditioning["notes"] = notes
 
         return {
             "loaded": True,

@@ -31,6 +31,9 @@ LOCALIZED_EDIT_MODES = ("annotate", "paint", "mask")
 # is bounded too, before any of them is loaded.
 MAX_CONDITION_SOURCE_PIXELS = 64_000_000
 
+# The shortest output side any family accepts (DiffusionGenerateRequest's lower bound).
+MIN_OUTPUT_SIDE = 256
+
 # Upstream QwenImage21Pipeline's own ``output_resolution`` default.
 DEFAULT_REFERENCE_RESOLUTION = 1024
 
@@ -48,6 +51,10 @@ def check_output_size(fam: Any, width: int, height: int) -> None:
     max_side = int(getattr(fam, "max_output_side", 2048) or 2048)
     max_pixels = int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048)
     name = getattr(fam, "name", "this")
+    if min(width, height) < MIN_OUTPUT_SIDE:
+        raise ValueError(
+            f"Width and height must be at least {MIN_OUTPUT_SIDE}px (got {width}x{height})."
+        )
     if width % multiple or height % multiple:
         raise ValueError(
             f"The {name} model needs width and height in multiples of {multiple} "
@@ -68,7 +75,9 @@ def match_source_size(fam: Any, source_size: tuple[int, int], resolution: int) -
     """Output (width, height) with the source's aspect ratio at a ``resolution`` x ``resolution``
     area, on the family grid and inside its bounds. Same rounding as upstream's
     ``calculate_dimensions``, so an omitted size matches what the pipeline would pick from Image 1,
-    never from the LAST reference as upstream does."""
+    never from the LAST reference as upstream does. A source too elongated to keep its ratio with
+    both sides inside [MIN_OUTPUT_SIDE, max side] keeps the short side at the minimum and caps the
+    long side, so the size is always one the request would accept."""
     multiple = int(getattr(fam, "dimension_multiple", 16) or 16)
     max_side = int(getattr(fam, "max_output_side", 2048) or 2048)
     max_pixels = int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048)
@@ -80,8 +89,16 @@ def match_source_size(fam: Any, source_size: tuple[int, int], resolution: int) -
         w = max(multiple, int(round(math.sqrt(area * ratio) / multiple)) * multiple)
         h = max(multiple, int(round(math.sqrt(area / ratio) / multiple)) * multiple)
         if max(w, h) <= max_side and w * h <= max_pixels:
-            return w, h
+            break
         area *= 0.9
+    short_min = -(-MIN_OUTPUT_SIDE // multiple) * multiple
+    long_max = max_side // multiple * multiple
+    if min(w, h) < short_min:
+        long_side = int(round(short_min * max(ratio, 1.0 / ratio) / multiple)) * multiple
+        long_side = min(max(long_side, short_min), long_max)
+        while long_side > short_min and long_side * short_min > max_pixels:
+            long_side -= multiple
+        w, h = (long_side, short_min) if ratio >= 1.0 else (short_min, long_side)
     return w, h
 
 
