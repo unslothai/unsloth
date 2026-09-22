@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { NumericValueInput } from "@/features/model-picker/components/numeric-value-input";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
@@ -77,15 +78,15 @@ const PALETTE_DEFAULT_COLORS: Record<
 > = {
   standard: {
     light: { accent: "#17b88b", background: "#fefefd", foreground: "#262626" },
-    dark: { accent: "#17b88b", background: "#181818", foreground: "#ffffff" },
+    dark: { accent: "#17b88b", background: "#181818", foreground: "#dfdfdf" },
   },
   classic: {
     light: { accent: "#339cff", background: "#ffffff", foreground: "#1a1c1f" },
-    dark: { accent: "#4dabff", background: "#181818", foreground: "#ffffff" },
+    dark: { accent: "#4dabff", background: "#181818", foreground: "#dfdfdf" },
   },
   minimal: {
     light: { accent: "#171717", background: "#ffffff", foreground: "#171717" },
-    dark: { accent: "#ededed", background: "#181818", foreground: "#ffffff" },
+    dark: { accent: "#ededed", background: "#181818", foreground: "#dfdfdf" },
   },
 };
 
@@ -334,7 +335,7 @@ function FontSelect({
           type="button"
           aria-label={ariaLabel}
           aria-expanded={open}
-          className="flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-xs outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
+          className="flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-xs outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
         >
           <span
             className="min-w-0 truncate"
@@ -918,23 +919,33 @@ export function ChatWidthSelect() {
   );
 }
 
+/** Run settings track and field, sized like the other controls in the column. */
 export function ContrastSliderRow() {
   const t = useT();
   const contrast = useAppearanceCustomStore((s) => s.customization.contrast);
   const patch = useAppearanceCustomStore((s) => s.patch);
   return (
-    <div className="flex w-48 items-center gap-3">
+    <div className="flex w-64 items-center gap-3">
       <Slider
         value={[contrast]}
         min={0}
         max={100}
-        step={5}
+        step={1}
         onValueChange={(values: number[]) => patch({ contrast: values[0] })}
+        className="panel-slider"
         aria-label={t("settings.appearance.custom.contrast.label")}
       />
-      <span className="w-8 text-right text-xs tabular-nums text-muted-foreground">
-        {contrast}
-      </span>
+      <NumericValueInput
+        value={contrast}
+        min={0}
+        max={100}
+        step={1}
+        onChange={(value) => patch({ contrast: value })}
+        ariaLabel={t("settings.appearance.custom.contrast.label")}
+        className="panel-field h-8 w-[84px] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
     </div>
   );
 }

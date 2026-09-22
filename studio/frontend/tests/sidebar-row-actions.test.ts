@@ -173,18 +173,20 @@ test("a section's chevron appears on hovering anywhere in it", () => {
 });
 
 // "the card that created it" named nothing the user can point at.
-test("the chat-folder hint names what to click instead", () => {
+test("the chat-folder hint names what to click instead", async () => {
+  // The item is shared with the Projects page's chat rows, so the hint lives with it.
+  const item = await readSrcAsync("features/chat/components/open-chat-folder-item.tsx");
   assert.ok(
-    !APP_SIDEBAR.includes("card that created it"),
+    !item.includes("card that created it"),
     "the hint still sends the user to a card it never identifies",
   );
   assert.ok(
-    APP_SIDEBAR.includes("download a file from the tool result that wrote it"),
+    item.includes("download a file from the tool result that wrote it"),
     "the hint no longer says where the files can be had",
   );
   // Carried twice on purpose: the tooltip is for the pointer, the title for everything else.
   assert.equal(
-    (APP_SIDEBAR.match(/Only the desktop app can open a chat's files folder/g) ??
+    (item.match(/Only the desktop app can open a chat('|&apos;)s files folder/g) ??
       []).length,
     2,
     "the hint is no longer stated for both the pointer and the screen reader",
