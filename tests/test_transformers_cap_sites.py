@@ -113,11 +113,8 @@ def _declared_window() -> SpecifierSet:
 
 
 def _ceiling(window: SpecifierSet) -> Version:
-    """The TIGHTEST upper bound, which is the one that decides what resolves.
-
-    `max` was wrong: `<=5.17.0,<=5.18.0` still resolves at 5.17.0, so reporting 5.18.0 let the
-    assertions below pass on exactly the stale cap this file exists to catch. At equal versions
-    `<` excludes more than `<=`, so it wins the tie.
+    """The TIGHTEST upper bound: `max` reported 5.18.0 for `<=5.17.0,<=5.18.0`, which resolves at
+    5.17.0, so the assertions passed on exactly the stale cap this file exists to catch.
     """
     tops = [
         (Version(str(spec.version)), spec.operator)
@@ -147,11 +144,8 @@ def _pyproject_zoo() -> list[Requirement]:
 
 
 def test_the_declared_zoo_floor_can_supply_the_declared_transformers_window() -> None:
-    """Widening the window here does nothing while the resolvable zoo still caps lower.
-
-    pip intersects unsloth's requirement with unsloth_zoo's and the user gets the LOWER ceiling,
-    and zoo 2026.9.5 says `transformers<=5.5.0`. Deferred while the constant is None; the body is
-    kept so raising the floor later is one edit.
+    """pip intersects our requirement with the zoo's and the user gets the LOWER ceiling, and zoo
+    2026.9.5 says `transformers<=5.5.0`. Deferred while the constant is None.
     """
     if ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP is None:
         pytest.skip(
@@ -204,11 +198,8 @@ def test_the_declared_zoo_floor_can_supply_the_declared_transformers_window() ->
 
 
 def test_pyproject_declares_one_unsloth_zoo_floor() -> None:
-    """The half of the check above that does not depend on which release the floor names.
-
-    Two different floors across the extras means one is what users hit and the other is what CI
-    reads; an unbounded `unsloth_zoo` admits every old release. Both hold at 2026.9.5, so this
-    keeps running while the gate above is deferred.
+    """Two floors across the extras means one is what users hit and the other what CI reads; an
+    unbounded `unsloth_zoo` admits every old release. Both hold at 2026.9.5.
     """
     reqs = _pyproject_zoo()
     assert reqs, "pyproject.toml names no versioned unsloth_zoo requirement at all"
@@ -238,9 +229,8 @@ def _floor(window: SpecifierSet) -> Version:
 
 
 def _floor_lane_transformers_pins() -> dict[str, str]:
-    """`{job: pinned transformers}` for every version-compat lane whose slug is `floor`.
-
-    Parsed, not grepped: the file also pins transformers exactly in lanes that are NOT the floor.
+    """`{job: pinned transformers}` per floor lane. Parsed, not grepped: the file also pins
+    transformers exactly in lanes that are NOT the floor.
     """
     if sys.version_info < (3, 11):
         pytest.skip("yaml parsing here needs the 3.11+ interpreter the job uses")
@@ -278,10 +268,8 @@ def test_pyproject_declares_one_transformers_window() -> None:
 
 
 def test_pyproject_declares_the_floor_the_lanes_run() -> None:
-    """A floor can rot downward just as silently as a ceiling rots upward.
-
-    It did: `transformers>=4.51.3` was declared alongside `peft>=0.18.0`, a pair that cannot
-    import, so the published floor named a combination no user could run.
+    """A floor rots downward as silently as a ceiling rots up: `transformers>=4.51.3` was declared
+    beside `peft>=0.18.0`, a pair that cannot import, so the floor named an unrunnable combination.
     """
     window = _declared_window()
     assert _floor(window) == TESTED_FLOOR, (
@@ -371,10 +359,8 @@ def test_no_workflow_lane_sits_below_the_declared_ceiling() -> None:
 
 
 def test_every_exemption_names_a_lane_that_exists_today() -> None:
-    """A dormant exemption is a pre-authorisation, not documentation.
-
-    The day its string comes back the scan finds it and skips it, which is the failure this file
-    exists to prevent.
+    """A dormant exemption is a pre-authorisation: the day its string returns, the scan finds it and
+    skips it, which is the failure this file exists to prevent.
     """
     spelled = {
         (path.name, raw.strip())
@@ -464,10 +450,8 @@ def test_a_stale_range_cap_is_caught_even_in_an_allowlisted_workflow(tmp_path, m
 
 
 def _matrix_module(urlopen):
-    """The pinned-symbols module, imported fresh with `urllib.request.urlopen` replaced.
-
-    Imported under its own name because the matrix is built at import, so the substitution has to
-    be in place before the module body runs.
+    """The pinned-symbols module, imported fresh with `urlopen` replaced, under its own name: the
+    matrix is built at import, so the substitution must precede the module body.
     """
     import importlib.util
     import urllib.request
@@ -487,10 +471,8 @@ def _matrix_module(urlopen):
 
 
 def test_a_pypi_outage_keeps_every_load_bearing_tag() -> None:
-    """The fallback list holds one tag per minor, so it does not carry the anchors.
-
-    `_ALWAYS` names the patches a specific check exists for (v5.5.0 Apple Silicon ceiling, v5.16.0
-    tokenizers breakpoint); returning `_TAGS_FALLBACK` unmerged dropped both and still reported green.
+    """`_ALWAYS` names the patches a check exists for (v5.5.0 Apple Silicon ceiling, v5.16.0
+    tokenizers breakpoint); returning `_TAGS_FALLBACK` unmerged dropped both and reported green.
     """
     import urllib.error
 
@@ -508,11 +490,8 @@ def test_a_pypi_outage_keeps_every_load_bearing_tag() -> None:
 
 
 def test_the_outage_fallback_reaches_the_declared_floor() -> None:
-    """An outage must not quietly move the floor up.
-
-    The frozen fallback began at 4.57.6, so any PyPI failure dropped every 4.52-4.56 check and CI
-    could go green straight through a regression at the newly supported low end. `_ALWAYS` does not
-    restore them: both its anchors are 5.x.
+    """An outage must not quietly move the floor up: the frozen fallback began at 4.57.6, so any PyPI
+    failure dropped every 4.52-4.56 check. `_ALWAYS` cannot restore them, both its anchors are 5.x.
     """
     import urllib.error
 
@@ -558,10 +537,8 @@ def test_an_empty_release_index_keeps_every_load_bearing_tag() -> None:
 
 
 def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> None:
-    """The matrix keeps one tag per minor, so a 5.17.1 would evict 5.17.0.
-
-    5.17.0 is the exact maximum `transformers<=5.17.0` admits, so letting a later patch take its
-    slot starts checking a version no user can resolve. The anchor derives from pyproject's cap.
+    """One tag per minor means a 5.17.1 would evict 5.17.0, the exact maximum the window admits, and
+    check a version no user can resolve instead. The anchor derives from pyproject's cap.
     """
     import io
     import json as _json
@@ -595,11 +572,8 @@ def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> Non
 
 
 def test_the_matrix_is_shared_between_xdist_workers(tmp_path, monkeypatch) -> None:
-    """Every xdist worker must collect the same parameters.
-
-    Each resolves the matrix during collection, so one worker timing out gives it the fallback
-    list, the parameter sets diverge and xdist aborts the run. With the cache path set, the first
-    process to resolve publishes the answer.
+    """Each worker resolves the matrix during collection, so one timing out takes the fallback list,
+    the parameter sets diverge and xdist aborts. With the cache set, the first to resolve publishes.
     """
     import io
     import json as _json
@@ -647,11 +621,8 @@ def test_without_the_cache_a_failed_read_still_falls_back(tmp_path, monkeypatch)
 
 
 def test_a_pinned_patch_release_is_not_evicted_by_a_later_one() -> None:
-    """One tag per minor keeps the matrix bounded, but not at the cost of a pin users run.
-
-    Several notebooks pin 5.10.1; with 5.10.4 published the (5, 10) slot becomes 5.10.4 and a
-    symbol that only arrived in a later 5.10 patch would leave those notebooks broken while this
-    matrix stayed green.
+    """Notebooks pin 5.10.1; with 5.10.4 published the (5, 10) slot becomes 5.10.4, so a symbol
+    arriving in a later 5.10 patch would break them while this matrix stayed green.
     """
     import io
     import json as _json
@@ -684,11 +655,8 @@ def test_a_pinned_patch_release_is_not_evicted_by_a_later_one() -> None:
 
 
 def test_an_import_lane_pins_the_declared_ceiling() -> None:
-    """Something has to import the supported maximum, not just the supported minimum.
-
-    The `latest` lane is unpinned, so once upstream publishes above the cap it resolves a
-    combination no user can install. The static symbol suite reads source and cannot see
-    import-time breakage, so nothing else covers this.
+    """The `latest` lane is unpinned, so once upstream publishes above the cap it resolves a
+    combination no user can install. The static symbol suite cannot see import-time breakage.
     """
     import yaml
 
@@ -730,11 +698,8 @@ def test_the_ceiling_lane_moves_with_the_declared_window() -> None:
 
 
 def test_no_two_import_lanes_mint_the_same_pip_cache_key() -> None:
-    """Lanes share a cache name and key-files, so the interpreter alone separates their keys.
-
-    Two lanes on one interpreter collide, whichever saves first wins and the other re-downloads
-    every run. The restore step cannot take `${{ matrix.slug }}`: test_pip_cache_naming.py
-    requires a literal lowercase name.
+    """Two lanes on one interpreter share a key, so whichever saves first wins and the other
+    re-downloads. The restore step cannot take `matrix.slug`: the name must be a literal lowercase.
     """
     import yaml
 
@@ -748,11 +713,8 @@ def test_no_two_import_lanes_mint_the_same_pip_cache_key() -> None:
 
 
 def test_a_published_matrix_still_carries_the_anchors(tmp_path, monkeypatch) -> None:
-    """Sharing the matrix between workers must not become a second source of truth.
-
-    The published file can be written by a different revision or left from an earlier run, and
-    returning it verbatim dropped the floor, the old ceiling and the notebook pins while the suite
-    reported green.
+    """The published file can come from another revision or an earlier run, and returning it verbatim
+    dropped the floor, the old ceiling and the notebook pins while the suite reported green.
     """
     import json as _json
     import urllib.error
@@ -797,9 +759,8 @@ def test_the_declared_ceiling_anchor_uses_the_tag_upstream_pushed() -> None:
 
 
 def _newest_published_zoo_transformers_ceiling(timeout: float = 10.0):
-    """(zoo version, its transformers ceiling) for the newest unsloth_zoo on PyPI, else None.
-
-    Never raises: the caller treats "could not ask" as "keep deferring".
+    """(zoo version, transformers ceiling) for the newest unsloth_zoo on PyPI, else None. Never
+    raises: the caller treats "could not ask" as "keep deferring".
     """
     import json
     import urllib.error
@@ -835,10 +796,8 @@ def _newest_published_zoo_transformers_ceiling(timeout: float = 10.0):
 
 
 def test_the_zoo_deferral_expires_when_the_zoo_release_ships() -> None:
-    """A deferral nothing can end is the defect this file exists to catch.
-
-    The gate above skips on a hand-written constant. This asks PyPI what the newest zoo allows and
-    fails only on POSITIVE evidence the deferral is obsolete, so an offline runner stays skipped.
+    """The gate above skips on a hand-written constant, so this asks PyPI what the newest zoo allows
+    and fails only on POSITIVE evidence it is obsolete; an offline runner stays skipped.
     """
     if ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP is not None:
         pytest.skip(
