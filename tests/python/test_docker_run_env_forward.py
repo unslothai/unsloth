@@ -20,7 +20,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _documented(page, heading):
-    table = (DOCKER / page).read_text().split(f"\n{heading}\n", 1)[1]
+    table = (DOCKER / page).read_text(encoding = "utf-8").split(f"\n{heading}\n", 1)[1]
     names = []
     for row in table.split("\n## ", 1)[0].splitlines():
         if row.startswith("| `"):
@@ -39,7 +39,9 @@ def _forwarded(tmp_path, **env_extra):
     bindir.mkdir()
     argv_log = tmp_path / "argv"
     docker = bindir / "docker"
-    docker.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$@" > {argv_log}\n')
+    docker.write_text(
+        f'#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "{argv_log}"\n', encoding = "utf-8"
+    )
     docker.chmod(docker.stat().st_mode | stat.S_IEXEC)
     env = {k: v for k, v in os.environ.items() if k not in DOCUMENTED}
     env.update(
@@ -58,13 +60,22 @@ def _forwarded(tmp_path, **env_extra):
         timeout = 60,
     )
     assert proc.returncode == 0, proc.stderr
-    argv = argv_log.read_text().splitlines()
+    argv = argv_log.read_text(encoding = "utf-8").splitlines()
     return [spec for flag, spec in zip(argv, argv[1:]) if flag == "-e"]
 
 
 def test_the_hub_pages_still_have_a_variable_table():
-    assert "JUPYTER_PORT" in DOCUMENTED and len(DOCUMENTED) >= 10, DOCUMENTED
+    assert len(DOCUMENTED) >= 10, DOCUMENTED
     assert "UNSLOTH_SKIP_GPU_CHECK" in ROCM_DOCUMENTED, ROCM_DOCUMENTED
+    # named one by one: a row reformatted out of the parser's reach would otherwise
+    # drop that variable's case silently, and the suite would still report all green
+    for name in (
+        "JUPYTER_PORT",
+        "UNSLOTH_SKIP_NOTEBOOK_SYNC",
+        "UNSLOTH_SKIP_NOTEBOOK_REFRESH",
+        "UNSLOTH_SKIP_GPU_CHECK",
+    ):
+        assert name in DOCUMENTED, (name, DOCUMENTED)
 
 
 @pytest.mark.parametrize("name", DOCUMENTED)
