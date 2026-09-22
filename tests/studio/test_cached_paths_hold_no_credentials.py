@@ -130,6 +130,23 @@ DEFAULT_OWNERS = {
     "~/.config/gh": None,
 }
 
+# Which credential homes each shell login actually writes into. Matching every pattern
+# against every variable reported a job that caches `HF_HOME` and runs `docker login` as
+# leaking the Hugging Face token, which it plainly does not: docker writes
+# $DOCKER_CONFIG/config.json. The same false failure applied to npm, cargo, aws and gcloud.
+#
+# `None` means "any credential home", used for the Hugging Face patterns because those
+# write to whichever of HF_HOME or HF_TOKEN_PATH is in force.
+LOGIN_PATTERN_HOMES = {
+    r"\bnpm\s+login\b": ("NPM_CONFIG_USERCONFIG",),
+    r"\bcargo\s+login\b": ("CARGO_HOME",),
+    r"\bdocker\s+login\b": ("DOCKER_CONFIG",),
+    r"\bgcloud\s+auth\s+(?:application-default\s+)?login\b": (
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    ),
+    r"\baws\s+configure\b": ("AWS_SHARED_CREDENTIALS_FILE",),
+}
+
 LOGIN_PATTERNS = (
     r"\bhf\s+auth\s+login\b",
     r"\bhuggingface-cli\s+login\b",
@@ -296,7 +313,7 @@ def _persisted_paths(job):
 
 
 
-def _reusable_jobs(job):
+def _reusable_jobs(job, env = None, inputs = None):
     """(steps, env, inputs) for a job that delegates to a local reusable workflow.
 
     `jobs.<id>.uses: ./.github/workflows/x.yml` has no `steps:` of its own, so the caller
@@ -328,7 +345,14 @@ def _reusable_jobs(job):
                 passed[str(name)] = str(spec["default"])
     with_ = job.get("with")
     if isinstance(with_, dict):
-        passed.update({str(k): str(v) for k, v in with_.items()})
+        # Resolved against the CALLER's env and inputs, exactly as a composite's
+        # forwarded `with:` is. Copying verbatim meant reusable workflow A handing
+        # `path: ${{ inputs.path }}` to B gave B a self-referential value: the path and
+        # the credential home both normalised away and the login plus cache was accepted
+        # even though the outer caller supplied a concrete directory.
+        passed.update({
+            str(k): _expand(str(v), env or {}, inputs or {}) for k, v in with_.items()
+        })
     out = []
     for _jid, inner in _jobs(doc):
         out.append((inner, _env_of(inner, doc), passed))
@@ -359,7 +383,7 @@ def _flat_steps(job, inherited = None, inputs = None, stack = None):
     stack = () if stack is None else stack
     out = []
     # A job may delegate wholesale to a local reusable workflow instead of listing steps.
-    for inner, inner_env, passed in _reusable_jobs(job):
+    for inner, inner_env, passed in _reusable_jobs(job, inherited, inputs):
         out.extend(_flat_steps(inner, {**inherited, **inner_env}, passed, stack))
     for step in _steps(job):
         own = step.get("env")
@@ -495,7 +519,13 @@ def _login_offenders(doc, job):
                 )
                 break
             matched = next(
-                (p for p in LOGIN_PATTERNS if body and re.search(p, body, re.IGNORECASE)),
+                (
+                    p
+                    for p in LOGIN_PATTERNS
+                    if body
+                    and re.search(p, body, re.IGNORECASE)
+                    and var in (LOGIN_PATTERN_HOMES.get(p) or (var,))
+                ),
                 None,
             )
             if matched is not None:
@@ -1278,4 +1308,92 @@ def test_a_reusable_workflow_job_is_flattened(tmp_path, monkeypatch):
     assert [p for p, _s in _persisted_with_env(caller, {})] == ["hf-cache"]
     assert _login_offenders({}, caller), (
         "the reusable job logs in and caches the same input-named directory"
+    )
+
+
+def test_a_reusable_workflow_resolves_the_inputs_it_was_handed(tmp_path, monkeypatch):
+    """A reusable workflow forwarding `${{ inputs.path }}` means the CALLER's value.
+
+    Copying a call site's `with:` verbatim made the forwarded expression
+    self-referential one level down: workflow A hands B `path: ${{ inputs.path }}`, B
+    resolves it against its own empty inputs, and both the credential home and the cached
+    path normalise to the empty string. The containment test then compares nothing with
+    nothing, the login plus cache is accepted, and the concrete directory the outer
+    caller actually supplied never enters the comparison. This is the same forwarding bug
+    already fixed for composites, one layer up, and it is a bypass rather than a false
+    failure.
+    """
+    import sys
+
+    module = sys.modules[__name__]
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "inner.yml").write_text(
+        "name: inner\n"
+        "on:\n  workflow_call:\n    inputs:\n      path:\n        type: string\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    env:\n      HF_HOME: ${{ inputs.path }}\n"
+        "    steps:\n      - run: hf auth login --token x\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: ${{ inputs.path }}\n          key: k\n"
+    )
+    (wf / "outer.yml").write_text(
+        "name: outer\n"
+        "on:\n  workflow_call:\n    inputs:\n      path:\n        type: string\n"
+        "jobs:\n  forward:\n    uses: ./.github/workflows/inner.yml\n"
+        "    with:\n      path: ${{ inputs.path }}\n"
+    )
+    monkeypatch.setattr(module, "REPO", tmp_path)
+
+    caller = {"uses": "./.github/workflows/outer.yml", "with": {"path": "hf-cache"}}
+    assert [p for p, _s in _persisted_with_env(caller, {})] == ["hf-cache"], (
+        "the outer caller's concrete directory has to survive two hops of forwarding"
+    )
+    assert _login_offenders({}, caller), (
+        "the innermost job logs in and caches the directory the outermost caller named"
+    )
+
+
+def test_a_shell_login_only_counts_against_what_that_command_writes():
+    """`docker login` writes $DOCKER_CONFIG. It does not write the Hugging Face token.
+
+    Every login pattern was tested against every credential home in the job, so a job
+    that legitimately caches `HF_HOME` and separately runs `docker login` -- with
+    `DOCKER_CONFIG` nowhere near the cache -- was reported as leaking a Hugging Face
+    token into the cache. The same false pairing applied to npm, cargo, aws and gcloud,
+    and the report named a credential the command never touches, which is worse than
+    silence: it sends the reader looking for a leak that is not there.
+    """
+    safe = {
+        "env": {"HF_HOME": "hf-cache", "DOCKER_CONFIG": "/tmp/docker"},
+        "steps": [
+            {"run": "echo y | docker login -u u --password-stdin"},
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+        ],
+    }
+    assert _login_offenders({}, safe) == [], (
+        "docker writes $DOCKER_CONFIG/config.json, which is outside the cached "
+        f"directory: {_login_offenders({}, safe)}"
+    )
+
+    unsafe = dict(safe, steps = [
+        {"run": "hf auth login --token x"},
+        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+    ])
+    assert _login_offenders({}, unsafe), (
+        "the Hugging Face login does write the cached HF_HOME, and still has to be caught"
+    )
+
+    docker_cached = {
+        "env": {"DOCKER_CONFIG": "docker-cache"},
+        "steps": [
+            {"run": "echo y | docker login -u u --password-stdin"},
+            {
+                "uses": "actions/cache/save@v4",
+                "with": {"path": "docker-cache", "key": "k"},
+            },
+        ],
+    }
+    assert _login_offenders({}, docker_cached), (
+        "narrowing the pairing must not stop docker being caught against its own home"
     )

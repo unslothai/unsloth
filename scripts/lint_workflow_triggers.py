@@ -203,11 +203,13 @@ def _resolved_inputs(caller_paths: list, target: str) -> dict:
     names = {str(name) for site in sites for name in site}
     for name in names:
         literals: set = set()
-        unresolved = 0
+        omitted = 0
+        dynamic = 0
         for site in sites:
             if name not in site:
-                # Omitted, so the action's default applies and is not visible here.
-                unresolved += 1
+                # Omitted, so the action's default applies. A declared default settles
+                # THIS, and only this.
+                omitted += 1
                 continue
             literal = str(site[name]).strip().strip("'\"")
             if re.fullmatch(r"[A-Za-z0-9][\w.-]*", literal):
@@ -215,8 +217,11 @@ def _resolved_inputs(caller_paths: list, target: str) -> dict:
             elif _DELEGATED_KEY.fullmatch(literal):
                 pass
             else:
-                unresolved += 1
-        values[name] = (literals, unresolved == 0)
+                # An explicit value this check cannot expand, such as
+                # `${{ matrix.cache_key }}`. No default can settle it, because the caller
+                # overrode the default with something unknown.
+                dynamic += 1
+        values[name] = (literals, dynamic == 0 and omitted == 0, omitted, dynamic)
     return values
 
 
@@ -309,6 +314,22 @@ def _shell_built_key_prefixes(
     false rejection of a publish prefix.
     """
     heads: list[str] = []
+    # A shell value only becomes a cache key by leaving the step, and `$GITHUB_OUTPUT` is
+    # how it leaves. Every assignment named `key` or `prefix` was being treated as a cache
+    # namespace regardless, so an unrelated `key="shared-${RANDOM}"` in a workflow that
+    # caches nothing made a publish `restore-keys: shared-` fail the hard gate.
+    #
+    # Requiring the output channel rather than a cache step in the same file is
+    # deliberate: the composite that BUILDS the key and the workflow that CACHES with it
+    # are routinely different documents, which is the whole arrangement this function
+    # exists to read.
+    #
+    # Residual, stated rather than implied: a document that writes an unrelated `key=`
+    # value AND uses $GITHUB_OUTPUT elsewhere still over-collects. That direction is a
+    # false rejection rather than a bypass, and narrowing it further would mean tracing
+    # shell dataflow, which is past what this check should attempt.
+    if "GITHUB_OUTPUT" not in text:
+        return []
     pattern = re.compile(
         r"""(?:^|[\s;(])(?:[A-Za-z_]*_)?(?:key|prefix|KEY|PREFIX)\s*=\s*["']?"""
         r"""([A-Za-z0-9][A-Za-z0-9._-]*?-)(?=\$|\{)""",
@@ -363,14 +384,18 @@ def _input_namespaces(callers: list, targets: list) -> dict:
         )
         resolved = _resolved_inputs(callers, name)
         # A declared default is a value the target really can be called with, so it
-        # belongs in the namespace even when no call site mentions the input.
-        for field, value in _declared_defaults(target).items():
-            vals, ok = resolved.get(field, (set(), True))
-            # The default IS the value an omitting call site produces, so recording it
-            # also settles that omission. Leaving `ok` false kept the raw expression in
-            # the undecidable list and rejected unrelated publish fallbacks, which is a
-            # false failure introduced by the fix for the omission itself.
-            resolved[field] = (vals | {value}, ok or field in _declared_defaults(target))
+        # belongs in the namespace even when no call site mentions the input, and
+        # recording it settles the OMISSION that made the input unresolved.
+        #
+        # It settles nothing else. A caller that explicitly passes
+        # `${{ matrix.cache_key }}` has overridden the default with a value this check
+        # cannot expand, so the namespace stays undecided however many defaults exist.
+        # Treating a default as blanket resolution dropped that caller's namespace
+        # entirely, which turned the fix for one false failure into a silent bypass.
+        defaults = _declared_defaults(target)
+        for field, value in defaults.items():
+            vals, _ok, _omitted, dynamic = resolved.get(field, (set(), True, 0, 0))
+            resolved[field] = (vals | {value}, dynamic == 0, 0, dynamic)
         for field, pair in resolved.items():
             vals, ok = merged.get(field, (set(), True))
             merged[field] = (vals | pair[0], ok and pair[1])
@@ -816,7 +841,7 @@ def main() -> int:
     for action_path in pr_reachable:
         composite_keys.extend(_extract_cache_keys(action_path))
         resolved = _resolved_inputs(pr_callers, action_path.parent.name)
-        names, all_literal = resolved.get("name", (set(), False))
+        names, all_literal = resolved.get("name", (set(), False))[:2]
         built = _shell_built_key_prefixes(action_path.read_text(ENC), names, all_literal)
         composite_keys.extend(built)
         # A shell-built value is the literal HEAD of a key whose remainder is assembled

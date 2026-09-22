@@ -2189,3 +2189,115 @@ def test_a_declared_input_default_is_part_of_the_namespace(tmp_path):
         f"publish workflow uses exactly:\n{proc.stdout}\n{proc.stderr}"
     )
     assert "shared-key" in proc.stderr
+
+
+def test_a_declared_default_does_not_settle_an_explicit_dynamic_value(tmp_path):
+    """A default applies to an OMISSION. It says nothing about an explicit override.
+
+    Recording a declared default as blanket resolution -- the first fix for the omission
+    case -- meant a second caller passing `key: ${{ matrix.cache_key }}` was marked
+    resolved on the strength of a default it had overridden. Its namespace is unknown, so
+    the publish prefix `shared-` cannot be shown not to reach it, and dropping it turned
+    the fix for one false failure into a silent bypass.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "defaulted-cache"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: defaulted cache\n"
+        "inputs:\n"
+        "  cache_key:\n"
+        "    default: unrelated-default\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: actions/cache@v4\n"
+        "      with:\n"
+        "        path: wheels\n"
+        "        key: ${{ inputs.cache_key }}\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    strategy:\n"
+        "      matrix:\n"
+        "        cache_key: [a, b]\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/defaulted-cache\n"
+        "        with:\n"
+        "          cache_key: ${{ matrix.cache_key }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  publish:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n"
+        "          path: wheels\n"
+        "          key: shared-key\n"
+        "          restore-keys: |\n"
+        "            shared-\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the matrix caller overrode the default with a value the check cannot expand, "
+        f"so the PR namespace is undecided and the publish prefix cannot be "
+        f"cleared:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_a_shell_key_that_never_leaves_the_step_is_not_a_namespace(tmp_path):
+    """A shell variable becomes a cache key by being written to `$GITHUB_OUTPUT`.
+
+    Reading every assignment named `key` or `prefix` regardless meant an unrelated
+    `key="shared-${RANDOM}"` -- a temp-file name, in a workflow with no cache at all --
+    registered `shared-` as a pull-request cache namespace and failed the publish
+    workflow's legitimate `restore-keys: shared-`. A false failure on a correct tree is
+    how a guard gets exempted, so the recovered value has to be tied to something that
+    can actually become a key.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: |\n"
+        '          key="shared-${RANDOM}"\n'
+        '          echo hello > "/tmp/$key"\n'
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  publish:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n"
+        "          path: wheels\n"
+        "          key: shared-key-v1\n"
+        "          restore-keys: |\n"
+        "            shared-\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"the pull request workflow caches nothing and the assignment never reaches "
+        f"$GITHUB_OUTPUT, so `shared-` is not a namespace it can "
+        f"write:\n{proc.stdout}\n{proc.stderr}"
+    )
