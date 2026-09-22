@@ -920,6 +920,22 @@ def _unsloth_grpo_autocast_kwargs(self, device_type = "cuda"):
     return {"enabled": enabled, "dtype": dtype}
 
 
+def _unsloth_grpo_accumulation_steps(trainer):
+    """Gradient accumulation divisor for the GRPO loss. 1 whenever the model is not training.
+
+    TRL divides by `current_gradient_accumulation_steps` in train mode and by 1.0 in eval, since
+    an eval pass accumulates nothing. Trainer sets that attribute inside the training loop and
+    never clears it, so an in-training evaluation still sees the training window's size and
+    eval_loss comes back that many times too small. Read off `model.training` like TRL does
+    rather than a trainer flag, because that is what the eval loop actually switches.
+    The attribute is also missing when evaluate() runs standalone (#2464), hence the default.
+    """
+    model = getattr(trainer, "model", None)
+    if model is not None and not getattr(model, "training", True):
+        return 1
+    return getattr(trainer, "current_gradient_accumulation_steps", 1)
+
+
 def _unsloth_grpo_vision_inputs(source):
     """unsloth_zoo owns this key tuple; the copy below is the fallback for a zoo predating
     GRPO_VISION_KEYS, and test_grpo_vision_kwargs_forwarded.py fails if the two diverge."""
@@ -2746,6 +2762,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_returns_hidd
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_states_signal))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_vision_by_sample))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_unsplit_vision))
@@ -2825,10 +2842,7 @@ def grpo_trainer_compute_loss(function_name, function):
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
-        # Missing when evaluate() runs standalone; eval does not accumulate, so fall back to 1 rather than underreport eval_loss (#2464).
-        current_gradient_accumulation_steps = getattr(
-            self, "current_gradient_accumulation_steps", 1
-        )
+        current_gradient_accumulation_steps = _unsloth_grpo_accumulation_steps(self)
         num_processes = self.accelerator.num_processes
 
         input_ids = torch.cat([prompt_ids, completion_ids], dim = 1)
