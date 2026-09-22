@@ -55,6 +55,22 @@ def is_remote_deepseek_gate(module) -> bool:
     )
 
 
+def _forward_has_no_training_branch(cls) -> bool:
+    """The inference-only ports compute the output only under `if not self.training` and
+    leave nothing for training; the training-capable DeepSeek-V2/V3 implementations have an
+    `if self.training:` dispatch of their own (and a gate that returns an auxiliary loss).
+    Only the former is shimmed. A forward whose source cannot be read is left alone."""
+    import inspect
+
+    try:
+        source = inspect.getsource(cls.forward)
+    except (OSError, TypeError):
+        return False
+    # The port: `if not self.training: y = self.moe_infer(...)` and nothing for training.
+    # The training-capable implementation: `if self.training: ... else: ... moe_infer(...)`.
+    return "moe_infer" in source and "if self.training" not in source
+
+
 def is_remote_deepseek_moe(module) -> bool:
     cls = type(module)
     return (
@@ -63,6 +79,7 @@ def is_remote_deepseek_moe(module) -> bool:
         and hasattr(module, "moe_infer")
         and hasattr(module, "experts")
         and hasattr(module, "gate")
+        and _forward_has_no_training_branch(cls)
     )
 
 

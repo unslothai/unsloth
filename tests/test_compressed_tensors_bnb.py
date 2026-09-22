@@ -595,3 +595,48 @@ def test_a_pickled_shard_is_refused_rather_than_read_in_the_model_dtype():
     with pytest.raises(RuntimeError, match = "safetensors"):
         _checkpoint_keys(["/x/pytorch_model-00001-of-00002.bin"])
     assert _checkpoint_keys([]) == []
+
+
+def test_load_only_converters_are_dropped_before_save():
+    """transformers reverses every converter on model._weight_conversions in save_pretrained;
+    the decompression converters must not be there, or a bitsandbytes model is saved under
+    the packed names."""
+    from unsloth.models.compressed_tensors_bnb import _DecompressPackedWeights, drop_load_only_conversions
+
+    class Conv:
+        def __init__(self, ops):
+            self.operations = ops
+
+    model = SimpleNamespace(_weight_conversions = [Conv([object()]), Conv([_DecompressPackedWeights.__new__(_DecompressPackedWeights)])])
+    assert drop_load_only_conversions(model) == 1
+    assert len(model._weight_conversions) == 1
+    assert drop_load_only_conversions(SimpleNamespace()) == 0
+
+
+def test_partially_packed_expert_bucket_is_refused():
+    from unsloth.models.compressed_tensors_bnb import _WithOriginalSources
+
+    class Op:
+        def convert(self, d, **kw):
+            return d
+
+    adapter = _WithOriginalSources(Op(), ["experts.*.up_proj.weight"], ["experts.*.up_proj.weight"])
+    with pytest.raises(RuntimeError, match = "partially packed"):
+        adapter.convert({"experts.*.up_proj.weight_packed$": [torch.zeros(2, 2)], "experts.*.up_proj.weight$": [torch.zeros(2, 2)]})
+
+
+@pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
+def test_scheme_is_resolved_per_converter_source_and_mixed_buckets_are_refused():
+    from compressed_tensors.quantization import QuantizationConfig
+    from unsloth.models.compressed_tensors_bnb import _scheme_for_sources
+
+    quant = _w4a16()
+    quant["config_groups"] = {
+        "group_0": {"targets": ["re:.*gate_proj.*"], "weights": dict(quant["config_groups"]["group_0"]["weights"], num_bits = 4), "input_activations": None, "output_activations": None},
+        "group_1": {"targets": ["re:.*up_proj.*"], "weights": dict(quant["config_groups"]["group_0"]["weights"], num_bits = 8), "input_activations": None, "output_activations": None},
+    }
+    ctc = QuantizationConfig.model_validate(quant)
+    assert _scheme_for_sources(ctc, ["mlp.experts.*.gate_proj.weight"]).weights.num_bits == 4
+    assert _scheme_for_sources(ctc, ["mlp.experts.*.up_proj.weight"]).weights.num_bits == 8
+    with pytest.raises(RuntimeError, match = "different config groups"):
+        _scheme_for_sources(ctc, ["mlp.experts.*.gate_proj.weight", "mlp.experts.*.up_proj.weight"])

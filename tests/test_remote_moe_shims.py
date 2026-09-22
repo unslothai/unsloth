@@ -119,7 +119,12 @@ class DeepseekV3MoE(nn.Module):
         return (new_x.view(*topk_ids.shape, -1).type(topk_weight.dtype).mul_(topk_weight.unsqueeze(dim=-1)).sum(dim=1).type(new_x.dtype))
 '''
     mod = types.ModuleType(name)
-    exec(src, mod.__dict__)
+    # A hub module always has a file behind it, and the shim predicate reads the forward's
+    # source; give the exec'd fixture the same through linecache.
+    import linecache
+    filename = f"<{name}>"
+    linecache.cache[filename] = (len(src), None, src.splitlines(True), filename)
+    exec(compile(src, filename, "exec"), mod.__dict__)
     sys.modules[name] = mod
     for cls in (mod.MoEGate, mod.DeepseekV3MoE, mod.MLP):
         cls.__module__ = name
@@ -216,3 +221,34 @@ def test_composite_gradient_checkpointing_flag():
     outer.gradient_checkpointing_enable()
     assert outer.language_model.model.gradient_checkpointing
     assert not enable_composite_gradient_checkpointing(nn.Linear(2, 2), verbose = False)
+
+
+def test_a_training_capable_remote_moe_is_left_alone():
+    """The standard DeepSeek-V2/V3 implementation branches on self.training and its gate
+    returns an auxiliary loss; shimming it would replace a working training path."""
+    import sys, types
+    from unsloth.models.remote_moe_shims import is_remote_deepseek_moe
+
+    module = types.ModuleType("transformers_modules.capable.modeling_deepseek")
+
+    class DeepseekV3MoE(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = nn.ModuleList([nn.Linear(2, 2)])
+            self.gate = nn.Linear(2, 1)
+
+        def forward(self, hidden_states):
+            if self.training:
+                return hidden_states * 2
+            else:
+                return self.moe_infer(hidden_states)
+
+        def moe_infer(self, x):
+            return x
+
+    DeepseekV3MoE.__module__ = module.__name__
+    sys.modules[module.__name__] = module
+    try:
+        assert not is_remote_deepseek_moe(DeepseekV3MoE())
+    finally:
+        sys.modules.pop(module.__name__, None)

@@ -321,6 +321,51 @@ def _experts_scheme(ct_config):
         return groups[0]
 
 
+def _scheme_for_sources(ct_config, weight_sources):
+    """The config group that quantized the expert projections a converter collects. With one
+    group there is nothing to choose. With several, each source pattern (a glob such as
+    ``mlp.experts.*.gate_proj.weight``) is matched as a module name against the groups; the
+    projections of one converter must agree, since one op decompresses them all."""
+    groups = list(ct_config.config_groups.values())
+    if len(groups) == 1:
+        return groups[0]
+    chosen = []
+    for pattern in weight_sources:
+        name = pattern[: -len(".weight")] if pattern.endswith(".weight") else pattern
+        name = name.replace("*", "0")
+        scheme = _scheme_for_module(ct_config, name, None)
+        if all(scheme is not s for s in chosen):
+            chosen.append(scheme)
+    if len(chosen) > 1:
+        raise RuntimeError(
+            "Unsloth: the compressed-tensors checkpoint quantizes the projections of one expert "
+            f"bucket ({', '.join(weight_sources)}) under different config groups; re-quantizing it "
+            "on the fly is not supported. Load it as published without `load_in_4bit = True`."
+        )
+    return chosen[0] if chosen else _experts_scheme(ct_config)
+
+
+def drop_load_only_conversions(model) -> int:
+    """Remove this module's converters from ``model._weight_conversions`` so save_pretrained
+    does not reverse them. Returns how many were dropped."""
+    conversions = getattr(model, "_weight_conversions", None)
+    if not conversions:
+        return 0
+    kept, dropped = [], 0
+    for conv in conversions:
+        ops = getattr(conv, "operations", None) or []
+        if any(isinstance(op, (_DecompressPackedWeights, _WithOriginalSources)) for op in ops):
+            dropped += 1
+            continue
+        kept.append(conv)
+    if dropped:
+        try:
+            model._weight_conversions = kept
+        except Exception:
+            return 0
+    return dropped
+
+
 def _scheme_for_module(ct_config, name: str, module: Optional[torch.nn.Module]):
     """Config group that quantized ``name``: a single group applies to everything; with
     several, match the module name against each group's ``targets`` (regex ``re:`` or class
@@ -466,6 +511,15 @@ class _WithOriginalSources:
         except Exception:  # pragma: no cover
             MergeModulelist = ()
         keeps_stack = isinstance(self.op, MergeModulelist) if MergeModulelist else False
+        for pattern in self.weight_sources:
+            if (pattern + "_packed$") in input_dict and (pattern + "$") in input_dict:
+                # Some experts of one bucket packed and others not: the loader hands both
+                # subsets over without their indices, so a merge would silently reorder them.
+                raise RuntimeError(
+                    "Unsloth: the compressed-tensors checkpoint packs only some of the experts of "
+                    f"`{pattern}`; a partially packed expert bucket cannot be re-quantized on the fly. "
+                    "Load it as published without `load_in_4bit = True`."
+                )
         renamed = {}
         for key, value in input_dict.items():
             new_key = key
@@ -569,6 +623,12 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     delattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
                 except AttributeError:
                     config.__dict__.pop(UNSLOTH_COMPRESSED_TENSORS_ATTR, None)
+            # The decompression converters are load-only. transformers keeps every converter
+            # it used on `model._weight_conversions` and reverses them in save_pretrained, which
+            # would file the bitsandbytes (or merged) tensors under the packed names without
+            # recreating any of the packed metadata: an unloadable checkpoint. The model is a
+            # bitsandbytes model now and saves under bitsandbytes names.
+            drop_load_only_conversions(model)
             return super()._process_model_after_weight_loading(model, **kwargs)
 
         def _unsloth_keep_storage_dtype(self, target_patterns):
@@ -590,7 +650,7 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                 if isinstance(conv, WeightConverter) and any("experts" in p for p in conv.source_patterns):
                     weight_sources = [p for p in conv.source_patterns if p.endswith(".weight")]
                     if weight_sources:
-                        scheme = _experts_scheme(ct_config)
+                        scheme = _scheme_for_sources(ct_config, weight_sources)
                         other = [p for p in conv.source_patterns if not p.endswith(".weight")]
                         # The plain `.weight` sources stay so that expert layers the checkpoint
                         # left unpacked (its `ignore` list) still merge; anchored, so they do
