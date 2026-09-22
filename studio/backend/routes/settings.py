@@ -46,7 +46,7 @@ from core.rag.config import (
     effective_gguf_repo_for_embedding_model,
 )
 from loggers import get_logger
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
     PERSONALIZATION_VERSION,
@@ -1373,7 +1373,7 @@ def update_systemone_settings(
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc, fallback = "Invalid Decision API setting."),
+            safe_curated_detail(exc, fallback = "Invalid Decision API setting."),
             event = "settings.update_systemone_failed",
             log = logger,
         ) from exc

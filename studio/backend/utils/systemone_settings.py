@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 ENABLED_KEY = "systemone_enabled"
@@ -49,6 +50,11 @@ def device_locked() -> bool:
     return bool(_env(ENV_DEVICE))
 
 
+def runtime_supported() -> bool:
+    # extras-no-deps.txt installs laya only on Python 3.10+, its own floor.
+    return sys.version_info >= (3, 10)
+
+
 def get_enabled() -> bool:
     if enabled_locked():
         return False
@@ -83,6 +89,8 @@ def validate(
     if enabled is not None:
         if enabled_locked():
             raise ValueError(f"The Decision API is turned off by {ENV_DISABLE}.")
+        if enabled and not runtime_supported():
+            raise ValueError("The Decision API needs Python 3.10 or newer.")
         values[ENABLED_KEY] = bool(enabled)
     if model is not None:
         if model_locked():

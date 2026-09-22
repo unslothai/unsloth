@@ -610,6 +610,40 @@ def test_state_limit_counts_characters_not_json_escapes(client):
     assert _post(client, state = {"message": text}).status_code == 200
 
 
+def test_load_probes_the_download_registry_without_holding_runtime_state(client, monkeypatch):
+    from hub.utils import download_registry
+
+    registry = download_registry.get_models_registry()
+    seen, blocked = [], []
+
+    def active_job_refs(repo = None):
+        # What DownloadRegistry.claim's admission check does while holding the registry lock.
+        probe = threading.Thread(target = lambda: seen.append(laya_runtime.loading_repo_ids()))
+        probe.start()
+        probe.join(2)
+        blocked.append(probe.is_alive())
+        return []
+
+    monkeypatch.setattr(registry, "active_job_refs", active_job_refs)
+    assert _post(client).status_code == 200
+    assert blocked == [False]
+    assert seen == [(catalog.LAYA_REPO,)]
+
+
+def test_decision_api_cannot_be_enabled_where_laya_is_not_installed(client, monkeypatch):
+    settings = {}
+    monkeypatch.setattr(systemone_settings, "_owner_setting", settings.get)
+    import storage.studio_db as studio_db
+
+    monkeypatch.setattr(studio_db, "upsert_app_settings", settings.update)
+    monkeypatch.setattr(systemone_settings, "runtime_supported", lambda: False)
+    response = client.put("/api/settings/systemone", json = {"enabled": True})
+    assert response.status_code == 400
+    assert "Python 3.10" in response.json()["detail"]
+    assert client.get("/api/settings/systemone").json()["enabled"] is False
+    assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 200
+
+
 def test_real_laya_answers_through_the_route(client, monkeypatch):
     path = os.environ.get("SYSTEMONE_TEST_LAYA")
     if not path:

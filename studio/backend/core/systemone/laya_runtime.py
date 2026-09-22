@@ -183,7 +183,7 @@ def _hub_download_active(checkpoint: Checkpoint) -> bool:
 
 def loading_repo_ids() -> tuple[str, ...]:
     with _state_lock:
-        if _loader is not None and _loader.is_alive() and _loading and not _loading.is_local:
+        if _loading is not None and not _loading.is_local:
             return (_loading.source,)
     return ()
 
@@ -227,17 +227,22 @@ def _ensure_loading(checkpoint: Checkpoint) -> threading.Thread | None:
                 _failure[1],
                 retry_after = max(1.0, _failure[2] - time.monotonic()),
             )
-        if _loader is not None and _loader.is_alive():
+        if _loading is not None:
             if _loading != checkpoint:
                 raise Unavailable(
                     503, "model_loading", f"{_loading.name} is loading", retry_after = 5
                 )
-            return _loader
-        if _hub_download_active(checkpoint):
-            raise Unavailable(
-                503, "model_loading", f"{checkpoint.name} is downloading", retry_after = 5
-            )
+            if _loader is not None and _loader.is_alive():
+                return _loader
+            raise Unavailable(503, "model_loading", f"{checkpoint.name} is loading", retry_after = 5)
+        # Claimed before the registry probe, so a Hub download admitted from now on sees this load.
         _loading = checkpoint
+    # Outside _state_lock: the registry calls loading_repo_ids() while holding its own lock.
+    if _hub_download_active(checkpoint):
+        with _state_lock:
+            _loading = None
+        raise Unavailable(503, "model_loading", f"{checkpoint.name} is downloading", retry_after = 5)
+    with _state_lock:
         _loader = threading.Thread(
             target = _load, args = (checkpoint,), name = "systemone-load", daemon = True
         )
