@@ -17,8 +17,34 @@ import {
   sharesHostMemory,
 } from "../src/hooks/gpu-vram.ts";
 
-/** Measured on a Strix Halo gfx1151 box (Radeon 8060S) under ROCm on Linux. */
+/** Measured on a Strix Halo gfx1151 box (Radeon 8060S) under ROCm on Linux.
+ *
+ * The host-backed part is a measured ZERO, not an omission. `mem_info_vram_total`
+ * on this part is a real 64 GiB BIOS carve-out: the kernel never saw those pages,
+ * so the whole torch budget IS the dedicated heap. Confirmed by experiment on the
+ * AMD CI gfx1151 runner rather than by arithmetic, because no installed-capacity
+ * source is readable there (`dmidecode` is denied and `/sys/devices/system/memory`
+ * counts the kernel's own blocks, which a carve-out is excluded from exactly as
+ * `MemTotal` is, so both hypotheses predict the same 64 GiB). Taking 8 GiB of VRAM
+ * moved `/proc/meminfo` MemAvailable by -0.01 GiB, 0% of the allocation, while the
+ * card's `mem_info_vram_used` rose +8.17 GiB and `mem_info_gtt_used` did not move.
+ * MemTotal there is 62.44 GiB, disjoint from the 64.
+ *
+ * This fixture carried no `shared_memory_host_backed_gb` until unsloth#11451, which
+ * made the backend publish the zero. Leaving it absent described a payload the
+ * backend no longer emits for this box, and asserted the very reading that PR
+ * calls the defect. */
 const linuxApu = {
+  memory_total_gb: 64.0,
+  shared_memory: false,
+  unified_memory: true,
+  shared_memory_host_backed_gb: 0.0,
+};
+/** The same silicon where the split is genuinely UNKNOWN: sysfs unreadable, as on
+ * WSL. unsloth#11366's rule still governs here and must keep a test of its own --
+ * an absent figure means "assume the whole window is a view into host RAM", which
+ * is the safe reading when nobody has measured it. */
+const linuxApuUnknownSplit = {
   memory_total_gb: 64.0,
   shared_memory: false,
   unified_memory: true,
@@ -32,12 +58,36 @@ const windowsApu = {
 };
 const discrete = { memory_total_gb: 179.06, shared_memory: false };
 
-test("a Linux ROCm APU's window is shared host memory, not dedicated VRAM", () => {
+test("a Linux ROCm APU whose carve-out is MEASURED reads as dedicated VRAM", () => {
+  // The measured zero says the 64 GiB stands beside system RAM, so it is exactly
+  // as dedicated as a discrete card's. Rendering it as host memory is what printed
+  // `0 GiB VRAM + 64 GiB shared` on a machine with a full 64 GiB carve-out.
   const totals = gpuMemoryTotalsGb([linuxApu]);
+  assert.equal(totals.dedicated, 64);
+  assert.equal(totals.shared, 0);
+  assert.equal(totals.total, 64);
+  assert.equal(aggregateGpuMemoryTotalGb([linuxApu]), 64);
+});
+
+test("a Linux ROCm APU whose split is UNKNOWN is still shared host memory", () => {
+  // unsloth#11366's rule, kept: with nothing measured, the whole window has to be
+  // assumed a view INTO system RAM, because that is the reading that cannot invent
+  // capacity. Only a MEASURED zero may move it to dedicated.
+  const totals = gpuMemoryTotalsGb([linuxApuUnknownSplit]);
   assert.equal(totals.dedicated, 0);
   assert.equal(totals.shared, 64);
   assert.equal(totals.total, 64);
-  assert.equal(aggregateGpuMemoryTotalGb([linuxApu]), 64);
+  assert.equal(aggregateGpuMemoryTotalGb([linuxApuUnknownSplit]), 64);
+});
+
+test("the aggregate does not move between the measured and unknown splits", () => {
+  // The split is a display and budgeting concern; the TOTAL is what every fit
+  // verdict is measured against, so it must be identical either way or this change
+  // alters what the app agrees to load.
+  assert.equal(
+    gpuMemoryTotalsGb([linuxApu]).total,
+    gpuMemoryTotalsGb([linuxApuUnknownSplit]).total,
+  );
 });
 
 test("a discrete card beside an APU keeps its own VRAM separate", () => {
