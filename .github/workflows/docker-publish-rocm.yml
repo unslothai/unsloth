@@ -495,9 +495,11 @@ jobs:
           README=docker/DOCKERHUB-ROCM.md
           test -s "$README"
           HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
-          TOKEN="$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
-            -H 'Content-Type: application/json' \
-            -d "{\"identifier\": \"${{ env.REGISTRY_USERNAME }}\", \"secret\": \"${{ secrets.DOCKER_API_KEY }}\"}" \
+          # Body built from the environment and handed to curl on stdin, so the key is
+          # never a command-line argument.
+          TOKEN="$(python3 -c 'import json,os,sys; sys.stdout.write(json.dumps({"identifier": os.environ["REGISTRY_USERNAME"], "secret": os.environ["DOCKER_API_KEY"]}))' \
+            | curl -sS -X POST https://hub.docker.com/v2/auth/token \
+              -H 'Content-Type: application/json' --data-binary @- \
             | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
           if [ -z "$TOKEN" ]; then
             echo "::error::Could not exchange DOCKER_API_KEY for a Hub API token; the Hub page was not updated."

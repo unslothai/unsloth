@@ -39,10 +39,29 @@ def _step(workflow, job, name):
     return _steps(workflow, job)[_step_index(workflow, job, name)]
 
 
-def test_windows_release_build_restores_but_does_not_save_rust_cache():
+def test_the_release_build_restores_but_never_saves_the_rust_cache():
+    """No platform may save, because this job holds the signing credentials.
+
+    Windows was already restore-only, to keep a long target-cache upload from blocking
+    the publisher once the signed artifacts were ready. Every leg is restore-only now
+    for a security reason instead: GitHub lets pull requests restore caches written on
+    the default branch, so this was the only job in the organisation where a run holding
+    TAURI_SIGNING_PRIVATE_KEY, APPLE_* and AZURE_* wrote a cache a contributor could
+    read. That is the 2026-09-21 cargo-miri shape, where miri serialised the whole
+    environment under target/ and CI cached it.
+
+    A `save-if` that names a platform is what this guards against: it reads as a
+    performance knob, and the next platform added inherits saving by default.
+    """
     cache = _step(_workflow(), "build", "Rust cache")
     assert cache["with"]["workspaces"] == "studio/src-tauri -> target"
-    assert cache["with"]["save-if"] == "${{ matrix.platform != 'windows-latest' }}"
+    assert cache["with"]["save-if"] is False, (
+        f"the release build's rust-cache has save-if={cache['with']['save-if']!r}, so some "
+        f"platform writes a cache from the job that holds the signing credentials. Caches "
+        f"written on the default branch are restorable by every pull request. Keep this "
+        f"`save-if: false`; restoring is free of that risk, and a dispatch-only release "
+        f"does not run often enough for the save to be worth it."
+    )
 
 
 def _write_fake_gh(path: Path):

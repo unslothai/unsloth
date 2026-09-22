@@ -495,7 +495,7 @@ function PendingImageThumb({
     <div
       data-reload-snapshot-sensitive
       data-composer-attachment="image"
-      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted"
+      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted"
     >
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
       <button
@@ -2292,7 +2292,7 @@ export function SharedComposer({
         {pendingAudio && (
           <div
             data-composer-attachment="audio"
-            className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs"
+            className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
           >
             <HeadphonesIcon className="size-3.5 text-muted-foreground" />
             <span data-reload-snapshot-sensitive className="max-w-48 truncate">

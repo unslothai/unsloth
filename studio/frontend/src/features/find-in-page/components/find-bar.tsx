@@ -39,7 +39,7 @@ function rewindToStart(event: { currentTarget: HTMLInputElement }): void {
 }
 
 /** The wash reads on both the light and dark find-bar surfaces. */
-const FIND_BUTTON_CLASS = "size-8 hover:bg-black/[0.06] dark:hover:bg-white/10";
+const FIND_BUTTON_CLASS = "size-8 hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
 
 /** Coalesce a typing burst before the DOM search/highlight work runs. */
 export const FIND_QUERY_SETTLE_MS = 100;
