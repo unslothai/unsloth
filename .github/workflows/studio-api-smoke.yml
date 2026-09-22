@@ -38,6 +38,12 @@ on:
       # Named, not globbed: the rest of tests/studio is Playwright drivers this
       # workflow never runs.
       - 'tests/studio/studio_api_smoke.py'
+      # Reached by the installer this workflow already triggers on, so a commit touching
+      # only one of these changes what the job runs while matching nothing else in the
+      # list. install.sh --local hands off to the checked-out studio/setup.sh
+      # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
+      # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
+      - 'studio/nvidia_probe.py'
       - '.github/workflows/studio-api-smoke.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
       # Every server boot in this workflow shells out to that script, so an edit
@@ -68,6 +74,7 @@ on:
       - 'install.sh'
       - 'pyproject.toml'
       - 'tests/studio/studio_api_smoke.py'
+      - 'studio/nvidia_probe.py'
       - '.github/workflows/studio-api-smoke.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
       - '.github/scripts/boot-studio-api-only.sh'

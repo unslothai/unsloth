@@ -52,6 +52,19 @@ on:
       - 'studio/src-tauri/src/desktop_auth.rs'
       - 'studio/src-tauri/src/preflight/managed.rs'
       - 'pyproject.toml'
+      # Reached by the installer this workflow already triggers on, so a commit touching
+      # only one of these changes what the job runs while matching nothing else in the
+      # list. install.sh --local hands off to the checked-out studio/setup.sh
+      # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
+      # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/backend/utils/uv_path_safety.py'
+      - 'studio/backend/utils/wheel_utils.py'
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/install_manifest.py'
+      - 'studio/install_python_stack.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/prebuilt_core.py'
       - '.github/workflows/windows-application-control-ci.yml'
   push:
     branches: [main]
@@ -66,6 +79,14 @@ on:
       - 'studio/src-tauri/src/desktop_auth.rs'
       - 'studio/src-tauri/src/preflight/managed.rs'
       - 'pyproject.toml'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/backend/utils/uv_path_safety.py'
+      - 'studio/backend/utils/wheel_utils.py'
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/install_manifest.py'
+      - 'studio/install_python_stack.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/prebuilt_core.py'
       - '.github/workflows/windows-application-control-ci.yml'
   workflow_dispatch:
 

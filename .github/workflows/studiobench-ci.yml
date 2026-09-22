@@ -35,6 +35,13 @@ on:
   pull_request:
     paths:
       - 'tests/studio/studiobench/**'
+      # Reached by the installer this workflow already triggers on, so a commit touching
+      # only one of these changes what the job runs while matching nothing else in the
+      # list. install.sh --local hands off to the checked-out studio/setup.sh
+      # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
+      # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
+      - 'studio/nvidia_probe.py'
+      - 'studio/setup.sh'
       - '.github/workflows/studiobench-ci.yml'
       # The harness drives the shipped frontend through the real backend, so a
       # change to either can break it without touching a file under tests/.
@@ -58,6 +65,8 @@ on:
     branches: [main]
     paths:
       - 'tests/studio/studiobench/**'
+      - 'studio/nvidia_probe.py'
+      - 'studio/setup.sh'
       - '.github/workflows/studiobench-ci.yml'
       - 'studio/frontend/**'
       - 'studio/backend/**'
