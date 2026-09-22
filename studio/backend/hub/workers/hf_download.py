@@ -510,7 +510,10 @@ def _recover_manifest_after_download(
 
 
 def _download_snapshot(
-    repo_id: str, hf_token: str | None, mode: str, tqdm_class: type | None = None
+    repo_id: str,
+    hf_token: str | None,
+    mode: str,
+    tqdm_class: type | None = None,
 ) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
@@ -588,7 +591,11 @@ def _gguf_variant_target_plan(
 
 
 def _download_gguf_variant(
-    repo_id: str, variant: str, hf_token: str | None, mode: str, tqdm_class: type | None = None
+    repo_id: str,
+    variant: str,
+    hf_token: str | None,
+    mode: str,
+    tqdm_class: type | None = None,
 ) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
@@ -809,7 +816,10 @@ def _download_scoped_snapshot(
 
 
 def _download_dataset(
-    repo_id: str, hf_token: str | None, mode: str, tqdm_class: type | None = None
+    repo_id: str,
+    hf_token: str | None,
+    mode: str,
+    tqdm_class: type | None = None,
 ) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport

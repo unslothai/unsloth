@@ -1159,7 +1159,10 @@ def _start_stall_watchdog(
                 label,
             )
         logger.warning(
-            "%s %s for %s; killing the worker so the recovery ladder can retry", log_prefix, message, label
+            "%s %s for %s; killing the worker so the recovery ladder can retry",
+            log_prefix,
+            message,
+            label,
         )
         on_stall(message)
         try:

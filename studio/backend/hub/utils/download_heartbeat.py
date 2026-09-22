@@ -46,7 +46,11 @@ def remove(path: Optional[str]) -> None:
 
 
 class HeartbeatWriter:
-    def __init__(self, path: str, interval: float = 1.0) -> None:
+    def __init__(
+        self,
+        path: str,
+        interval: float = 1.0,
+    ) -> None:
         self._path = path
         self._interval = interval
         self._total = 0

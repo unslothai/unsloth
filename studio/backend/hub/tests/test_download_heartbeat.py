@@ -15,7 +15,11 @@ VERDICT = "Download appears stalled (xet transport) -- no progress for 30s"
 class _Proc:
     pid = 4242
 
-    def __init__(self, heartbeat, rc = None):
+    def __init__(
+        self,
+        heartbeat,
+        rc = None,
+    ):
         self.args = ["python", "--heartbeat", str(heartbeat)]
         self.killed = False
         self.rc = rc
@@ -208,8 +212,12 @@ def test_only_xet_workers_get_a_heartbeat(monkeypatch, tmp_path):
     monkeypatch.setattr(download_lifecycle.subprocess, "Popen", fake_popen)
     monkeypatch.setattr("huggingface_hub.utils.get_token_to_send", lambda token: None)
     monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
-    download_lifecycle.spawn_worker(["--repo-id", "Org/Model"], None, use_xet = True, allow_ambient_token = False)
-    download_lifecycle.spawn_worker(["--repo-id", "Org/Model"], None, use_xet = False, allow_ambient_token = False)
+    download_lifecycle.spawn_worker(
+        ["--repo-id", "Org/Model"], None, use_xet = True, allow_ambient_token = False
+    )
+    download_lifecycle.spawn_worker(
+        ["--repo-id", "Org/Model"], None, use_xet = False, allow_ambient_token = False
+    )
     assert "--heartbeat" in spawned[0]
     assert spawned[0][spawned[0].index("--heartbeat") + 1].startswith(str(tmp_path))
     assert "--heartbeat" not in spawned[1]
