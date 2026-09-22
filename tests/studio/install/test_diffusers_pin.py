@@ -603,7 +603,8 @@ def test_the_full_deps_escape_hatch_reaches_both_diffusers_steps(monkeypatch):
     assert module._diffusers_main_supersedes_release() is False
 
     # Opting out of the main build still wins over the hatch: no source build either way.
-    calls.clear(); installed.clear()
+    calls.clear()
+    installed.clear()
     monkeypatch.setenv(module.DIFFUSERS_MAIN_ENV, "0")
     module._diffusers_main_step()
     assert installed == [], installed

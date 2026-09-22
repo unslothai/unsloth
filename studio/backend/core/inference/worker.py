@@ -211,6 +211,11 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     on); unknown method -> force off only when the base is not a -bnb-4bit repo.
     A missing or unreadable adapter_config.json leaves the value unchanged.
     """
+    from utils.models.checkpoints import is_full_finetune_output
+
+    if load_in_4bit and not mc.is_lora and is_full_finetune_output(mc.path):
+        logger.info("Full fine-tune output has no quantization_config — setting load_in_4bit=False")
+        return False
     if not (mc.is_lora and mc.path):
         return load_in_4bit
 
