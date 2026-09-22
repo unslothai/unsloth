@@ -1712,3 +1712,102 @@ def test_a_per_layer_snapshot_never_becomes_a_scalar_rope_theta():
         written = config.rope_parameters.get("rope_theta", None)
         assert not isinstance(written, dict), written
         assert not isinstance(getattr(config, "rope_theta", None), dict)
+
+
+def test_the_torchvision_backend_still_breaks_the_4x_numpy_contract():
+    """DRIFT DETECTOR for `fix_transformers5_image_processing_reexports`'s method shim.
+
+    The shim exists because transformers 5 put a torchvision backend in every
+    image processor's MRO, so a remote-code subclass that hands channel-last
+    numpy to the methods the 4.x docs told it to call gets two different kinds
+    of wrong:
+
+    - `normalize` raises, because torchvision's functional refuses ndarray
+    - `rescale` silently returns float64, where transformers 4.x returned float32
+
+    Both halves are asserted, because a gate that only caught the raising one
+    would leave a checkpoint's pixel_values in float64 with nothing to notice.
+    If upstream restores either contract, this goes red and the corresponding
+    entry in `_LEGACY_NUMPY_IMAGE_METHODS` should be dropped rather than left to
+    wrap a method with itself.
+    """
+    transformers = pytest.importorskip("transformers")
+    np = pytest.importorskip("numpy")
+    from packaging.version import Version
+
+    if Version(transformers.__version__) < Version("5.0.0"):
+        pytest.skip("the torchvision backend does not exist before transformers 5")
+    pytest.importorskip("torchvision")
+    siglip2 = pytest.importorskip(
+        "transformers.models.siglip2.image_processing_siglip2"
+    )
+
+    processor = siglip2.Siglip2ImageProcessor()
+    image = np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
+
+    rescaled = processor.rescale(
+        image = image, scale = 1 / 255.0, input_data_format = "channels_last",
+    )
+    assert rescaled.dtype == np.float64, (
+        "DRIFT DETECTED: BaseImageProcessor.rescale no longer returns float64 on numpy, so "
+        "the 4.x dtype contract may be back. Re-verify before keeping `rescale` in "
+        "`_LEGACY_NUMPY_IMAGE_METHODS`."
+    )
+
+    with pytest.raises(TypeError):
+        processor.normalize(
+            image = rescaled,
+            mean = [0.5, 0.5, 0.5],
+            std = [0.5, 0.5, 0.5],
+            input_data_format = "channels_last",
+        )
+
+
+def test_the_4x_numpy_helpers_the_method_shim_forwards_to_still_exist():
+    """DRIFT DETECTOR: the shim forwards to transformers' own 4.x functions.
+
+    `_legacy_rescale` / `_legacy_normalize` are replicas of the 4.x
+    `BaseImageProcessor` methods, which were four-line forwards to these. If
+    transformers ever drops them there is no verified 4.x implementation left to
+    restore, and the shim must be reconsidered rather than reimplemented.
+    """
+    pytest.importorskip("transformers")
+    np = pytest.importorskip("numpy")
+    from transformers import image_transforms
+
+    image = np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
+    for name in ("rescale", "normalize"):
+        assert callable(getattr(image_transforms, name, None)), (
+            f"DRIFT DETECTED: transformers.image_transforms.{name} is gone, so the numpy "
+            "image method shim has nothing to forward to."
+        )
+
+    rescaled = image_transforms.rescale(
+        image, scale = 1 / 255.0, input_data_format = "channels_last",
+    )
+    assert rescaled.dtype == np.float32, (
+        "DRIFT DETECTED: image_transforms.rescale stopped defaulting to float32, which is "
+        "the dtype the shim exists to restore."
+    )
+    normalized = image_transforms.normalize(
+        rescaled,
+        mean = [0.5, 0.5, 0.5],
+        std = [0.5, 0.5, 0.5],
+        input_data_format = "channels_last",
+    )
+    assert normalized.dtype == np.float32
+    assert normalized.shape == image.shape
+
+
+def test_the_numpy_image_method_shim_is_wired_into_the_remote_code_hook():
+    """The installer must be reachable from the hook, or real loads never see it."""
+    source = Path(__file__).resolve().parent.parent / "unsloth" / "import_fixes.py"
+    source = source.read_text(encoding = "utf-8")
+    assert "_install_legacy_numpy_image_methods_now(loaded)" in source, (
+        "DRIFT DETECTED: the numpy image method shim is defined but never called from the "
+        "get_class_in_module wrapper, so a checkpoint's own image processor is never patched."
+    )
+    assert "_install_remote_image_processor_finder()" in source, (
+        "DRIFT DETECTED: the meta path finder is never installed, so a spawn-started worker "
+        "rebuilds an unpatched class when it unpickles a processor."
+    )

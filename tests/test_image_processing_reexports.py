@@ -456,3 +456,509 @@ def test_the_module_shims_are_reinstalled_after_a_module_reload(siglip2_module):
         assert dispatched()
     finally:
         _remove_legacy_image_reexports(SIGLIP2)
+
+
+# ---------------------------------------------------------------------------
+# The same numpy/torch split one level up: BACKEND METHODS on the remote class.
+#
+# transformers 5 put a torchvision backend in every image processor's MRO, so a
+# remote-code subclass that hands channel-last numpy to `self.normalize` reaches
+# torchvision and raises. These tests drive the real classes; nothing here
+# asserts on a version.
+
+from unsloth.import_fixes import (  # noqa: E402
+    _IMAGE_METHOD_BOUND,
+    _IMAGE_METHOD_PATCH_FLAG,
+    _LEGACY_NUMPY_IMAGE_METHODS,
+    _install_legacy_numpy_image_methods,
+    _is_remote_image_processor_class,
+    _remove_legacy_numpy_image_methods,
+    _resolved_image_method,
+)
+
+REMOTE_MODULE = "transformers_modules.unsloth_probe.image_processing_probe"
+
+
+def _backend_module():
+    """transformers 5's torchvision backend, or a skip on transformers 4.x."""
+    return pytest.importorskip("transformers.image_processing_backends")
+
+
+@pytest.fixture
+def remote_processor_class():
+    """A subclass that looks exactly like one a checkpoint's own file defined.
+
+    A real subclass of the real `Siglip2ImageProcessor`, with `__module__` set to
+    where transformers puts remote code. Faking only the module string is the
+    point: everything the classifier and the probe look at is genuine.
+    """
+    siglip2 = importlib.import_module(SIGLIP2)
+    base = siglip2.Siglip2ImageProcessor
+
+    cls = type("ProbeImageProcessorNoUpscale", (base,), {})
+    cls.__module__ = REMOTE_MODULE
+    yield cls
+    _remove_legacy_numpy_image_methods(cls)
+
+
+def _probe_image():
+    np = pytest.importorskip("numpy")
+    return np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
+
+
+def test_the_numpy_contract_is_restored_on_a_remote_subclass(remote_processor_class):
+    """The whole point: channel-last numpy through the methods remote code calls."""
+    np = pytest.importorskip("numpy")
+    image_transforms = importlib.import_module("transformers.image_transforms")
+    _backend_module()
+
+    assert _install_legacy_numpy_image_methods(remote_processor_class) == ["rescale", "normalize"]
+    inst = object.__new__(remote_processor_class)
+    image = _probe_image()
+
+    rescaled = inst.rescale(image = image, scale = 1.0 / 255.0, input_data_format = "channels_last")
+    expected = image_transforms.rescale(
+        image, scale = 1.0 / 255.0, input_data_format = "channels_last",
+    )
+    assert isinstance(rescaled, np.ndarray)
+    assert rescaled.dtype == expected.dtype
+    assert np.array_equal(rescaled, expected)
+
+    normalized = inst.normalize(
+        image = rescaled,
+        mean = [0.5, 0.5, 0.5],
+        std = [0.5, 0.5, 0.5],
+        input_data_format = "channels_last",
+    )
+    expected = image_transforms.normalize(
+        rescaled,
+        mean = [0.5, 0.5, 0.5],
+        std = [0.5, 0.5, 0.5],
+        input_data_format = "channels_last",
+    )
+    assert isinstance(normalized, np.ndarray)
+    assert normalized.dtype == expected.dtype
+    assert np.array_equal(normalized, expected)
+
+
+def test_rescale_is_in_scope_because_it_is_wrong_not_because_it_raises(remote_processor_class):
+    """Pins the exact reason the gate cannot be "did it raise".
+
+    `TorchvisionBackend.rescale` is `image * scale`, which numpy accepts and
+    returns as float64 where transformers 4.x returned float32. Patching only
+    the method that RAISES leaves the checkpoint's pixel_values float64, with
+    nothing to notice.
+    """
+    np = pytest.importorskip("numpy")
+    siglip2 = importlib.import_module(SIGLIP2)
+    _backend_module()
+    image = _probe_image()
+
+    upstream = siglip2.Siglip2ImageProcessor().rescale(
+        image = image, scale = 1.0 / 255.0, input_data_format = "channels_last",
+    )
+    if upstream.dtype == np.float32:
+        pytest.skip("this transformers already returns the 4.x dtype from rescale")
+    assert upstream.dtype == np.float64, "the silent half changed shape; re-verify the gate"
+
+    _install_legacy_numpy_image_methods(remote_processor_class)
+    patched = object.__new__(remote_processor_class).rescale(
+        image = image, scale = 1.0 / 255.0, input_data_format = "channels_last",
+    )
+    assert patched.dtype == np.float32
+    assert np.allclose(patched, upstream)
+
+
+def test_transformers_own_image_processor_is_untouched(remote_processor_class):
+    """Negative control, and the invariant the whole design rests on."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("PIL")
+    np = pytest.importorskip("numpy")
+    backends = _backend_module()
+    siglip2 = importlib.import_module(SIGLIP2)
+    from PIL import Image
+
+    own = siglip2.Siglip2ImageProcessor
+    image = Image.fromarray((np.random.RandomState(0).rand(64, 64, 3) * 255).astype(np.uint8))
+    before = own()(images = [image], return_tensors = "pt")
+
+    _install_legacy_numpy_image_methods(remote_processor_class)
+
+    for name in _LEGACY_NUMPY_IMAGE_METHODS:
+        assert name not in own.__dict__, f"{name} was set on transformers' own class"
+        assert getattr(own, name) is getattr(backends.TorchvisionBackend, name)
+    after = own()(images = [image], return_tensors = "pt")
+    for key in before:
+        assert torch.equal(
+            torch.as_tensor(before[key]), torch.as_tensor(after[key]),
+        ), f"{key} moved on transformers' own processor"
+
+
+def test_the_probe_decides_not_the_version(remote_processor_class):
+    """A class whose methods already honour numpy must be left alone.
+
+    Built by subclassing `BaseImageProcessor` directly, skipping the torchvision
+    backend, which is what the 4.x MRO looked like. If anyone swaps the probe
+    for a `Version(...)` comparison, this goes red on transformers 5.
+    """
+    utils = importlib.import_module("transformers.image_processing_utils")
+    cls = type("ProbeLegacyEraProcessor", (utils.BaseImageProcessor,), {})
+    cls.__module__ = REMOTE_MODULE
+    try:
+        owner, _ = _resolved_image_method(cls, "normalize")
+        if owner is None or "Torchvision" in owner.__name__:
+            pytest.skip("BaseImageProcessor itself is torchvision-backed on this build")
+        assert _install_legacy_numpy_image_methods(cls) == []
+        for name in _LEGACY_NUMPY_IMAGE_METHODS:
+            assert name not in cls.__dict__
+    finally:
+        _remove_legacy_numpy_image_methods(cls)
+
+
+def test_the_torch_contract_is_untouched_on_the_patched_class(remote_processor_class):
+    """Anything that is not a numpy array still reaches the inherited method."""
+    torch = pytest.importorskip("torch")
+    backends = _backend_module()
+
+    _install_legacy_numpy_image_methods(remote_processor_class)
+    inst = object.__new__(remote_processor_class)
+    tensor = torch.arange(3 * 4 * 4, dtype = torch.float32).reshape(3, 4, 4) / 255.0
+
+    assert torch.equal(
+        inst.normalize(tensor, mean = [0.5] * 3, std = [0.5] * 3),
+        backends.TorchvisionBackend.normalize(inst, tensor, mean = [0.5] * 3, std = [0.5] * 3),
+    )
+    assert torch.equal(
+        inst.rescale(tensor, scale = 2.0),
+        backends.TorchvisionBackend.rescale(inst, tensor, scale = 2.0),
+    )
+
+
+def test_the_classifier_rejects_everything_that_is_not_remote_remote(remote_processor_class):
+    """Negative controls for `_is_remote_image_processor_class`."""
+    siglip2 = importlib.import_module(SIGLIP2)
+    configuration_utils = importlib.import_module("transformers.configuration_utils")
+    processing_utils = importlib.import_module("transformers.processing_utils")
+
+    class NotAClass:
+        pass
+
+    remote_config = type("RemoteConfig", (configuration_utils.PretrainedConfig,), {})
+    remote_config.__module__ = REMOTE_MODULE
+    remote_processor = type("RemoteProcessor", (processing_utils.ProcessorMixin,), {})
+    remote_processor.__module__ = REMOTE_MODULE
+
+    assert _is_remote_image_processor_class(remote_processor_class) is True
+    for rejected in (
+        42,
+        "a string",
+        NotAClass,
+        remote_config,
+        remote_processor,
+        siglip2.Siglip2ImageProcessor,  # transformers' own, the one that must never match
+    ):
+        assert _is_remote_image_processor_class(rejected) is False, rejected
+
+
+def test_a_method_the_remote_code_owns_is_never_replaced():
+    """A checkpoint that wrote its own `normalize` keeps it."""
+    np = pytest.importorskip("numpy")
+    _backend_module()
+    siglip2 = importlib.import_module(SIGLIP2)
+
+    sentinel = object()
+
+    def normalize(self, image, *args, **kwargs):
+        return sentinel
+
+    cls = type(
+        "ProbeOwnNormalize", (siglip2.Siglip2ImageProcessor,), {"normalize": normalize},
+    )
+    cls.__module__ = REMOTE_MODULE
+    try:
+        assert _install_legacy_numpy_image_methods(cls) == ["rescale"]
+        assert cls.__dict__["normalize"] is normalize
+        assert object.__new__(cls).normalize(_probe_image()) is sentinel
+    finally:
+        _remove_legacy_numpy_image_methods(cls)
+
+
+def test_install_is_idempotent_and_the_guard_reads_the_live_descriptor(remote_processor_class):
+    """Second install is a no-op; a method that went back to upstream re-patches."""
+    _backend_module()
+    assert _install_legacy_numpy_image_methods(remote_processor_class) == ["rescale", "normalize"]
+    first = remote_processor_class.__dict__["normalize"]
+
+    assert _install_legacy_numpy_image_methods(remote_processor_class) == []
+    assert remote_processor_class.__dict__["normalize"] is first
+
+    # What a redefinition of the class body looks like from here: the flagged
+    # function is gone while `_IMAGE_METHOD_BOUND` survives. A guard reading the
+    # class attribute would call this done.
+    delattr(remote_processor_class, "normalize")
+    assert getattr(remote_processor_class, _IMAGE_METHOD_BOUND, None) is not None
+    assert _install_legacy_numpy_image_methods(remote_processor_class) == ["normalize"]
+
+
+def test_a_subclass_of_a_patched_class_is_not_double_wrapped(remote_processor_class):
+    """It inherits one layer, and installing on it again does nothing."""
+    np = pytest.importorskip("numpy")
+    _backend_module()
+    _install_legacy_numpy_image_methods(remote_processor_class)
+
+    sub = type("ProbeSub", (remote_processor_class,), {})
+    sub.__module__ = REMOTE_MODULE
+    try:
+        assert _install_legacy_numpy_image_methods(sub) == []
+        assert "normalize" not in sub.__dict__
+        out = object.__new__(sub).rescale(
+            image = _probe_image(), scale = 1.0 / 255.0, input_data_format = "channels_last",
+        )
+        assert out.dtype == np.float32
+    finally:
+        _remove_legacy_numpy_image_methods(sub)
+
+
+def test_the_method_shim_is_fully_removable(remote_processor_class):
+    """Removal is delattr, because the method was always inherited."""
+    backends = _backend_module()
+    assert _install_legacy_numpy_image_methods(remote_processor_class) == ["rescale", "normalize"]
+
+    assert sorted(_remove_legacy_numpy_image_methods(remote_processor_class)) == [
+        "normalize", "rescale",
+    ]
+    for name in _LEGACY_NUMPY_IMAGE_METHODS:
+        assert name not in remote_processor_class.__dict__
+        assert getattr(remote_processor_class, name) is getattr(backends.TorchvisionBackend, name)
+    assert not hasattr(remote_processor_class, _IMAGE_METHOD_BOUND)
+
+    assert _install_legacy_numpy_image_methods(remote_processor_class) == ["rescale", "normalize"]
+
+
+def test_the_dispatch_keeps_wraps_and_wrapped(remote_processor_class):
+    """`functools.wraps` plus an explicit `__wrapped__`, and the flag survives both."""
+    import inspect
+
+    backends = _backend_module()
+    _install_legacy_numpy_image_methods(remote_processor_class)
+
+    dispatch = remote_processor_class.__dict__["normalize"]
+    assert dispatch.__name__ == "normalize"
+    assert dispatch.__wrapped__ is backends.TorchvisionBackend.normalize
+    assert getattr(dispatch, _IMAGE_METHOD_PATCH_FLAG, False) is True, (
+        "the flag must be set AFTER functools.wraps, which copies __dict__"
+    )
+    assert inspect.signature(dispatch) is not None
+
+
+def test_no_shim_state_reaches_the_saved_config(remote_processor_class):
+    """`_IMAGE_METHOD_BOUND` is a class attribute, so `to_dict` must not see it."""
+    _backend_module()
+    siglip2 = importlib.import_module(SIGLIP2)
+
+    before = siglip2.Siglip2ImageProcessor().to_dict()
+    _install_legacy_numpy_image_methods(remote_processor_class)
+    instance = remote_processor_class()
+    saved = instance.to_dict()
+
+    assert not any(str(key).startswith("_unsloth") for key in saved), saved
+    assert siglip2.Siglip2ImageProcessor().to_dict() == before
+
+
+def test_the_remote_image_processor_finder_is_installed_once():
+    """The unpickle path: one finder, and it answers for nothing else."""
+    import sys
+
+    from unsloth.import_fixes import (
+        _REMOTE_IMAGE_FINDER_SENTINEL,
+        _install_remote_image_processor_finder,
+    )
+
+    _unsloth_import_or_skip()
+    _install_remote_image_processor_finder()
+    _install_remote_image_processor_finder()
+
+    installed = [
+        finder for finder in sys.meta_path
+        if getattr(finder, _REMOTE_IMAGE_FINDER_SENTINEL, False)
+    ]
+    assert len(installed) == 1
+    assert installed[0].find_spec("json") is None
+    assert installed[0].find_spec("transformers_modules.nope.not_here") is None
+
+
+def test_remote_code_calling_the_backend_methods_on_numpy_loads_and_runs(tmp_path):
+    """End to end through `get_class_in_module`, the way a checkpoint does it.
+
+    The wiring test. Reverting the `_install_legacy_numpy_image_methods_now()`
+    call out of the wrapper makes this raise the TypeError it exists to stop.
+    """
+    import pathlib
+
+    np = pytest.importorskip("numpy")
+    _unsloth_import_or_skip()
+    _backend_module()
+
+    from transformers import dynamic_module_utils
+    from transformers.utils import HF_MODULES_CACHE
+
+    siglip2 = _fresh_module(SIGLIP2)
+    if not _image_processing_reexports_are_missing(siglip2):
+        pytest.skip("this transformers still re-exports the image helpers")
+
+    package = pathlib.Path(HF_MODULES_CACHE) / "unsloth_method_probe"
+    package.mkdir(parents = True, exist_ok = True)
+    (package / "__init__.py").write_text("")
+    (package / "image_processing_probe.py").write_text(
+        "import numpy as np\n"
+        "import transformers.models.siglip2.image_processing_siglip2 as siglip2_ips\n"
+        "\n"
+        "class ProbeImageProcessor(siglip2_ips.Siglip2ImageProcessor):\n"
+        "    def preprocess_like_2024(self, image):\n"
+        "        image = self.rescale(image = image, scale = 1 / 255.0,\n"
+        "                             input_data_format = 'channels_last')\n"
+        "        return self.normalize(image = image, mean = [0.5] * 3, std = [0.5] * 3,\n"
+        "                              input_data_format = 'channels_last')\n"
+    )
+    try:
+        loaded = dynamic_module_utils.get_class_in_module(
+            "ProbeImageProcessor",
+            "unsloth_method_probe/image_processing_probe.py",
+            force_reload = True,
+        )
+        image = np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
+        out = object.__new__(loaded).preprocess_like_2024(image)
+        assert isinstance(out, np.ndarray)
+        assert out.dtype == np.float32, "float64 here means rescale was left unpatched"
+    finally:
+        import shutil
+
+        shutil.rmtree(package, ignore_errors = True)
+
+
+# The unpickle path. `pickle` stores a processor as (module path, qualname), so a
+# spawn-started DataLoader worker rebuilds the class by IMPORTING the remote
+# module, never through `get_class_in_module`. Without the meta-path finder the
+# child gets an upstream class and the first numpy `normalize` raises again.
+
+
+def _remote_probe_package():
+    """A real package under the remote-code root, so its module name is realistic."""
+    import pathlib
+
+    from transformers.dynamic_module_utils import init_hf_modules
+    from transformers.utils import HF_MODULES_CACHE
+
+    # Puts HF_MODULES_CACHE on sys.path and makes it a package; without it
+    # `transformers_modules` is not importable and the spawn test errors on the
+    # harness rather than on the fix.
+    init_hf_modules()
+
+    root = pathlib.Path(HF_MODULES_CACHE) / "transformers_modules"
+    package = root / "unsloth_spawn_probe"
+    package.mkdir(parents = True, exist_ok = True)
+    (root / "__init__.py").touch(exist_ok = True)
+    (package / "__init__.py").write_text("")
+    (package / "image_processing_probe.py").write_text(
+        "import transformers.models.siglip2.image_processing_siglip2 as siglip2_ips\n"
+        "\n"
+        "class SpawnProbeImageProcessor(siglip2_ips.Siglip2ImageProcessor):\n"
+        "    def preprocess_like_2024(self, image):\n"
+        "        image = self.rescale(image = image, scale = 1 / 255.0,\n"
+        "                             input_data_format = 'channels_last')\n"
+        "        return self.normalize(image = image, mean = [0.5] * 3, std = [0.5] * 3,\n"
+        "                              input_data_format = 'channels_last')\n"
+    )
+    importlib.invalidate_caches()
+    return package, "transformers_modules.unsloth_spawn_probe.image_processing_probe"
+
+
+_SPAWN_CHILD = """
+import pickle, sys
+{preamble}
+import numpy as np
+# What a real worker already has: transformers puts HF_MODULES_CACHE on sys.path
+# so a checkpoint's own module is importable. Without it the child fails on the
+# harness instead of on the thing under test.
+from transformers.dynamic_module_utils import init_hf_modules
+init_hf_modules()
+with open(sys.argv[1], "rb") as handle:
+    processor = pickle.load(handle)
+image = np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
+print("DTYPE", processor.preprocess_like_2024(image).dtype)
+"""
+
+
+def _run_spawn_child(pickled, preamble):
+    import subprocess
+    import sys
+
+    return subprocess.run(
+        [sys.executable, "-c", _SPAWN_CHILD.format(preamble = preamble), str(pickled)],
+        capture_output = True,
+        text = True,
+    )
+
+
+@pytest.fixture
+def pickled_remote_processor(tmp_path):
+    import pickle
+    import shutil
+    import sys
+
+    _unsloth_import_or_skip()
+    _backend_module()
+    siglip2 = _fresh_module(SIGLIP2)
+    if not _image_processing_reexports_are_missing(siglip2):
+        pytest.skip("this transformers still re-exports the image helpers")
+
+    package, module_name = _remote_probe_package()
+    try:
+        module = importlib.import_module(module_name)
+        target = tmp_path / "processor.pkl"
+        with open(target, "wb") as handle:
+            pickle.dump(module.SpawnProbeImageProcessor(), handle)
+        yield target
+    finally:
+        shutil.rmtree(package, ignore_errors = True)
+        sys.modules.pop(module_name, None)
+
+
+def test_a_spawn_started_worker_rebuilds_a_patched_class(pickled_remote_processor):
+    """The finder's test: a fresh interpreter must still honour numpy."""
+    out = _run_spawn_child(pickled_remote_processor, "import unsloth")
+    if out.returncode != 0 and "get_device_type" not in out.stderr and (
+        "unsloth" in out.stderr and "Error" in out.stderr and "TypeError" not in out.stderr
+    ):
+        pytest.skip(f"the child could not import unsloth: {out.stderr.strip()[-400:]}")
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "DTYPE float32" in out.stdout, (out.stdout, out.stderr[-2000:])
+
+
+def test_a_spawn_started_worker_without_unsloth_is_the_documented_limit(
+    pickled_remote_processor,
+):
+    """Negative control: proves the finder is what fixes the test above.
+
+    Also pins the boundary honestly. A child that never imports unsloth is
+    unpatched, and the failure is loud rather than a silent dtype change.
+    """
+    out = _run_spawn_child(pickled_remote_processor, "")
+    assert out.returncode != 0, out.stdout
+    assert "Functional F.normalize" in out.stderr or "numpy" in out.stderr, out.stderr[-2000:]
+
+
+def test_deepcopy_and_pickle_keep_the_override_in_process(pickled_remote_processor):
+    """Both keep `instance.__class__` by reference, so the patch travels with it."""
+    import copy
+    import pickle
+
+    np = pytest.importorskip("numpy")
+    with open(pickled_remote_processor, "rb") as handle:
+        processor = pickle.load(handle)
+    image = np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
+
+    assert processor.preprocess_like_2024(image).dtype == np.float32
+    assert copy.deepcopy(processor).preprocess_like_2024(image).dtype == np.float32
+    revived = pickle.loads(pickle.dumps(processor))
+    assert revived.preprocess_like_2024(image).dtype == np.float32
