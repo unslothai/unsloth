@@ -55,6 +55,7 @@ def fake_mx(monkeypatch):
     mlx_core = types.ModuleType("mlx.core")
     mlx_core.array = FakeArray
     mlx_core.eval = lambda arrays: evaluated.append(list(arrays))
+    mlx_core.contiguous = lambda array: FakeArray(array.rows)
     mlx_pkg = types.ModuleType("mlx")
     mlx_pkg.core = mlx_core
     monkeypatch.setitem(sys.modules, "mlx", mlx_pkg)
@@ -755,6 +756,50 @@ def test_copy_refuses_a_cache_it_cannot_walk_rather_than_sharing_it(fake_mx):
     Refusing costs the next turn its reuse; sharing costs it its answer."""
     with pytest.raises(TypeError):
         copy_cache_entries([FakeCacheList(FakeSlottedKV())])
+
+
+def test_copy_shares_buffers_yet_keeps_what_the_live_cache_overwrites():
+    mx = pytest.importorskip("mlx.core")
+    cache = pytest.importorskip("mlx_vlm.models.cache")
+    np = pytest.importorskip("numpy")
+
+    def rows(start, n):
+        return mx.arange(start * 128, (start + n) * 128, dtype = mx.float32).reshape(1, 2, n, 64)
+
+    kv, ring = cache.KVCache(), cache.RotatingKVCache(max_size = 16)
+    for entry in (kv, ring):
+        entry.update_and_fetch(rows(0, 16), -rows(0, 16))
+    live = [kv, ring]
+    mx.eval([entry.state for entry in live])
+    # Whole buffers: the KV cache's next row lands in its spare capacity.
+    held = [np.array(entry.keys) for entry in live]
+
+    mx.synchronize()
+    before = mx.get_active_memory()
+    saved = copy_cache_entries(live)
+    mx.synchronize()
+    assert mx.get_active_memory() - before < cache_entries_nbytes(live) // 2
+
+    # Both write their next row in place; the full ring's goes over row 0.
+    for entry in live:
+        entry.update_and_fetch(rows(16, 1), -rows(16, 1))
+    mx.eval([entry.state for entry in live])
+    assert ring.keys[0, 0, 0, 0].item() == 16 * 128
+    for entry, keys in zip(saved, held):
+        assert entry.offset == 16 and np.array_equal(np.array(entry.keys), keys)
+
+    # A state that is a slice of a larger buffer, as a convolution window can be.
+    mx.synchronize()
+    before = mx.get_active_memory()
+    conv = cache.ArraysCache(size = 1)
+    conv[0] = mx.arange(4096 * 256, dtype = mx.float32).reshape(1, 4096, 256)[:, -3:, :]
+    mx.eval(conv[0])
+    window = np.array(conv[0])
+    (saved,) = copy_cache_entries([conv])
+    del conv
+    mx.synchronize()
+    assert mx.get_active_memory() - before < 4096 * 256 * 4 // 2
+    assert np.array_equal(np.array(saved[0]), window)
 
 
 def test_session_restores_the_model_when_one_host_is_named_twice(fake_mx):

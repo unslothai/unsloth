@@ -104,7 +104,10 @@ def _is_opaque_cache(value):
 
 def _copy_value(value, mx):
     if isinstance(value, mx.array):
-        return value + 0
+        # Shares a buffer the array spans, and a write through either one then copies it first,
+        # since MLX writes in place only into a buffer nothing else references. A slice of a larger
+        # one is copied out: kept, it would hold the rest alive uncounted.
+        return mx.contiguous(value)
     if isinstance(value, list):
         return [_copy_value(item, mx) for item in value]
     if isinstance(value, tuple):
@@ -157,7 +160,7 @@ def release_cache_entries(entries):
 
 
 def copy_cache_entries(entries):
-    """Copies, object-shallow and array-deep, evaluated so they own their data."""
+    """Copies that share array buffers until either side writes, evaluated so they hold data."""
     import mlx.core as mx
 
     for entry in entries:
