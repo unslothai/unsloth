@@ -58,16 +58,14 @@ def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
 # Block classes diffusers ships without first-block-cache metadata, and the metadata they want.
 # The pair is (index of hidden_states in the block's return, index of encoder_hidden_states or None).
 #
-# Qwen-Image-2.1 is single stream: its block takes ``hidden_states, modulation, rotary_emb, ...``
-# and returns the hidden states alone, so 0 / None. Without the entry ``enable_cache`` raises
-# "Model class QwenImage21TransformerBlock not registered." and every load of the family renders
-# uncached, which is the whole step-cache saving gone on a 20+ step model, silently.
-_UNREGISTERED_BLOCK_METADATA: dict = {
-    (
-        "diffusers.models.transformers.transformer_qwenimage21",
-        "QwenImage21TransformerBlock",
-    ): (0, None),
-}
+# Deliberately empty. QwenImage21TransformerBlock was registered here as (0, None), which reads
+# right from the block's return alone, and every generation of the family then died at the first
+# step in FBCache's _should_compute_remaining_blocks on a length mismatch: the transformer hands
+# the block a JOINT text+image sequence, and the pipeline's cond and uncond passes carry different
+# text lengths. An unregistered class renders uncached, which costs the step-cache saving; a
+# wrongly registered one cannot generate at all. Do not add a class back on the strength of
+# reading its return signature.
+_UNREGISTERED_BLOCK_METADATA: dict = {}
 
 
 def register_unregistered_transformer_blocks(logger: Any = None) -> tuple:
