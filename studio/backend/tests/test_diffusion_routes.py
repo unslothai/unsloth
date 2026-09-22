@@ -2162,10 +2162,10 @@ def test_cancel_generation_route_requires_auth():
 )
 def test_an_offloading_memory_request_refuses_an_explicit_precision(monkeypatch, memory):
     """balanced and low_vram name their offload policy outright, and the legacy cpu_offload flag
-    forces whole-module offload. Offload hooks move modules with Module.to(), which torchao
-    tensors do not survive, so the loader skips the dense build -- and the strict refusal then
-    arrived after the resident image model had already been torn down. The two requests are
-    incompatible on their face, so the refusal is owed before anything is staged or evicted."""
+    forces whole-module offload. A GGUF pick swaps in the dense quantised transformer only when it
+    fits resident, so the loader skips the dense build -- and the strict refusal then arrived after
+    the resident image model had already been torn down. The two requests are incompatible on
+    their face, so the refusal is owed before anything is staged or evicted."""
     from core.inference.diffusion import DiffusionBackend
 
     backend = DiffusionBackend.__new__(DiffusionBackend)
@@ -2180,6 +2180,35 @@ def test_an_offloading_memory_request_refuses_an_explicit_precision(monkeypatch,
         )
     assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
     assert "offload" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "memory",
+    [
+        {"memory_mode": "balanced"},
+        {"memory_mode": "low_vram"},
+        {"cpu_offload": True},
+    ],
+)
+def test_an_offloading_memory_request_admits_a_pipeline_precision(monkeypatch, memory):
+    """A pipeline quantises in place under group and whole-module offload, which is what balanced,
+    low_vram and cpu_offload pick, so the gate must not 409 a combination the loader runs."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: _cuda_target(),
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "z-image"),
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        **memory,
+    )
 
 
 def test_a_measured_memory_mode_is_not_refused_by_the_precision_gate(monkeypatch):

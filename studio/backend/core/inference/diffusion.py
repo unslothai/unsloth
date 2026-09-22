@@ -1646,16 +1646,17 @@ class DiffusionBackend:
                     f"{getattr(fam, 'denoiser_attr', 'unet')}, not a transformer, and the dense torchao schemes "
                     "do not cover it"
                 )
-            elif _memory_request_forces_offload(memory_mode, cpu_offload):
+            elif model_kind != "pipeline" and _memory_request_forces_offload(
+                memory_mode, cpu_offload
+            ):
                 # Not a measurement: balanced and low_vram name their policy outright, and the legacy flag forces
-                # model offload. Offload hooks move modules with Module.to(), which torchao tensors do not survive, so
-                # the loader skips the dense build for any of them, and the strict refusal then landed after the
-                # resident model was already gone. The two requests are incompatible on their face.
+                # model offload. A pipeline quantises in place under group and model offload, but a GGUF pick swaps
+                # in the dense quantised transformer only when it fits resident, so the strict refusal would land
+                # after the resident model was already gone. The two requests are incompatible on their face.
                 requested_memory = normalize_memory_mode(memory_mode) or "cpu_offload"
                 reason = (
-                    f"'{requested_memory}' memory places the transformer under CPU offload, and "
-                    "torchao quantised tensors cannot be moved by the offload hooks, so the dense "
-                    "quant is skipped"
+                    f"'{requested_memory}' memory places the transformer under CPU offload, and a "
+                    "GGUF pick only swaps in the quantised dense transformer when it fits resident"
                 )
             elif not dense_transformer_supported(target):
                 reason = dense_transformer_unsupported_reason(target)
