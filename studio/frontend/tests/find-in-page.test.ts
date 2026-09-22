@@ -1456,16 +1456,29 @@ test("dark mode sits above the cards it floats over", async () => {
     assert.ok(hit, `${selector} has no ${property}`);
     return hit[1].trim();
   };
-  const grey = (hex: string) => Number.parseInt(hex.slice(1, 3), 16);
+  const grey = (declaration: string) => {
+    // The bar is authored inside a color-mix now, so read the colour it mixes.
+    const hex = /#[0-9a-f]{6}/i.exec(declaration);
+    assert.ok(hex, `no colour in ${declaration}`);
+    return Number.parseInt(hex[0].slice(1, 3), 16);
+  };
   // A bar at `--card` dissolves into what scrolls under it; past `--border` it reads as an edge.
-  const bar = grey(value(".dark .find-bar-surface", "background-color"));
-  const card = grey(value(".dark", "--card"));
-  const border = grey(value(".dark", "--border"));
+  const barDeclaration = value(".dark .find-bar-surface", "background-color");
+  const bar = grey(barDeclaration);
+  const card = grey(value(".dark", "--card-base"));
+  const border = grey(value(".dark", "--border-base"));
   assert.ok(bar > card, `bar ${bar} is not lighter than --card ${card}`);
   assert.ok(bar < border, `bar ${bar} is not darker than --border ${border}`);
   assert.match(
     value(".dark .find-bar-surface", "box-shadow"),
     /var\(--background\)/,
+  );
+  // Both take the same step at the same time, so the order above survives the
+  // contrast slider instead of holding only at the default.
+  assert.match(barDeclaration, /var\(--contrast-surface-mix, 0%\)/);
+  assert.match(
+    value("html[data-contrast-adjust]", "--card"),
+    /var\(--contrast-surface-mix\)/,
   );
 });
 
@@ -1488,7 +1501,9 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
   // 22.25/28.25rem is exactly the previous short-counter width: fixed input + 12rem chrome.
   assert.match(surface[1], /(?:^|\s)w-\[22\.25rem\](?:\s|$)/);
   assert.match(surface[1], /(?:^|\s)sm:w-\[28\.25rem\](?:\s|$)/);
-  const input = /<input[\s\S]*?className=\{cn\([\s\S]*?"([^"]*)"/.exec(
+  // Either form: the field's classes are the point, not whether they go
+  // through cn().
+  const input = /<input[\s\S]*?className=\{?(?:cn\()?\s*"([^"]*)"/.exec(
     FIND_BAR,
   );
   assert.ok(input);
@@ -2439,7 +2454,12 @@ test("the bar has no border, and its buttons have a hover that shows", async () 
     "the bar took a border back",
   );
   // The ghost variant's own `--muted/50` hover lands within a shade of this surface.
-  assert.match(FIND_BAR, /hover:bg-black\/\[0\.06\] dark:hover:bg-white\/10/);
+  // The hover washes carry their authored alpha times the contrast gain, so the
+  // slider can fade or strengthen them (appearance-custom-store.ts).
+  assert.match(
+    FIND_BAR,
+    /hover:bg-\[rgb\(0_0_0_\/_calc\(0\.06\*var\(--contrast-wash-gain,1\)\)\)\] dark:hover:bg-\[rgb\(255_255_255_\/_calc\(0\.1\*var\(--contrast-wash-gain,1\)\)\)\]/,
+  );
   assert.equal(
     (FIND_BAR.match(/className=\{FIND_BUTTON_CLASS\}/g) ?? []).length,
     3,

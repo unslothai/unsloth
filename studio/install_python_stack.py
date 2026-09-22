@@ -2204,6 +2204,9 @@ def _amd_arch_index_url(gfx_arch: str | None) -> str | None:
     mirrored/air-gapped Linux repair reaches the index install.sh chose rather
     than falling back to repo.amd.com. Both default to repo.amd.com when unset.
     """
+    # rocminfo prints gcnArchName with its feature suffix (gfx1100:sramecc-:xnack-), which is
+    # the spelling users copy into UNSLOTH_ROCM_GFX_ARCH; both tables key on the bare arch.
+    gfx_arch = (gfx_arch or "").strip().split(":")[0] or None
     if IS_WINDOWS:
         return _windows_rocm_index_url(gfx_arch)
     # gfx1033 (Van Gogh) miscomputes under ROCm (studio/ROCM_RDNA2_APU.md). Without this,
@@ -2498,15 +2501,32 @@ def _persist_bnb_rocm_version(version: str) -> bool:
     return True
 
 
+def _rocm_torch_explicitly_requested() -> bool:
+    """Whether UNSLOTH_FORCE_ROCM_TORCH asked for ROCm torch whatever else the host has.
+
+    Auto-detection stops probing AMD once CUDA is usable, leaving a mixed NVIDIA+AMD host no
+    route to its AMD card but an index pin, which names a wheel family rather than a
+    preference (#10450). Mirrors UNSLOTH_FORCE_VULKAN; a pin still outranks it. One torch
+    install serves one vendor, so this SWAPS the stack: NVIDIA is unavailable while it is set.
+    """
+    return (os.environ.get("UNSLOTH_FORCE_ROCM_TORCH") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def _has_rocm_gpu() -> bool:
     """Return True only if an actual AMD GPU is visible (not just ROCm tools installed).
 
-    Always returns False when an NVIDIA GPU is present -- NVIDIA takes
-    priority on mixed hosts and prevents every detection path below
-    (rocminfo, amd-smi, KFD sysfs) from producing a false positive even
-    if ROCm tools are installed alongside the NVIDIA driver.
+    Returns False when an NVIDIA GPU is present -- NVIDIA takes priority on mixed
+    hosts and prevents every detection path below (rocminfo, amd-smi, KFD sysfs) from
+    producing a false positive even if ROCm tools are installed alongside the NVIDIA
+    driver -- unless this run explicitly asked for ROCm, which is the one case where
+    the AMD card is the point.
     """
-    if _has_usable_nvidia_gpu():
+    if _has_usable_nvidia_gpu() and not _rocm_torch_explicitly_requested():
         return False
     for cmd, check_fn in (
         # rocminfo: real gfx GPU ids only (gfx000 = CPU agent, "gfx11-generic" = ISA line).
@@ -2627,6 +2647,16 @@ def _has_usable_nvidia_gpu() -> bool:
 # to a visible-device mask, so the Strix reroute needs to know. None when stubbed, which
 # keeps the plain indexing behaviour.
 _LAST_AMD_GFX_PROBE: "str | None" = None
+
+# How the last _runtime_gfx_target call failed to resolve a target, which the target itself
+# cannot carry. Only the replace-the-stack callers read these; everything else keeps the guess.
+_LAST_HIP_MASK_RESOLVED = True
+#   One layer down: _rocr_visible_subset keeps the whole list when the first ordinal names
+#   nothing, so a mask exposing no device still reaches HIP as a full list.
+_LAST_ROCR_MASK_RESOLVED = True
+#   Both masks resolved and the probes still could not say WHICH arch was selected, so "no
+#   target" must not be read as a detection miss.
+_LAST_GFX_TARGET_AMBIGUOUS = False
 
 
 def _detect_amd_gfx_codes(
@@ -2782,6 +2812,109 @@ def _gfx_route_on_host(gfx: "str | None", host_codes: "list[str] | None" = None)
     )
 
 
+def _amd_hardware_is_corroborated() -> bool:
+    """AMD silicon this host can point at, with no declared arch anywhere in the chain.
+
+    _infer_linux_amd_gfx_arch() returns UNSLOTH_ROCM_GFX_ARCH before it looks at hardware, so
+    it cannot answer "is there a card". Under UNSLOTH_FORCE_ROCM_TORCH that matters: the
+    request skips the NVIDIA precedence return, so a stale arch would otherwise force AMD
+    wheels over a working CUDA stack on a host with no AMD GPU. Sources are the ones
+    _infer_linux_amd_gfx_arch uses on its own non-declared path.
+    """
+    if IS_WINDOWS or IS_MACOS:
+        return False
+    if _has_rocm_gpu() or _kfd_gfx_targets():
+        return True
+    if _is_wsl():
+        # WSL enumerates no PCI display device, and neither /dev/dxg (an NVIDIA passthrough creates
+        # it too) nor a leftover librocdxg names a vendor, so beside a usable NVIDIA card the
+        # runtime must name an agent itself.
+        return _wsl_rocm_runtime_present() and not _has_usable_nvidia_gpu()
+    return _linux_amd_display_device_present()
+
+
+def _forced_rocm_route_is_viable() -> bool:
+    """Whether the request has something to swap TO on this host.
+
+    The bar is _gfx_has_a_wheel_route's: an arch no index can serve must never depose a card
+    that can. Presence is not it (gfx1010 is present with no route). Runtime visibility is
+    not it either: a runtime-less but inferable AMD card is deliberately served per-arch
+    wheels on a pure-AMD host, so requiring rocminfo would answer differently for the same
+    silicon by whether an NVIDIA card sits beside it.
+    """
+    # ROCm wheels are x86_64 only, so _ensure_rocm_torch() installs nothing elsewhere and
+    # standing the CUDA repair down leaves the venv on whatever broken torch it had.
+    if platform.machine().lower() not in {"x86_64", "amd64"}:
+        return False
+    if not _amd_hardware_is_corroborated():
+        return False
+    if _miscomputing_arch_host():
+        return False
+    # The card the runtime will hand torch, not any sibling. _runtime_gfx_target returns the
+    # whole machine beside the target, which _gfx_route_on_host's gfx906 rule needs.
+    _inferred = (_infer_linux_amd_gfx_arch() or "").strip().lower().split(":")[0] or None
+    _target, _, _, _host_codes = _runtime_gfx_target(_inferred)
+    # A declared arch REPLACES the inventory, so a stale one hides a Van Gogh sibling
+    # (studio/ROCM_RDNA2_APU.md). Probe-resolved stays exempt, as install.sh already has it.
+    if (
+        (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip()
+        and _target is not None
+        and any(_gfx in _ROCM_MISCOMPUTING_GFX for _gfx in _physical_amd_gfx_archs())
+    ):
+        return False
+    # A mask HIP cannot resolve exposes no device, so there is nothing to swap to. Above the
+    # target test, or the fallback below approves the same host off its inventory.
+    if not _LAST_HIP_MASK_RESOLVED or not _LAST_ROCR_MASK_RESOLVED or _LAST_GFX_TARGET_AMBIGUOUS:
+        return False
+    if _target is not None:
+        # Keyed on the SELECTED target: _miscomputing_arch_host above requires EVERY arch to be bad,
+        # so a mask selecting the gfx1033 of a pair passed it and the install then declined.
+        if _target in _ROCM_MISCOMPUTING_GFX:
+            return False
+        # Below ROCm 6.0 no generic tag resolves, so _ensure_rocm_torch installs nothing while
+        # _ensure_cuda_torch has stood down. Ask its three version-independent arms verbatim.
+        _raw_ver = _detect_rocm_version()
+        _ver = _raw_ver or (0, 0)
+        _declared = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip()
+        if _raw_ver is None:
+            # An unreadable version is not "ROCm 0.0" to _ensure_rocm_torch: its `ver is None` branch
+            # answers differently for gfx1102 / gfx1200 / gfx1201 than the (0, 0) spelling does.
+            _torch_ran, _torch_imp, _torch_ver, _, _ = _probe_torch_runtime()
+            _installed_ver = (_torch_ver or "").lower() if (_torch_ran and _torch_imp) else ""
+            # Already on a ROCm build: the arms below ask whether _ensure_rocm_torch would install
+            # SOMETHING, which after a successful swap is legitimately no, and reading that as "no
+            # route" let _ensure_cuda_torch overwrite it (gfx950, unreadable ROCm version).
+            if "rocm" in _installed_ver or "hip" in _installed_ver:
+                return _gfx_route_on_host(_target, _host_codes or [_target])
+            if (
+                _explicit_rocm_torch_index_url() is None
+                and not _inferred
+                and not _generic_rocm_wheel_lacks_kernels(_target)
+                and not _rocm_torch_family_needs_repair(_target, None, _host_codes or [_target])
+                and not _rocm_compat_reroute_pending(_target, (0, 0), _installed_ver)
+            ):
+                return False
+            return _gfx_route_on_host(_target, _host_codes or [_target])
+        if (
+            _explicit_rocm_torch_index_url() is None
+            and _generic_pytorch_rocm_tag(_ver) is None
+            and not _generic_rocm_wheel_lacks_kernels(_target, _ver)
+            and not (
+                _inferred
+                and (_declared or not _has_rocm_gpu())
+                and _amd_arch_index_url(_inferred) is not None
+            )
+        ):
+            return False
+        return _gfx_route_on_host(_target, _host_codes or [_target])
+    # No target resolved: a mask exposing no GPU is deliberate, anything else is a detection
+    # miss where the inventory is still the best evidence.
+    if _visible_masks_select_no_gpu():
+        return False
+    _archs = _physical_amd_gfx_archs()
+    return any(_gfx_route_on_host(_gfx, _archs) for _gfx in _archs)
+
+
 def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
     """Whether ANY index this installer can pick carries kernels for ``gfx``.
 
@@ -2879,6 +3012,12 @@ def _runtime_gfx_target(
     matter because a runtime-only ROCm install ships neither rocminfo nor amd-smi, and with
     no target the callers keep a wheel with no kernels for this GPU.
     """
+    # Reset on entry, not only where decided, so a caller never reads a previous host shape's
+    # answer: every early return below leaves a mask that resolved or no list to index.
+    global _LAST_HIP_MASK_RESOLVED, _LAST_ROCR_MASK_RESOLVED, _LAST_GFX_TARGET_AMBIGUOUS
+    _LAST_HIP_MASK_RESOLVED = True
+    _LAST_ROCR_MASK_RESOLVED = True
+    _LAST_GFX_TARGET_AMBIGUOUS = False
     # An empty (or "-1") mask selects NO GPU, deliberately, per _visible_devices_pinned.
     # Decided before any probe runs, because no probe is filtered the way the reroutes need:
     # only ROCR_VISIBLE_DEVICES reaches rocminfo, and amd-smi and KFD sysfs are filtered by
@@ -2901,6 +3040,21 @@ def _runtime_gfx_target(
         # handing torch a gfx1100 agent the gfx1151 wheels have no code for). Only when the
         # override names a DIFFERENT arch: naming the arch you spoofed TO is deliberate.
         _spoofed = _explicit_gfx if _hsa_spoof_contradicts(_explicit_gfx) else None
+        # The arch names what to BUILD for; whether the runtime exposes a device to build it for is
+        # separate. Only for a host that ASKED, and only when a mask is set: the two flags below are
+        # read by the forced route alone, while the probes cost up to 15s each, so collecting them
+        # for every declared-arch host put a minute of timeouts into an ordinary `studio update`.
+        if _rocm_torch_explicitly_requested() and _visible_devices_pinned():
+            # KFD node order IS the order HIP and ROCr index, and answers on runtime-less hosts.
+            # ignore_visible_masks because the ordinals below index the list BEFORE the ROCr mask.
+            _mask_devices = _kfd_gfx_targets() or _detect_amd_gfx_codes(
+                dedup = False, ignore_visible_masks = True
+            )
+            if _mask_devices:
+                _LAST_ROCR_MASK_RESOLVED = _rocr_layer_mask_names_a_device(len(_mask_devices))
+                _LAST_HIP_MASK_RESOLVED = _hip_layer_mask_names_a_device(
+                    len(_rocr_visible_subset(_mask_devices)[0])
+                )
         return _explicit_gfx, [_explicit_gfx], _spoofed, [_explicit_gfx]
     gfx_devices = _detect_amd_gfx_codes(dedup = False)
     # Keyed to the userland probe: ROCr spoofs that reading and no other.
@@ -2935,6 +3089,9 @@ def _runtime_gfx_target(
                 f"   cannot be read here, so the AMD per-gfx index is left alone.\n"
                 f"   Set UNSLOTH_ROCM_GFX_ARCH to the arch you want wheels for.\n"
             )
+            # A REJECTION, not a detection miss: without the flag a caller re-reads the arch just
+            # declined and stands a working CUDA install down for a swap that is then refused.
+            _LAST_HIP_MASK_RESOLVED = False
             return None, [], None, []
         gfx_devices = [inferred_linux_gfx]
     # The machine as the probes saw it, before the ROCr layer reduces it to a lone survivor.
@@ -2982,6 +3139,8 @@ def _runtime_gfx_target(
                 gfx_devices = _kfd_ordered
                 _unlike_adapters = len(set(gfx_devices)) > 1
                 _discovery_ordered = False
+        # Against the list BEFORE the subset, which is what the ROCr ordinals index.
+        _LAST_ROCR_MASK_RESOLVED = _rocr_layer_mask_names_a_device(len(gfx_devices))
         gfx_devices, _rocr_unresolved = _rocr_visible_subset(gfx_devices)
         # A UUID names a device this cannot place. Judged against the list BEFORE the mask
         # was applied: dropping the tokens that did resolve can leave one arch standing and
@@ -3015,7 +3174,12 @@ def _runtime_gfx_target(
                 f"   selected cannot be read here, so the AMD per-gfx index is left alone.\n"
                 f"   Set UNSLOTH_ROCM_GFX_ARCH to the arch you want wheels for.\n"
             )
+            # A REJECTION, exactly as the mask branch above, and the message just said so.
+            _LAST_GFX_TARGET_AMBIGUOUS = True
             return None, [], None, host_codes
+    # Beside the pick and against the same list, the one place both are known.
+    if gfx_devices:
+        _LAST_HIP_MASK_RESOLVED = _hip_layer_mask_names_a_device(len(gfx_devices))
     runtime_gfx = (
         gfx_devices[_pick_visible_index(len(gfx_devices), masks = _HIP_LAYER_MASKS)]
         if gfx_devices
@@ -3263,6 +3427,65 @@ _HIP_LAYER_MASKS = ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
 _INDEX_PROBE_LEN = 1 << 20
 
 
+def _hip_layer_mask_names_a_device(device_count: int) -> bool:
+    """Whether the HIP-layer mask, if set, names a device index this host has.
+
+    _pick_visible_index answers 0 for a mask it cannot resolve, because for arch SELECTION a
+    first-GPU guess beats no answer. Deciding whether to REPLACE a working CUDA stack is the
+    opposite question: HIP exposes no device, so the ROCm wheels would land where the runtime
+    hands torch nothing. install.sh fails closed on the same input.
+
+    First-set-wins between the two spellings, as _pick_visible_index documents, against the
+    list the HIP layer indexes (the ROCr survivors, which the caller has applied). True when
+    no HIP-layer mask is set, which is not the same as failing to resolve one.
+    """
+    for _env in _HIP_LAYER_MASKS:
+        _val = os.environ.get(_env)
+        if _val is None:
+            continue
+        _val = _val.strip()
+        # A no-GPU mask is deliberate, and _visible_masks_select_no_gpu already declines it.
+        if _val == "" or _val == "-1":
+            return False
+        _first = _val.split(",")[0].strip()
+        try:
+            return 0 <= int(_first) < device_count
+        except ValueError:
+            # A UUID or junk. AMD documents UUID forms for ROCR_VISIBLE_DEVICES, a different
+            # layer, resolved by _rocr_visible_subset.
+            return False
+    return True
+
+
+def _rocr_layer_mask_names_a_device(device_count: int) -> bool:
+    """Whether ROCR_VISIBLE_DEVICES, if set, leaves the runtime at least one device.
+
+    ROCr's filter (ROCR-Runtime, core/inc/amd_filter_device.h) keeps the tokens that are
+    "Legal and NOT Terminating", and an index terminates when it "lies outside the interval
+    [0 - (numGpuDevices - 1)]" or "maps to a device that has been previously selected". So
+    the survivors are a PREFIX: ROCR_VISIBLE_DEVICES=7 on a two-GPU box surfaces nothing.
+
+    _rocr_visible_subset keeps the whole list there instead, deliberately, so arch SELECTION
+    still guesses GPU 0. This is the other question -- whether to REPLACE a working CUDA
+    stack -- and it fails closed, as _hip_layer_mask_names_a_device does one layer up. A UUID
+    resolves to no position here. install.sh composes the same rule in _amd_mask_survivors.
+    """
+    _raw = (os.environ.get("ROCR_VISIBLE_DEVICES") or "").strip()
+    if not _raw:
+        return True
+    _selected: "set[int]" = set()
+    for _tok in _raw.split(","):
+        _tok = _tok.strip()
+        try:
+            _idx = int(_tok)
+        except ValueError:
+            break
+        if not (0 <= _idx < device_count) or _idx in _selected:
+            break
+        _selected.add(_idx)
+    return bool(_selected)
+
+
 def _rocr_visible_subset(gfx_devices: "list[str]") -> "tuple[list[str], bool]":
     """Apply the ROCr layer to a device list no probe filtered.
 
@@ -3280,6 +3503,7 @@ def _rocr_visible_subset(gfx_devices: "list[str]") -> "tuple[list[str], bool]":
     if not _raw or not gfx_devices:
         return gfx_devices, False
     _kept: "list[str]" = []
+    _seen: "set[int]" = set()
     _unresolved = False
     for _tok in _raw.split(","):
         _tok = _tok.strip()
@@ -3288,12 +3512,14 @@ def _rocr_visible_subset(gfx_devices: "list[str]") -> "tuple[list[str], bool]":
         except ValueError:
             _unresolved = True  # a UUID: this names a device, but not a position
             continue
-        if 0 <= _idx < len(gfx_devices):
-            _kept.append(gfx_devices[_idx])
-    # An out-of-range index keeps the whole list, deliberately: _pick_visible_index warns and
-    # falls back to GPU 0 for that value (matching setup.ps1's Resolve-VisibleGpuIndex), and a
-    # stricter rule here would split the two. ROCR_VISIBLE_DEVICES=1 on a one-GPU box is a
-    # typo, and reading it as "no GPU" withdraws the repair from the hosts this exists for.
+        # The survivors are a PREFIX: an index terminates the mask when it falls outside the list OR
+        # repeats a selection, and appending past either invents a device the runtime never exposes.
+        if _idx in _seen or not (0 <= _idx < len(gfx_devices)):
+            break
+        _seen.add(_idx)
+        _kept.append(gfx_devices[_idx])
+    # A mask whose FIRST index resolves to nothing keeps the whole list, deliberately, matching
+    # _pick_visible_index. _LAST_ROCR_MASK_RESOLVED is the fail-closed half.
     return (_kept or gfx_devices), _unresolved
 
 
@@ -3912,6 +4138,15 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
         return
     # Never undo a deliberate ROCm install (setup.ps1 sets this marker).
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
+        return
+    # Nor one this run asked for: a standalone `studio update` leaves _TORCH_BACKEND empty, so this
+    # repair read the requested HIP build as poisoning and reinstalled CUDA for _ensure_rocm_torch
+    # to force ROCm back (#10450). Same wheel-ROUTE predicate, so the two cannot drift.
+    if (
+        _rocm_torch_explicitly_requested()
+        and _explicit_cuda_torch_index_url() is None
+        and _forced_rocm_route_is_viable()
+    ):
         return
     # An explicit CUDA pin commits to CUDA wheels and skips ALL GPU gates below.
     _cuda_pinned = _explicit_cuda_torch_index_url() is not None
@@ -5222,7 +5457,11 @@ def _amd_torch_needs_dependency_pass() -> bool:
     if _explicit_rocm_torch_index_url() is None:
         if _explicit_torch_index_url() is not None:
             return False
-        if _has_usable_nvidia_gpu():
+        # The request outranks NVIDIA only where it has somewhere to go, or this answers True
+        # forever and setup.sh reruns the dependency pass on every launch for an impossible swap.
+        if _has_usable_nvidia_gpu() and not (
+            _rocm_torch_explicitly_requested() and _forced_rocm_route_is_viable()
+        ):
             return False
         # A hidden layer either side leaves no target to classify. Same reading the routing
         # guard uses, so the two can never drift.
@@ -5441,6 +5680,9 @@ def _ensure_rocm_torch() -> None:
     if IS_WINDOWS:
         # An explicit ROCm pin overrides the per-arch index: retry the PINNED one, not repo.amd.com.
         _win_rocm_pin = _explicit_rocm_torch_index_url()
+        # UNSLOTH_FORCE_ROCM_TORCH is deliberately NOT read here: install.ps1 picks CUDA from the
+        # NVIDIA probe and setup.ps1 republishes a tag _ensure_expected_torch_flavor() restores, so
+        # honouring it only here is a multi-GB round trip. Windows needs both PowerShell installers.
         if _win_rocm_pin is None and _has_usable_nvidia_gpu():
             return
         gfx_arch = _detect_windows_gfx_arch()
@@ -5528,13 +5770,28 @@ def _ensure_rocm_torch() -> None:
         _infer_linux_amd_gfx_arch() if (_rocm_pin is None and not IS_WINDOWS) else None
     )
     if _rocm_pin is None:
-        # NVIDIA takes precedence on mixed hosts (only if a GPU is usable).
-        if _has_usable_nvidia_gpu():
+        # NVIDIA takes precedence unless this run asked for ROCm. The request relaxes which vendor
+        # wins, not whether there is a card, so the presence test below still has to pass; a pin of
+        # another known family outranks it.
+        if _has_usable_nvidia_gpu() and (
+            not _rocm_torch_explicitly_requested()
+            or _explicit_cuda_torch_index_url() is not None
+            or _explicit_cpu_torch_index_url() is not None
+        ):
             return
         # _has_rocm_gpu() (rocminfo / amd-smi rows) is the authoritative AMD-host signal;
         # the old /opt/rocm-or-hipcc gate broke runtime-only ROCm installs.
         if not _has_rocm_gpu() and not _inferred_linux_gfx:
             return  # no AMD GPU visible
+        # The request skipped the NVIDIA return, and _infer_linux_amd_gfx_arch() takes
+        # UNSLOTH_ROCM_GFX_ARCH before hardware, so a stale one satisfies the line above with no
+        # AMD card. Same viable ROUTE bar _ensure_cuda_torch stands down on.
+        if (
+            _rocm_torch_explicitly_requested()
+            and _has_usable_nvidia_gpu()
+            and not _forced_rocm_route_is_viable()
+        ):
+            return
 
     ver = _detect_rocm_version()
     if ver is None:
@@ -5605,8 +5862,17 @@ def _ensure_rocm_torch() -> None:
     ):
         index_url = _amd_arch_index_url(_inferred_linux_gfx)
         if index_url is not None:
+            # The bare arch _amd_arch_index_url resolved the URL from: stripping the suffix there is
+            # what OPENS this branch for "gfx1151:xnack-", and a table keyed on the raw string then
+            # misses and installs unpinned torch, losing this dict's ABI bound. _hsa_spoof_contradicts
+            # likewise reads a same-card HSA override as a spoof unless asked in bare form.
+            _bare_gfx = (_inferred_linux_gfx or "").strip().lower().split(":")[0]
+            # Falling back UNBOUNDED was the rest of that same defect: a suffixed arch reaching this
+            # branch for the first time skipped the bounds the reroute applies to every other
+            # arch-index install, so the newly opened route installed a companion set nothing
+            # constrained. Same tuple that path uses, so the two cannot drift.
             _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
-                _inferred_linux_gfx, ("torch", "torchvision", "torchaudio")
+                _bare_gfx, _ROCM_ARCH_INDEX_TORCH_PKG_SPEC
             )
             _safe_print(
                 f"   {_inferred_linux_gfx} inferred (ROCm runtime not visible) -- "
@@ -5631,8 +5897,8 @@ def _ensure_rocm_torch() -> None:
             # _inferred_linux_gfx code objects alone, and a spoof naming another arch has ROCr
             # hand them a device none of it matches (#7331). The install is already committed
             # to that arch, so declining here only guarantees it is unusable.
-            if _hsa_spoof_contradicts(_inferred_linux_gfx):
-                _clear_confirmed_hsa_spoof(_inferred_linux_gfx)
+            if _hsa_spoof_contradicts(_bare_gfx):
+                _clear_confirmed_hsa_spoof(_bare_gfx)
 
     # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the
     # MI50 / Radeon VII path; it must win over the Strix probe-order detection
@@ -9056,11 +9322,15 @@ def _parse_pinned_pip_config(
 def pip_install_try(
     label: str,
     *args: str,
+    req: Path | None = None,
     constrain: bool = True,
     force_pip: bool = False,
 ) -> bool:
     """Like pip_install but returns False on failure instead of exiting.
     For optional installs that have a follow-up fallback.
+
+    ``req`` goes through ``_effective_requirements`` exactly as in pip_install, so a file
+    installed through either entry point is the same file the install-manifest gate audits.
     """
     # Same reason as pip_install: this installs torch too (the Windows AMD ROCm trio),
     # so the memoized classification must not survive it.
@@ -9073,19 +9343,33 @@ def pip_install_try(
         constraint_args_pip = ["-c", str(CONSTRAINTS)]
         constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
 
+    actual_req = req
+    temp_reqs: list[Path] = []
+    if req is not None:
+        actual_req, temp_reqs = _effective_requirements(req)
+    req_args_pip: list[str] = []
+    req_args_uv: list[str] = []
+    if actual_req is not None:
+        req_args_pip = ["-r", str(actual_req)]
+        req_args_uv = ["-r", _uv_safe_path(actual_req)]
+
     if USE_UV and not force_pip:
-        cmd, env = _pinned_cmd_and_env(_build_uv_cmd(args) + constraint_args_uv)
+        cmd, env = _pinned_cmd_and_env(_build_uv_cmd(args) + constraint_args_uv + req_args_uv)
     else:
-        cmd, env = _pinned_cmd_and_env(_build_pip_cmd(args) + constraint_args_pip)
+        cmd, env = _pinned_cmd_and_env(_build_pip_cmd(args) + constraint_args_pip + req_args_pip)
 
     if VERBOSE:
         _step(_LABEL, f"{label}...", _dim)
-    result = subprocess.run(
-        cmd,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        env = env,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            env = env,
+        )
+    finally:
+        for temp_req in temp_reqs:
+            temp_req.unlink(missing_ok = True)
     if result.returncode == 0:
         # As pip_install below: `nobuild` only catches a build that reaches the log.
         if VERBOSE and result.stdout:
@@ -10040,6 +10324,7 @@ def _skip_step(
     no_deps: bool,
     constrain: bool = True,
     extra_check = None,
+    superseded: bool = False,
 ) -> bool:
     """Announce one requirements step and say whether it is already satisfied.
 
@@ -10048,12 +10333,22 @@ def _skip_step(
 
     *extra_check* is an on-disk predicate for a file importlib.metadata cannot fully answer:
     today only triton-kernels.txt, whose git ref no version reflects.
+
+    *superseded* says a LATER step has already put a different build of this distribution in
+    place, one this file's version pin cannot describe. The requirement really is unsatisfied and
+    must still not run: running it would undo the step that supersedes it, which would then redo
+    itself, so every pass reinstalls twice and no update is ever a no-op. Deliberately separate
+    from *extra_check*, which can only make an answer stricter.
     """
     key = _pass_input_key(req) or str(req)
     if not no_deps and _pass_input_key(req) is not None:
         # Registered whether or not skipped, so the first pass records what its closure cannot
         # satisfy.
         _AUDITED_STEPS[key] = req
+    if superseded:
+        _progress(f"{progress_label} (superseded, skipped)")
+        _record_step(key, "skipped")
+        return True
     satisfied = _requirements_satisfied(req, no_deps = no_deps, constrain = constrain)
     if satisfied and extra_check is not None:
         satisfied = bool(extra_check())
@@ -10194,6 +10489,131 @@ def _triton_kernels_step() -> None:
         req = req,
         constrain = False,
     )
+
+
+DIFFUSERS_MAIN_ENV = "UNSLOTH_DIFFUSERS_MAIN"
+
+# Diffusers main declares requires-python >= 3.10 while the release pin file still names 0.36.0
+# for anything older, so 3.9 is a supported install this step can never satisfy.
+DIFFUSERS_MAIN_MIN_PYTHON = (3, 10)
+
+
+def _diffusers_main_requested() -> bool:
+    """Whether this install wants the pinned Diffusers main build. Default: yes.
+
+    Opt OUT with ``UNSLOTH_DIFFUSERS_MAIN=0`` (also false/no/off). Anything else, including the
+    variable being unset, means yes, so the models that need an unreleased Diffusers work for
+    everyone without a flag. The opt-out exists for an install that must stay on the exact release
+    everything else is built against, or that cannot reach github.com but does have git.
+    """
+    value = (os.environ.get(DIFFUSERS_MAIN_ENV) or "").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def _diffusers_main_resident(req: "Path | None" = None) -> bool:
+    """Whether the pinned main build is BOTH what the file names and actually on disk.
+
+    Provenance alone is not a build, the same reason ``_triton_kernels_step`` pairs its ref check
+    with this one: ``direct_url.json`` survives inside dist-info while the package tree under it is
+    deleted or truncated, and a provenance-only answer would skip the reinstall AND, since the
+    release pin reads the same predicate to decide it has been superseded, skip the repair too.
+    Diffusers is mandatory, so that combination leaves Studio broken on every later pass rather
+    than for one. Either half failing means "install it", which is the recoverable direction.
+    """
+    if req is None:
+        req = REQ_ROOT / "diffusers-main.txt"
+    return _direct_reference_is_installed(req, "diffusers") and _payload_recorded_intact(
+        "diffusers"
+    )
+
+
+def _diffusers_main_supersedes_release() -> bool:
+    """Whether 11c's build already stands in for the release pin, so 11b must not reinstall it.
+
+    Only when the main build is BOTH wanted and resident, AND this pass is allowed to skip work at
+    all: under UNSLOTH_STUDIO_FULL_DEPS both steps run, the release first and the commit back on
+    top, which is the same order a first install takes and the only order that ends with the tree
+    the family gate expects.
+    """
+    if _full_deps_requested():
+        return False
+    return _diffusers_main_requested() and _diffusers_main_resident()
+
+
+def _diffusers_main_step() -> None:
+    """Install the pinned Diffusers commit, or leave the release pin alone.
+
+    Three things this has to get right, none of which the ordinary ``_skip_step`` path covers:
+
+    * A VERSION says nothing here. Every build of main reports 0.41.0.dev0, so the usual "is the
+      requirement satisfied" check passes against a build from any other commit, or against the
+      release the previous step just installed. ``_direct_reference_is_installed`` reads the ref out
+      of direct_url.json, which is the only place it survives, so bumping the commit in the file
+      actually reinstalls instead of silently keeping the old tree.
+    * Diffusers is MANDATORY, unlike triton_kernels, so a host that cannot do a source build must
+      not be left with a broken install. It is not: the release pin ran first and is already in
+      place, so skipping here leaves a working Studio that simply cannot load the newest model.
+      That is the whole reason this is a second step on top of the release pin rather than an
+      edit to it, now that it runs by default and therefore meets every host there is.
+    * Opting out must put the release back. Setting the variable to 0 and re-running reinstalls the
+      pin on the next pass, because the pin step's own inputs are unchanged but the resident
+      diffusers is no longer what the release pin names.
+
+    It spends exactly ONE progress slot on every path, including opting out, because the total is
+    fixed before any of this is known. An early return without a _progress leaves the bar short of
+    its own total for precisely the users who opted out.
+    """
+    if not _diffusers_main_requested():
+        _progress("diffusers main (opted out, skipped)")
+        return
+    if sys.version_info < DIFFUSERS_MAIN_MIN_PYTHON:
+        # Diffusers main needs 3.10, and the release pin file still carries a 0.36.0 line for
+        # older interpreters, so 3.9 is a supported path this can never satisfy. Unmarked, pip would
+        # clone the repository and only then reject its requires-python, and since the build can
+        # never become resident that clone repeats on every install and update forever.
+        _progress("diffusers main (skipped, needs python 3.10)")
+        return
+    req = REQ_ROOT / "diffusers-main.txt"
+    if not req.is_file():
+        _progress("diffusers main (skipped, no pin file)")
+        return
+    if not _has_working_git():
+        _progress("diffusers main (skipped, no git)")
+        _note(
+            "No working git, so this install keeps the pinned Diffusers release instead of the "
+            "pinned main build. Everything else works; models that need an unreleased Diffusers "
+            "will refuse with a message naming the version they want.",
+        )
+        return
+    # The escape hatch reaches this skip too. UNSLOTH_STUDIO_FULL_DEPS is the documented way to
+    # repair an install whose evidence looks fine and whose payload is not, and _diffusers_main_resident
+    # is exactly such evidence: _payload_recorded_intact compares recorded sizes, so a same-size
+    # corruption reads as intact. A skip nobody can turn off is a bug nobody can work around.
+    if not _full_deps_requested() and _diffusers_main_resident(req):
+        _progress("diffusers main (satisfied, skipped)")
+        _record_step("diffusers-main.txt", "skipped")
+        return
+    _progress("diffusers main")
+    _record_step("diffusers-main.txt", "ran")
+    # pip_install_try, NOT pip_install, and this is the whole reason the step is safe to run by
+    # default. pip_install exits the installer on failure, which would make a reachable github.com
+    # a hard requirement of every install: a PyPI mirror with no route out, a proxy that blocks git
+    # over https, a transient upstream outage would each turn a working install into no install at
+    # all. Diffusers is mandatory, so the failure has to be survivable, and it is exactly survivable
+    # because the release pin ran first and is still resident. Degrading costs one model.
+    if not pip_install_try(
+        "Installing the pinned Diffusers main build",
+        "--no-cache-dir",
+        req = req,
+        constrain = False,
+    ):
+        _record_step("diffusers-main.txt", "skipped")
+        _note(
+            "Could not install the pinned Diffusers main build, so this install keeps the pinned "
+            "Diffusers release. Everything else works; models that need an unreleased Diffusers "
+            f"will refuse with a message naming the version they want. Set {DIFFUSERS_MAIN_ENV}=0 "
+            "to stop trying.",
+        )
 
 
 def _recorded_direct_url(dist_name: str) -> "dict | None":
@@ -10444,9 +10864,10 @@ def install_python_stack() -> int:
     # reinstall path too, not just the two calls below
     # Clean-machine CI overlays only unsloth, not the full local source pair.
     ci_source_overlay = os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY", "")
-    # Four lettered steps beside the numbered ones: anyio repair (8b), accelerate repair
-    # (8c, Windows only), diffusers pin (11b), torchcodec (13b).
-    base_total = 13 if IS_WINDOWS else 14
+    # Five lettered steps beside the numbered ones: anyio repair (8b), accelerate repair
+    # (8c, Windows only), diffusers pin (11b), diffusers main (11c), torchcodec (13b).
+    # 11c is counted unconditionally because it spends its slot unconditionally, opt-out included.
+    base_total = 14 if IS_WINDOWS else 15
     if IS_WINDOWS:
         base_total += 1  # 8c, gated exactly as the step is
     if IS_MACOS:
@@ -10869,9 +11290,9 @@ def install_python_stack() -> int:
     # )
 
     # 8. Unsloth dependencies
-    if not _skip_step(REQ_ROOT / "studio.txt", "studio deps", no_deps = False):
+    if not _skip_step(REQ_ROOT / "studio.txt", "Unsloth Studio deps", no_deps = False):
         pip_install(
-            "Installing studio dependencies",
+            "Installing Unsloth Studio dependencies",
             "--no-cache-dir",
             req = REQ_ROOT / "studio.txt",
         )
@@ -10952,12 +11373,31 @@ def install_python_stack() -> int:
     #      release, and outside every skip_base / NO_TORCH branch so it reaches every path.
     #      constrain stays on: constraints.txt says nothing about diffusers today, and a
     #      future entry there should win rather than be silently bypassed here.
-    if not _skip_step(REQ_ROOT / "diffusers-pin.txt", "diffusers pin", no_deps = False):
+    #      And it stands down once 11c's build is resident. Nothing here can see that on its own: a
+    #      main build reports 0.41.0.dev0, which does not satisfy `diffusers==0.40.0`, so this step
+    #      would reinstall the release on every later pass and 11c would put the same commit back on
+    #      top of it. Two Diffusers installs per update, no update that is a no-op, and offline the
+    #      downgrade lands while the restore cannot. Only a build that is BOTH wanted and already
+    #      resident supersedes it, so opting out still reinstates the release, and a first install
+    #      still lays it down first, which is what a failed source build degrades to.
+    if not _skip_step(
+        REQ_ROOT / "diffusers-pin.txt",
+        "diffusers pin",
+        no_deps = False,
+        superseded = _diffusers_main_supersedes_release(),
+    ):
         pip_install(
             "Installing the pinned Diffusers release",
             "--no-cache-dir",
             req = REQ_ROOT / "diffusers-pin.txt",
         )
+
+    # 11c. A pinned commit of Diffusers main, for models whose support has merged upstream but has
+    #      not reached a release. ON by default; UNSLOTH_DIFFUSERS_MAIN=0 opts out. Runs immediately
+    #      after the release pin so it overwrites it, and only ever on top of it: the release is
+    #      already resident, so no git and a failed source build both degrade to a working install
+    #      rather than no install.
+    _diffusers_main_step()
 
     # 12. Patch metadata for single-env compatibility
     _finalize_ran = _dd_deps_ran or _dd_ran or _patch_metadata_is_pending()

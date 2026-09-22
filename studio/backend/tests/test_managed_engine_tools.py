@@ -393,3 +393,51 @@ def test_monitor_failure_cannot_leak_active_request(native, monkeypatch, started
         assert api.active_generations.count() == 0
 
     asyncio.run(request())
+
+
+@pytest.mark.parametrize("vision", [False, True])
+def test_managed_tool_history_promotes_images_for_vision_only(native, vision):
+    import base64
+    import io
+    from PIL import Image
+    from core.inference.mcp_images import SENTINEL
+
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(image, format = "PNG")
+    envelope = (
+        "Screenshot\n"
+        + SENTINEL
+        + json.dumps(
+            [{"data": base64.b64encode(image.getvalue()).decode(), "mimeType": "image/png"}]
+        )
+    )
+    native[0].models["sf-model"]["is_vision"] = vision
+    payload = route_test._request(enable_tools = False, tools = [route_test.LOOKUP_TOOL])
+    payload.messages = [
+        route_test.ChatMessage(role = "user", content = "Look"),
+        route_test.ChatMessage(
+            role = "assistant",
+            content = "",
+            tool_calls = [
+                {
+                    "id": "prior",
+                    "type": "function",
+                    "function": {"name": "mcp__test__image", "arguments": "{}"},
+                }
+            ],
+        ),
+        route_test.ChatMessage(
+            role = "tool", tool_call_id = "prior", name = "mcp__test__image", content = envelope
+        ),
+        route_test.ChatMessage(role = "user", content = "Describe it"),
+    ]
+    run(payload)
+    sent = native[1][0]["messages"]
+    assert SENTINEL not in json.dumps(sent)
+    parts = [
+        part
+        for message in sent
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+    ]
+    assert any(part.get("type") == "image_url" for part in parts) is vision

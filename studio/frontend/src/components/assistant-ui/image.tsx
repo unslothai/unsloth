@@ -18,11 +18,10 @@ import type {
   ImageMessagePart,
   ImageMessagePartComponent,
 } from "@assistant-ui/react";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type VariantProps, cva } from "class-variance-authority";
 import {
-  CopyIcon,
   ImageIcon,
   ImageOffIcon,
   RefreshCwIcon,
@@ -415,7 +414,7 @@ function ImageActions({ part, onRegenerate, className }: ImageActionsProps) {
         aria-label="Copy image"
         className="inline-flex size-7 items-center justify-center rounded hover:bg-muted"
       >
-        <CopyIcon className="size-4" />
+        <HugeiconsIcon icon={Copy01Icon} className="size-4" />
       </button>
       {onRegenerate && <RegenerateButton onRegenerate={onRegenerate} />}
     </div>

@@ -910,7 +910,8 @@ def test_native_precision_arguments(engine, precision):
     )
 
 
-def test_managed_images_keep_their_conversation_positions(peer):
+@pytest.mark.parametrize("encoded", [False, True])
+def test_managed_images_keep_their_conversation_positions(peer, encoded):
     from PIL import Image
 
     engine, requests = peer
@@ -919,12 +920,11 @@ def test_managed_images_keep_their_conversation_positions(peer):
         {"role": "assistant", "content": "Red"},
         {"role": "user", "content": [{"type": "text", "text": "Second?"}, {"type": "image"}]},
     ]
-    list(
-        engine.generate(
-            messages = messages,
-            images = [Image.new("RGB", (4, 4), "red"), Image.new("RGB", (4, 4), "blue")],
-        )
-    )
+    images = [Image.new("RGB", (4, 4), "red"), Image.new("RGB", (4, 4), "blue")]
+    if encoded:
+        from core.inference.orchestrator import InferenceOrchestrator
+        images = [InferenceOrchestrator._pil_to_base64(image) for image in images]
+    list(engine.generate(messages = messages, images = images))
     sent = requests[0][2]["messages"]
     assert sent[0]["content"][0]["type"] == "image_url"
     assert sent[2]["content"][1]["type"] == "image_url"
@@ -986,7 +986,13 @@ def test_parallel_mode_uses_exactly_the_selected_devices(engine, mode, devices):
     from core.inference.engine_adapters import ADAPTERS
 
     args = ADAPTERS[engine].command(
-        "python", "model", 12345, "key", 2048, 0.8, devices,
+        "python",
+        "model",
+        12345,
+        "key",
+        2048,
+        0.8,
+        devices,
         options = {"parallelism": mode},
     )
     sizes = {}
@@ -1009,9 +1015,17 @@ def test_non_tensor_modes_do_not_require_divisible_heads(tmp_path, engine, mode)
     from types import SimpleNamespace
     from core.inference.managed_engine import validate_model
 
-    (tmp_path / "config.json").write_text(json.dumps({
-        "text_config": {"num_attention_heads": 3, "hidden_size": 15, "num_hidden_layers": 12},
-    }))
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "text_config": {
+                    "num_attention_heads": 3,
+                    "hidden_size": 15,
+                    "num_hidden_layers": 12,
+                },
+            }
+        )
+    )
     config = SimpleNamespace(is_local = True, path = str(tmp_path))
     with pytest.raises(ValueError, match = "cannot be split"):
         validate_model(config, gpu_ids = [0, 1], engine = engine)
@@ -1025,17 +1039,24 @@ def test_non_tensor_modes_validate_prequantized_bitsandbytes(tmp_path, engine, m
     from types import SimpleNamespace
     from core.inference.managed_engine import validate_model
 
-    (tmp_path / "config.json").write_text(json.dumps({"quantization_config": {"quant_method": "bitsandbytes"}}))
+    (tmp_path / "config.json").write_text(
+        json.dumps({"quantization_config": {"quant_method": "bitsandbytes"}})
+    )
     config = SimpleNamespace(is_local = True, path = str(tmp_path))
     if engine == "sglang" and mode == "pipeline":
         with pytest.raises(ValueError, match = "SGLang cannot load prequantized BitsAndBytes"):
             validate_model(config, gpu_ids = [0, 1], engine = engine, parallelism = mode)
         # A retained pipeline selection still permits a single-device load.
-        assert validate_model(config, gpu_ids = [0], engine = engine, parallelism = mode)["load_format"] == "bitsandbytes"
+        assert (
+            validate_model(config, gpu_ids = [0], engine = engine, parallelism = mode)["load_format"]
+            == "bitsandbytes"
+        )
         return
     options = validate_model(
         config,
-        gpu_ids = [0, 1], engine = engine, parallelism = mode,
+        gpu_ids = [0, 1],
+        engine = engine,
+        parallelism = mode,
     )
     assert options["parallelism"] == mode and options["load_format"] == "bitsandbytes"
 
@@ -1046,17 +1067,27 @@ def test_resident_engine_parallel_mode_requires_reload(mode):
     from routes.inference import _non_gguf_runtime_settings_match
     from models.inference import LoadRequest
 
-    backend = SimpleNamespace(active_model_name = "model", models = {"model": {
-        "engine": "vllm", "engine_parallelism": mode, "gpu_ids_requested": [0, 1],
-    }})
-    request = LoadRequest(model_path = "model", engine = "vllm", engine_parallelism = mode, gpu_ids = [0, 1])
+    backend = SimpleNamespace(
+        active_model_name = "model",
+        models = {
+            "model": {
+                "engine": "vllm",
+                "engine_parallelism": mode,
+                "gpu_ids_requested": [0, 1],
+            }
+        },
+    )
+    request = LoadRequest(
+        model_path = "model", engine = "vllm", engine_parallelism = mode, gpu_ids = [0, 1]
+    )
     assert _non_gguf_runtime_settings_match(backend, request)
-    assert not _non_gguf_runtime_settings_match(backend, request.model_copy(update = {"engine_parallelism": "tensor"}))
+    assert not _non_gguf_runtime_settings_match(
+        backend, request.model_copy(update = {"engine_parallelism": "tensor"})
+    )
 
 
 def test_native_api_key_cannot_be_parsed_as_a_cli_option(monkeypatch):
     import core.inference.managed_engine as managed
-
     monkeypatch.setattr(managed.secrets, "token_urlsafe", lambda _: "--random-token")
     assert managed.ManagedEngine("vllm").key == "studio---random-token"
 
@@ -1069,11 +1100,30 @@ def test_vllm_int4_pipeline_uses_native_torchao_loader(tmp_path):
     (tmp_path / "config.json").write_text('{"model_type":"qwen2"}')
     options = validate_model(
         SimpleNamespace(is_local = True, path = str(tmp_path)),
-        engine = "vllm", gpu_ids = [0, 1], precision = "int4", parallelism = "pipeline",
+        engine = "vllm",
+        gpu_ids = [0, 1],
+        precision = "int4",
+        parallelism = "pipeline",
     )
     args = ADAPTERS["vllm"].command("python", "model", 12345, "key", 2048, 0.8, 2, options = options)
     assert args[args.index("--load-format") + 1] == "auto"
     assert args[args.index("--quantization") + 1] == "torchao"
-    config = json.loads(json.loads(args[args.index("--hf-overrides") + 1])["quantization_config_dict_json"])
+    config = json.loads(
+        json.loads(args[args.index("--hf-overrides") + 1])["quantization_config_dict_json"]
+    )
     assert config["_type"] == "Int4WeightOnlyConfig"
     assert config["_data"]["int4_choose_qparams_algorithm"]["_data"] == "HQQ"
+
+
+def test_switching_from_managed_engine_keeps_default_precision():
+    from types import SimpleNamespace
+    from models.inference import LoadRequest
+    from routes.inference import _inherit_resident_load_in_4bit
+
+    backend = SimpleNamespace(
+        active_model_name = "model",
+        models = {"model": {"engine": "vllm", "load_in_4bit_requested": False}},
+    )
+    request = LoadRequest(model_path = "model")
+    _inherit_resident_load_in_4bit(backend, request, "model")
+    assert request.load_in_4bit is True

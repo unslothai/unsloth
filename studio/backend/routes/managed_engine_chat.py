@@ -61,7 +61,16 @@ class ManagedToolTransport:
                 await lines.aclose()
 
 
-async def managed_tool_chat(payload, request, backend, messages, system_prompt, monitor_id):
+async def managed_tool_chat(
+    payload,
+    request,
+    backend,
+    messages,
+    system_prompt,
+    monitor_id,
+    *,
+    promoted_image_parts = (),
+):
     from routes import inference as api
     from state.tool_policy import get_tool_policy
     from core.inference.sse_control_frames import sanitize_provider_sse_line
@@ -178,6 +187,8 @@ async def managed_tool_chat(payload, request, backend, messages, system_prompt, 
                         thread_id = payload.thread_id,
                         model = engine.model,
                         tool_choice = payload.tool_choice,
+                        supports_vision = bool(info.get("is_vision")),
+                        promoted_image_parts = promoted_image_parts,
                     ),
                     policy = ToolLoopPolicy(
                         tools = tools,

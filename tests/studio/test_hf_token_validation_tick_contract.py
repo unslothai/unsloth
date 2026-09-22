@@ -177,7 +177,7 @@ def test_training_start_claims_runtime_before_first_await():
         "setStarting:", 1
     )[0]
     assert "!startRequestId || isTrainingStartPending(state)" in claim
-    assert "return { isStarting: true, startRequestId }" in claim
+    assert "return { isStarting: true, startRequestId," in claim
     assert "runtime.tryBeginStarting(startRequestId)" in start_runtime
     acquire = start_runtime.split("export function tryAcquireTrainingStart", 1)[1].split(
         "export function isTrainingStartLeaseActive", 1

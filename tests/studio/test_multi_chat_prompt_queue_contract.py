@@ -6,6 +6,8 @@
 import re
 from pathlib import Path
 
+from tests.studio._js_source import gates_the_markup
+
 
 REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src"
@@ -1027,7 +1029,15 @@ def test_sidebar_exposes_queue_activity_for_each_thread():
     assert "const queueByThreadId = usePromptQueueUI((s) => s.byThreadId);" in APP_SIDEBAR
     assert "hasQueuedActivity" in APP_SIDEBAR
     assert "showWorkSpinner" in APP_SIDEBAR
-    assert "{showWorkSpinner && (" in APP_SIDEBAR
+    # That it gates mounted markup, not that it does so with `&&`. #11408 moved the spinner to
+    # the trailing column and wrote the gate as `{showWorkSpinner ? (`, which renders the same
+    # element under the same condition, and pinning the `&&` spelling failed a correct change.
+    # `showWorkSpinner` also picks class strings in this file, so a plain substring search would
+    # go on passing once the spinner itself stopped being rendered; this asks for the gate.
+    assert gates_the_markup(APP_SIDEBAR, "showWorkSpinner"), (
+        "app-sidebar.tsx no longer mounts anything under showWorkSpinner, so a working chat "
+        "row shows no spinner however much room it reserves for one"
+    )
     assert "hasUnreadActivity" in APP_SIDEBAR
     assert "clearChatNotifications(item)" in APP_SIDEBAR
 

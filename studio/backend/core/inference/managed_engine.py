@@ -415,9 +415,12 @@ class ManagedEngine:
             raise ValueError(
                 "Video input is not yet supported by the Studio managed engine transport."
             )
-        from .orchestrator import _request_images, InferenceOrchestrator
+        from .orchestrator import _encoded_images, InferenceOrchestrator
 
-        request_images = _request_images(params.get("image"), params.get("images"))
+        request_images = _encoded_images(
+            params.get("images") or ([params["image"]] if params.get("image") is not None else []),
+            InferenceOrchestrator._pil_to_base64,
+        )
         if request_images:
             messages = [dict(message) for message in messages]
             pending = iter(request_images)
@@ -434,10 +437,7 @@ class ManagedEngine:
                         parts.append(
                             {
                                 "type": "image_url",
-                                "image_url": {
-                                    "url": "data:image/png;base64,"
-                                    + InferenceOrchestrator._pil_to_base64(image)
-                                },
+                                "image_url": {"url": "data:image/png;base64," + image},
                             }
                         )
                     else:
@@ -455,10 +455,7 @@ class ManagedEngine:
                         parts.extend(
                             {
                                 "type": "image_url",
-                                "image_url": {
-                                    "url": "data:image/png;base64,"
-                                    + InferenceOrchestrator._pil_to_base64(image)
-                                },
+                                "image_url": {"url": "data:image/png;base64," + image},
                             }
                             for image in request_images
                         )

@@ -11,6 +11,7 @@ import type {
 } from "@/hooks/use-tauri-update";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { cn } from "@/lib/utils";
+import { useT } from "@/i18n";
 import { CircleAlert, Download } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
@@ -54,6 +55,7 @@ export function UpdateBanner({
   onDismiss,
   onCopyDiagnostics,
 }: UpdateBannerProps) {
+  const t = useT();
   const [copying, setCopying] = useState(false);
   const [manualReport, setManualReport] = useState<string | null>(null);
   const [manualMessage, setManualMessage] = useState<string | null>(null);
@@ -115,7 +117,7 @@ export function UpdateBanner({
           data-testid="tauri-update-banner"
         >
           {/* Paint the full floor even when the notes are short. */}
-          <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
             <button
               type="button"
               onClick={onDismiss}
@@ -163,7 +165,7 @@ export function UpdateBanner({
                     : isManualLinuxPackage
                       ? "Open the GitHub release page to install the Linux package"
                       : isExternalServer
-                        ? "Run `unsloth studio update` from your terminal"
+                        ? t("settings.about.update.desktopExternalServer")
                         : "A new app update is available"}
                 </p>
               </div>
