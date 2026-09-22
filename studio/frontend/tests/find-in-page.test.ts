@@ -1456,9 +1456,15 @@ test("dark mode sits above the cards it floats over", async () => {
     assert.ok(hit, `${selector} has no ${property}`);
     return hit[1].trim();
   };
-  const grey = (hex: string) => Number.parseInt(hex.slice(1, 3), 16);
+  const grey = (declaration: string) => {
+    // The bar is authored inside a color-mix now, so read the colour it mixes.
+    const hex = /#[0-9a-f]{6}/i.exec(declaration);
+    assert.ok(hex, `no colour in ${declaration}`);
+    return Number.parseInt(hex[0].slice(1, 3), 16);
+  };
   // A bar at `--card` dissolves into what scrolls under it; past `--border` it reads as an edge.
-  const bar = grey(value(".dark .find-bar-surface", "background-color"));
+  const barDeclaration = value(".dark .find-bar-surface", "background-color");
+  const bar = grey(barDeclaration);
   const card = grey(value(".dark", "--card-base"));
   const border = grey(value(".dark", "--border-base"));
   assert.ok(bar > card, `bar ${bar} is not lighter than --card ${card}`);
@@ -1466,6 +1472,13 @@ test("dark mode sits above the cards it floats over", async () => {
   assert.match(
     value(".dark .find-bar-surface", "box-shadow"),
     /var\(--background\)/,
+  );
+  // Both take the same step at the same time, so the order above survives the
+  // contrast slider instead of holding only at the default.
+  assert.match(barDeclaration, /var\(--contrast-surface-mix, 0%\)/);
+  assert.match(
+    value("html[data-contrast-adjust]", "--card"),
+    /var\(--contrast-surface-mix\)/,
   );
 });
 
