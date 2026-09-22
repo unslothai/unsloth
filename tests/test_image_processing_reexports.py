@@ -162,7 +162,13 @@ def test_import_unsloth_does_not_pull_in_the_image_stack():
         "print('transformers.models.siglip2.image_processing_siglip2' in sys.modules)"
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True)
-    assert out.returncode == 0, out.stderr[-2000:]
+    if out.returncode != 0:
+        # `import unsloth` refuses to finish without an accelerator, so on a
+        # CPU-only runner there is no import to measure the laziness of. Skip
+        # rather than fail: asserting here tests the runner, not the fix.
+        if "cannot find any torch accelerator" in out.stderr:
+            pytest.skip("import unsloth requires an accelerator; nothing to measure here")
+        raise AssertionError(out.stderr[-2000:])
     assert out.stdout.strip().splitlines()[-1] == "False", out.stdout[-2000:]
 
 
