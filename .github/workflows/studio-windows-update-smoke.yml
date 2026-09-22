@@ -49,6 +49,9 @@ on:
       - 'studio/backend/utils/wheel_utils.py'
       - 'studio/backend/utils/uv_path_safety.py'
       - 'studio/backend/utils/prebuilt/llama_backend.py'
+      # setup.sh runs this at setup.sh:5130 and setup.ps1 at setup.ps1:9025, so it is the
+      # last executed edge of the installer chain that was not listed here.
+      - 'studio/install_whisper_prebuilt.py'
       - '.github/workflows/studio-windows-update-smoke.yml'
   push:
     branches: [main]
@@ -76,6 +79,7 @@ on:
       - 'studio/backend/utils/wheel_utils.py'
       - 'studio/backend/utils/uv_path_safety.py'
       - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/install_whisper_prebuilt.py'
       - '.github/workflows/studio-windows-update-smoke.yml'
   workflow_dispatch:
 

@@ -65,6 +65,9 @@ on:
       - 'studio/install_python_stack.py'
       - 'studio/nvidia_probe.py'
       - 'studio/prebuilt_core.py'
+      # setup.sh runs this at setup.sh:5130 and setup.ps1 at setup.ps1:9025, so it is the
+      # last executed edge of the installer chain that was not listed here.
+      - 'studio/install_whisper_prebuilt.py'
       - '.github/workflows/windows-application-control-ci.yml'
   push:
     branches: [main]
@@ -87,6 +90,7 @@ on:
       - 'studio/install_python_stack.py'
       - 'studio/nvidia_probe.py'
       - 'studio/prebuilt_core.py'
+      - 'studio/install_whisper_prebuilt.py'
       - '.github/workflows/windows-application-control-ci.yml'
   workflow_dispatch:
 

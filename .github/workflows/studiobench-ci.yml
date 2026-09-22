@@ -48,6 +48,9 @@ on:
       - 'studio/install_llama_prebuilt.py'
       - 'studio/install_manifest.py'
       - 'studio/prebuilt_core.py'
+      # setup.sh runs this at setup.sh:5130 and setup.ps1 at setup.ps1:9025, so it is the
+      # last executed edge of the installer chain that was not listed here.
+      - 'studio/install_whisper_prebuilt.py'
       - '.github/workflows/studiobench-ci.yml'
       # The harness drives the shipped frontend through the real backend, so a
       # change to either can break it without touching a file under tests/.
@@ -77,6 +80,7 @@ on:
       - 'studio/install_llama_prebuilt.py'
       - 'studio/install_manifest.py'
       - 'studio/prebuilt_core.py'
+      - 'studio/install_whisper_prebuilt.py'
       - '.github/workflows/studiobench-ci.yml'
       - 'studio/frontend/**'
       - 'studio/backend/**'
