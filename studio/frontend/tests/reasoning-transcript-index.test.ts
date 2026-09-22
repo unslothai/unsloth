@@ -255,7 +255,7 @@ test("a closing delimiter split across appends cannot eat later prose", () => {
     const rows = index.update(["```js\nconst bird = true;\n" + suffix]);
     if (suffix.endsWith("After"))
       assert.ok(rows.some((row) => !row.code && row.text.includes("After")));
-    else assert.equal(fromMarkdown(rows[0].text).children[0].type, "code");
+    else assert.ok(rows[0].code);
   }
 });
 

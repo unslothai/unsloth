@@ -529,10 +529,14 @@ export class ReasoningTranscriptIndex {
       const index = (this.documents[document] ??= new DocumentIndex());
       index.update(source);
       return index.blocks.flatMap((block) => {
-        // Bounded fences retain the existing previews, artifact settings, and actions.
+        // Preview-capable fences retain the established renderer and its settings.
+        // Ordinary code keeps the same incremental renderer and scroll geometry.
         if (
           block.fence &&
-          block.text.length > REASONING_FRAGMENT_CHARACTERS
+          (block.text.length > REASONING_FRAGMENT_CHARACTERS ||
+            !["mermaid", "svg", "xml", "html"].includes(
+              block.fence.language?.toLowerCase() ?? "",
+            ))
         ) {
           const fence = block.fence;
           fence.index ??= new ReasoningCodeIndex({
