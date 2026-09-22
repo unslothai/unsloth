@@ -303,3 +303,34 @@ def test_no_reference_to_the_fp8_parameter_survives_into_the_cpu_pass(monkeypatc
     assert done == 2
     assert state["alive_in_pass_2"] is False
     assert torch.equal(model.experts.gate_up_proj.detach(), expected["experts.gate_up_proj"])
+
+
+def test_disk_offloaded_leftover_is_refused_with_an_instruction():
+    """A leftover fp8 tensor on the meta device is disk-offloaded: its hook would restore raw
+    fp8 bytes at forward time and the checkpoint scale is gone, so the load must stop here
+    instead of failing later inside torch._grouped_mm."""
+    model, tensors, expected = _build()
+    model.experts.gate_up_proj = nn.Parameter(
+        torch.empty_like(model.experts.gate_up_proj, device = "meta"), requires_grad = False
+    )
+    with tempfile.TemporaryDirectory() as d:
+        _write_checkpoint(d, tensors)
+        with pytest.raises(RuntimeError, match = "offloaded to disk"):
+            _dequantize_leftover_fp8_params(model, d, torch.bfloat16)
+
+
+def test_activation_scale_survives_on_a_module_that_kept_its_fp8_weight():
+    """Cleanup of stale activation scales is limited to modules whose weights were converted."""
+    model, tensors, expected = _build()
+    # q_proj keeps its own scale, so it stays fp8 and must keep its activation scale.
+    model.q_proj.weight = nn.Parameter(tensors["q_proj.weight"], requires_grad = False)
+    model.q_proj.weight_scale_inv = nn.Parameter(tensors["q_proj.weight_scale_inv"], requires_grad = False)
+    model.q_proj.register_buffer("input_activation_scale", torch.ones(1))
+    model.experts.register_buffer("input_activation_scale", torch.ones(1))
+    with tempfile.TemporaryDirectory() as d:
+        _write_checkpoint(d, tensors)
+        done, skipped = _dequantize_leftover_fp8_params(model, d, torch.bfloat16)
+    assert done == 2 and skipped >= 1
+    assert model.q_proj.weight.dtype in _FP8_DTYPES
+    assert hasattr(model.q_proj, "input_activation_scale")
+    assert not hasattr(model.experts, "input_activation_scale")

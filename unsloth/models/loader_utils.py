@@ -1465,6 +1465,10 @@ def _fp8_scale_grid_dequant(quantized, scale, out_dtype):
     return None
 
 
+class FP8LeftoverOffloadedError(RuntimeError):
+    """A leftover fp8 tensor is disk-offloaded, so the 16bit load cannot be finished in place."""
+
+
 def _dequantize_leftover_fp8_params(
     model,
     model_name,
@@ -1559,6 +1563,7 @@ def _dequantize_leftover_fp8_params(
 
         # Pass 1: dequantize on the parameter's own device. The device map was planned for the 16bit size, so a card that is full to its plan while its stacks are still fp8 has room for the result but not for the transient; such a stack is parked on the CPU (which frees its fp8 bytes) and finished in pass 2 once the rest of the card is at its final size.
         deferred = []
+        converted_modules = set()
         for weight_key, (module, live_name, attr) in target_of_ckpt.items():
             param = getattr(module, attr, None)
             if not isinstance(param, torch.Tensor) or param.dtype not in _FP8_DTYPES:
@@ -1571,8 +1576,14 @@ def _dequantize_leftover_fp8_params(
                 skipped += 1
                 continue
             if param.device.type == "meta":
-                skipped += 1
-                continue
+                # Offloaded to disk: the hook would restore the raw fp8 bytes at forward time,
+                # and its checkpoint scale is already gone. There is nothing correct to do here.
+                raise FP8LeftoverOffloadedError(
+                    f"Unsloth: `{weight_key}` is an fp8 tensor transformers left quantized on a 16bit "
+                    "load, and it is offloaded to disk, so it cannot be dequantized in place. Load with "
+                    "enough GPU or CPU memory to keep the model resident (no disk offload), or use "
+                    "`load_in_4bit = True`."
+                )
             try:
                 scale = _scale_for(weight_key, param.device)
                 with torch.no_grad():
@@ -1582,6 +1593,7 @@ def _dequantize_leftover_fp8_params(
                     last_error = f"{weight_key}: scale {tuple(scale.shape)} does not tile {tuple(param.shape)}"
                     continue
                 module._parameters[attr] = torch.nn.Parameter(out, requires_grad = False)
+                converted_modules.add(module)
                 dequantized += 1
             except Exception as e:
                 if _is_oom(e):
@@ -1610,6 +1622,7 @@ def _dequantize_leftover_fp8_params(
                 _empty_device_cache(device)
                 module._parameters[attr] = torch.nn.Parameter(out.to(device), requires_grad = False)
                 del param, out
+                converted_modules.add(module)
                 dequantized += 1
             except Exception as e:
                 failed += 1
@@ -1624,8 +1637,9 @@ def _dequantize_leftover_fp8_params(
                     pass
 
         if dequantized > 0:
-            # The remaining activation scales of a static checkpoint mean nothing once the weights are 16bit.
-            for module in set(m for m, _, _ in target_of_ckpt.values()):
+            # The remaining activation scales of a static checkpoint mean nothing once a module's
+            # weights are 16bit. A module that kept its fp8 weight and scale keeps its activation scale too.
+            for module in converted_modules:
                 for stale in [
                     n
                     for n, p in list(module._parameters.items())
@@ -1644,6 +1658,8 @@ def _dequantize_leftover_fp8_params(
                 f"(last: {last_error})."
             )
         return (dequantized, skipped)
+    except FP8LeftoverOffloadedError:
+        raise
     except Exception:
         return (0, 0)
 
