@@ -366,15 +366,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-2.1-FP8"),),
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image_21", "qwenimage21", "qwen-image-21"),
-        # Straight from the model's own repo, not a repackaged mirror: sd.cpp converts the
-        # diffusers tensor names itself, so the subfolder file loads as-is and there is nothing to
-        # repackage. Every other family here points at a ComfyUI-style mirror because its base is
-        # gated and a GGUF pick would 401 on the companions; Qwen/Qwen-Image-2.1 is not gated.
-        # The cost is that this file is fp32 (1.35 GB) where a repackaged bf16 would be 644 MiB.
-        # Rendered both: mean absolute difference 0.13/255 at a fixed seed, so it is the same
-        # image and only the download differs. 2.1 has its own VAE class, so the qwen-image file
-        # would decode to noise here rather than failing.
-        sd_cpp_vae = ("Qwen/Qwen-Image-2.1", "vae/diffusion_pytorch_model.safetensors"),
+        # Our own mirror of the Comfy-Org repack, byte for byte (sha256
+        # bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9), same shape as the
+        # qwen-image and z-image entries. The model's own repo would also serve a usable VAE, and
+        # ungated at that, but its copy is the fp32 diffusers file at 1.35 GB against 644 MiB here
+        # for an identical render (mean absolute difference 0.13/255 at a fixed seed), and
+        # mirroring keeps a rename upstream from turning every CPU load into a 404.
+        # 2.1 has its own VAE class, so the qwen-image or Wan 2.2 file decodes to noise here
+        # rather than failing.
+        sd_cpp_vae = ("unsloth/Qwen-Image-2.1-ComfyUI", "vae/qwen_image_2.1_vae_bf16.safetensors"),
         # Qwen3-VL 8B, not Qwen2.5-VL, and supplied through --llm rather than --qwen2vl: the
         # qwen2vl flag carries Qwen2-VL's vision preprocessing, which this encoder does not want.
         # Q4_K_M keeps the CPU RAM win the no-GPU route exists for (bf16 is 16.4 GB, this is 4.7).

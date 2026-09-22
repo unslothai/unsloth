@@ -680,9 +680,13 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
     assert fam is not None and fam.name == "qwen-image-2.1"
     assert family_sd_cpp_supported(fam)
 
-    assert fam.sd_cpp_vae == ("Qwen/Qwen-Image-2.1", "vae/diffusion_pytorch_model.safetensors")
-    # The base repo serves it directly, so there is no companion-only mirror to keep public.
-    assert fam.sd_cpp_vae[0] == fam.base_repo
+    assert fam.sd_cpp_vae == (
+        "unsloth/Qwen-Image-2.1-ComfyUI",
+        "vae/qwen_image_2.1_vae_bf16.safetensors",
+    )
+    # Not the qwen-image VAE: a different class for a different latent space, which decodes to
+    # noise rather than raising if it is ever substituted here.
+    assert "2.1" in fam.sd_cpp_vae[1]
 
     encoders = sd_cpp_text_encoders_for(fam, "unsloth/Qwen-Image-2.1-GGUF", None)
     assert len(encoders) == 1
@@ -699,4 +703,6 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
     # the base itself, so it must NOT be classified that way.
     companions = sd_cpp_companion_only_repo_ids()
     assert "unsloth/qwen3-vl-8b-instruct-gguf" in companions
+    assert "unsloth/qwen-image-2.1-comfyui" in companions
+    # The base itself is loadable, so it must never be classified as fetch-only.
     assert "qwen/qwen-image-2.1" not in companions
