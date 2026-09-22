@@ -204,3 +204,44 @@ def test_a_plain_safetensors_build_derives_the_name_the_loader_now_asks_for_firs
     # No upload repo means nothing to derive from, so it refuses rather than guessing.
     with pytest.raises(ValueError, match = "prequant_filenames"):
         build.upload_destination(zimage, "fp8", rotated = False, safetensors = True)
+
+
+def test_the_recorded_base_must_be_the_canonical_id_not_just_the_same_tail(capsys, monkeypatch):
+    """``--base-model-id`` decides what a PUBLISHED file claims to be, so the loader's deliberately
+    tail-tolerant comparison is the wrong gate here: ``other/Qwen-Image-2.1`` passes it, and the
+    loader's equally tolerant check then accepts those weights as the official family base.
+
+    Driven through ``main`` so the refusal is the one a builder would actually hit, and it has to
+    land BEFORE the download: nothing below is stubbed, so reaching the load would fail differently.
+    """
+    build = _script()
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam is not None and fam.base_repo == "Qwen/Qwen-Image-2.1"
+
+    argv = [
+        "--base",
+        "./temp/qwen_image_21",
+        "--family",
+        "qwen-image-2.1",
+        "--scheme",
+        "int8",
+        "--out",
+        "/nonexistent/out.pt",
+        "--base-model-id",
+        "other/Qwen-Image-2.1",
+    ]
+    assert build.main(argv) == 2
+    message = capsys.readouterr().out
+    assert "other/Qwen-Image-2.1" in message and "Qwen/Qwen-Image-2.1" in message
+
+    # The canonical id is accepted, and whitespace around it is not a different model. "Accepted"
+    # here means the run gets PAST this guard: what it reaches next is the transformer class lookup,
+    # which on a diffusers predating the family raises rather than returning 2, and either way it is
+    # no longer this refusal.
+    for accepted in ("Qwen/Qwen-Image-2.1", "  Qwen/Qwen-Image-2.1  "):
+        try:
+            rc = build.main(argv[:-1] + [accepted])
+        except AttributeError as exc:
+            assert fam.transformer_class in str(exc), exc
+            continue
+        assert rc != 2 or "is not" not in capsys.readouterr().out, accepted

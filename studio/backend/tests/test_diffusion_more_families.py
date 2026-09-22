@@ -617,3 +617,100 @@ def test_flux2_gguf_base_mismatch_check_fails_open(tmp_path):
     assert_flux2_gguf_matches_base(
         detect_family("unsloth/FLUX.1-dev-GGUF"), "black-forest-labs/FLUX.2-klein-4B", empty
     )
+
+
+def test_qwen_image_21_is_reachable_end_to_end_not_just_detectable():
+    """A family whose base repo is not trusted is not a family at all.
+
+    Detection resolving is the easy half and was never the problem: the load is refused several
+    layers later, by a check that reads a different list, so the entry shipped looking complete and
+    every non-GGUF pick of it died with "restricted to unsloth/* repos". This asserts the whole
+    chain the picker actually walks, which is why it is one test rather than four.
+    """
+    from core.inference.diffusion_families import (
+        _PIPELINE_MIN_DIFFUSERS,
+        detect_family,
+        detect_family_by_pipeline_class,
+    )
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    # Not swallowed by the generic family, and not swallowing it either.
+    assert detect_family("Qwen/Qwen-Image").name == "qwen-image"
+    assert detect_family("Qwen/Qwen-Image-2512").name == "qwen-image"
+    for alias in ("qwen_image_21", "qwenimage21", "qwen-image-21"):
+        assert detect_family("", override = alias) is fam, alias
+    # The class really is what the published model_index.json names.
+    assert detect_family_by_pipeline_class("QwenImage21Pipeline") is fam
+    assert fam.pipeline_class in _PIPELINE_MIN_DIFFUSERS
+
+    # The gate that made the entry inert. _is_trusted_diffusion_repo is asked of the base repo by
+    # validate_load_request BEFORE anything is built, so a family base missing from that list is
+    # unloadable however correct the rest of the entry is.
+    assert _is_trusted_diffusion_repo(fam.base_repo), (
+        f"{fam.base_repo} is the family's own base and is not in _TRUSTED_NON_GGUF_REPOS, so "
+        "every non-GGUF pick of this family is refused before the pipeline is built"
+    )
+
+
+def test_every_image_family_base_repo_is_loadable():
+    """The general form of the above, so the next family cannot ship inert the same way."""
+    from core.inference.diffusion_families import _FAMILIES
+
+    unreachable = [
+        f.name for f in _FAMILIES if f.base_repo and not _is_trusted_diffusion_repo(f.base_repo)
+    ]
+    assert (
+        not unreachable
+    ), f"these families declare a base repo that validate_load_request refuses: {unreachable}"
+
+
+def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade():
+    """``pip install -U 'diffusers>=0.41.0'`` has no candidate while 0.41.0 is unreleased, so the
+    refusal has to name the pinned main build Studio actually installs for this class."""
+    from core.inference.diffusion_families import (
+        _PIPELINE_MIN_DIFFUSERS,
+        _UNRELEASED_MIN_DIFFUSERS,
+        _too_old_message,
+    )
+
+    message = _too_old_message("QwenImage21Pipeline", "qwen-image-2.1", "0.40.0")
+    assert "pip install -U 'diffusers>=0.41.0'" not in message
+    assert "diffusers-main.txt" in message
+    assert "has not been released yet" in message
+
+    # A released minimum keeps the ordinary remedy.
+    released = _too_old_message("Krea2Pipeline", "krea-2", "0.38.0")
+    assert "pip install -U 'diffusers>=0.39.0'" in released
+
+    # Every unreleased entry must still be a minimum some class actually declares, so a stale one
+    # cannot sit here unnoticed after its release ships.
+    declared = set(_PIPELINE_MIN_DIFFUSERS.values())
+    assert _UNRELEASED_MIN_DIFFUSERS <= declared, sorted(_UNRELEASED_MIN_DIFFUSERS - declared)
+
+
+def test_qwen_image_21_takes_reference_images_but_is_not_an_edit_only_family():
+    """2.1 is unified, so it is the FLUX.2 shape and not the Qwen-Image-Edit one.
+
+    ``QwenImage21Pipeline.__call__`` takes ``image`` as optional condition images beside the prompt,
+    with no ``strength`` and the size from width/height, which is what the reference workflow passes.
+    ``edit`` would mean the pipeline IS the edit pipeline with no plain text-to-image, which is
+    Qwen-Image-Edit, a different model with a different pipeline class. Getting this wrong in either
+    direction is silent: False refuses reference images outright, True would demand an input image
+    for every generation.
+    """
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    assert fam.reference is True
+    assert fam.edit is False
+    assert fam.pipeline_class == "QwenImage21Pipeline"
+    # It also has no separate img2img or inpaint pipeline upstream: the one class covers both jobs.
+    assert fam.img2img_pipeline_class is None
+    assert fam.inpaint_pipeline_class is None
+
+    # The edit family is a different model entirely, and must not have been merged into this one.
+    edit = detect_family("Qwen/Qwen-Image-Edit-2511")
+    assert edit is not None and edit.name == "qwen-image-edit" and edit.edit is True
+    assert edit.pipeline_class != fam.pipeline_class

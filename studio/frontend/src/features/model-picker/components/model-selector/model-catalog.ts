@@ -180,6 +180,24 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [gguf("unsloth/Z-Image-GGUF")],
   },
   {
+    canonicalId: "unsloth/Qwen-Image-2.1",
+    displayName: "Qwen-Image 2.1",
+    // Text-to-image that also accepts reference images on the same call (the family's `reference`
+    // flag), rather than a separate edit pipeline the way Qwen-Image-Edit is.
+    description: "Text-to-image",
+    scope: "image",
+    // Same reason as the 2512 row below: the int8 half of the prequant repo is reached through
+    // prequant_variant_repos and has no artifact row, so alias it to keep a pasted id finding it.
+    aliases: ["unsloth/Qwen-Image-2.1-FP8"],
+    artifacts: [
+      bf16Pipeline("Qwen/Qwen-Image-2.1", 33, {
+        totalParams: 7115124736,
+        prequantRepo: "unsloth/Qwen-Image-2.1-FP8",
+        prequantSizeGb: { fp8: 7.12, int8: 7.26 },
+      }),
+    ],
+  },
+  {
     canonicalId: "unsloth/Qwen-Image-2512",
     displayName: "Qwen-Image 2512",
     description: "Text-to-image",
