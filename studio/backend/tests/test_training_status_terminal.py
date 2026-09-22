@@ -308,7 +308,7 @@ def test_worker_reports_remote_repo_but_not_local_paths(monkeypatch, tmp_path):
     import time
 
     source = Path(__file__).parents[1] / "core/training/worker.py"
-    tree = ast.parse(source.read_text())
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
     report = next(
         n
         for n in ast.walk(tree)

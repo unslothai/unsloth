@@ -14,7 +14,7 @@ LOADER = ROOT / "unsloth/models/loader.py"
 
 
 def _loader(cls):
-    tree = ast.parse(LOADER.read_text())
+    tree = ast.parse(LOADER.read_text(encoding = "utf-8"))
     node = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls)
     return next(
         n for n in node.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
@@ -119,7 +119,7 @@ def test_callback_is_consumed_by_loaders_and_forwarded_only_to_delegated_loader(
 
 def test_training_forwards_observer_through_each_loader_and_retry():
     path = ROOT / "studio/backend/core/training/trainer.py"
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
     load = next(
         n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "load_model"
     )
