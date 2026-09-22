@@ -187,6 +187,10 @@ type ActiveModelLoadRun = {
   loadAttemptPath: string | null;
   cancelPromise: Promise<boolean> | null;
   rollbackCheckpoint: string | null;
+  /** The outgoing model's GGUF variant, captured with the checkpoint above. clearCheckpoint()
+   *  drops activeGgufVariant from the store, so a replacement that has to reload the former
+   *  resident must carry the variant itself or it would restore the wrong artifact. */
+  rollbackVariant: string | null;
   rollbackConfig?: PerModelConfig;
   /** Set once the preliminary unload has removed the model that was resident before
    *  this load. A cancellation before this run POSTs its own /load leaves the backend
@@ -201,7 +205,6 @@ type ActiveModelLoadRun = {
 
 /** The selection the user last asked for, so an await can tell it was superseded. */
 let modelSelectionIntentEpoch = 0;
-let latestExternalSelectionIntentId: number | null = null;
 let pendingExternalReplacement:
   | { intentId: number; config?: PerModelConfig }
   | null = null;
@@ -298,11 +301,19 @@ type PendingReplacementRollback = {
    *  checkpoint for exactly that case, so the replacement has to carry the unloaded state or it
    *  would skip its compensating reload and leave nothing resident. */
   residentUnloaded?: boolean;
+  /** The outgoing model's GGUF variant at the moment of cancellation, for the same reason as
+   *  the unloaded flag: clearCheckpoint() has already dropped it from the store. */
+  variant?: string | null;
 };
 
 // Cancellation can finish after a newer selection intent has already started, so the
 // rollback target the replacement inherits is retained until the winner reserves its run.
 let pendingReplacementRollback: PendingReplacementRollback | null = null;
+
+/** One bounded lease-wait step: a pick waiting for a preflight holder re-checks this often. */
+const PREFLIGHT_LEASE_RETRY_MS = 250;
+/** How long a pick waits for a preflight lease holder to yield before giving up. */
+const PREFLIGHT_LEASE_WAIT_MS = 30_000;
 function rememberApprovedRemoteCode(
   checkpoint: string,
   fingerprint: string | null,
@@ -1042,7 +1053,6 @@ export function useChatModelRuntime() {
     (): Promise<boolean> => cancelLoadingWithCheckpointPolicy(false),
     [cancelLoadingWithCheckpointPolicy],
   );
-
   /**
    * Stop the pending load so a different pick can take the slot. Preserves the
    * working checkpoint, which the replacement needs as its rollback target.
@@ -1068,7 +1078,6 @@ export function useChatModelRuntime() {
 
   const invalidatePendingModelSelection = useCallback((): number => {
     modelSelectionIntentEpoch += 1;
-    latestExternalSelectionIntentId = modelSelectionIntentEpoch;
     return modelSelectionIntentEpoch;
   }, []);
 
@@ -1180,12 +1189,13 @@ export function useChatModelRuntime() {
         pendingReplacementRollback = {
           checkpoint: cancelledRun.rollbackCheckpoint,
           config: previousConfigForReplacement,
-          // Only claim the former resident is gone when this run really unloaded it and never
-          // POSTed a load of its own: that is exactly when the reconciliation above clears the
-          // store checkpoint this replacement reads.
-          residentUnloaded:
-            cancelledRun.residentModelUnloaded &&
-            cancelledRun.loadAttemptPath === null,
+          // The run really removed the resident with its own /unload, so the replacement must be
+          // prepared to restore it. A POSTed /load does not undo that: the resident this rolls back
+          // to is gone either way, and the cancellation reconciliation only clears the store
+          // checkpoint for the pre-POST case. The variant travels with it because clearCheckpoint()
+          // drops activeGgufVariant before the replacement reads it.
+          residentUnloaded: cancelledRun.residentModelUnloaded,
+          variant: cancelledRun.rollbackVariant ?? null,
         };
       };
 
@@ -1466,10 +1476,40 @@ export function useChatModelRuntime() {
         }
       }
 
-      // Hold the lifecycle lease through confirmation and loading.
-      const lifecycleLease = useChatRuntimeStore
-        .getState()
-        .beginModelLoading("preparing");
+      // Hold the lifecycle lease through confirmation and loading. A PREFLIGHT holder (parked on
+      // the stop-running-chats confirmation) owns the lease without having published a run or a
+      // picker entry, so a pick arriving now reads null from the gate while the holder later
+      // yields the slot as stale -- and both picks are lost. Wait, bounded, for the holder to
+      // release the lease, then claim it: the user's latest pick must not be dropped by a lease
+      // whose owner is still deciding.
+      let lifecycleLease: ModelLifecycleLease | null = null;
+      const leaseWaitDeadline = Date.now() + PREFLIGHT_LEASE_WAIT_MS;
+      while (lifecycleLease === null) {
+        lifecycleLease = useChatRuntimeStore
+          .getState()
+          .beginModelLoading("preparing");
+        if (lifecycleLease !== null) break;
+        // This pick was itself superseded while waiting; it must not load.
+        if (modelSelectionIntentEpoch !== loadIntentId) return;
+        if (Date.now() >= leaseWaitDeadline) break;
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          const unsubscribe = useChatRuntimeStore.subscribe((state) => {
+            if (settled || state.modelLoading) return;
+            settled = true;
+            unsubscribe();
+            resolve();
+          });
+          setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            unsubscribe();
+            resolve();
+          }, PREFLIGHT_LEASE_RETRY_MS);
+        });
+        // The holder released the lease; re-claim it, or yield if this pick went stale.
+        if (modelSelectionIntentEpoch !== loadIntentId) return;
+      }
       if (lifecycleLease === null) {
         restorePreviousConfig();
         toast.info("A model is loading", {
@@ -1501,9 +1541,10 @@ export function useChatModelRuntime() {
       }
       if (!stopDecision.proceed) {
         releasePreflightLifecycleLease();
-        if (typeof selection !== "string" && selection.previousConfig) {
-          applyPerModelConfigToRuntime(selection.previousConfig);
-        }
+        // The inherited target, not this pick's own previousConfig: when this pick superseded a
+        // load that had already pre-applied its settings, that field holds the superseded target's
+        // transient config, and declining here would leave the resident model wearing it.
+        restorePreviousConfig();
         return;
       }
       // Re-check the tracked picker for a load that was already starting when this lifecycle lease was acquired.
@@ -1552,7 +1593,10 @@ export function useChatModelRuntime() {
       const previousCheckpoint = inheritedPendingRollback
         ? inheritedPendingRollback.checkpoint
         : currentCheckpoint;
-      const previousVariant = currentRollbackState.activeGgufVariant ?? null;
+      // The cancelled run captured the variant before clearCheckpoint() dropped it from the store.
+      const previousVariant = inheritedPendingRollback
+        ? (inheritedPendingRollback.variant ?? null)
+        : (currentRollbackState.activeGgufVariant ?? null);
       const reloadingSameModel =
         previousCheckpoint === modelId &&
         (ggufVariant ?? null) === (previousVariant ?? null);
@@ -1611,6 +1655,9 @@ export function useChatModelRuntime() {
         cancelPromise: null,
         rollbackCheckpoint: previousCheckpoint,
         rollbackConfig: previousConfigForReplacement,
+        // Carried on the run, not read from the store later: clearCheckpoint() drops the store's
+        // activeGgufVariant before a replacement can derive the prior model's variant.
+        rollbackVariant: previousVariant,
         // An inherited rollback target whose model the cancelled run already unloaded: the backend
         // has nothing resident, so a failure below must restore it rather than find it still there.
         residentModelUnloaded: inheritedPendingRollback?.residentUnloaded === true,
@@ -1662,37 +1709,40 @@ export function useChatModelRuntime() {
           // read before the staged-metadata await so a change cannot perturb it. Unlike tensorParallel,
           // vision does NOT survive a model switch: it is per-model config defaulting to vision on, so a
           // target that saved none gets that default. The dedupe above builds its own view of an
-          // unconfigured switch from DEFAULT_PER_MODEL_CONFIG, and resetsPerModelSettings cannot repair it.
+          // Every rollback read below uses the INHERITED target, never this pick's own
+          // `selection.previousConfig`: when this pick superseded a load that had already
+          // pre-applied its settings, that field holds the superseded target's transient config,
+          // and a rollback would restore the resident model wearing the wrong model's settings.
+          // `previousConfigForReplacement` already carries the resident model's own config.
+          const rollbackConfig = previousConfigForReplacement;
           const previousNParallel =
-            typeof selection !== "string" && selection.previousConfig
-              ? (selection.previousConfig.nParallel ?? null)
+            rollbackConfig
+              ? (rollbackConfig.nParallel ?? null)
               : useChatRuntimeStore.getState().nParallel;
           const previousReasoningBudget =
-            typeof selection !== "string" && selection.previousConfig
-              ? selection.previousConfig.reasoningBudget
+            rollbackConfig
+              ? rollbackConfig.reasoningBudget
               : useChatRuntimeStore.getState().reasoningBudget;
           const previousReasoningBudgetMessage =
-            typeof selection !== "string" && selection.previousConfig
-              ? selection.previousConfig.reasoningBudgetMessage
+            rollbackConfig
+              ? rollbackConfig.reasoningBudgetMessage
               : useChatRuntimeStore.getState().reasoningBudgetMessage;
           const previousNBatch =
-            typeof selection !== "string" && selection.previousConfig
-              ? (selection.previousConfig.nBatch ?? null)
+            rollbackConfig
+              ? (rollbackConfig.nBatch ?? null)
               : useChatRuntimeStore.getState().nBatch;
           const previousNUbatch =
-            typeof selection !== "string" && selection.previousConfig
-              ? (selection.previousConfig.nUbatch ?? null)
+            rollbackConfig
+              ? (rollbackConfig.nUbatch ?? null)
               : useChatRuntimeStore.getState().nUbatch;
           // The outgoing tuning intent, read the same way and for the same reason: a rollback restores the
           // control, not the echo.
           const previousServerTuning: ServerTuningValues =
-            typeof selection !== "string" && selection.previousConfig
-              ? selection.previousConfig
-              : useChatRuntimeStore.getState();
+            rollbackConfig ?? useChatRuntimeStore.getState();
           // Same reason: the rollback echo would overwrite an edit staged against it.
           const previousMlxKvBits =
-            typeof selection !== "string" && selection.previousConfig
-              ? (selection.previousConfig.mlxKvBits ?? null)
+            rollbackConfig
+              ? (rollbackConfig.mlxKvBits ?? null)
               : useChatRuntimeStore.getState().mlxKvBits;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do: the Hub rejects an invalid
@@ -1742,9 +1792,7 @@ export function useChatModelRuntime() {
           // Roll back to the previous model's own context: previousConfig was snapshotted before this load
           // pre-applied the next model's config, so params.maxSeqLength may already be the next model's.
           const previousMaxSeqLength =
-            (typeof selection !== "string"
-              ? selection.previousConfig?.maxSeqLength
-              : null) ?? maxSeqLength;
+            previousConfigForReplacement?.maxSeqLength ?? maxSeqLength;
           // The intent the model had, not the length it ended up at: sending the resolved length would pin a
           // model nobody pinned. The resident backend's own answer, so a native-audio checkpoint the worker
           // served off the MLX path does not roll back at the sentinel.

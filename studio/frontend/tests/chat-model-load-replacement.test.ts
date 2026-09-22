@@ -443,10 +443,7 @@ test("an inherited rollback carries the already-unloaded state into the replacem
     "const inheritCancelledRunRollback = (",
     "// A different pick supersedes the load in flight.",
   );
-  assert.match(
-    inherit,
-    /residentUnloaded:\n\s*cancelledRun\.residentModelUnloaded &&\n\s*cancelledRun\.loadAttemptPath === null,/,
-  );
+  assert.match(inherit, /residentUnloaded: cancelledRun\.residentModelUnloaded,/);
   const registration = section(
     runtime,
     "const loadRun: ActiveModelLoadRun = {",
@@ -491,3 +488,136 @@ test("a failed cancellation clears the rollback the replacement would inherit", 
   assert.ok(drop < bail, "the marker must be cleared on the way out");
 });
 
+test("a pick parked on a preflight lease waits for the holder instead of being lost", () => {
+  const runtime = read(RUNTIME);
+  // The holder owns the lease without having published a run or a picker entry, so a pick
+  // arriving now used to read null from the gate and return -- and the holder then yielded as
+  // stale, so neither selection loaded. It has to wait, bounded, and re-check its own intent.
+  const claim = section(
+    runtime,
+    "// Hold the lifecycle lease through confirmation and loading.",
+    "if (lifecycleLease === null) {",
+  );
+  assert.match(claim, /beginModelLoading\("preparing"\)/);
+  assert.match(
+    claim,
+    /if \(modelSelectionIntentEpoch !== loadIntentId\) return;/,
+    "a superseded waiter must yield rather than load",
+  );
+  assert.match(claim, /Date\.now\(\) >= leaseWaitDeadline/, "the wait must be bounded");
+  assert.match(
+    claim,
+    /if \(settled \|\| state\.modelLoading\) return;/,
+    "the wait must end when the holder releases the lease",
+  );
+  // Giving up is still possible, but only after the bounded wait has actually elapsed.
+  assert.match(runtime, /restorePreviousConfig\(\);\n\s*toast\.info\("A model is loading"/);
+});
+
+test("the cancelled run's GGUF variant survives into the replacement's rollback", () => {
+  const runtime = read(RUNTIME);
+  // clearCheckpoint() drops the store's activeGgufVariant, so a replacement that must reload the
+  // former resident would send gguf_variant: null and restore the wrong artifact of that repo.
+  const inherit = section(
+    runtime,
+    "const inheritCancelledRunRollback = (",
+    "// A different pick supersedes the load in flight.",
+  );
+  assert.match(
+    inherit,
+    /variant: cancelledRun\.rollbackVariant \?\? null,/,
+    "the cancelled run's captured variant must ride the inherited rollback",
+  );
+  assert.match(runtime, /rollbackVariant: string \| null;/);
+  const variant = section(
+    runtime,
+    "const previousVariant = inheritedPendingRollback",
+    "const reloadingSameModel =",
+  );
+  assert.match(variant, /inheritedPendingRollback\.variant \?\? null/);
+  // The run has to capture it, since the store no longer holds it by then.
+  const registration = section(
+    runtime,
+    "const loadRun: ActiveModelLoadRun = {",
+    "activeLoadRunRef.current = loadRun;",
+  );
+  assert.match(registration, /rollbackVariant: previousVariant,/);
+});
+
+test("an unload that survived the load POST still counts as unloaded", () => {
+  const runtime = read(RUNTIME);
+  // The /load POST does not put the removed resident back, so the unloaded fact must not be
+  // discarded merely because the run has since POSTed. Otherwise a replacement cancelled before
+  // its own preliminary unload skips the compensating reload and nothing is resident.
+  const inherit = section(
+    runtime,
+    "const inheritCancelledRunRollback = (",
+    "// A different pick supersedes the load in flight.",
+  );
+  assert.equal(
+    /loadAttemptPath === null/.test(inherit),
+    false,
+    "the unloaded marker must not be gated on the run not having POSTed",
+  );
+  assert.match(inherit, /residentUnloaded: cancelledRun\.residentModelUnloaded,/);
+});
+
+test("every rollback path reads the inherited config, not this pick's own previousConfig", () => {
+  const runtime = read(RUNTIME);
+  // selection.previousConfig belongs to the pick's own predecessor; when this pick superseded a
+  // load that had already pre-applied its settings, that field holds the superseded TARGET's
+  // transient config, so a rollback through it restores the resident wearing the wrong settings.
+  const body = section(
+    runtime,
+    "// Every rollback read below uses the INHERITED target, never this pick's own",
+    "if (isGguf && isDiffusion === undefined)",
+  );
+  // Comment lines name the field to explain the rule, so only code lines are judged here.
+  const bodyCode = body
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("//"))
+    .join("\n");
+  assert.equal(
+    /selection\.previousConfig/.test(bodyCode),
+    false,
+    "the rollback reads must not consult this pick's own previousConfig",
+  );
+  assert.match(body, /const rollbackConfig = previousConfigForReplacement;/);
+  // The decline path and the maxSeqLength snapshot are rollback reads too.
+  const decline = section(
+    runtime,
+    "if (!stopDecision.proceed) {",
+    "// Re-check the tracked picker for a load that was already starting",
+  );
+  assert.match(decline, /restorePreviousConfig\(\);/);
+  assert.match(
+    runtime,
+    /previousConfigForReplacement\?\.maxSeqLength \?\? maxSeqLength;/,
+  );
+});
+
+test("an external pick cancels the local load it replaces", () => {
+  const page = read(CHAT_PAGE);
+  const external = section(
+    page,
+    'if (meta?.source === "external" || isExternalModelId(value)) {',
+    'const selectedExternal = parseExternalModelId(value);',
+  );
+  // Without this the local run keeps modelLoading true -- the composer then treats even the
+  // external checkpoint as unavailable -- and its completion overwrites the capability fields
+  // this branch sets. The intent is invalidated BEFORE the cancellation so a run still parked in
+  // its preflight yields on wakeup instead of adopting its status and starting anyway.
+  assert.match(external, /if \(modelOperationInProgress \|\| loadingModel\) \{/);
+  const invalidate = external.indexOf("invalidatePendingModelSelection()");
+  const cancel = external.indexOf("cancelLoadingForReplacement(externalIntentId)");
+  assert.notEqual(invalidate, -1, "expected the intent invalidation");
+  assert.notEqual(cancel, -1, "expected the replacement cancellation");
+  assert.ok(invalidate < cancel, "the intent must be invalidated before cancelling");
+  // A stopped run's own reconciliation may clear the checkpoint, so the pick is re-asserted;
+  // and the stale-intent guard keeps a superseded pick from writing to the store.
+  assert.match(external, /if \(!isModelSelectionIntentCurrent\(externalIntentId\)\) return;/);
+  assert.match(external, /live\.setCheckpoint\(value, null\);/);
+  assert.match(external, /restoreConfigForExternalReplacement\(externalIntentId\);/);
+  assert.match(external, /discardExternalReplacement\(externalIntentId\);/);
+  assert.match(page, /isModelSelectionIntentCurrent,/);
+});
