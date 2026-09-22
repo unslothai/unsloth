@@ -19,7 +19,13 @@ import copy
 import io
 import wave
 
+import numpy as np
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import routes.inference as inference_route
+from auth.authentication import get_current_subject
 
 from models.inference import AnthropicMessagesRequest
 from routes.inference import (
@@ -552,6 +558,47 @@ class TestAnAudioTurnIsChargedByItsDuration:
 
         asyncio.run(run())
         assert on_loop == [False]
+
+    # An ogg header states no length, so only the WAV it is transcoded to can be measured.
+    @pytest.mark.parametrize(
+        "raw",
+        [inference_route._mono_f32_to_wav_bytes(np.zeros(320_000), 16000), b"OggS" * 4**8],
+        ids = ["wav", "ogg"],
+    )
+    def test_an_audio_chat_reserves_a_bound_on_its_duration(self, monkeypatch, raw):
+        from .llama_backend_double import FakeLlamaCppBackend
+
+        class _AudioGguf(FakeLlamaCppBackend):
+            is_vision = _has_audio_input = True
+            _kv_cache_context_total = context_length = 32768
+
+            def generate_chat_completion(self, **_kwargs):
+                yield "ok"
+
+        charged, estimate = [], inference_route._openai_llama_admission_estimate
+        monkeypatch.setattr(inference_route, "get_llama_cpp_backend", _AudioGguf)
+        monkeypatch.setattr(
+            inference_route,
+            "_openai_llama_admission_estimate",
+            lambda **kw: charged.append(estimate(**kw)) or charged[-1],
+        )
+        monkeypatch.setattr(
+            inference_route, "_decode_audio_mono", lambda _raw: (np.zeros(20 * 16000), 16000)
+        )
+        app = FastAPI()
+        app.include_router(inference_route.router, prefix = "/v1")
+        app.dependency_overrides[get_current_subject] = lambda: "tester"
+        body = {
+            "max_tokens": 256,
+            "messages": [{"role": "user", "content": "hi"}],
+            "audio_base64": base64.b64encode(raw).decode(),
+        }
+
+        response = TestClient(app).post("/v1/chat/completions", json = body)
+
+        assert response.status_code == 200, response.text
+        # 25/s over the clip and a trailing 30 s window, the wrapper, output, and the prompt.
+        assert 0 <= charged[0] - (25 * (20 + 30) + 128 + 256) < 32, charged
 
 
 class TestAnAnthropicImageIsChargedLikeAnyOtherImage:

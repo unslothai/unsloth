@@ -1884,9 +1884,8 @@ _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
     _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
 )
 
-# Also an upper bound, per second of audio. No mtmd audio projector emits more than 25
-# embeddings a second (qwen2a and gemma4a/ua; voxtral 12.5, lfm2a 12.5, qwen3a 13), and the
-# Whisper-style encoders pad every clip to a whole 30 s window, so a 3 s clip costs 750.
+# Also an upper bound: no mtmd audio projector emits over 25 embeddings a second, and
+# Whisper-style preprocessing appends 30 s of silence before cutting 30 s windows.
 _OPENAI_LLAMA_ADMISSION_AUDIO_TOKENS_PER_SECOND = 25
 _OPENAI_LLAMA_ADMISSION_AUDIO_WINDOW_SECONDS = 30
 
@@ -2193,8 +2192,8 @@ def _openai_llama_admission_media_tokens(
     already carry is a second image really sent. The allowance is per-image rather than
     per-byte because the real mtmd count follows the loaded projector, not base64 length.
 
-    Audio is charged by duration where its header states one. Video keeps the old
-    top-level accounting until it has a model-specific estimate.
+    Audio is charged by its header's duration, or by its bytes where none is stated. Video
+    keeps the old top-level accounting until it has a model-specific estimate.
     """
     extra = 0
     extra += max(0, message_image_parts) * image_tokens
@@ -25056,6 +25055,9 @@ async def produce_openai_chat_completions(
             except Exception as e:
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
+            # Admission reads the duration from this field's header, which only the forwarded
+            # wav/mp3 is sure to state; an m4a, ogg or flac upload would be charged by its bytes.
+            payload.audio_base64 = audio_b64
 
         # llama-server samples frames but encodes each at the clip's resolution.
         video_b64 = None
