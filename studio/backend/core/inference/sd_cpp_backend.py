@@ -1614,7 +1614,7 @@ def binary_carries_marker(binary: Optional[str], marker: Optional[str]) -> bool:
                 if needle in tail + block:
                     found = True
                     break
-                tail = block[-(len(needle) - 1):] if len(needle) > 1 else b""
+                tail = block[-(len(needle) - 1) :] if len(needle) > 1 else b""
     except OSError:
         return True
     _ARCH_MARKER_CACHE[key] = found

@@ -730,6 +730,8 @@ def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
         "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1; "
         f"{module.DEFAULT_TAG} is not"
     )
+
+
 def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade():
     """``pip install -U 'diffusers>=0.41.0'`` has no candidate while 0.41.0 is unreleased, so the
     refusal has to name the pinned main build Studio actually installs for this class."""
