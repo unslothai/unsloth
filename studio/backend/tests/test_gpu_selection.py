@@ -923,7 +923,7 @@ class TestExplicitPickWithoutTorchKernels(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 ValueError,
-                r"GPU 1 \(AMD Radeon RX 5700 XT, gfx1010\) cannot run this Studio's PyTorch build, "
+                r"GPU 1 \(AMD Radeon RX 5700 XT, gfx1010\) cannot run the PyTorch build this Unsloth Studio installed, "
                 r"which has kernels for gfx1030, gfx1034 only",
             ):
                 prepare_gpu_selection([1], model_name = "unsloth/test")

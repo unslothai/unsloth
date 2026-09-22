@@ -5473,7 +5473,7 @@ def reject_gpu_ids_without_torch_kernels(gpu_ids) -> None:
         return
     built_for = ", ".join(_torch_kernel_arch_tokens()) or "other GPU architectures"
     raise ValueError(
-        f"{', '.join(_describe_rocm_gpus(uncovered))} cannot run this Studio's PyTorch build, "
+        f"{', '.join(_describe_rocm_gpus(uncovered))} cannot run the PyTorch build this Unsloth Studio installed, "
         f"which has kernels for {built_for} only. Pick another GPU, or reinstall Unsloth "
         f"Studio for that card."
     )
