@@ -1544,14 +1544,8 @@ def _transformers_rope_scaling_assignment_drops_theta():
 
 
 def fix_transformers_is_torch_fx_available():
-    """Give remote modeling code written against transformers 4.x the
-    ``transformers.utils.is_torch_fx_available`` it imports at module top.
-
-    transformers 5.0 removed the symbol (huggingface/transformers#44561, closed as not planned),
-    and hub modeling files that still import it (inclusionAI/Ling-2.6-flash's
-    ``modeling_bailing_moe_v2_5.py``) die on their first import. The 4.x definition returned
-    ``is_torch_available()``, which is what is restored, on ``transformers.utils`` and
-    ``transformers.utils.import_utils``. A build that still has it is left alone."""
+    """Restore ``transformers.utils.is_torch_fx_available`` (removed in 5.0) for remote
+    modeling code written against 4.x. The 4.x definition was ``is_torch_available()``."""
     try:
         import transformers.utils as utils
         import transformers.utils.import_utils as import_utils
@@ -1579,8 +1573,7 @@ _no_own_ignore_keys = object()
 
 
 def _validate_rope_accepting_ignore_keys(original):
-    """``original`` wrapped to accept the 5.0 ``ignore_keys`` argument, or ``None``
-    when it already takes it (or cannot be inspected, or is already wrapped)."""
+    """``original`` wrapped to accept the 5.0 ``ignore_keys`` argument, or ``None`` if not needed."""
     if original is None or getattr(original, "_unsloth_ignore_keys", False):
         return None
     try:
@@ -1614,9 +1607,7 @@ def _validate_rope_accepting_ignore_keys(original):
             args = ()
         if not ignore_keys:
             return original(self, *args, **kwargs)
-        # 5.4 did not drop the keys' meaning, it moved them onto this attribute, which the
-        # per-type validators read to keep model-specific keys out of the "Unrecognized keys"
-        # warning. Merge them in for this call only, as 5.0 to 5.3 scoped them to the call.
+        # 5.4 moved ignore_keys onto this attribute; merge them in for this call only.
         own = self.__dict__.get("ignore_keys_at_rope_validation", _no_own_ignore_keys)
         try:
             merged = set(getattr(self, "ignore_keys_at_rope_validation", None) or ()) | set(
@@ -1647,22 +1638,11 @@ def _patch_own_validate_rope(cls):
 
 
 def fix_transformers_validate_rope_ignore_keys():
-    """Let remote configuration code call ``validate_rope(ignore_keys = ...)`` on a transformers
-    that dropped that parameter.
+    """Accept ``validate_rope(ignore_keys = ...)`` from 5.0-era remote configuration code;
+    transformers 5.1 removed the parameter, raising TypeError in AutoConfig.from_pretrained.
 
-    transformers 5.0 declared ``RotaryEmbeddingConfigMixin.validate_rope(self, ignore_keys)``
-    and 5.1 removed the parameter. Remote code written against 5.0 (sarvamai/sarvam-105b-fp8's
-    ``configuration_sarvam_moe.py`` calls it from ``convert_rope_params_to_dict``) then dies in
-    ``AutoConfig.from_pretrained`` with ``TypeError: validate_rope() got an unexpected keyword
-    argument 'ignore_keys'`` before a single weight is read. The wrapper accepts and drops the
-    keyword; on a build whose validator still takes it, or has no mixin at all (4.x), nothing
-    is changed.
-
-    Some configurations define their own validator (Phi3Config, PhimoeConfig, DeepseekV4Config
-    and Phi4MultimodalConfig on 5.17), and a remote subclass of one of those resolves to it
-    rather than to the mixin. Every class already imported is patched, and a hook on
-    ``PreTrainedConfig.__init_subclass__`` patches every class defined afterwards: transformers
-    imports its model configurations lazily, and remote configurations arrive later still."""
+    Some configs (e.g. Phi3Config) define their own validator, so every existing subclass is
+    patched and an ``__init_subclass__`` hook covers lazily imported and remote configs."""
     try:
         from transformers.modeling_rope_utils import RotaryEmbeddingConfigMixin
     except Exception:

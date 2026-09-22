@@ -181,8 +181,7 @@ if _IS_MLX:
     except Exception:
         pass
     try:
-        # Same reason: a 5.0-era remote configuration calls validate_rope(ignore_keys = ...) on
-        # this path too, and _gpu_init is never reached here.
+        # Same reason: 5.0-era remote configs call validate_rope(ignore_keys = ...).
         from .import_fixes import fix_transformers_validate_rope_ignore_keys as _fix_validate_rope
         _fix_validate_rope()
         del _fix_validate_rope

@@ -12,9 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Remote configuration code written against transformers 5.0 calls
-``validate_rope(ignore_keys = ...)``; 5.1 dropped the parameter, so such a config
-died in AutoConfig.from_pretrained before a weight was read."""
+"""5.0-era remote configs call ``validate_rope(ignore_keys = ...)``, which 5.1 dropped."""
 
 import inspect
 
@@ -50,9 +48,7 @@ def test_validate_rope_accepts_ignore_keys_after_the_fix():
         intermediate_size = 8,
         vocab_size = 16,
     )
-    # what the 5.0-era remote code does
-    # A model-specific key, as DeepSeek-style remote configs pass. "rope_type" is required, so
-    # 5.0 to 5.3 themselves raise KeyError when it is ignored; it is not a valid probe.
+    # "rope_type" is required, so ignoring it raises KeyError even on 5.0; use model keys.
     config.validate_rope(ignore_keys = {"mscale", "mscale_all_dim"})
     config.validate_rope({"mscale", "mscale_all_dim"})  # the 5.0 positional form
     config.validate_rope()
@@ -80,13 +76,12 @@ def test_the_mlx_branch_installs_the_fix_too():
 
 
 def test_is_torch_fx_available_is_importable_from_transformers_utils_after_the_fix():
-    """Ling-2.6-flash's hub modeling file does `from transformers.utils import
-    is_torch_fx_available`; transformers 5 removed the symbol."""
+    """Hub modeling code imports is_torch_fx_available, which transformers 5 removed."""
     fix_transformers_is_torch_fx_available()
     from transformers.utils import is_torch_fx_available
     import transformers.utils.import_utils as import_utils
 
-    # The 4.x definition: whatever torch availability says (False on a torch-less MLX host).
+    # The 4.x definition: is_torch_available().
     assert is_torch_fx_available() == import_utils.is_torch_available()
     assert import_utils.is_torch_fx_available() == import_utils.is_torch_available()
     fix_transformers_is_torch_fx_available()  # idempotent
@@ -102,8 +97,7 @@ def test_the_mlx_branch_installs_the_fx_shim_too():
 
 
 def test_a_config_with_its_own_validator_accepts_ignore_keys_too():
-    """Phi3Config (and a remote subclass of it) resolves validate_rope to its own override,
-    not the mixin's; classes defined after the fix are covered by the subclass hook."""
+    """Phi3Config overrides validate_rope; later subclasses are covered by the hook."""
     fix_transformers_validate_rope_ignore_keys()
     from transformers import Phi3Config
 
@@ -128,8 +122,8 @@ def test_a_config_with_its_own_validator_accepts_ignore_keys_too():
 
 
 def test_ignore_keys_keep_their_meaning_on_a_validator_without_the_parameter():
-    """5.4 moved ``ignore_keys`` onto ``ignore_keys_at_rope_validation``; dropping the keys
-    instead brings back the "Unrecognized keys" warning 5.0 to 5.3 suppressed for them."""
+    """5.4 moved ``ignore_keys`` onto ``ignore_keys_at_rope_validation``; keys must still be
+    suppressed from the "Unrecognized keys" warning."""
     import logging
 
     from transformers import LlamaConfig
