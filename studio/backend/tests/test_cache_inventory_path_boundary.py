@@ -876,6 +876,38 @@ def test_every_request_that_consumes_an_inventory_identity_resolves_the_handle(
             assert getattr(echoed, field) == written, (model_name, field, written)
 
 
+
+
+def test_the_delete_preview_does_not_answer_with_the_path(monkeypatch):
+    """The preview names the folder it would delete, so an API-key caller gets the opaque
+    reference the delete itself accepts, not the host's absolute cache directory."""
+    async def _preview(repo_id, variant):
+        return {
+            "repo_id": repo_id,
+            "variant": variant,
+            "reclaimed_bytes": 256,
+            "cache_path": REPO_DIR,
+            "retained_companions": [],
+            "freeable_companions": [],
+            "blocked_by": [],
+        }
+
+    from hub.services.models import companion_cleanup
+
+    monkeypatch.setattr(companion_cleanup, "delete_impact_response", _preview)
+    body = {"repo_id": "unsloth/Llama-3.2-1B-Instruct", "variant": "Q4_K_M"}
+
+    payload = _hub(via_api_key = True).post("/api/hub/delete-impact", json = body).json()
+    assert payload["cache_path"] in (None, ""), payload
+    assert HOST_ROOT not in json.dumps(payload), payload
+    assert response_leaks_host_path(payload, [HOST_ROOT]) is None
+    assert host_paths.resolve_host_path_reference(payload["cache_ref"]) == REPO_DIR
+
+    # BOUNDARY. A browser session names the path itself and still reads it back.
+    ui = _hub(via_api_key = False).post("/api/hub/delete-impact", json = body).json()
+    assert ui["cache_path"] == REPO_DIR
+
+
 @pytest.mark.parametrize(
     ("client", "route"),
     [(_hub, "/api/hub/delete-cached"), (_models, "/api/models/delete-cached")],

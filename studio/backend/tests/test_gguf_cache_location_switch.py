@@ -147,6 +147,30 @@ def test_complete_inactive_copy_beats_torn_active_copy(cache_locations, cache_cl
     assert cached_gguf_for_load(repo_id, inactive_quant) == str(expected[inactive_quant][1])
 
 
+
+def test_loader_skips_a_cancelled_copy_for_a_healthy_duplicate(cache_locations):
+    """The listing prefers the healthy duplicate, so the loader must not open the cancelled copy."""
+    from core.inference.llama_cpp import cached_gguf_for_load
+    from hub.utils import download_manifest
+
+    repo_id, expected = cache_locations
+    active = hf_cache_settings.get_hf_cache_paths().hub_cache
+    quant = "Q4_K_M"
+    cancelled = healthy = None
+    cancelled_repo = None
+    for repo, path in expected.values():
+        (path.parent / f"Model-{quant}.gguf").write_bytes(b"0" * 256)
+        if repo.parent == active:
+            cancelled, cancelled_repo = path.parent, repo
+        else:
+            healthy = path.parent
+    assert cancelled is not None and healthy is not None
+    assert download_manifest.write_cancel_marker(
+        "model", repo_id, quant, hub_cache = cancelled_repo.parent
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    assert cached_gguf_for_load(repo_id, quant) == str(healthy / f"Model-{quant}.gguf")
+
 def test_duplicate_quant_prefers_active_cache_and_deletes_only_that_copy(
     cache_locations, cache_client
 ):

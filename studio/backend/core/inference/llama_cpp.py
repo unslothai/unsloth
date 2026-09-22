@@ -3099,7 +3099,11 @@ def _cached_variant_candidates(
 ) -> Generator[tuple[str, str, list[str], Path], None, None]:
     """Yield complete cached variant copies in snapshot preference order."""
     try:
-        from hub.utils.gguf_sources import cached_gguf_manifest_complete, gguf_cache_snapshots
+        from hub.utils.gguf_sources import (
+            cached_gguf_manifest_complete,
+            cached_gguf_source_partial,
+            gguf_cache_snapshots,
+        )
         pending_downloads = []
         for snap in gguf_cache_snapshots(repo_id):
             cached_files = _gguf_snapshot_files(snap)
@@ -3125,7 +3129,9 @@ def _cached_variant_candidates(
             if require_mmproj and not _pick_mmproj(cached_files):
                 continue
             candidate = (str(main_path), main, shards, snap)
-            if not cached_gguf_manifest_complete(repo_id, hf_variant, snap):
+            if not cached_gguf_manifest_complete(
+                repo_id, hf_variant, snap
+            ) or cached_gguf_source_partial(repo_id, hf_variant, snap):
                 pending_downloads.append(candidate)
                 continue
             yield candidate

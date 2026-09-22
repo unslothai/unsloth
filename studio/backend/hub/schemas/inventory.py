@@ -369,6 +369,8 @@ class DeleteImpactResponse(BaseModel):
     cache_path: Optional[str] = Field(
         None, description = "Cache repository folder targeted by this delete"
     )
+    # Opaque stand-in for ``cache_path``, filled in by the host-path boundary for API-key callers.
+    cache_ref: Optional[str] = None
 
     repo_id: str
     variant: Optional[str] = None

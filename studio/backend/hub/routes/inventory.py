@@ -321,13 +321,19 @@ async def delete_impact(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Preview a delete: bytes reclaimed, shared assets retained, and anything blocking it.
 
     POST rather than GET because a repo id is a path-shaped value and this reads no cache of its
     own; it is a pure query and mutates nothing.
     """
-    return await companion_cleanup.delete_impact_response(repo_id, variant)
+    # The preview names the folder it would delete, so it takes the same host-path boundary as
+    # the inventory routes; an API-key caller gets the opaque reference instead.
+    return redact_host_paths(
+        await companion_cleanup.delete_impact_response(repo_id, variant),
+        via_api_key = via_api_key,
+    )
 
 
 @router.get("/orphan-companions", response_model = OrphanCompanionsResponse)
