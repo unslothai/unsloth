@@ -650,3 +650,59 @@ def test_the_zoo_detector_cannot_spin_on_a_cycle(monkeypatch):
 
     monkeypatch.setattr(conversion_mapping, "get_model_conversion_mapping", a)
     assert import_fixes._zoo_composite_prefix_renaming_installed() is False
+
+
+def test_both_probes_see_the_repair_under_the_real_moe_wrapper(monkeypatch):
+    """unsloth_zoo's MoE wrapper publishes no `__wrapped__`, on purpose.
+
+    zoo's re-scope unwraps `__wrapped__` to choose what to wrap, so a MoE wrapper carrying one
+    would be REPLACED rather than sat on top of, silently dropping its per-expert converters.
+    It publishes `_unsloth_wrapper_inner` instead. zoo also registers the re-scope before the
+    MoE patch, so the MoE wrapper is on top in the normal case -- meaning a `__wrapped__`-only
+    walk reports no repair for one that is live, which would put the downgrade advice back in
+    the guard's message and stack a second wrapper here.
+
+    Driven through the real patch, not a stand-in: a stand-in that sets `__wrapped__` exercises
+    the one thing the real wrapper does not do, and passes either way.
+    """
+    conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
+    moe = pytest.importorskip("unsloth_zoo.temporary_patches.moe_utils_bnb4bit")
+    if not hasattr(moe, "patch_bnb4bit_model_conversion_mapping"):
+        pytest.skip("this unsloth_zoo has no MoE conversion-mapping patch")
+    import unsloth.import_fixes as import_fixes
+
+    def zoo_repair(*args, **kwargs):
+        pass
+    setattr(zoo_repair, "_unsloth_zoo_patched_composite_prefix_renaming", True)
+
+    monkeypatch.setattr(conversion_mapping, "get_model_conversion_mapping", zoo_repair)
+    moe.patch_bnb4bit_model_conversion_mapping()
+    live = conversion_mapping.get_model_conversion_mapping
+    if live is zoo_repair:
+        pytest.skip("the MoE patch declined to install on this transformers")
+
+    assert getattr(live, "__wrapped__", None) is None, \
+        "the MoE wrapper must not publish __wrapped__; see the docstring"
+    if getattr(live, "_unsloth_wrapper_inner", None) is None:
+        # An unsloth_zoo predating the link attribute. The repair really is invisible from
+        # here, and nothing this side can fix, so this is a skip and not a failure.
+        pytest.skip("this unsloth_zoo's MoE wrapper publishes no link to what it wrapped")
+
+    assert import_fixes._zoo_composite_prefix_renaming_installed() is True
+    assert import_fixes._composite_prefix_renaming_repaired() is True
+
+
+def test_the_chain_walk_is_bounded(monkeypatch):
+    conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
+    import unsloth.import_fixes as import_fixes
+
+    def a():
+        pass
+    def b():
+        pass
+    a.__wrapped__ = b
+    b.__wrapped__ = a
+
+    monkeypatch.setattr(conversion_mapping, "get_model_conversion_mapping", a)
+    assert import_fixes._zoo_composite_prefix_renaming_installed() is False
+    assert import_fixes._composite_prefix_renaming_repaired() is False
