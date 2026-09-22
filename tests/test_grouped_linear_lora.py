@@ -170,7 +170,7 @@ def test_a_saved_adapter_reloads_onto_the_grouped_forward(tmp_path):
     base.load_state_dict(base_state, strict = True)
     config = register_grouped_linear_lora_for_adapter(base, str(tmp_path))
     assert config is not None
-    reloaded = PeftModel.from_pretrained(base, str(tmp_path), config = config)
+    reloaded = PeftModel.from_pretrained(base, str(tmp_path), config = config, torch_device = "cpu")
     assert type(reloaded.base_model.model.o_a_proj).__name__ == "GroupedLinearLoRA"
     with torch.no_grad():
         got = reloaded(x)

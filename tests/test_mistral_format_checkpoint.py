@@ -11,6 +11,9 @@ import json
 import os
 
 import pytest
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 
@@ -30,8 +33,18 @@ def test_a_params_json_without_a_mistral_marker_is_not_claimed(tmp_path):
     tokenizer.model. Not Mistral's format, so the generic message must stay."""
     from unsloth.models.loader import _is_mistral_format_checkpoint
 
-    assert _is_mistral_format_checkpoint(_write(tmp_path, ["params.json", "consolidated.00.pth", "tokenizer.model"])) is False
-    assert _is_mistral_format_checkpoint(_write(tmp_path, ["params.json", "consolidated.safetensors.index.json"])) is True
+    assert (
+        _is_mistral_format_checkpoint(
+            _write(tmp_path, ["params.json", "consolidated.00.pth", "tokenizer.model"])
+        )
+        is False
+    )
+    assert (
+        _is_mistral_format_checkpoint(
+            _write(tmp_path, ["params.json", "consolidated.safetensors.index.json"])
+        )
+        is True
+    )
 
 
 def test_a_config_json_next_to_params_json_is_a_transformers_repo(tmp_path):
@@ -57,7 +70,7 @@ def test_the_message_names_the_file_and_the_route():
     assert "Mistral-Large-3-675B-Instruct-2512" in text
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "import unsloth needs an accelerator")
+@pytest.mark.skipif(not has_real_accelerator(), reason = "import unsloth needs an accelerator")
 def test_loader_raises_the_specific_message(tmp_path):
     """The arm that fails on main: the loader used to raise the generic message."""
     import unsloth  # noqa: F401

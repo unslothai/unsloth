@@ -128,7 +128,11 @@ def targeted_grouped_linear_classes(lora_config, model):
     """The grouped-linear classes `lora_config.target_modules` actually selects in `model`."""
     classes = []
     for name, module in model.named_modules():
-        if is_grouped_linear(module) and type(module) not in classes and _targets_module(lora_config, name):
+        if (
+            is_grouped_linear(module)
+            and type(module) not in classes
+            and _targets_module(lora_config, name)
+        ):
             classes.append(type(module))
     return classes
 

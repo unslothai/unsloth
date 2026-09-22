@@ -276,7 +276,6 @@ def _is_mistral_format_checkpoint(
             if local_files_only:
                 return False
             from huggingface_hub import file_exists
-
             has = lambda name: file_exists(model_name, name, revision = revision, token = token)
         return has("params.json") and not has("config.json") and any(has(m) for m in markers)
     except Exception:
@@ -1189,8 +1188,12 @@ class FastLanguageModel(FastLlamaModel):
             # A grouped linear (DeepSeek-V4's o_a_proj) needs its LoRA mapping registered again:
             # the mapping holds class objects and is not part of the saved adapter config.
             _grouped_config = register_grouped_linear_lora_for_adapter(
-                model, old_model_name, token = token, revision = revision,
-                local_files_only = local_files_only, **peft_load_kwargs,
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                **peft_load_kwargs,
             )
             if _grouped_config is not None:
                 peft_load_kwargs["config"] = _grouped_config
@@ -2197,8 +2200,12 @@ class FastModel(FastBaseModel):
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
             _grouped_config = register_grouped_linear_lora_for_adapter(
-                model, old_model_name, token = token, revision = revision,
-                local_files_only = local_files_only, **peft_load_kwargs,
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                **peft_load_kwargs,
             )
             if _grouped_config is not None:
                 peft_load_kwargs["config"] = _grouped_config

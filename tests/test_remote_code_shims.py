@@ -7,6 +7,8 @@ no-argument call on the training side then fails with
 `get_input_embeddings() missing 1 required positional argument: 'input_ids'`.
 """
 
+import sys
+
 import pytest
 import torch
 
@@ -78,6 +80,9 @@ class Outer(PreTrainedModel):
 
 # Remote code lives under transformers_modules; the loss shim keys on that.
 Outer.__module__ = "transformers_modules.tiny_remote.modeling_tiny"
+# Newer transformers reads sys.modules[cls.__module__] while building a model
+# (the experts implementation probe), so the name must resolve to a real module.
+sys.modules.setdefault(Outer.__module__, sys.modules[__name__])
 
 
 @pytest.fixture
