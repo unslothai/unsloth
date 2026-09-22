@@ -1239,6 +1239,8 @@ class TrainingBackend:
         self._model_download_repo_id: Optional[str] = None
         self._xet_fallback_used: bool = False
         self._needs_xet_respawn: bool = False
+        # #7843 mirror. None when the temp file could not be opened; the spawn still proceeds.
+        self._stderr_capture = None
 
         logger.info("TrainingBackend initialized (subprocess mode)")
 
@@ -1836,16 +1838,19 @@ class TrainingBackend:
                 ):
                     event_queue = _CTX.Queue()
                     stop_queue = _CTX.Queue()
+                    self._open_worker_stderr_capture()
 
                     process_args, process_kwargs = account_process_spec(
                         "core.training.worker",
                         "run_training_process",
                         cache_env,
-                        {
-                            "event_queue": event_queue,
-                            "stop_queue": stop_queue,
-                            "config": config,
-                        },
+                        self._with_stderr_mirror(
+                            {
+                                "event_queue": event_queue,
+                                "stop_queue": stop_queue,
+                                "config": config,
+                            }
+                        ),
                     )
                     proc = _CTX.Process(
                         target = run_without_native_path_secret,
@@ -2607,15 +2612,18 @@ class TrainingBackend:
                     ):
                         event_queue = _CTX.Queue()
                         stop_queue = _CTX.Queue()
+                        self._open_worker_stderr_capture()
                         process_args, process_kwargs = account_process_spec(
                             "core.training.worker",
                             "run_training_process",
                             cache_env,
-                            {
-                                "event_queue": event_queue,
-                                "stop_queue": stop_queue,
-                                "config": config,
-                            },
+                            self._with_stderr_mirror(
+                                {
+                                    "event_queue": event_queue,
+                                    "stop_queue": stop_queue,
+                                    "config": config,
+                                }
+                            ),
                         )
                         new_proc = _CTX.Process(
                             target = run_without_native_path_secret,
@@ -2877,6 +2885,46 @@ class TrainingBackend:
             etype = event.get("type") if isinstance(event, dict) else type(event).__name__
             logger.exception("Training event pump: failed to handle %s event; skipping", etype)
 
+    def _open_worker_stderr_capture(self) -> None:
+        """Replace the #7843 sink. A failed open leaves the spawn on inherited stderr."""
+        previous = self._stderr_capture
+        self._stderr_capture = None
+        if previous is not None:
+            try:
+                previous.close()
+            except Exception:
+                logger.debug("Could not close the previous training stderr sink", exc_info = True)
+        try:
+            from utils.worker_stderr import WorkerStderrCapture
+            self._stderr_capture = WorkerStderrCapture(prefix = "unsloth-training-worker-")
+        except Exception as exc:
+            logger.debug("Could not open a training worker stderr mirror: %s", exc)
+
+    def _with_stderr_mirror(self, kwargs: dict) -> dict:
+        capture = self._stderr_capture
+        if capture is None:
+            return kwargs
+        from utils.native_path_leases import STDERR_MIRROR_KWARG
+
+        # Popped by run_without_native_path_secret. It must not reach run_training_process.
+        return {**kwargs, STDERR_MIRROR_KWARG: capture.path}
+
+    def _unexpected_exit_message(self, proc) -> str:
+        from utils.worker_stderr import unexpected_exit_message
+
+        text = ""
+        capture = self._stderr_capture
+        if capture is not None:
+            try:
+                text = capture.text()
+            except Exception:
+                logger.debug("Could not read the training worker stderr sink", exc_info = True)
+        return unexpected_exit_message(
+            getattr(proc, "pid", None),
+            getattr(proc, "exitcode", None),
+            text,
+        )
+
     @job_pump
     def _pump_loop(self) -> None:
         """Background thread: consume subprocess events and update state.
@@ -2932,6 +2980,15 @@ class TrainingBackend:
                     return
 
                 with self._lock:
+                    report_exit = (
+                        self._progress.is_training
+                        and not self._should_stop
+                        and not self._progress.error
+                    )
+                exit_message = self._unexpected_exit_message(proc) if report_exit else None
+                if exit_message:
+                    logger.error("%s", exit_message)
+                with self._lock:
                     if self._progress.is_training:
                         if self._should_stop:
                             self._progress.is_training = False
@@ -2939,7 +2996,9 @@ class TrainingBackend:
                         else:
                             self._progress.is_training = False
                             self._progress.error = (
-                                self._progress.error or "Training process exited unexpectedly"
+                                self._progress.error
+                                or exit_message
+                                or "Training process exited unexpectedly"
                             )
 
                 self._ensure_db_run_created()
