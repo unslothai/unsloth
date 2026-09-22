@@ -261,3 +261,25 @@ test("the compact class is scoped, and both menu families get the same rules", (
     );
   }
 });
+
+
+// Rendered inline, a submenu's fixed popper wrapper sits inside the parent menu, whose open
+// animation transforms it. That makes it the containing block and its overflow clips the
+// submenu away. Both families portal out, so Project and Export survive either menu.
+
+test("both menu families portal their submenus out of the parent", () => {
+  for (const [file, primitive] of [
+    ["components/ui/dropdown-menu.tsx", "DropdownMenuPrimitive"],
+    ["components/ui/context-menu.tsx", "ContextMenuPrimitive"],
+  ] as const) {
+    const source = readSrc(file);
+    const at = source.indexOf(`<${primitive}.SubContent`);
+    assert.ok(at > 0, `${file}: no SubContent element`);
+    const before = source.slice(0, at);
+    assert.match(
+      before.slice(-400),
+      new RegExp(`<${primitive}\\.Portal>`),
+      `${file}: SubContent should be wrapped in a Portal`,
+    );
+  }
+});
