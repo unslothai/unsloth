@@ -10,11 +10,19 @@ CUDA major, complete runtime) and the refusals.
 
 from __future__ import annotations
 
+import os
 import sys
+import sysconfig
 
 import pytest
 
 from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
+
+import utils.prebuilt.runtime_libs as runtime_libs
+
+# The list as this host builds it, read before the autouse fixture below masks it:
+# the multiarch arms assert on the shipped value, not on a pinned one.
+_REAL_LOADER_DEFAULT_LIB_DIRS = runtime_libs._LOADER_DEFAULT_LIB_DIRS
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason = "the vendored roots are Linux paths"
@@ -47,7 +55,6 @@ def _host_loader_unknown(monkeypatch):
     # The match rule is what these pin, and the loader probe is host state; the
     # arms that need it pin their own answer.
     import utils.prebuilt.runtime_libs as runtime_libs
-
     monkeypatch.setattr(runtime_libs, "_ld_cache_sonames", lambda: None)
     monkeypatch.setattr(runtime_libs, "_LOADER_DEFAULT_LIB_DIRS", ())
 
@@ -122,7 +129,6 @@ def test_missing_root_is_not_an_error(tmp_path):
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = roots) == []
 
 
-
 def test_withholds_the_runtime_when_the_loader_already_finds_it(tmp_path, monkeypatch):
     # The dir would join LD_LIBRARY_PATH, which outranks the loader's cache and
     # its defaults, so a runtime the loader resolves must not be displaced.
@@ -162,3 +168,45 @@ def test_an_unreadable_cache_still_rescues_from_the_default_dirs(tmp_path, monke
 
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
+
+
+def test_the_multiarch_dirs_are_discovered_not_assumed(tmp_path, monkeypatch):
+    # The dirs come from what is installed, so a layout nobody wrote down (a
+    # multilib host, riscv64, a container with only one of the pair) is still
+    # covered. Pinned against a fixed layout here, where the real one would make
+    # the test say nothing on a host that has neither.
+    import utils.prebuilt.runtime_libs as runtime_libs
+
+    for name in ("lib/x86_64-linux-gnu", "usr/lib/x86_64-linux-gnu", "usr/lib/riscv64-linux-gnu"):
+        (tmp_path / name).mkdir(parents = True)
+    (tmp_path / "usr/lib/not-a-layout").mkdir(parents = True)
+    monkeypatch.setattr(
+        runtime_libs,
+        "_MULTIARCH_LIB_GLOBS",
+        (str(tmp_path / "lib/*-linux-gnu*"), str(tmp_path / "usr/lib/*-linux-gnu*")),
+    )
+
+    assert runtime_libs._multiarch_lib_dirs() == [
+        str(tmp_path / "lib/x86_64-linux-gnu"),
+        str(tmp_path / "usr/lib/riscv64-linux-gnu"),
+        str(tmp_path / "usr/lib/x86_64-linux-gnu"),
+    ]
+
+
+def test_the_default_dirs_cover_the_hosts_multiarch_paths():
+    # The real list, not a pinned one: the finding is about an actual Debian/Ubuntu
+    # host, where a distro CUDA runtime sits in the arch-specific dir and no
+    # ldconfig can be read. The triple comes from the interpreter rather than from
+    # the module, so this cannot pass by agreeing with the implementation.
+    triple = sysconfig.get_config_var("MULTIARCH")
+    if not triple:
+        pytest.skip("this interpreter records no MULTIARCH triple")
+    installed = [
+        f"{prefix}/{triple}"
+        for prefix in ("/lib", "/usr/lib")
+        if os.path.isdir(f"{prefix}/{triple}")
+    ]
+    if not installed:
+        pytest.skip(f"no {triple} directory is installed on this host")
+    for directory in installed:
+        assert directory in _REAL_LOADER_DEFAULT_LIB_DIRS

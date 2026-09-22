@@ -12,6 +12,7 @@ only the backend root on sys.path.
 
 from __future__ import annotations
 
+import glob
 import os
 import re
 import shutil
@@ -42,6 +43,33 @@ def dedupe_existing_dirs(paths: Iterable[str | Path]) -> list[str]:
     return unique
 
 
+# Debian, Ubuntu and their derivatives put every library in an architecture
+# subdirectory and bake that directory into ld.so's own search path: glibc prints
+# /lib/x86_64-linux-gnu and /usr/lib/x86_64-linux-gnu ahead of /lib and /usr/lib as
+# its first system dirs, with no ldconfig involved. The glob is used rather than
+# the machine name because that is what these layouts are actually named, on every
+# architecture, and a layout that is not installed cannot hold a runtime anyway.
+_MULTIARCH_LIB_GLOBS: tuple[str, ...] = ("/lib/*-linux-gnu*", "/usr/lib/*-linux-gnu*")
+
+
+def _multiarch_lib_dirs() -> list[str]:
+    """The arch-specific dirs this host's loader searches without being asked.
+
+    Counted alongside the generic defaults below, because prebuilt_core.py's
+    linux_runtime_dirs_for_required_libraries already counts them when it picks a
+    runtime line: a system CUDA runtime in one of them is not absent just because
+    no ``ldconfig -p`` can be read, and calling it absent would add the vendored
+    dir over the top of the very runtime the loader probe exists to protect.
+    """
+    found: list[str] = []
+    for pattern in _MULTIARCH_LIB_GLOBS:
+        try:
+            found.extend(sorted(glob.glob(pattern)))
+        except OSError:
+            continue
+    return found
+
+
 _LOADER_DEFAULT_LIB_DIRS: tuple[str, ...] = (
     "/lib",
     "/lib64",
@@ -49,6 +77,8 @@ _LOADER_DEFAULT_LIB_DIRS: tuple[str, ...] = (
     "/usr/lib64",
     "/usr/local/lib",
     "/usr/local/lib64",
+    # ld.so searches these ahead of the generic dirs above wherever they exist.
+    *_multiarch_lib_dirs(),
 )
 
 

@@ -539,7 +539,12 @@ def test_child_env_omits_cuda_runtime_dirs_for_cpu_bundle(monkeypatch, tmp_path)
     assert called["n"] == 0
 
 
-def _make_cuda_bundle(tmp_path, *, runtime_line = "cuda13", linked_from = None):
+def _make_cuda_bundle(
+    tmp_path,
+    *,
+    runtime_line = "cuda13",
+    linked_from = None,
+):
     """A CUDA whisper bundle whose install marker names a CUDA runtime line."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -584,7 +589,6 @@ def test_child_env_appends_vendored_cuda_runtime(monkeypatch, tmp_path):
     assert parts.index(str(wheel_dir.resolve())) < parts.index(str(vendored.resolve()))
 
 
-
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
 def test_child_env_keeps_vendored_runtime_off_a_resolvable_runtime(monkeypatch, tmp_path):
     # A runtime the loader already finds is never displaced by the private one.
@@ -605,6 +609,7 @@ def test_child_env_keeps_vendored_runtime_off_a_resolvable_runtime(monkeypatch, 
     reset_caches()
 
     assert str(vendored.resolve()) not in env[_loader_path_var()].split(os.pathsep)
+
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
 def test_slim_child_env_reads_vendored_cuda_runtime_from_paired_llama(monkeypatch, tmp_path):

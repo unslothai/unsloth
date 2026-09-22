@@ -161,6 +161,7 @@ def test_read_install_marker_handles_invalid_json(tmp_path):
     bin_path = _fake_binary(install_dir, layout = "root")
     assert fr.read_install_marker(str(bin_path)) is None
 
+
 def test_read_install_marker_handles_non_utf8(tmp_path):
     # A corrupt marker decodes as invalid UTF-8, which used to raise out of here
     # into every unguarded caller (the update paths, the launchers' CUDA lookup).
@@ -169,7 +170,6 @@ def test_read_install_marker_handles_non_utf8(tmp_path):
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_bytes(b'{"runtime_line": "\xff\xfecuda13"}')
     bin_path = _fake_binary(install_dir, layout = "root")
     assert fr.read_install_marker(str(bin_path)) is None
-
 
 
 @pytest.mark.parametrize(

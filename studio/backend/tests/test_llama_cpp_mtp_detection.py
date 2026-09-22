@@ -843,6 +843,7 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
     assert "/already-inherited" in dyld_dirs
     assert captured["env"]["LD_LIBRARY_PATH"] == "/already-there"
 
+
 def _make_vendored_cuda_runtime(tmp_path: Path, runtime_line: str = "cuda13") -> tuple[Path, Path]:
     """A prebuilt install tree plus the private CUDA runtime its marker selects."""
     binary_dir = tmp_path / "llama.cpp" / "build" / "bin"
@@ -881,9 +882,7 @@ def test_llama_server_env_appends_vendored_cuda_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "glob.glob",
         lambda pattern: (
-            [str(python_cuda_dir)]
-            if pattern.replace("\\", "/").endswith("nvidia/cu*/lib")
-            else []
+            [str(python_cuda_dir)] if pattern.replace("\\", "/").endswith("nvidia/cu*/lib") else []
         ),
     )
 
@@ -896,6 +895,7 @@ def test_llama_server_env_appends_vendored_cuda_runtime(tmp_path, monkeypatch):
         env = LlamaCppBackend._llama_server_env_for_binary(str(binary))
         reset_caches()
         return env["LD_LIBRARY_PATH"].split(os.pathsep)
+
     # Host-independent: both runs see whatever /usr/local/cuda* this host has, and
     # differ only in whether a runtime the marker selects is on disk to be added.
     absent = _loader_dirs(((tmp_path / "nonexistent", "cuda_v{major}"),))
@@ -938,6 +938,7 @@ def test_llama_server_env_keeps_vendored_runtime_off_a_resolvable_runtime(tmp_pa
     reset_caches()
 
     assert str(runtime_dir.resolve()) not in env["LD_LIBRARY_PATH"].split(os.pathsep)
+
 
 @_NEEDS_BASH
 def test_probe_server_capabilities_does_not_disable_devices_off_macos(tmp_path, monkeypatch):
