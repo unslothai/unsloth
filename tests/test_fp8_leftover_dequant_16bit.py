@@ -61,7 +61,13 @@ class _Experts(nn.Module):
 class _Model(nn.Module):
     """Mirrors the live tree of a Mistral-Small-4 16bit load: dense linears already dequantized by transformers, expert stacks left as raw fp8 in a plain module."""
 
-    def __init__(self, E = 4, M = 8, N = 16, dtype = torch.bfloat16):
+    def __init__(
+        self,
+        E = 4,
+        M = 8,
+        N = 16,
+        dtype = torch.bfloat16,
+    ):
         super().__init__()
         self.q_proj = nn.Linear(N, N, bias = False, dtype = dtype)
         self.experts = _Experts(E, M, N, dtype)
@@ -73,7 +79,12 @@ def _quantize(t):
     return (t.float() / scale).to(_FP8), scale
 
 
-def _build(E = 4, M = 8, N = 16, hidden_state = True):
+def _build(
+    E = 4,
+    M = 8,
+    N = 16,
+    hidden_state = True,
+):
     torch.manual_seed(0)
     model = _Model(E, M, N)
     gate_up = torch.randn(E, 2 * M, N)
@@ -118,8 +129,12 @@ def test_leftover_expert_stacks_are_dequantized_from_checkpoint_scale():
 def test_module_with_live_scale_is_left_in_fp8():
     """A converted fp8 module keeps its own scale and its fp8 forward: never rewrite it."""
     model, tensors, _ = _build()
-    model.experts.gate_up_proj_scale_inv = nn.Parameter(tensors["experts.gate_up_proj_scale_inv"].clone(), requires_grad = False)
-    model.experts.down_proj_scale_inv = nn.Parameter(tensors["experts.down_proj_scale_inv"].clone(), requires_grad = False)
+    model.experts.gate_up_proj_scale_inv = nn.Parameter(
+        tensors["experts.gate_up_proj_scale_inv"].clone(), requires_grad = False
+    )
+    model.experts.down_proj_scale_inv = nn.Parameter(
+        tensors["experts.down_proj_scale_inv"].clone(), requires_grad = False
+    )
     with tempfile.TemporaryDirectory() as d:
         _write_checkpoint(d, tensors)
         done, skipped = _dequantize_leftover_fp8_params(model, d, torch.bfloat16)
@@ -136,6 +151,7 @@ def test_no_fp8_params_is_a_noop_without_reading_the_checkpoint():
 
 def test_vlm_key_remap_resolves_language_model_prefix():
     """Checkpoint keys `language_model.model.layers...` map onto a live `model.language_model.layers...` tree."""
+
     class _Inner(nn.Module):
         def __init__(self):
             super().__init__()
@@ -191,18 +207,25 @@ def test_scale_grid_dequant_matches_expanded_reference(shape, scale_shape):
     elif len(shape) == 2:
         s2 = s_full.view(-1, 1) if s_full.ndim == 1 else s_full
         p, qq = s2.shape
-        ref = s2.repeat_interleave(shape[0] // p, 0).repeat_interleave(shape[1] // qq, 1) * q.float()
+        ref = (
+            s2.repeat_interleave(shape[0] // p, 0).repeat_interleave(shape[1] // qq, 1) * q.float()
+        )
     else:
         s3 = s_full.view(shape[0], 1, 1) if s_full.ndim == 1 else s_full
         p, qq = s3.shape[1], s3.shape[2]
-        ref = s3.repeat_interleave(shape[1] // p, 1).repeat_interleave(shape[2] // qq, 2) * q.float()
+        ref = (
+            s3.repeat_interleave(shape[1] // p, 1).repeat_interleave(shape[2] // qq, 2) * q.float()
+        )
     assert torch.equal(out, ref)
 
 
 def test_scale_grid_that_does_not_tile_is_refused():
     q = torch.randn(6, 8).to(_FP8)
     assert _fp8_scale_grid_dequant(q, torch.rand(4, 2), torch.float32) is None
-    assert _fp8_scale_grid_dequant(torch.randn(3, 6, 8).to(_FP8), torch.rand(2, 1, 1), torch.float32) is None
+    assert (
+        _fp8_scale_grid_dequant(torch.randn(3, 6, 8).to(_FP8), torch.rand(2, 1, 1), torch.float32)
+        is None
+    )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")

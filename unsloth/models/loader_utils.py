@@ -1456,7 +1456,11 @@ def _fp8_scale_grid_dequant(quantized, scale, out_dtype):
         for start in range(0, E, step):
             stop = min(E, start + step)
             chunk = quantized[start:stop].to(torch.float32).view(stop - start, p, bm, q, bn)
-            out[start:stop] = (chunk * scale[start:stop, :, None, :, None]).reshape(stop - start, rows, cols).to(out_dtype)
+            out[start:stop] = (
+                (chunk * scale[start:stop, :, None, :, None])
+                .reshape(stop - start, rows, cols)
+                .to(out_dtype)
+            )
         return out
     return None
 
@@ -1541,8 +1545,10 @@ def _dequantize_leftover_fp8_params(
             return shard_cache[shard].get_tensor(scale_key).to(device)
 
         def _is_oom(error):
-            return isinstance(error, torch.OutOfMemoryError) if hasattr(torch, "OutOfMemoryError") else (
-                isinstance(error, RuntimeError) and "out of memory" in str(error).lower()
+            return (
+                isinstance(error, torch.OutOfMemoryError)
+                if hasattr(torch, "OutOfMemoryError")
+                else (isinstance(error, RuntimeError) and "out of memory" in str(error).lower())
             )
 
         # Pass 1: dequantize on the parameter's own device. The device map was planned for the 16bit size, so a card that is full to its plan while its stacks are still fp8 has room for the result but not for the transient; such a stack is parked on the CPU (which frees its fp8 bytes) and finished in pass 2 once the rest of the card is at its final size.
@@ -1615,7 +1621,9 @@ def _dequantize_leftover_fp8_params(
             # The remaining activation scales of a static checkpoint mean nothing once the weights are 16bit.
             for module in set(m for m, _, _ in target_of_ckpt.values()):
                 for stale in [
-                    n for n, p in list(module._parameters.items()) if p is not None and n.endswith("activation_scale")
+                    n
+                    for n, p in list(module._parameters.items())
+                    if p is not None and n.endswith("activation_scale")
                 ] + [n for n in list(module._buffers) if n.endswith("activation_scale")]:
                     if stale in module._parameters:
                         del module._parameters[stale]
