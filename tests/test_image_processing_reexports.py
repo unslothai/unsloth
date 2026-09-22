@@ -329,3 +329,19 @@ def test_numpy_dispatch_covers_the_keyword_forms(siglip2_module, style):
     assert isinstance(patches, np.ndarray) and patches.shape == (4, 12)
     assert isinstance(padded, np.ndarray) and padded.shape == (6, 12)
     assert mask.tolist() == [1, 1, 1, 1, 0, 0]
+
+
+def test_every_import_path_installs_the_fix():
+    """Both entry points must call it, not just the CUDA one.
+
+    `unsloth/__init__.py` returns early on Apple Silicon with MLX and never
+    reaches `_gpu_init.py`, so the call added there alone left macOS unpatched.
+    Caught by the macOS leg of cross-platform CI, held here so it fails
+    everywhere: the running host cannot exercise the branch it is not on.
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).parents[1] / "unsloth"
+    for site in ("_gpu_init.py", "__init__.py"):
+        source = (root / site).read_text(encoding = "utf-8")
+        assert "fix_transformers5_image_processing_reexports" in source, site
