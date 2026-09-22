@@ -1747,15 +1747,15 @@ def test_the_torchvision_backend_still_breaks_the_4x_numpy_contract():
 
     if not is_torchvision_available() or not hasattr(backends, "tvF"):
         pytest.skip("torchvision is not usable here, so the backend cannot run")
-    siglip2 = pytest.importorskip(
-        "transformers.models.siglip2.image_processing_siglip2"
-    )
+    siglip2 = pytest.importorskip("transformers.models.siglip2.image_processing_siglip2")
 
     processor = siglip2.Siglip2ImageProcessor()
     image = np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
 
     rescaled = processor.rescale(
-        image = image, scale = 1 / 255.0, input_data_format = "channels_last",
+        image = image,
+        scale = 1 / 255.0,
+        input_data_format = "channels_last",
     )
     assert rescaled.dtype == np.float64, (
         "DRIFT DETECTED: BaseImageProcessor.rescale no longer returns float64 on numpy, so "
@@ -1792,7 +1792,9 @@ def test_the_4x_numpy_helpers_the_method_shim_forwards_to_still_exist():
         )
 
     rescaled = image_transforms.rescale(
-        image, scale = 1 / 255.0, input_data_format = "channels_last",
+        image,
+        scale = 1 / 255.0,
+        input_data_format = "channels_last",
     )
     assert rescaled.dtype == np.float32, (
         "DRIFT DETECTED: image_transforms.rescale stopped defaulting to float32, which is "

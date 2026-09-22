@@ -969,11 +969,13 @@ _REMOTE_IMAGE_MODULE_PREFIX = "transformers_modules."
 # on the already-loaded MRO rather than by isinstance, so classifying the configs
 # and models that also come through `get_class_in_module` costs a string compare
 # and imports nothing.
-_IMAGE_PROCESSOR_BASE_NAMES = frozenset((
-    "ImageProcessingMixin",
-    "BaseImageProcessor",
-    "BaseImageProcessorFast",
-))
+_IMAGE_PROCESSOR_BASE_NAMES = frozenset(
+    (
+        "ImageProcessingMixin",
+        "BaseImageProcessor",
+        "BaseImageProcessorFast",
+    )
+)
 
 
 def _legacy_rescale(
@@ -993,7 +995,6 @@ def _legacy_rescale(
     so a positional splat would hand a channel dimension to the `dtype` slot.
     """
     from transformers.image_transforms import rescale
-
     return rescale(
         image,
         scale = scale,
@@ -1014,7 +1015,6 @@ def _legacy_normalize(
 ):
     """transformers 4.x `BaseImageProcessor.normalize`, which was this and nothing else."""
     from transformers.image_transforms import normalize
-
     return normalize(
         image,
         mean = mean,
@@ -1281,9 +1281,7 @@ def _install_legacy_numpy_image_methods_now(loaded = None):
         try:
             bound.extend(_install_legacy_numpy_image_methods_on_module(module))
         except Exception as e:
-            logger.info(
-                f"Unsloth: numpy image method shim skipped for {module!r} ({e})"
-            )
+            logger.info(f"Unsloth: numpy image method shim skipped for {module!r} ({e})")
     return bound
 
 
@@ -1347,7 +1345,18 @@ class _RemoteImageProcessorLoader:
         return create(spec)
 
     def exec_module(self, module):
+        # BEFORE delegating, because `exec_module` is what runs the module body,
+        # and a checkpoint reads the dropped re-exports while its CLASS BODY is
+        # executing: Phi-4's file does
+        # `@siglip2_ips.filter_out_non_signature_kwargs()` on the method. Patch
+        # afterwards and the delegation has already raised AttributeError, so
+        # the method shim below is never reached.
+        try:
+            _install_legacy_image_reexports_now()
+        except Exception:
+            pass
         self._loader.exec_module(module)
+        # After, because the classes do not exist until the body has run.
         try:
             _install_legacy_numpy_image_methods_on_module(module)
         except Exception:

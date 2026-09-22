@@ -535,7 +535,9 @@ def test_the_numpy_contract_is_restored_on_a_remote_subclass(remote_processor_cl
 
     rescaled = inst.rescale(image = image, scale = 1.0 / 255.0, input_data_format = "channels_last")
     expected = image_transforms.rescale(
-        image, scale = 1.0 / 255.0, input_data_format = "channels_last",
+        image,
+        scale = 1.0 / 255.0,
+        input_data_format = "channels_last",
     )
     assert isinstance(rescaled, np.ndarray)
     assert rescaled.dtype == expected.dtype
@@ -572,7 +574,9 @@ def test_rescale_is_in_scope_because_it_is_wrong_not_because_it_raises(remote_pr
     image = _probe_image()
 
     upstream = siglip2.Siglip2ImageProcessor().rescale(
-        image = image, scale = 1.0 / 255.0, input_data_format = "channels_last",
+        image = image,
+        scale = 1.0 / 255.0,
+        input_data_format = "channels_last",
     )
     if upstream.dtype == np.float32:
         pytest.skip("this transformers already returns the 4.x dtype from rescale")
@@ -580,7 +584,9 @@ def test_rescale_is_in_scope_because_it_is_wrong_not_because_it_raises(remote_pr
 
     _install_legacy_numpy_image_methods(remote_processor_class)
     patched = object.__new__(remote_processor_class).rescale(
-        image = image, scale = 1.0 / 255.0, input_data_format = "channels_last",
+        image = image,
+        scale = 1.0 / 255.0,
+        input_data_format = "channels_last",
     )
     assert patched.dtype == np.float32
     assert np.allclose(patched, upstream)
@@ -607,7 +613,8 @@ def test_transformers_own_image_processor_is_untouched(remote_processor_class):
     after = own()(images = [image], return_tensors = "pt")
     for key in before:
         assert torch.equal(
-            torch.as_tensor(before[key]), torch.as_tensor(after[key]),
+            torch.as_tensor(before[key]),
+            torch.as_tensor(after[key]),
         ), f"{key} moved on transformers' own processor"
 
 
@@ -689,7 +696,9 @@ def test_a_method_the_remote_code_owns_is_never_replaced():
         return sentinel
 
     cls = type(
-        "ProbeOwnNormalize", (siglip2.Siglip2ImageProcessor,), {"normalize": normalize},
+        "ProbeOwnNormalize",
+        (siglip2.Siglip2ImageProcessor,),
+        {"normalize": normalize},
     )
     cls.__module__ = REMOTE_MODULE
     try:
@@ -729,7 +738,9 @@ def test_a_subclass_of_a_patched_class_is_not_double_wrapped(remote_processor_cl
         assert _install_legacy_numpy_image_methods(sub) == []
         assert "normalize" not in sub.__dict__
         out = object.__new__(sub).rescale(
-            image = _probe_image(), scale = 1.0 / 255.0, input_data_format = "channels_last",
+            image = _probe_image(),
+            scale = 1.0 / 255.0,
+            input_data_format = "channels_last",
         )
         assert out.dtype == np.float32
     finally:
@@ -742,7 +753,8 @@ def test_the_method_shim_is_fully_removable(remote_processor_class):
     assert _install_legacy_numpy_image_methods(remote_processor_class) == ["rescale", "normalize"]
 
     assert sorted(_remove_legacy_numpy_image_methods(remote_processor_class)) == [
-        "normalize", "rescale",
+        "normalize",
+        "rescale",
     ]
     for name in _LEGACY_NUMPY_IMAGE_METHODS:
         assert name not in remote_processor_class.__dict__
@@ -762,9 +774,9 @@ def test_the_dispatch_keeps_wraps_and_wrapped(remote_processor_class):
     dispatch = remote_processor_class.__dict__["normalize"]
     assert dispatch.__name__ == "normalize"
     assert dispatch.__wrapped__ is backends.TorchvisionBackend.normalize
-    assert getattr(dispatch, _IMAGE_METHOD_PATCH_FLAG, False) is True, (
-        "the flag must be set AFTER functools.wraps, which copies __dict__"
-    )
+    assert (
+        getattr(dispatch, _IMAGE_METHOD_PATCH_FLAG, False) is True
+    ), "the flag must be set AFTER functools.wraps, which copies __dict__"
     assert inspect.signature(dispatch) is not None
 
 
@@ -796,8 +808,7 @@ def test_the_remote_image_processor_finder_is_installed_once():
     _install_remote_image_processor_finder()
 
     installed = [
-        finder for finder in sys.meta_path
-        if getattr(finder, _REMOTE_IMAGE_FINDER_SENTINEL, False)
+        finder for finder in sys.meta_path if getattr(finder, _REMOTE_IMAGE_FINDER_SENTINEL, False)
     ]
     assert len(installed) == 1
     assert installed[0].find_spec("json") is None
@@ -849,7 +860,6 @@ def test_remote_code_calling_the_backend_methods_on_numpy_loads_and_runs(tmp_pat
         assert out.dtype == np.float32, "float64 here means rescale was left unpatched"
     finally:
         import shutil
-
         shutil.rmtree(package, ignore_errors = True)
 
 
@@ -876,10 +886,17 @@ def _remote_probe_package():
     package.mkdir(parents = True, exist_ok = True)
     (root / "__init__.py").touch(exist_ok = True)
     (package / "__init__.py").write_text("")
+    # The decorator on the method is not decoration: it is read while the CLASS
+    # BODY executes, which is what a checkpoint written against the 4.x layout
+    # does (Phi-4's own file, verbatim shape). An earlier version of this probe
+    # omitted it and passed while the loader patched only AFTER delegating to
+    # the real `exec_module`, so the real spawn path raised AttributeError
+    # before the method shim was ever reached.
     (package / "image_processing_probe.py").write_text(
         "import transformers.models.siglip2.image_processing_siglip2 as siglip2_ips\n"
         "\n"
         "class SpawnProbeImageProcessor(siglip2_ips.Siglip2ImageProcessor):\n"
+        "    @siglip2_ips.filter_out_non_signature_kwargs()\n"
         "    def preprocess_like_2024(self, image):\n"
         "        image = self.rescale(image = image, scale = 1 / 255.0,\n"
         "                             input_data_format = 'channels_last')\n"
@@ -909,7 +926,6 @@ print("DTYPE", processor.preprocess_like_2024(image).dtype)
 def _run_spawn_child(pickled, preamble):
     import subprocess
     import sys
-
     return subprocess.run(
         [sys.executable, "-c", _SPAWN_CHILD.format(preamble = preamble), str(pickled)],
         capture_output = True,
@@ -944,17 +960,17 @@ def pickled_remote_processor(tmp_path):
 def test_a_spawn_started_worker_rebuilds_a_patched_class(pickled_remote_processor):
     """The finder's test: a fresh interpreter must still honour numpy."""
     out = _run_spawn_child(pickled_remote_processor, "import unsloth")
-    if out.returncode != 0 and "get_device_type" not in out.stderr and (
-        "unsloth" in out.stderr and "Error" in out.stderr and "TypeError" not in out.stderr
+    if (
+        out.returncode != 0
+        and "get_device_type" not in out.stderr
+        and ("unsloth" in out.stderr and "Error" in out.stderr and "TypeError" not in out.stderr)
     ):
         pytest.skip(f"the child could not import unsloth: {out.stderr.strip()[-400:]}")
     assert out.returncode == 0, out.stderr[-2000:]
     assert "DTYPE float32" in out.stdout, (out.stdout, out.stderr[-2000:])
 
 
-def test_a_spawn_started_worker_without_unsloth_is_the_documented_limit(
-    pickled_remote_processor,
-):
+def test_a_spawn_started_worker_without_unsloth_is_the_documented_limit(pickled_remote_processor):
     """Negative control: proves the finder is what fixes the test above.
 
     Also pins the boundary honestly. A child that never imports unsloth is
@@ -962,7 +978,16 @@ def test_a_spawn_started_worker_without_unsloth_is_the_documented_limit(
     """
     out = _run_spawn_child(pickled_remote_processor, "")
     assert out.returncode != 0, out.stdout
-    assert "Functional F.normalize" in out.stderr or "numpy" in out.stderr, out.stderr[-2000:]
+    # Either failure mode counts, and which one it is says where the child got
+    # to. Unpatched it now dies earlier, on the class-body decorator during the
+    # unpickle import (`AttributeError: ... filter_out_non_signature_kwargs`),
+    # rather than later on the numpy `normalize`. Asserting only the second
+    # would pin the shallower break and go red on the deeper one.
+    assert (
+        "filter_out_non_signature_kwargs" in out.stderr
+        or "Functional F.normalize" in out.stderr
+        or "numpy" in out.stderr
+    ), out.stderr[-2000:]
 
 
 def test_deepcopy_and_pickle_keep_the_override_in_process(pickled_remote_processor):
