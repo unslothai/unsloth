@@ -773,7 +773,107 @@ def _install_legacy_image_reexports(module_name):
     module.__getattr__ = __getattr__
     setattr(module, _IMAGE_REEXPORT_FLAG, True)
     setattr(module, _IMAGE_REEXPORT_BOUND, bound)
+    # Names that still resolve never reach __getattr__, so the ones whose
+    # contract changed from numpy to torch are handled separately.
+    try:
+        _install_legacy_numpy_image_helpers(module)
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping numpy image helper shim for {module_name} ({e})")
     return True
+
+
+# Helpers transformers 5 KEPT on these modules but re-specified from numpy
+# (channel-last) to torch (channel-first). A module __getattr__ never fires for
+# a name that still resolves, so these need replacing rather than forwarding.
+# Phi-4-reasoning-vision-15B's modeling_phi4_visionr.py reaches both off the
+# siglip2 namespace at lines 347-348, having built numpy arrays at line 302, so
+# without this the class loads and then preprocessing fails:
+# "cannot reshape array of size 150528 into shape (224,14,16,0,16)".
+_IMAGE_REEXPORT_LEGACY_BOUND = "_unsloth_legacy_image_numpy_bound"
+
+
+def _legacy_convert_image_to_patches(image, patch_size):
+    """transformers 4.x semantics: (height, width, channels) numpy in."""
+    image_height, image_width, num_channels = image.shape
+    num_patches_height = image_height // patch_size
+    num_patches_width = image_width // patch_size
+    patched_image = image.reshape(
+        num_patches_height, patch_size, num_patches_width, patch_size, num_channels
+    )
+    patched_image = patched_image.transpose(0, 2, 1, 3, 4)
+    return patched_image.reshape(num_patches_height * num_patches_width, -1)
+
+
+def _legacy_pad_along_first_dim(
+    array,
+    target_length,
+    pad_value = 0,
+):
+    """transformers 4.x semantics: numpy in, numpy array and mask out."""
+    import numpy as np
+
+    current_length = array.shape[0]
+    padding_length = target_length - current_length
+    mask = np.ones((target_length,), dtype = np.int32)
+    if padding_length > 0:
+        paddings = [(0, padding_length)] + [(0, 0)] * (array.ndim - 1)
+        array = np.pad(array, paddings, mode = "constant", constant_values = pad_value)
+        mask[-padding_length:] = 0
+    return array, mask
+
+
+_LEGACY_NUMPY_IMAGE_HELPERS = {
+    "convert_image_to_patches": _legacy_convert_image_to_patches,
+    "pad_along_first_dim": _legacy_pad_along_first_dim,
+}
+
+
+def _install_legacy_numpy_image_helpers(module):
+    """Dispatch the retained helpers on the argument type.
+
+    A numpy array takes the 4.x implementation, anything else (a torch tensor)
+    goes to whatever the module already had, so transformers' OWN
+    Siglip2ImageProcessor keeps calling the current code unchanged. Replacing
+    them outright would fix the remote checkpoint by breaking the model the
+    module is named after.
+    """
+    import numpy as np
+
+    bound = []
+    for name, legacy in _LEGACY_NUMPY_IMAGE_HELPERS.items():
+        current = getattr(module, name, None)
+        if current is None or getattr(current, "_unsloth_numpy_dispatch", False):
+            continue
+
+        def make(current = current, legacy = legacy):
+            @functools.wraps(current)
+            def dispatch(*args, **kwargs):
+                first = args[0] if args else None
+                if isinstance(first, np.ndarray):
+                    return legacy(*args, **kwargs)
+                return current(*args, **kwargs)
+
+            dispatch.__wrapped__ = current
+            dispatch._unsloth_numpy_dispatch = True
+            return dispatch
+
+        setattr(module, name, make())
+        bound.append(name)
+    if bound:
+        setattr(module, _IMAGE_REEXPORT_LEGACY_BOUND, bound)
+    return bound
+
+
+def _remove_legacy_numpy_image_helpers(module):
+    for name in getattr(module, _IMAGE_REEXPORT_LEGACY_BOUND, ()):
+        current = getattr(module, name, None)
+        original = getattr(current, "__wrapped__", None)
+        if original is not None:
+            setattr(module, name, original)
+    try:
+        delattr(module, _IMAGE_REEXPORT_LEGACY_BOUND)
+    except AttributeError:
+        pass
 
 
 def _remove_legacy_image_reexports(module_name):
@@ -781,6 +881,7 @@ def _remove_legacy_image_reexports(module_name):
     module = sys.modules.get(module_name)
     if module is None or not getattr(module, _IMAGE_REEXPORT_FLAG, False):
         return False
+    _remove_legacy_numpy_image_helpers(module)
     for name in getattr(module, _IMAGE_REEXPORT_BOUND, ()):  # drop cached hits
         try:
             delattr(module, name)

@@ -223,3 +223,61 @@ def test_remote_code_reading_siglip_helpers_loads(tmp_path):
     finally:
         import shutil
         shutil.rmtree(package, ignore_errors = True)
+
+
+# Helpers transformers 5 KEPT but re-specified from numpy (channel-last) to
+# torch (channel-first). A module __getattr__ never fires for a name that still
+# resolves, so forwarding cannot reach these: they need replacing. Phi-4's
+# modeling_phi4_visionr.py builds numpy arrays at line 302 and hands them to
+# both at lines 347-348.
+
+
+def _numpy_image():
+    np = pytest.importorskip("numpy")
+    return np.arange(4 * 4 * 3, dtype = np.float32).reshape(4, 4, 3)
+
+
+def test_retained_helpers_accept_the_numpy_arrays_remote_code_passes(siglip2_module):
+    np = pytest.importorskip("numpy")
+    _install_legacy_image_reexports(SIGLIP2)
+
+    patches = siglip2_module.convert_image_to_patches(_numpy_image(), 2)
+    assert isinstance(patches, np.ndarray)
+    # 2x2 patches of 2x2x3 = 4 patches of 12 values, the transformers 4.x shape
+    assert patches.shape == (4, 12)
+
+    padded, mask = siglip2_module.pad_along_first_dim(patches, 6)
+    assert isinstance(padded, np.ndarray)
+    assert padded.shape == (6, 12)
+    assert mask.tolist() == [1, 1, 1, 1, 0, 0]
+
+
+def test_the_torch_contract_is_untouched(siglip2_module):
+    """transformers' own Siglip2ImageProcessor calls these with tensors.
+
+    Replacing them outright would fix the remote checkpoint by breaking the
+    model the module is named after, so the shim dispatches on the argument.
+    """
+    torch = pytest.importorskip("torch")
+    image = torch.arange(3 * 4 * 4, dtype = torch.float32).reshape(3, 4, 4)
+
+    before = siglip2_module.convert_image_to_patches(image, 2).clone()
+    before_pad, before_mask = siglip2_module.pad_along_first_dim(before, 6)
+
+    _install_legacy_image_reexports(SIGLIP2)
+
+    after = siglip2_module.convert_image_to_patches(image, 2)
+    after_pad, after_mask = siglip2_module.pad_along_first_dim(after, 6)
+    assert torch.equal(after, before)
+    assert torch.equal(after_pad, before_pad)
+    assert torch.equal(after_mask, before_mask)
+
+
+def test_numpy_shim_is_idempotent_and_removable(siglip2_module):
+    _install_legacy_image_reexports(SIGLIP2)
+    once = siglip2_module.convert_image_to_patches
+    _install_legacy_image_reexports(SIGLIP2)  # no-op, already flagged
+    assert siglip2_module.convert_image_to_patches is once
+
+    restored = _fresh_module(SIGLIP2)
+    assert not getattr(restored.convert_image_to_patches, "_unsloth_numpy_dispatch", False)
