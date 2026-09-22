@@ -642,6 +642,105 @@ def test_normalizing_does_not_mutate_the_clients_nested_dict():
     assert payload.model_extra["chat_template_kwargs"] == {"keep_me": 1}
 
 
+@pytest.mark.parametrize(
+    "nested_enable_thinking",
+    [
+        "false",  # bool("false") was True, so this used to turn thinking ON
+        "true",
+        0,  # a JSON number used to be coerced, and happened to land on the right answer
+        1,
+        None,
+        [],
+        {},
+        "",
+    ],
+)
+def test_a_nested_enable_thinking_that_is_not_a_json_boolean_is_ignored(nested_enable_thinking):
+    """Only a real JSON boolean controls thinking, whichever way the wrong type would have read.
+
+    ``bool()`` on the old lift made ``"false"`` mean ON, which is the bug this fixes. It also
+    made ``0`` mean OFF, which happened to be what such a client wanted, so requiring the
+    boolean changes that request too: the value is ignored and the template renders in
+    whatever mode the model was launched in. Both directions are the same rule, and a client
+    is only carried by sending a real boolean.
+    """
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+
+    payload = ChatCompletionRequest.model_validate(
+        {
+            "model": "unsloth/Qwen3.8-27B-GGUF",
+            "messages": [{"role": "user", "content": "hi"}],
+            "chat_template_kwargs": {"enable_thinking": nested_enable_thinking},
+        }
+    )
+    inference_route._normalize_chat_reasoning_controls(payload)
+
+    assert payload.enable_thinking is None
+    assert payload.reasoning_effort is None
+    # Consumed either way, so no render sees the value the validation just refused.
+    assert payload.model_extra["chat_template_kwargs"] == {}
+
+
+@pytest.mark.parametrize("nested_preserve_thinking", ["true", "false", 0, 1, None, [], {}])
+def test_a_nested_preserve_thinking_that_is_not_a_json_boolean_is_ignored(nested_preserve_thinking):
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+
+    payload = ChatCompletionRequest.model_validate(
+        {
+            "model": "unsloth/Qwen3.8-27B-GGUF",
+            "messages": [{"role": "user", "content": "hi"}],
+            "chat_template_kwargs": {"preserve_thinking": nested_preserve_thinking},
+        }
+    )
+    inference_route._normalize_chat_reasoning_controls(payload)
+
+    assert payload.preserve_thinking is None
+    assert payload.model_extra["chat_template_kwargs"] == {}
+
+
+def test_an_ignored_nested_control_resolves_exactly_like_omitting_it():
+    """The rule stated as a property: an invalid value is not a third outcome.
+
+    Whatever an invalid nested control does, it has to be indistinguishable from never
+    having sent the key, on every surface that renders a template. Otherwise "ignored"
+    would still be steering generation.
+    """
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+
+    def _resolved(nested):
+        payload = ChatCompletionRequest.model_validate(
+            {
+                "model": "unsloth/Qwen3.8-27B-GGUF",
+                "messages": [{"role": "user", "content": "hi"}],
+                **({"chat_template_kwargs": nested} if nested is not None else {}),
+            }
+        )
+        inference_route._normalize_chat_reasoning_controls(payload)
+        return payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking
+
+    omitted = _resolved(None)
+    for nested in (
+        {"enable_thinking": "false"},
+        {"enable_thinking": 0},
+        {"reasoning_effort": "hihg"},
+        {"reasoning_effort": "HIGH"},
+        {"reasoning_effort": 5},
+        {"preserve_thinking": "true"},
+        {"enable_thinking": "false", "reasoning_effort": "hihg"},
+    ):
+        assert _resolved(nested) == omitted, nested
+
+    # A valid control alongside an invalid one is still honored.
+    assert _resolved({"enable_thinking": "false", "reasoning_effort": "none"}) == (
+        False,
+        "none",
+        None,
+    )
+
+
 def test_an_anthropic_derived_boolean_stays_out_of_the_explicit_field_set():
     """resolve_thinking_onto_enable_thinking's discard has to actually remove the name.
 
