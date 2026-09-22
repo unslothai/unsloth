@@ -579,7 +579,7 @@ async def test_graceful_supervisor_shutdown_is_interrupted(durable_run, monkeypa
     await supervisor.stop()
     run = runs_db.get_run("run-1", "alice")
     assert (run["status"], run["finishReason"]) == ("failed", "interrupted")
-    assert run["error"] == "Studio shut down during generation"
+    assert run["error"] == "Unsloth shut down during generation"
 
 
 def test_thread_delete_captures_durable_run_before_cascade(durable_run):

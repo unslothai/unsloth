@@ -114,6 +114,7 @@ import {
   generationIsCorroboratedLive,
   threadHasDurableGenerationRun,
   generationNeedsRecovery,
+  requestParsesThinkTags,
   restoreCarriedPartsFromRaw,
   isLiveGenerationRun,
   generationRawContent,
@@ -889,6 +890,7 @@ function scheduleGenerationRecovery(
     // Settled before disarmAll so an arm cannot land after the run is over.
     let seededApprovals: Promise<void> | null = null;
     let { raw, reasoningOpen } = stored;
+    let parseThink = metadata.parseThinkTags !== false;
     let completionTokens: number | undefined;
     let recoveryUsage:
       | {
@@ -926,6 +928,7 @@ function scheduleGenerationRecovery(
         restoreCarriedPartsFromRaw(
           reasoningOpen ? `${raw}</think>` : raw,
           carried,
+          { parseThink },
         ),
       ) as MessageRecord["content"];
     const toolNames = (content: MessageRecord["content"]): string[] =>
@@ -1090,6 +1093,13 @@ function scheduleGenerationRecovery(
               // only stops an unhandled rejection before the join below reaches it.
               seededApprovals.catch(() => {});
             }
+            if (typeof metadata.parseThinkTags !== "boolean") {
+              parseThink = requestParsesThinkTags(update.run.requestPayload);
+              currentMetadata = {
+                ...currentMetadata,
+                parseThinkTags: parseThink,
+              };
+            }
             identityValidated = true;
           }
           // Replay from 0 re-delivers already-saved chunks: apply them, but publish nothing.
@@ -1159,7 +1169,13 @@ function scheduleGenerationRecovery(
                 typeof deltaRecord?.reasoning_content === "string"
                   ? deltaRecord.reasoning_content
                   : "";
-              const delta = extractDeltaText(deltaRecord?.content).text;
+              const { text: delta, hasStructuredReasoning } = extractDeltaText(
+                deltaRecord?.content,
+              );
+              if (!parseThink && (reasoning || hasStructuredReasoning)) {
+                parseThink = true;
+                currentMetadata = { ...currentMetadata, parseThinkTags: true };
+              }
               if (reasoning) {
                 if (!reasoningOpen) raw += "<think>";
                 raw += reasoning;

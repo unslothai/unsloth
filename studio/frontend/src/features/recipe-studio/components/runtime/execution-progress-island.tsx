@@ -133,7 +133,7 @@ export function ExecutionProgressIsland({
     <div
       className={cn(
         "w-[clamp(15rem,26vw,20rem)] max-w-[calc(100vw-1rem)] rounded-b-xl border-x border-b bg-card/96 shadow-sm backdrop-blur-sm transition-all",
-        minimized ? "min-h-[3rem]" : "min-h-[8.5rem]",
+        minimized ? "min-h-[calc(3rem*var(--ui-space-scale,1))]" : "min-h-[8.5rem]",
       )}
       aria-live="polite"
     >

@@ -191,6 +191,29 @@ Each fires a rule and each is load-bearing. Listed so nobody spends a second pas
   - ie4uinit, Get-Process, python -X utf8 -c, Invoke-WebRequest. Each is scored; each has no
     equivalent that does the job.
 
+## Which products ship a controlled-folder-access equivalent
+
+Get-SecuritySoftwareNote, in install.ps1 and studio/setup.ps1, explains a denied llama.cpp cache
+by naming the security product that is registered and running, because takeown and icacls cannot
+clear a filter-driver block and elevation does not either. Defender's own feature is Controlled
+folder access, and the script names it directly: that name is Microsoft's, not a third-party
+vendor's, and is already in the user-facing string the function returns.
+
+The third-party suites ship the same protected-folders feature under their own product names,
+and those names live here rather than in the scripts, because the scripts are AMSI input and a
+comment listing security vendors raises the score of the file it is explaining:
+
+| Vendor | Feature |
+|---|---|
+| Bitdefender | Safe Files, and Ransomware Remediation |
+| Kaspersky | Anti-Ransomware / Protected folders |
+| Trellix and McAfee Enterprise | Access Protection rules |
+| Sophos | CryptoGuard protected folders |
+
+The function does not hard-code any of these. It reads whatever SecurityCenter2 has registered
+and names that, so the list above is the reason the code is written to ask rather than the data
+it asks with, and it does not need updating when a vendor renames a feature.
+
 ## Reporting a detection
 
 Use the "Windows: antivirus or security software blocked the installer" issue form. It requires the
@@ -904,8 +927,16 @@ function Get-WinEvent {
 """
 
 
-def _run_watch(tmp_path, action: str) -> tuple[str, list[str]]:
-    """Drive the real Invoke-WithCompilerWatch over $Action, with TEMP pointed at tmp_path."""
+def _run_watch(
+    tmp_path,
+    action: str,
+    setup: str = "",
+) -> tuple[str, list[str]]:
+    """Drive the real Invoke-WithCompilerWatch over $Action, with TEMP pointed at tmp_path.
+
+    ``setup`` runs BEFORE the watch starts, for the one case that needs a directory to
+    already exist and already be watched when the action writes into it.
+    """
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
     evidence = tmp_path / "evidence"
@@ -918,6 +949,7 @@ def _run_watch(tmp_path, action: str) -> tuple[str, list[str]]:
                 f'$env:TMP = "{temp_root.as_posix()}"',
                 _FAKE_WINEVENT,
                 f'. "{_WATCHER}"',
+                setup,
                 f"$action = {{ {action} }}",
                 "$seen = Invoke-WithCompilerWatch -Name 'probe' -Action $action "
                 f'-EvidenceRoot "{evidence.as_posix()}"',
@@ -945,20 +977,46 @@ def test_the_watcher_sees_intermediates_the_compiler_cleaned_up(tmp_path) -> Non
     directory once the assembly is loaded. Comparing a listing taken before against one
     taken after cannot see a file that no longer exists, so the job failed as a broken
     detector on every run since it was added.
+
+    The directory is staged BEFORE the watch starts, and that is the whole reason this
+    test is reliable. It used to be created inside the action, which is what CodeDom
+    does, and which is unobservable here: `IncludeSubdirectories` is recursive in the
+    kernel on Windows, but off Windows .NET emulates it by adding an inotify watch per
+    directory, and it adds the one for a new subdirectory after the fact. A file written
+    into a brand-new subdirectory microseconds later can land before its watch does and
+    never be raised at all. Measured driving the same shape in a loop, idle: 1 miss in
+    60. On a two-core hosted runner it landed as COUNT:0 on a pull request that touches
+    none of this (Backend CI job 105986532571, `Repo tests (CPU, studio)`).
+
+    There is nothing to synchronise on either, so a wait is the only alternative and a
+    wait is just a wider race. The watcher's NotifyFilter is FileName, which does not
+    raise a directory's own creation: measured, 0 of 1 under FileName and 1 of 1 once
+    DirectoryName is added, so the event that would say "the subdirectory is watched
+    now" is deliberately not in the stream, and widening the production filter to put it
+    there would change what the detector records.
+
+    What is under test does not need a new directory. The claim is that a file which no
+    longer exists when the action returns is still reported, and the only detector that
+    can make it is the live stream: the before-listing is taken while the directory is
+    empty, the after-listing sees a directory that is gone. Staging the directory removes
+    the platform's timing from the measurement without touching the claim.
     """
+    setup = (
+        '$staged = Join-Path $env:TEMP "vpmyd5eq"; '
+        "New-Item -ItemType Directory -Force -Path $staged | Out-Null"
+    )
     action = (
-        '$dir = Join-Path $env:TEMP "abcd1234"; '
-        "New-Item -ItemType Directory -Force -Path $dir | Out-Null; "
-        'Set-Content -LiteralPath (Join-Path $dir "abcd1234.cmdline") -Value "/noconfig"; '
-        'Set-Content -LiteralPath (Join-Path $dir "abcd1234.dll") -Value "MZ"; '
+        '$dir = Join-Path $env:TEMP "vpmyd5eq"; '
+        'Set-Content -LiteralPath (Join-Path $dir "vpmyd5eq.cmdline") -Value "/noconfig"; '
+        'Set-Content -LiteralPath (Join-Path $dir "vpmyd5eq.dll") -Value "MZ"; '
         "Start-Sleep -Milliseconds 400; "
         # The whole point: gone before the action returns, exactly as CodeDom leaves it.
         "Remove-Item -LiteralPath $dir -Recurse -Force"
     )
-    stdout, libraries = _run_watch(tmp_path, action)
+    stdout, libraries = _run_watch(tmp_path, action, setup = setup)
     assert libraries, f"a compile that cleaned up after itself was missed again: {stdout}"
-    assert any(lib.endswith(".cmdline") for lib in libraries), libraries
-    assert any(lib.endswith(".dll") for lib in libraries), libraries
+    assert any(lib.endswith("vpmyd5eq.cmdline") for lib in libraries), libraries
+    assert any(lib.endswith("vpmyd5eq.dll") for lib in libraries), libraries
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")

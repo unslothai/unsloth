@@ -56,7 +56,7 @@ export function MediaPageLink({
               onNavigate?.();
               navigate({ to });
             }}
-            className="flex h-[34px] min-w-0 items-center gap-1.5 rounded-full pl-2.5 pr-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex h-[calc(34px*var(--ui-space-scale,1))] min-w-0 items-center gap-1.5 rounded-full pl-2.5 pr-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <HugeiconsIcon icon={icon} className="size-4 shrink-0" />
             <span className={cn("min-w-0 truncate", labelClassName)}>{label}</span>

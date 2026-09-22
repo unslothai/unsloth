@@ -129,6 +129,8 @@ export const it = {
       export: "Esporta",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Nessuna chat",
       showMore: "Mostra altro",
       showLess: "Mostra meno",
       settings: "Impostazioni",
@@ -159,6 +161,7 @@ export const it = {
       unpinChats: "Rimuovi le chat fissate",
       archiveChats: "Archivia le chat",
       markUnread: "Segna come non letta",
+      markRead: "Segna come letta",
       deleteChats: "Elimina le chat",
       deleteTitle: "Elimina le chat",
       deleteDescription: "Eliminare {count} chat? L'operazione non è reversibile.",
@@ -177,11 +180,19 @@ export const it = {
       priority: "Priorità",
       lastUpdated: "Ultimo aggiornamento",
       manualOrder: "Ordine manuale",
-      moveUp: "Sposta su",
-      moveDown: "Sposta giù",
+      switchedToManual: "Ordinamento manuale: trascina le righe per riordinarle",
       organizeChats: "Organizza le chat",
       organizeProjects: "Organizza i progetti",
       sortPinnedChats: "Ordina le chat fissate",
+      moveUp: "Sposta su",
+      moveDown: "Sposta giù",
+    },
+    drag: {
+      reorder: "Riordina",
+      pin: "Fissa",
+      unpin: "Sblocca",
+      moveTo: "Sposta in {name}",
+      moveToRecents: "Sposta in Recenti",
     },
     dialog: {
       deleteChat: {
@@ -213,9 +224,19 @@ export const it = {
   settings: {
     accounts: {
       title: "Account",
-      description: "Crea account Studio privati. I nuovi utenti accedono con un codice di configurazione monouso e scelgono una password.",
+      description: "Crea account Unsloth privati. I nuovi utenti accedono con un codice di configurazione monouso e scelgono una password.",
       username: "Nome utente",
       create: "Crea account",
+      createDescription: "Condividi un codice di configurazione perché possa scegliere la propria password.",
+      actionsFor: "Gestisci {username}",
+      actions: "Azioni",
+      search: "Cerca account",
+      noResults: "Nessun account corrispondente",
+      created: "Creato",
+      status: "Stato",
+      loginHint: "Accedi come {username} usando questo codice come password, poi scegli una nuova password.",
+      privateAccount: "Account privato",
+      empty: "Nessun altro account",
       setupCode: "Codice di configurazione",
       setupFor: "Codice di configurazione per {username}",
       shownOnce: "Copia subito questo codice e condividilo con il titolare dell'account. Viene mostrato solo qui e può essere usato una sola volta entro 60 minuti.",
@@ -225,13 +246,13 @@ export const it = {
       copyFailed: "Impossibile copiare. Seleziona e copia il codice di configurazione qui sopra.",
       dismiss: "Fatto",
       owner: "Proprietario dell'installazione",
-      active: "Attivo",
-      inactive: "Inattivo",
+      active: "Attivato",
+      inactive: "Disattivato",
       regenerate: "Rigenera codice di configurazione",
       resetTitle: "Reimpostare la password di {username}?",
       resetDescription: "Rigenerare il codice di configurazione sostituisce la password di {username}, chiude le sue sessioni e revoca le sue chiavi API. Consegnagli il nuovo codice per scegliere di nuovo una password.",
       deactivate: "Disattiva",
-      reactivate: "Riattiva",
+      reactivate: "Attiva",
       delete: "Elimina account",
       deleteTitle: "Eliminare {username}?",
       deleteDescription: "Questa operazione revoca le sessioni di {username} e annulla il suo lavoro. Chat, impostazioni, credenziali, caricamenti, dataset, addestramenti, output, esportazioni, gallerie, sandbox, progetti e file temporanei vengono ritirati. Le directory vengono rinominate e messe da parte, mai eliminate. Creare di nuovo questo nome utente avvia un account nuovo senza questi dati.",
@@ -268,9 +289,10 @@ export const it = {
     },
     keyboardShortcuts: {
       title: "Scorciatoie da tastiera",
-      description:
-        "Modifica una scorciatoia, oppure cancellala per liberare la combinazione per il browser o il sistema.",
       searchPlaceholder: "Cerca scorciatoie…",
+      keystrokePlaceholder: "Premi una scorciatoia per cercare",
+      searchByKeystrokes: "Cerca per combinazione",
+      searchByName: "Cerca per nome",
       noResults: "Nessuna scorciatoia corrisponde alla ricerca.",
       unassigned: "Non assegnata",
       recording: "Premi i tasti…",
@@ -467,6 +489,14 @@ export const it = {
           label: "Invia messaggio",
           description: "Invia il contenuto dell’editor",
         },
+        queueMessage: {
+          label: "Accoda messaggio",
+          description: "Invia la bozza in fondo alla coda",
+        },
+        steerMessage: {
+          label: "Reindirizza la risposta",
+          description: "Interrompi la risposta in corso e invia subito la bozza",
+        },
         cycleReasoningEffort: {
           label: "Scorri lo sforzo di ragionamento",
           description: "Passa in rassegna i livelli di sforzo di ragionamento",
@@ -507,7 +537,16 @@ export const it = {
       sourceHint: "I runner dei modelli scrivono i propri log, quindi un caricamento o una generazione non riusciti sono spesso spiegati lì anziché nel log del server.",
       path: "Posizione",
       pathCopy: "Copia il percorso",
-      refreshSection: "Aggiornamento",
+      currentSession: "Attuale",
+      statusLive: "In diretta",
+      statusPaused: "In pausa",
+      statusStale: "Obsoleto",
+      filterPlaceholder: "Filtra righe",
+      lineCount: "{count} righe",
+      filteredLineCount: "{shown} di {total} righe",
+      wrapLines: "Righe a capo",
+      jumpToLatest: "Vai alla fine",
+      noMatches: "Nessuna riga corrisponde al filtro.",
       mode: "Modalità",
       modeLive: "In tempo reale",
       modeInterval: "Ogni 3 secondi",
@@ -533,7 +572,7 @@ export const it = {
       openLogsFolderFailed: "Non è stato possibile aprire la cartella dei log.",
       exportFailed: "Non è stato possibile scaricare i log.",
       exportTooOld: "Il backend Unsloth in esecuzione è troppo vecchio per esportare i log. Aggiornalo e riavvialo.",
-      exportForbidden: "Per scaricare tutti i log serve una sessione di Studio con accesso eseguito. Una chiave API non basta.",
+      exportForbidden: "Per scaricare tutti i log serve una sessione di Unsloth con accesso eseguito. Una chiave API non basta.",
       keywords: "debug log logs registro registri errore errori crash traccia diagnostica risoluzione dei problemi",
     },
     voice: {
@@ -842,6 +881,18 @@ export const it = {
         revoked: "Tutti i link di anteprima sono stati revocati",
         revokeError: "Impossibile revocare i link di anteprima",
       },
+      managedProviderUrls: {
+        sectionTitle: "Account gestiti",
+        enableLabel: "Connessioni locali e di rete",
+        enableDescription:
+          "Consente agli account gestiti di puntare le proprie connessioni a indirizzi locali o di rete, come un server Ollama o llama.cpp su questo computer o sulla tua rete locale. Disattivato per impostazione predefinita, perché consente a quegli account di raggiungere i servizi in esecuzione sul tuo computer e sulla tua rete.",
+        lockedByEnvironment:
+          "Impostato da UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 in questo server, che rifiuta gli indirizzi privati per tutti gli account.",
+        loadError:
+          "Impossibile caricare le impostazioni di connessione degli account gestiti.",
+        saveError:
+          "Impossibile salvare le impostazioni di connessione degli account gestiti.",
+      },
       permissions: {
         sectionTitle: "Autorizzazioni",
         bypassLabel: "Autorizzazioni degli strumenti",
@@ -856,6 +907,9 @@ export const it = {
         showLoadedModels: "Indicatore dei modelli caricati",
         showLoadedModelsDescription:
           "Mostra una piccola scheda in basso a destra con tutti i modelli attualmente in memoria (chat, voce, immagini, video), con un pulsante per rimuovere ciascuno.",
+        showWhisperUpdates: "Notifiche di aggiornamento di whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Avvisa quando è disponibile una build più recente di whisper.cpp per i modelli di trascrizione vocale. Disattiva le notifiche se non trascrivi mai l'audio.",
       },
       startup: {
         sectionTitle: "Avvio",
@@ -1080,7 +1134,7 @@ export const it = {
       custom: {
         chatWidth: {
           label: "Larghezza chat",
-          description: "Imposta la larghezza dei messaggi e del campo di testo. La larghezza piena usa lo spazio tra le barre laterali.",
+          description: "Larghezza dei messaggi e del campo di testo.",
           standard: "Standard",
           wide: "Ampia",
           full: "Larghezza piena",
@@ -1155,7 +1209,6 @@ export const it = {
         },
         contrast: {
           label: "Contrasto",
-          description: "Intensità dei bordi e del testo secondario.",
         },
         reduceMotion: {
           label: "Riduci le animazioni",
@@ -1185,7 +1238,7 @@ export const it = {
       sidebarNav: {
         title: "Navigazione della barra laterale",
         description:
-          "Fissa e riordina le schede della barra laterale. Le schede non fissate vengono raccolte nel menu «Altro»; se ne resta una sola non fissata viene nascosta invece di creare un menu con una voce sola. «Nuova chat» resta sempre al suo posto.",
+          "Fissa e riordina le schede della barra laterale. Quelle non fissate vanno nel menu «Altro».",
         dragToReorder: "Trascina per riordinare",
         pinToSidebar: "Fissa {name} nella barra laterale",
         moreHolds: "Altro ({count})",
@@ -1193,7 +1246,7 @@ export const it = {
       sidebarMenu: {
         title: "Menu della barra laterale",
         description:
-          "Mostra, nascondi e riordina le voci del menu del profilo nella barra laterale. Impostazioni, Aiuto, Esci e Arresta restano fisse.",
+          "Scegli e riordina le scorciatoie del menu del profilo.",
         darkModeToggle: "Interruttore del tema scuro",
         dragToReorder: "Trascina per riordinare",
       },
@@ -1227,7 +1280,11 @@ export const it = {
       },
       gpu: {
         title: "Dispositivi GPU",
-        ggufInference: "Inferenza GGUF",
+        memory: "Memoria GPU",
+        sharedWithSystemRam: "Condivisa con la RAM di sistema",
+        estimatedAvailable: "Disponibilità stimata: {value}",
+        sharedEstimatedAvailable: "RAM di sistema condivisa: disponibilità stimata di {value}",
+        ggufInference: "Memoria per i modelli GGUF",
         unavailable: "non disponibile",
         detecting: "Ricerca di GPU...",
         unreadable: "Impossibile leggere l'hardware di questo server.",
@@ -1344,6 +1401,54 @@ export const it = {
         copied: "Percorso copiato",
         openError: "Impossibile aprire la cartella",
         copyError: "Impossibile copiare il percorso",
+        caches: {
+          label: "File di cache",
+          description:
+            "{size} nelle cache, di cui {reclaimable} eliminabili subito.",
+          hint: "Download di pacchetti, kernel compilati e cache di trasferimento che Unsloth ricrea quando servono. I modelli scaricati, i progetti, le chat, le impostazioni e il tuo token Hugging Face non vengono mai eliminati qui.",
+          keywords:
+            "cache svuotare pulire eliminare liberare spazio disco temporaneo compilato cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Misurazione delle dimensioni delle cache...",
+          measureFailed: "Impossibile misurare le cache",
+          empty: "Nessun file di cache trovato.",
+          detailsAction: "Dettagli",
+          recheckAction: "Ricontrolla",
+          hideDetailsAction: "Nascondi dettagli",
+          clearAction: "Svuota le cache",
+          clearOneAction: "Svuota",
+          clearingAction: "Svuotamento in corso...",
+          confirmTitle: "Svuotare i file nella cache?",
+          confirmDescription: "Libera circa {size}.",
+          confirmOneTitle: "Svuotare {name}?",
+          safety:
+            "Unsloth ricrea una cache la volta successiva in cui serve. I modelli scaricati, i progetti, le chat, le impostazioni e il tuo token Hugging Face non vengono toccati.",
+          hubCost:
+            "Questa è la cache dei modelli. Svuotandola, quei modelli verranno scaricati di nuovo al prossimo utilizzo.",
+          datasetsCost:
+            "Svuotandola, quei set di dati verranno scaricati di nuovo al prossimo utilizzo.",
+          blocked: "Non svuotata: {reason}",
+          cleared: "Liberati {size}",
+          partial: "Alcuni file di cache non sono stati rimossi",
+          clearFailed: "Impossibile svuotare le cache",
+          names: {
+            uv: "Cache dei pacchetti uv",
+            pip: "Cache dei download pip",
+            npm: "Cache dei pacchetti npm",
+            bun: "Cache dei pacchetti Bun",
+            torchInductor: "Cache di compilazione Torch Inductor",
+            torchExtensions: "Build delle estensioni Torch",
+            triton: "Cache dei kernel Triton",
+            cuda: "Cache dei kernel CUDA",
+            numba: "Cache di compilazione Numba",
+            matplotlib: "Cache dei font Matplotlib",
+            vllm: "Cache di vLLM",
+            unslothCompiled: "Moduli compilati di Unsloth",
+            hfXet: "Cache di trasferimento Hugging Face",
+            hfAssets: "Cache delle risorse Hugging Face",
+            hfDatasets: "Cache dei set di dati Hugging Face",
+            hfHub: "Cache dei modelli Hugging Face",
+          },
+        },
       },
       environment: {
         title: "Ambiente",
@@ -1456,9 +1561,9 @@ export const it = {
         yolo: "Salta le richieste di approvazione. Usa solo in ambienti fidati.",
       },
       remote: {
-        title: "Connettersi a un Unsloth Studio remoto",
+        title: "Connettersi a un Unsloth remoto",
         description:
-          "Punta unsloth start a un Unsloth Studio in esecuzione altrove impostando queste variabili prima dell'avvio (oppure passa direttamente --api-key):",
+          "Punta unsloth start a un Unsloth in esecuzione altrove impostando queste variabili prima dell'avvio (oppure passa direttamente --api-key):",
       },
       passthrough: {
         title: "Passare argomenti all'agente",
@@ -1486,16 +1591,11 @@ export const it = {
       rememberParamsPerModelHint:
         "Quando è disattivata, tutti i modelli usano le stesse impostazioni.",
       autoCompactHint:
-        "Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
+        "Solo chat GGUF locali. I turni rimossi vengono indicizzati perché il modello possa recuperarli, e un ripristino cita parola per parola le istruzioni permanenti che rientrano, privilegiando le più vecchie e le più recenti rispetto a quelle intermedie. L’archiviazione richiede una chat salvata e l’indice vettoriale; senza di essi i turni più vecchi vengono eliminati. Usa la lunghezza del contesto impostata, non la VRAM disponibile.",
       pastedTextShortDescription:
         "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
       pastedTextOffDescription:
         "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
-      compactionDescriptionInherit: "Segue la politica del contesto del server.",
-      compactionDescriptionCheckpoint:
-        "Mantiene l’ultimo scambio e le istruzioni permanenti.",
-      compactionDescriptionRolling:
-        "Rimuove i turni più vecchi per conservare la cronologia recente e lo spazio aggiuntivo selezionato.",
       projectsSection: "Mostra la sezione Progetti",
       projectsSectionDescription:
         "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
@@ -1520,7 +1620,7 @@ export const it = {
           "Fissa le voci nel menu laterale «+» della chat. Le altre verranno spostate in «Altro».",
         chatWithFiles: "Chat con file (RAG)",
         mcp: "MCP",
-        skills: "Competenze degli agenti",
+        skills: "Competenze",
         savedPrompts: "Prompt salvati",
         compareChat: "Confronta chat",
         exportChat: "Esporta chat",
@@ -1543,26 +1643,20 @@ export const it = {
         "Ripristina l’ultimo prompt, la temperatura e le altre impostazioni usate con ogni modello.",
       autoCompact: "Compatta automaticamente le chat lunghe",
       autoCompactDescription:
-        "Rimuove i turni più vecchi quando una chat GGUF locale raggiunge il limite del contesto.",
-      compactionStyle: "Quando il contesto è pieno",
-      compactionStyleDescription:
-        "Il valore predefinito del server mantiene UNSLOTH_CONTEXT_POLICY. Reimpostare la conversazione conserva l'ultimo turno e le istruzioni permanenti. Una finestra scorrevole elimina i turni più vecchi e può conservare più cronologia recente.",
-      compactionStyleInherit: "Usa il valore del server",
-      compactionStyleCheckpoint: "Reimposta la conversazione",
-      compactionStyleRollingDefault:
-        "Elimina i turni precedenti (~25% di spazio aggiuntivo)",
-      compactionStyleRolling10:
-        "Elimina i turni precedenti (~10% di spazio aggiuntivo)",
-      compactionStyleRolling5:
-        "Elimina i turni precedenti (~5% di spazio aggiuntivo)",
-      compactionStyleRollingNone:
-        "Elimina i turni precedenti (nessun taglio aggiuntivo)",
+        "I turni più vecchi passano in un archivio consultabile quando una chat riempie il contesto.",
       autoCompactKeywords:
-        "compattazione automatica contesto finestra troncare scorrevole checkpoint margine compaction rolling headroom",
+        "compattazione automatica contesto finestra troncare scorrevole checkpoint margine archivio recupero ricerca compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Compresso",
+        auto: "Espandi durante l’esecuzione",
+        expanded: "Sempre espanso",
+      },
+      visibilityKeywords:
+        "comprimi compresso espandi espanso aperto chiuso ragionamento chiamate agli strumenti attività raggruppa streaming",
       thinking: {
-        collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
-        collapseByDefaultDescription:
-          "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
+        visibility: "Ragionamento",
+        visibilityDescription:
+          "Come si apre il ragionamento. Puoi comunque espandere o comprimere ogni blocco a mano.",
       },
       currentDate: {
         label: "Comunica al modello la data di oggi",
@@ -1572,9 +1666,14 @@ export const it = {
         saveError: "Impossibile aggiornare le impostazioni della data corrente",
       },
       tools: {
-        collapseByDefault: "Comprimi l’attività degli strumenti per impostazione predefinita",
-        collapseByDefaultDescription:
-          "Mantieni compressi input e output degli strumenti durante l’esecuzione. Espandi una riga per esaminarla.",
+        visibility: "Chiamate agli strumenti",
+        visibilityDescription:
+          "Come si apre l’attività degli strumenti. Puoi comunque espandere o comprimere ogni chiamata a mano.",
+        foldIntoThinking: "Raggruppa le chiamate agli strumenti nel Ragionamento",
+        foldIntoThinkingDescription:
+          "Mostra le chiamate agli strumenti di un turno nel blocco Ragionamento invece che su righe proprie.",
+        foldIntoThinkingBlocked:
+          "Non disponibile finché le chiamate agli strumenti sono su «Sempre espanso», che le tiene su righe proprie.",
       },
       webSearch: {
         title: "Ricerca web",
@@ -1961,7 +2060,7 @@ export const it = {
         desktopAvailableDescription:
           "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
         desktopExternalServer:
-          "Esegui `unsloth studio update` nel terminale da cui hai avviato il server.",
+          "L’app si è connessa a un server Studio già in esecuzione e non può aggiornarlo. Arresta quel server, poi chiudi e riapri l’app desktop per aggiornare.",
         desktopManualInstall:
           "Apri la pagina della release per installare il pacchetto Linux più recente.",
         desktopCheckFailed:
@@ -2745,7 +2844,7 @@ export const it = {
     tooLarge: "Più grande della VRAM, verrà scaricato sulla CPU. Una quantizzazione più piccola è più veloce",
   },
   skills: {
-    title: "Competenze degli agenti",
+    title: "Competenze",
     description: "Le competenze vengono rilevate nelle cartelle standard degli agenti. Attivale qui, poi digita @ nella chat per menzionarne una.",
     precedence: "~/.agents/skills ha la precedenza rispetto a ~/.claude/skills.",
     refresh: "Aggiorna",
@@ -2760,6 +2859,6 @@ export const it = {
     enable: "Attiva {name}",
     disable: "Disattiva {name}",
     updateError: "Impossibile aggiornare la competenza",
-    mentions: "Competenze degli agenti",
+    mentions: "Competenze",
   },
 } as const;
