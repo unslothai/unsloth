@@ -296,17 +296,31 @@ def _expand(value: str, env: dict, inputs: dict | None = None) -> str:
     without the caller's `with:` block the path resolved to empty and the composite
     appeared to persist nothing at all.
     """
-    value = re.sub(
-        r"\$\{\{\s*env\.([A-Za-z_]\w*)\s*\}\}",
-        lambda m: env.get(m.group(1), ""),
-        value,
-    )
-    if inputs:
+    # To a fixed point, because a variable's value may name another variable. With
+    # `CACHE_ROOT: hf-cache` at workflow level, `HF_HOME: ${{ env.CACHE_ROOT }}` on the
+    # job and `path: ${{ env.HF_HOME }}` on the cache step, one pass left
+    # `${{ env.CACHE_ROOT }}` standing, `_normalise` erased it, and the job cached its
+    # own credential home with no offender reported. Actions resolves the whole chain.
+    #
+    # The iteration is bounded rather than trusting the chain to terminate: two variables
+    # that name each other would otherwise substitute forever. A value still holding an
+    # expression after the last pass is left as it is and handled downstream, which is
+    # the same outcome as an unknown variable.
+    for _ in range(8):
+        before = value
         value = re.sub(
-            r"\$\{\{\s*inputs\.([A-Za-z_][\w-]*)\s*\}\}",
-            lambda m: str(inputs.get(m.group(1), "")),
+            r"\$\{\{\s*env\.([A-Za-z_]\w*)\s*\}\}",
+            lambda m: env.get(m.group(1), ""),
             value,
         )
+        if inputs:
+            value = re.sub(
+                r"\$\{\{\s*inputs\.([A-Za-z_][\w-]*)\s*\}\}",
+                lambda m: str(inputs.get(m.group(1), "")),
+                value,
+            )
+        if value == before:
+            break
     return value
 
 def _persisted_paths(job):
@@ -1552,3 +1566,41 @@ def test_two_jobs_of_a_reusable_workflow_are_not_one_runner(tmp_path, monkeypatc
     assert _login_offenders({}, caller), (
         "one job logging in and caching its own credential home is still caught"
     )
+
+
+def test_a_chain_of_environment_references_is_resolved():
+    """A variable's value may name another variable, and Actions resolves the chain.
+
+    One substitution pass left the inner expression standing, `_normalise` erased it,
+    and a job that cached its own credential home through two hops produced no offender
+    at all. Spelling the same thing in two steps instead of one was a complete bypass.
+    """
+    env = {"CACHE_ROOT": "hf-cache", "HF_HOME": "${{ env.CACHE_ROOT }}"}
+    assert _expand("${{ env.HF_HOME }}", env) == "hf-cache"
+
+    job = {
+        "env": {"CACHE_ROOT": "hf-cache", "HF_HOME": "${{ env.CACHE_ROOT }}"},
+        "steps": [
+            {"run": "hf auth login --token x"},
+            {
+                "uses": "actions/cache/save@v4",
+                "with": {"path": "${{ env.HF_HOME }}", "key": "k"},
+            },
+        ],
+    }
+    assert _login_offenders({}, job), (
+        "the cached path and the credential home are the same directory, reached "
+        "through two references"
+    )
+
+
+def test_a_reference_cycle_does_not_hang_the_expansion():
+    """Two variables naming each other must terminate, not spin.
+
+    The fixed point is bounded for this reason. A value still holding an expression
+    after the last pass is treated exactly like an unknown variable, which is the
+    existing behaviour rather than a new one.
+    """
+    env = {"A": "${{ env.B }}", "B": "${{ env.A }}"}
+    out = _expand("${{ env.A }}", env)
+    assert "${{" in out, f"an unresolvable cycle stays an expression, got {out!r}"

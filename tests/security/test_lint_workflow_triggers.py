@@ -2518,3 +2518,177 @@ def test_a_reusable_workflow_is_named_by_its_file_not_its_directory():
     assert lint._target_name(Path(".github/workflows/reuse.yml")) == "reuse.yml"
     assert lint._target_name(Path(".github/actions/pip-cache/action.yml")) == "pip-cache"
     assert lint._target_name(Path(".github/actions/pip-cache/action.yaml")) == "pip-cache"
+
+
+def test_an_unresolvable_publish_key_is_reported_too(tmp_path):
+    """Failing closed on one side only leaves half this check's own rule unenforced.
+
+    A publish composite called with `cache_key: ${{ matrix.cache_key }}` may well
+    produce a literal a pull request also writes, and the publish branch skipped every
+    key that still contained an expression. The PR side had already been made to fail
+    closed, which made the asymmetry easy to miss: the rule looked enforced.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "pub-cache"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: pub cache\n"
+        "inputs:\n  cache_key:\n    description: k\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - uses: actions/cache/restore@v4\n"
+        "      with:\n        path: wheels\n        key: ${{ inputs.cache_key }}\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n          path: wheels\n          key: shared-key\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    strategy:\n      matrix:\n        cache_key: [x, y]\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/pub-cache\n"
+        "        with:\n          cache_key: ${{ matrix.cache_key }}\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the matrix could produce `shared-key`, which the pull request writes:\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_two_identically_spelled_unresolved_keys_collide(tmp_path):
+    """`shared-${{ hashFiles('lock') }}` on both sides is one key at run time.
+
+    Both sides were dropped for still containing an expression, so the most direct
+    collision there is -- the same key, written the same way, in both workflows -- was
+    invisible. A pull request that leaves the lockfile untouched writes exactly the entry
+    the publish run restores.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    body = (
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: shared-${{ hashFiles('lock') }}\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n" + body
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n" + body
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"identical keys resolve identically:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "identically" in proc.stderr
+
+
+def test_a_publish_key_is_expanded_with_its_own_targets_inputs(tmp_path):
+    """The publish side kept using the merged namespace, so its scoping changed nothing.
+
+    `publish_by_target` was computed and never read. Two publish-reachable actions
+    sharing an input name therefore had every key expanded with both their values, and a
+    cache composite given `publish-key` was also expanded to an unrelated action's
+    `safe-key` and reported as colliding with a pull request cache of that name.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    caching = root / "actions" / "pub-caching"
+    unrelated = root / "actions" / "pub-unrelated"
+    wf.mkdir(parents = True)
+    caching.mkdir(parents = True)
+    unrelated.mkdir(parents = True)
+    (caching / "action.yml").write_text(
+        "name: pub caching\n"
+        "inputs:\n  cache_key:\n    description: k\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - uses: actions/cache/restore@v4\n"
+        "      with:\n        path: wheels\n        key: ${{ inputs.cache_key }}\n"
+    )
+    (unrelated / "action.yml").write_text(
+        "name: pub unrelated\n"
+        "inputs:\n  cache_key:\n    description: k\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - run: echo ${{ inputs.cache_key }}\n      shell: bash\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n          path: wheels\n          key: safe-key\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/pub-caching\n"
+        "        with:\n          cache_key: publish-key\n"
+        "      - uses: ./.github/actions/pub-unrelated\n"
+        "        with:\n          cache_key: safe-key\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"`safe-key` only ever reaches the action that caches nothing:\n{proc.stdout}\n"
+        f"{proc.stderr}"
+    )
+
+
+def test_a_composite_key_is_not_counted_a_second_time_without_its_inputs(tmp_path):
+    """A duplicate entry with an empty namespace made a decided key look undecided.
+
+    Composite YAML keys were added once with their target's inputs and once more with no
+    namespace at all. The second copy expanded to nothing, counted as unresolved, and the
+    fail-closed rule then rejected an unrelated publish key on the strength of the
+    duplicate -- even though every caller passes a literal and the key can only be one
+    thing.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "decided"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: decided\n"
+        "inputs:\n  name:\n    description: n\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - uses: actions/cache@v4\n"
+        "      with:\n        path: wheels\n        key: prefix-${{ inputs.name }}\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/decided\n"
+        "        with:\n          name: safe\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: prefix-other\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"every caller passes `name: safe`, so the PR key can only be `prefix-safe` and "
+        f"`prefix-other` is a different namespace:\n{proc.stdout}\n{proc.stderr}"
+    )

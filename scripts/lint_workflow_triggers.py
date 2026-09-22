@@ -424,6 +424,10 @@ def _expand_key(key: str, namespaces: dict) -> tuple:
     """
     out = {key.strip()}
     complete = True
+    # Inputs whose every call site DELEGATES: the value is assembled elsewhere and its
+    # namespace is recorded by `_shell_built_key_prefixes`, so the expression left
+    # standing for one of these is not an unanswered question.
+    delegated_inputs: set = set()
     for _ in range(6):
         nxt: set = set()
         changed = False
@@ -435,7 +439,15 @@ def _expand_key(key: str, namespaces: dict) -> tuple:
             values, resolved = namespaces.get(match.group(1), (set(), False))
             if not values:
                 nxt.add(k)
-                complete = False
+                # Resolved with NO literals means every call site delegates. Only
+                # resolved-false is genuine doubt. Treating the two alike reported this
+                # repository's own pip-cache-save, whose every caller passes
+                # `${{ steps.pip-cache.outputs.key }}`, against every publish key in the
+                # tree -- a false failure on a correct configuration.
+                if resolved:
+                    delegated_inputs.add(match.group(1))
+                else:
+                    complete = False
                 continue
             changed = True
             if not resolved:
@@ -454,8 +466,18 @@ def _expand_key(key: str, namespaces: dict) -> tuple:
             expanded.update(_RUNNER_OS_EXPR.sub(v, k) for v in _RUNNER_OS_VALUES)
         else:
             expanded.add(k)
-    if any("${{" in k for k in expanded):
-        complete = False
+    # Residue that a delegated input accounts for does not make the key undecided; any
+    # other surviving expression does. Checked after the delegated ones are removed, so a
+    # key mixing the two is still reported.
+    for k in expanded:
+        residue = k
+        for name in delegated_inputs:
+            residue = re.sub(
+                r"\$\{\{\s*inputs\." + re.escape(name) + r"\s*\}\}", "", residue
+            )
+        if "${{" in residue:
+            complete = False
+            break
     return sorted(expanded), complete
 
 
@@ -971,7 +993,12 @@ def main() -> int:
     # (namespace, key) rather than a bare key, so every key is expanded against the
     # inputs of the definition that declares it and no other.
     pr_sites = [({}, k) for _, keys in pr_triggered for k in keys]
-    pr_sites += [({}, k) for k in composite_keys]
+    # Shell-built heads only. Re-adding every composite's YAML keys here gave each one a
+    # SECOND entry carrying an empty namespace: it expanded to nothing, counted as
+    # unresolved, and a composite whose callers all pass literals then rejected an
+    # unrelated publish key on the strength of its own duplicate. The target loop below
+    # is where those keys belong, with the inputs that decide them.
+    pr_sites += [({}, k) for k in sorted(shell_built)]
     for target, namespace in pr_by_target.items():
         pr_sites += [(namespace, k) for k in _extract_cache_keys(target)]
 
@@ -982,12 +1009,38 @@ def main() -> int:
     for namespace, key in pr_sites:
         literals, complete = _expand_key(key, namespace)
         pr_keys.update(k for k in literals if "${{" not in k)
-        if not complete:
+        # Delegation is not indecision. A key that is nothing but
+        # `${{ steps.probe.outputs.key }}` names a value assembled in a shell step, and
+        # `_shell_built_key_prefixes` recovers its head and records that namespace
+        # separately; counting it here as well reported every publish key in the tree
+        # against it, which failed the live tree on a correct configuration.
+        if not complete and not _DELEGATED_KEY.fullmatch(key.strip()):
             pr_undecided.append((key, _prefix_candidates(key)))
+    pr_raw_unresolved = {raw.strip() for raw, _heads in pr_undecided}
 
     for pub_path, pub_keys in publish_triggered:
+        # This target's own inputs, not the merged view. Two publish-reachable actions
+        # sharing an input name had every key expanded with both their values, so a cache
+        # composite given `publish-key` was also expanded to an unrelated action's
+        # `safe-key` and reported as colliding with a PR cache of that name.
+        pub_ns = publish_by_target.get(pub_path, publish_namespaces)
         for raw in pub_keys:
-            literals, _complete = _expand_key(raw, publish_namespaces)
+            literals, complete = _expand_key(raw, pub_ns)
+            # Identical spellings first. Two keys written the same way around an
+            # expression this check cannot expand -- `shared-${{ hashFiles('lock') }}`
+            # on both sides -- resolve identically at run time, so a PR that leaves the
+            # lockfile alone writes the very entry the publish run restores. Both sides
+            # were being dropped for still containing `${{`, which made the most direct
+            # collision of all invisible.
+            if not complete and raw.strip() in pr_raw_unresolved:
+                findings.append(
+                    f"{pub_path.name}: cache key {raw.strip()!r} is spelled identically "
+                    "in a PR-triggered workflow. Neither value can be resolved here, "
+                    "but two identical keys resolve identically at run time, so a fork "
+                    "PR could write the entry this workflow restores. Add a unique "
+                    "suffix (e.g. '-publish-only')."
+                )
+                continue
             for k in literals:
                 if k in pr_keys:
                     findings.append(
@@ -999,6 +1052,29 @@ def main() -> int:
                     )
                     continue
                 if "${{" in k:
+                    if _DELEGATED_KEY.fullmatch(k.strip()):
+                        # Delegated, not undecidable. See the PR side above.
+                        continue
+                    # An unresolved PUBLISH key, which needs the same treatment as an
+                    # unresolved PR key and was simply skipped. A publish composite
+                    # called with `cache_key: ${{ matrix.cache_key }}` may well produce a
+                    # literal a pull request also writes, and failing closed only on the
+                    # PR side left exactly half of this check's own rule unenforced.
+                    # No literal head at all means the key is expression-led and
+                    # could be ANY value, so it is not narrowable and every PR key is a
+                    # candidate. Requiring a head silently exempted exactly the least
+                    # decidable keys, which is the wrong way round.
+                    heads = [h for h in _prefix_candidates(k) if h]
+                    for literal in sorted(pr_keys):
+                        if not heads or any(literal.startswith(h) for h in heads):
+                            findings.append(
+                                f"{pub_path.name}: cache key {k!r} cannot be shown not "
+                                f"to collide with the PR-written key {literal!r}, "
+                                "because this check cannot resolve the publish key's "
+                                "value. Give it a unique suffix (e.g. "
+                                "'-publish-only'), or make it literal."
+                            )
+                            break
                     continue
                 # Fail closed. An unsettled PR key can equal this publish key at run
                 # time, and reporting it only from the restore-prefix pass meant a
@@ -1007,7 +1083,10 @@ def main() -> int:
                 # fixed head this publish key actually begins with, because a PR key
                 # headed `pip-v2-` cannot become `wheels-x` however its tail resolves.
                 for raw_pr, heads in pr_undecided:
-                    if any(k.startswith(h) for h in heads if h):
+                    # Same rule in the other direction: a PR key with no literal head is
+                    # unnarrowable rather than harmless.
+                    fixed = [h for h in heads if h]
+                    if not fixed or any(k.startswith(h) for h in fixed):
                         findings.append(
                             f"{pub_path.name}: cache key {k!r} cannot be shown not to "
                             f"collide with the PR-reachable key {raw_pr!r}, whose value "
