@@ -911,6 +911,7 @@ def _zoo_composite_prefix_renaming_installed():
         seen += 1
     return False
 
+
 # How many of a submodule's own parameter names to try a renaming against. A prefix renaming
 # either matches every name under the submodule or none of them, so one would do; eight costs
 # nothing and covers a mapping that only rewrites some leaf names.
@@ -3820,7 +3821,6 @@ def check_transformers_prequantized_vlm_quant_state():
     # Checked on the live attribute, so a repair that declined to install still warns.
     try:
         from transformers import conversion_mapping
-
         if getattr(
             getattr(conversion_mapping, "get_model_conversion_mapping", None),
             _COMPOSITE_PREFIX_RENAMING_FLAG,

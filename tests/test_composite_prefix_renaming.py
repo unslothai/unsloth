@@ -470,7 +470,12 @@ def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch, for
 
     # Zoo's wrapper, spelled the way zoo really spells it: no functools.wraps, no
     # __wrapped__, just its own marker attribute.
-    def zoo_wrapper(model, key_mapping = None, hf_quantizer = None, add_legacy = True):
+    def zoo_wrapper(
+        model,
+        key_mapping = None,
+        hf_quantizer = None,
+        add_legacy = True,
+    ):
         return pristine(model, key_mapping, hf_quantizer, add_legacy)
 
     zoo_wrapper._unsloth_moe_patched = True
@@ -486,9 +491,9 @@ def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch, for
 
     patched = conversion_mapping.get_model_conversion_mapping
     assert patched is not zoo_wrapper, "the repair declined even with the gate forced open"
-    assert early.get_model_conversion_mapping is patched, (
-        "a module holding the pre-zoo function was left bound to the unscoped mapping"
-    )
+    assert (
+        early.get_model_conversion_mapping is patched
+    ), "a module holding the pre-zoo function was left bound to the unscoped mapping"
 
 
 @pytest.mark.parametrize(
@@ -559,7 +564,8 @@ def test_it_defers_to_the_unsloth_zoo_copy_of_the_same_repair(monkeypatch):
     assert conversion_mapping.get_model_conversion_mapping is zoo_wrapper
     assert not getattr(
         conversion_mapping.get_model_conversion_mapping,
-        "_unsloth_patched_composite_prefix_renaming", False,
+        "_unsloth_patched_composite_prefix_renaming",
+        False,
     )
 
 
@@ -573,10 +579,12 @@ def test_it_finds_the_zoo_mark_under_an_unmarked_wrapper(monkeypatch):
 
     def zoo_repair():
         pass
+
     setattr(zoo_repair, "_unsloth_zoo_patched_composite_prefix_renaming", True)
 
     def moe_wrapper():
         pass
+
     moe_wrapper.__wrapped__ = zoo_repair
 
     monkeypatch.setattr(conversion_mapping, "get_model_conversion_mapping", moe_wrapper)
@@ -589,8 +597,10 @@ def test_the_zoo_detector_cannot_spin_on_a_cycle(monkeypatch):
 
     def a():
         pass
+
     def b():
         pass
+
     a.__wrapped__ = b
     b.__wrapped__ = a
 
