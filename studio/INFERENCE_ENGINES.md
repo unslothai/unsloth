@@ -103,7 +103,7 @@ clients that explicitly send `load_in_4bit: true` without `engine_precision` sel
 
 Vision models accept text-only chat and OpenAI `image_url` content parts, including
 multiple images and images on earlier turns. Studio forwards the original image
-parts to the engine. The selected model determines its image and context limits.
+bytes to the engine, fetching remote URLs itself with the same limits as other backends. The selected model determines its image and context limits.
 
 ## Environment and cache design
 

@@ -27236,8 +27236,13 @@ async def produce_openai_chat_completions(
 
     _managed_promoted_parts: list = []
     if _managed_images:
-        # Native servers accept OpenAI image parts. Preserve every turn and URL,
-        # including remote images, without flattening or resizing them in Studio.
+        # Native servers accept OpenAI image parts. Preserve every turn without flattening
+        # or resizing, but fetch remote URLs here: the engine's own fetch has no SSRF guard.
+        if _messages_have_remote_image(payload.messages):
+            try:
+                await asyncio.to_thread(_inline_request_remote_images, payload)
+            except HTTPException as exc:
+                raise _reject(exc.status_code, exc.detail)
         chat_messages = [
             message
             for message in await _promote_mcp_history_images_async(
