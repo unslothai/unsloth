@@ -53,8 +53,7 @@ export interface DiffusionStatus {
   // Image workflows the loaded family supports (drives tab gating). Absent when nothing is loaded or
   // on the native engine.
   workflows?: string[];
-  // Image-conditioning limits of the loaded model on the active engine. Null/absent when nothing is loaded or
-  // on an older backend, in which case callers keep the historical limits (4 images, RGB, 16 px, 2048).
+  // Absent on an older backend: callers keep the historical limits (4 images, RGB, 16 px, 2048).
   conditioning?: DiffusionConditioning | null;
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA picker enabled state).
   supports_lora?: boolean;
@@ -68,17 +67,14 @@ export interface DiffusionStatus {
 export interface DiffusionConditioning {
   // Total input images per call, INCLUDING the source.
   max_condition_images: number;
-  // Whether transparency in the inputs reaches the model.
   alpha: boolean;
   dimension_multiple: number;
   max_output_side: number;
   max_output_pixels: number;
-  // Accepted reference_resolution values; empty when the model has no such control.
   reference_resolutions: number[];
-  // Whether Edit is the unified instruction editor (sized explicitly) rather than an edit-only pipeline.
   unified_edit: boolean;
   localized_edit_modes: LocalizedEditMode[];
-  // Engine-specific differences the page should show next to the inputs (the native engine's, today).
+  // Engine-specific caveats shown next to the inputs.
   notes?: string[];
 }
 
@@ -165,11 +161,9 @@ export interface DiffusionGenerateRequest {
   upscale?: number;
   // Additional images after init_image, in order, for the reference and edit workflows.
   reference_images?: string[];
-  // Explicit conditioned workflow. Omitted keeps the workflow the other fields imply.
   workflow?: "edit" | "reference";
-  // Condition-image preprocessing resolution, for models that list reference_resolutions.
   reference_resolution?: number;
-  // Localized edit layer (unified edit only): annotate/paint composite onto the source, mask is sent as Image 2.
+  // Unified edit only: annotate/paint composite onto the source, mask is sent as Image 2.
   localized_edit?: { mode: LocalizedEditMode; image: string };
   // LoRA adapters for this generation (discovery id + weight, 0..2). Rejected with a 400 when the
   // loaded model cannot apply LoRA.

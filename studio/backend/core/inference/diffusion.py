@@ -608,10 +608,9 @@ def _image_variant_hint(
 
 
 def _is_source_sized(workflow: str, family: Any = None) -> bool:
-    """Whether ``workflow`` takes its output size from the (resized/snapped) source image rather
-    than the requested width/height. "edit" is source-sized only on an edit-only family (Kontext,
-    Qwen-Image-Edit); the unified edit workflow (Qwen-Image-2.1) renders at the requested size like
-    reference does. ``family`` None keeps the edit-only reading."""
+    """Whether ``workflow`` takes its output size from the source image rather than width/height.
+    "edit" is source-sized only on an edit-only family (Kontext, Qwen-Image-Edit), or when
+    ``family`` is None; the unified edit (Qwen-Image-2.1) renders at the requested size."""
     if workflow == "edit":
         return family is None or bool(getattr(family, "edit", False))
     return workflow in ("img2img", "inpaint", "upscale")
@@ -6858,7 +6857,7 @@ class DiffusionBackend:
         *,
         prompt: str,
         negative_prompt: Optional[str] = None,
-        # None on both (unified edit only) matches Image 1's aspect ratio at the reference resolution.
+        # None on both (unified edit only) matches Image 1's aspect ratio.
         width: Optional[int] = 1024,
         height: Optional[int] = 1024,
         # Fallbacks; the route always sends the per-model values the UI seeds.
@@ -6882,9 +6881,7 @@ class DiffusionBackend:
         reference_images: Optional[list[str]] = None,
         # Explicit "edit" / "reference"; None keeps the workflow the other arguments imply.
         workflow: Optional[str] = None,
-        # Condition-image preprocessing resolution, for families that expose one (Qwen-Image-2.1).
         reference_resolution: Optional[int] = None,
-        # Localized edit layer for the unified edit workflow.
         localized_edit: Optional[LocalizedEdit] = None,
         loras: Optional[list[tuple[str, float]]] = None,
         # ControlNet (id, control_image_b64, control_type, strength, guidance_start, guidance_end). None = off.
@@ -6970,8 +6967,7 @@ class DiffusionBackend:
                             f"The {requested_workflow} workflow requires a source image (init_image)."
                         )
                 if requested_workflow is not None:
-                    # The explicit workflows run one pipeline call over the ordered images: a mask, a strength, an
-                    # upscale or a ControlNet would each be dropped, so refuse them rather than ignore them.
+                    # One pipeline call over the ordered images would drop these, so refuse rather than ignore them.
                     for present, name in (
                         (mask_image is not None, "mask_image"),
                         (strength is not None, "strength"),
@@ -6995,8 +6991,6 @@ class DiffusionBackend:
                     raise ValueError(
                         f"Reference images are not supported for the '{fam.name}' model family."
                     )
-                # Reference and unified edit share one conditioning path: every image in order, the family's alpha
-                # policy, its count limit, and an output rendered at the requested size.
                 conditioned = False
                 if getattr(fam, "edit", False):
                     if requested_workflow == "reference":
@@ -7061,7 +7055,6 @@ class DiffusionBackend:
                     if strength is None:
                         strength = 0.35  # hires-fix default: preserve content, add detail
                 elif getattr(fam, "reference", False) and init_image is not None:
-                    # Omitted workflow on a reference family: reference conditioning, as before.
                     workflow = "reference"
                     conditioned = True
                 elif init_image is not None:
@@ -7086,7 +7079,6 @@ class DiffusionBackend:
                     if width is None or height is None:
                         if not conditioned:
                             raise ValueError("width and height are required for this workflow.")
-                        # Image 1 decides the aspect ratio, never the last reference as upstream would.
                         width, height = match_source_size(
                             fam, init_pil.size, ref_resolution or 1024
                         )
@@ -7265,8 +7257,6 @@ class DiffusionBackend:
                         # resolution" is actionable there; the rest size from the upload alone and get the upload-side
                         # remedy.
                         source_driven = source_sized and workflow != "img2img",
-                        # Every condition image joins the sequence as latent tokens at the preprocessing
-                        # area, and the batch carries its own copy of them.
                         condition_pixels = (
                             int(
                                 (1 + len(ref_extra))

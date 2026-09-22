@@ -1623,20 +1623,15 @@ def binary_carries_marker(binary: Optional[str], marker: Optional[str]) -> bool:
 
 
 def _native_output_image(fam: Any, im: Any) -> Any:
-    """A rendered image as the gallery keeps it. A family whose model generates transparency keeps
-    its alpha, exactly as the diffusers engine returns it; every other family is flattened to RGB
-    as before."""
+    """A rendered image as the gallery keeps it: alpha for a family that generates transparency, as
+    the diffusers engine returns it, else RGB."""
     if getattr(fam, "condition_image_mode", "RGB") == "RGBA" and im.mode in ("RGBA", "LA", "P"):
         return im.convert("RGBA")
     return im.convert("RGB")
 
 
-# A literal only sd.cpp builds that read reference images at full fidelity carry: upstream e112ab5 (2026-09-22)
-# loads a reference with its own channel count, so an RGBA image keeps its alpha into the model, and it sits after
-# 78557f8 / e012065, which stopped sd-server from centre-cropping references to the output's aspect ratio. The pinned
-# build (master-813-bfbef5b-u1d02858) predates all three. Measured with upstream c92d73c, Q6_K and cfg 6 on an RTX
-# 3090: a transparent edit kept 47.1% of its pixels fully transparent from the RGBA reference against 24.9% from
-# the same reference flattened over white.
+# Carried only by sd.cpp builds that keep reference alpha (upstream e112ab5) and no longer centre-crop references
+# on sd-server (78557f8 / e012065). The pinned build predates all three.
 _REFERENCE_FIDELITY_MARKER = "error: allocate memory for channel promotion"
 
 
@@ -1651,21 +1646,11 @@ def _native_condition_images(
     full_fidelity: bool,
     pad_to_output: bool,
 ) -> tuple[int, int, list[bytes]]:
-    """(width, height, ordered PNG bytes) for one native reference / edit call.
-
-    Decoded through the same helper as the diffusers engine, so the order, the image count limit,
-    the localized-edit layers and the match-source size are identical. A build with
-    ``full_fidelity`` gets every image as decoded, alpha included. An older build gets two
-    workarounds for its own limits:
-
-    - It reads reference images as RGB and pads alpha to opaque, which turns transparent pixels into
-      whatever colour they happen to hold. Each image is composited over white first, the same
-      flattening the model's vision encoder is trained on, so a cutout arrives as a subject on white
-      rather than on noise. The alpha itself does not reach the native VAE.
-    - Its sd-server centre-crops every reference to the requested output's aspect ratio. On that
-      path (``pad_to_output``) each image whose aspect ratio differs is padded to the output's, so
-      nothing is cut off: white for images, black for a separate mask, which would otherwise gain
-      an edit region. sd-cli keeps aspect ratios on its own and gets the images unchanged.
+    """(width, height, ordered PNG bytes) for one native reference / edit call, decoded through
+    the diffusers engine's helper. A ``full_fidelity`` build gets every image as decoded. An older
+    build reads references as RGB, so each is flattened over white first (else transparent pixels
+    become noise), and its sd-server centre-crops references to the output aspect, so with
+    ``pad_to_output`` each is padded to it instead: white for images, black for a separate mask.
     """
     import io
 
@@ -1682,8 +1667,6 @@ def _native_condition_images(
         width, height = match_source_size(fam, images[0].size, 1024)
     check_output_size(fam, int(width), int(height))
     target = float(width) / float(height)
-    # A separate mask is Image 2. Its padding must be black: white would mark the added border as
-    # part of the region to edit. The source is padded by the same amount, so the two stay aligned.
     mask_index = 1 if getattr(localized_edit, "mode", None) == "mask" else None
     blobs: list[bytes] = []
     for index, img in enumerate(images):
@@ -3354,9 +3337,8 @@ class SdCppDiffusionBackend:
         return bool(binary) and binary_carries_marker(binary, _REFERENCE_FIDELITY_MARKER)
 
     def _native_edit_ready(self, state: Optional[_SdState]) -> bool:
-        """Whether this load can run the unified edit workflow natively: a family that has one, its
-        vision projector among the loaded files, and a build that carries the family's edit marker.
-        The text-to-image arch marker does not answer this; the build before the pin had neither."""
+        """Whether this load can run the unified edit workflow natively: a unified-edit family, its
+        vision projector loaded, and a build carrying the family's edit marker."""
         if state is None:
             return False
         fam = state.family
@@ -3406,8 +3388,6 @@ class SdCppDiffusionBackend:
 
         from core.inference import diffusion_lora
 
-        # The unified edit / reference workflows run natively for a family whose loaded build and assets can
-        # (_native_edit_ready); every other image-conditioned request keeps the refusal it always had.
         conditioned = workflow in ("edit", "reference")
         if conditioned:
             if init_image is None:
@@ -3853,8 +3833,7 @@ class SdCppDiffusionBackend:
                 )
                 eff_prompt = diffusion_lora.inject_prompt_tags(prompt, materialized)
                 lora_dir = str(Path(tmpdir) / "loras")
-            # Condition images staged as ordered PNGs inside the run's temporary directory, so success, failure and
-            # cancellation all remove them with it.
+            # Inside the run's temporary directory, so every exit path removes them.
             ref_paths: list[str] = []
             for i, blob in enumerate(ref_pngs or []):
                 ref_path = Path(tmpdir) / f"ref_{i + 1:02d}.png"
@@ -4068,9 +4047,7 @@ class SdCppDiffusionBackend:
         if self._native_edit_ready(state):
             workflows += ["reference", "edit"]
         conditioning = conditioning_capabilities(state.family, workflows)
-        # The native engine's own limits, reported rather than papered over. There is no separate reference detail
-        # (sd.cpp sizes inputs to the output area). An older build also loses input alpha and, on sd-server, the
-        # input's shape.
+        # No reference detail natively: sd.cpp sizes inputs to the output area.
         conditioning["reference_resolutions"] = []
         full_fidelity = self._native_reference_fidelity(state)
         conditioning["alpha"] = full_fidelity
@@ -4085,8 +4062,7 @@ class SdCppDiffusionBackend:
                         "Input images with a different shape from the output are padded to its "
                         "aspect ratio on this native build."
                     )
-            # Measured with upstream c92d73c and Q6_K: a transparent edit kept 3.7% of its pixels transparent at
-            # guidance 1 and 47.1% at 6, the value upstream's own examples use.
+            # Measured with upstream c92d73c: 3.7% of pixels stayed transparent at guidance 1, 47.1% at 6.
             notes.append(
                 "For transparent output on the native engine, raise Guidance above 1 (upstream uses 6)."
             )

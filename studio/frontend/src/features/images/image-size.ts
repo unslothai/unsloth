@@ -3,8 +3,7 @@
 
 import type { DiffusionConditioning } from "./api";
 
-// Z-Image's range, which every family but Qwen-Image-2.1 keeps. ImageGenerationPresetParams
-// enforces MIN_DIM and the transport ceiling on the persisted recipe.
+// Z-Image's range, which every family but Qwen-Image-2.1 keeps.
 export const MIN_DIM = 256;
 export const MAX_DIM = 2048;
 
@@ -44,8 +43,7 @@ export function snapDim(
   return Math.min(top, Math.max(bottom, Math.round(value / m) * m));
 }
 
-/** A (width, height) pair on the grid and inside both the side and the area bound. The pair is
- *  shrunk together, so its aspect ratio survives; each side alone would not. */
+/** A (width, height) pair on the grid and inside both bounds, shrunk together to keep its ratio. */
 export function fitSize(
   width: number,
   height: number,
@@ -61,10 +59,7 @@ export function fitSize(
   return { width: w, height: h };
 }
 
-/** Output size with the source's aspect ratio at a resolution x resolution area. Mirrors the
- *  backend's match_source_size, so the size shown is the size generated: a source too elongated
- *  to keep its ratio inside [MIN_DIM, maxSide] keeps the short side at MIN_DIM and caps the long
- *  side, so the result is always a size the request accepts. */
+/** Mirrors the backend's match_source_size, so the size shown is the size generated. */
 export function matchSourceSize(
   sourceWidth: number,
   sourceHeight: number,

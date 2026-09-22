@@ -3982,10 +3982,8 @@ class ControlNetSpec(BaseModel):
 
 
 class LocalizedEditSpec(BaseModel):
-    """A localized edit for the unified-edit workflow (Qwen-Image-2.1), in one of the conventions the
-    model was shown: coloured marks drawn on the source, a white region painted on it, or a
-    separate mask sent as the next image. It guides a generative edit; it does not keep the pixels
-    outside the region the way inpainting does."""
+    """A localized edit for the unified-edit workflow (Qwen-Image-2.1). It guides a generative edit;
+    unlike inpainting it does not keep the pixels outside the region."""
 
     mode: Literal["annotate", "paint", "mask"] = Field(
         ...,
@@ -4000,7 +3998,7 @@ class LocalizedEditSpec(BaseModel):
     )
 
 
-# Every image one request carries, base64, so ten maximal uploads cannot buffer ~320 MiB at once.
+# All images of one request, base64: ten maximal uploads would otherwise buffer ~320 MiB.
 _MAX_CONDITION_PAYLOAD = 128 * 1024 * 1024
 
 
@@ -4011,8 +4009,7 @@ class DiffusionGenerateRequest(BaseModel):
     negative_prompt: Optional[str] = Field(
         None, description = "What to avoid (if the model supports it)"
     )
-    # The transport ceiling is the largest official 2K preset side; the loaded family enforces its own tighter bounds
-    # (2048 for every family but Qwen-Image-2.1) and grid (Qwen-Image-2.1 needs multiples of 32).
+    # Transport ceiling = the largest 2K preset side; the loaded family enforces its own bounds and grid.
     width: int = Field(
         1024,
         ge = 256,

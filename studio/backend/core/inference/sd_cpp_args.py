@@ -647,8 +647,7 @@ def build_img_gen_request(
     # ``<lora:>`` tags are unsupported server-side), so LoRAs are staged here.
     if lora:
         req["lora"] = lora
-    # Reference images, base64 PNG in model order (Image 1 first). No init_image, strength or mask goes with them:
-    # the edit is the model's own reference conditioning, not img2img over the first one.
+    # Base64 PNGs in model order; no init_image/strength/mask: this is reference conditioning, not img2img.
     if ref_images:
         req["ref_images"] = list(ref_images)
     return req

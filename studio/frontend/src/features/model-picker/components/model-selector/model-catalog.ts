@@ -182,9 +182,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   {
     canonicalId: "unsloth/Qwen-Image-2.1",
     displayName: "Qwen-Image 2.1",
-    // One pipeline for text-to-image and instruction editing over up to ten input images (the
-    // family's `unified_edit`), rather than a separate edit pipeline the way Qwen-Image-Edit is.
-    // Which of these the Images page offers still follows the loaded engine's status.
+    // One pipeline for text-to-image and editing (`unified_edit`); the Images page follows the engine's status.
     description: "Text-to-image and image editing",
     scope: "image",
     // Same reason as the 2512 row below: the int8 half of the prequant repo is reached through

@@ -213,9 +213,7 @@ logger = get_logger(__name__)
 
 class ImageGenerationPresetParams(BaseModel):
     """Bounds track DiffusionGenerateRequest. A preset the generate endpoint would refuse is not
-    a usable preset: selecting it would make every following Generate fail validation. The ceiling
-    is the transport's (the largest Qwen-Image-2.1 2K preset side); the loaded family still applies
-    its own tighter bounds when the preset is used."""
+    a usable preset: selecting it would make every following Generate fail validation."""
 
     model_config = ConfigDict(extra = "forbid")
 

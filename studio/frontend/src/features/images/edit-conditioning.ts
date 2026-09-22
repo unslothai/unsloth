@@ -29,8 +29,7 @@ export const TRANSPARENCY_CHECKER: CSSProperties = {
 /** Total inputs when the backend does not say: the FLUX.2 reference limit it has always had. */
 export const DEFAULT_MAX_CONDITION_IMAGES = 4;
 
-/** How many images the page may add after the source. A separate mask occupies Image 2, so it
- *  takes one of the slots. */
+/** Images the page may add after the source; a separate mask takes one slot. */
 export function maxAdditionalImages(
   conditioning: DiffusionConditioning | null | undefined,
   localizedMode: LocalizedEditMode | null,
@@ -40,8 +39,7 @@ export function maxAdditionalImages(
   return Math.max(0, total - 1 - (localizedMode === "mask" ? 1 : 0));
 }
 
-/** The number each additional slot is shown with. Image 1 is the source; a separate mask is
- *  Image 2, so the additional images start one later. */
+/** Image number of additional slot ``index`` (after the source and any separate mask). */
 export function additionalImageNumber(
   index: number,
   localizedMode: LocalizedEditMode | null,
@@ -55,8 +53,7 @@ export const REFERENCE_DETAIL_LABELS: Record<number, string> = {
   2048: "High (2048)",
 };
 
-/** The reference detail to seed: the build's own canvas tier when the model lists it, never an
- *  automatic 2048. */
+/** The build's canvas tier when listed, else 1024; never an automatic 2048. */
 export function seedReferenceResolution(
   allowed: readonly number[],
   tier: number,
@@ -92,8 +89,7 @@ export function presetsWithin(limits: SizeLimits) {
   );
 }
 
-// The prompt format the model card gives for transparent output. Applied visibly, never behind
-// the user's back.
+// The model card's prompt format for transparent output.
 export const TRANSPARENCY_PREFIX = "This is an RGBA image with transparency.";
 export const TRANSPARENCY_SUFFIX =
   "The image has alpha channel and the background is transparent.";
@@ -109,10 +105,8 @@ export function withTransparencyPrompt(prompt: string): string {
   return body;
 }
 
-/** Wording that points the instruction at the region, in the conventions of the official demo
- *  cases: a leading phrase naming the marked area, and for annotations a closing sentence asking
- *  for the marks to be left out. Applied as a visible edit of the instruction box, so the request
- *  carries exactly what the box shows. */
+/** Region wording from the official demo cases: a leading phrase naming the marked area, or for
+ *  annotations a closing sentence asking for the marks to be left out. */
 export function withLocalizedHint(
   prompt: string,
   mode: LocalizedEditMode,
@@ -138,8 +132,7 @@ function joinWords(words: readonly string[]): string {
 
 export type EditSizing = "source" | "custom";
 
-/** Output size for the unified edit workflow: Image 1's aspect ratio at the chosen area, or the
- *  custom size fitted to the model's grid. Both are sent explicitly. */
+/** Unified edit output size: Image 1's aspect ratio at the chosen area, or the custom size fitted. */
 export function resolveEditSize(
   sizing: EditSizing,
   source: { width: number; height: number } | null,
@@ -158,8 +151,7 @@ export function resolveEditSize(
   return fitSize(custom.width, custom.height, limits);
 }
 
-/** The conditioned half of a generate request for Reference and unified Edit. Empty slots are
- *  dropped without renumbering the rest, which keeps their order. */
+/** The conditioned half of a Reference / unified Edit request. Empty slots are dropped in order. */
 export function conditionedRequestFields(opts: {
   workflow: "edit" | "reference";
   initImage: string;

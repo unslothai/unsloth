@@ -274,10 +274,9 @@ const DIM_OPTIONS = [
   1408, 1536, 1664, 1792, 1920, 2048, 2304, 2560, 2752,
 ];
 
-// The longest side every family but Qwen-Image-2.1 is limited to; larger limits unlock the 2K presets.
+// Larger limits than this unlock the 2K presets.
 const MAX_OUTPUT_DEFAULT = DEFAULT_SIZE_LIMITS.maxSide;
 
-// The listed sizes the loaded model can take: on its grid and within its longest side.
 function dimOptions(limits: SizeLimits): number[] {
   return DIM_OPTIONS.filter((n) => n <= limits.maxSide && n % limits.multiple === 0);
 }
@@ -1298,17 +1297,11 @@ export function ImagesPage({
   // Upscale (hires fix): the enlargement factor and the low denoise strength that re-details the result.
   const [upscaleFactor, setUpscaleFactor] = useState(2);
   const [upscaleStrength, setUpscaleStrength] = useState(0.35);
-  // Reference and Edit: the ADDITIONAL images after the source, in order. Empty strings hold a
-  // cleared slot in place so the others do not renumber mid-edit; they are dropped at send time.
+  // Reference and Edit: the ADDITIONAL images after the source. "" holds a cleared slot so others do not renumber.
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
-  // Condition-image preprocessing resolution (Qwen-Image-2.1's reference detail), seeded from the
-  // build's canvas tier once the model is loaded.
   const [referenceResolution, setReferenceResolution] = useState<number | null>(null);
-  // Unified Edit output size: Image 1's aspect ratio at `matchResolution`, or the custom sliders.
   const [editSizing, setEditSizing] = useState<EditSizing>("source");
   const [matchResolution, setMatchResolution] = useState(1024);
-  // Localized edit: the convention, the drawn layer (RGBA marks or a white-on-black mask), the
-  // annotation colour in use and the colours drawn so far.
   const [localizedMode, setLocalizedMode] = useState<LocalizedEditMode | null>(null);
   const [localizedLayer, setLocalizedLayer] = useState<string | null>(null);
   const [localizedColor, setLocalizedColor] = useState(ANNOTATION_COLORS[0].value);
@@ -2077,10 +2070,9 @@ export function ImagesPage({
       else setStrength(image.strength);
     }
     if (typeof image.upscale === "number") setUpscaleFactor(image.upscale);
-    // None of the conditioning images are persisted, so a restore clears every upload. Edit and
-    // Reference reopen their own workflow with its controls restored, so Generate stays blocked
-    // until the inputs are supplied again instead of replaying the recipe as text-to-image. The
-    // other conditioned workflows return to Create, as they always have.
+    // Conditioning images are not persisted, so every upload is cleared. Edit and Reference reopen
+    // their own workflow, so Generate stays blocked until the inputs are supplied again instead of
+    // replaying as text-to-image; the others return to Create.
     const reopened: WorkflowId =
       image.workflow === "edit" ? "edit" : image.workflow === "reference" ? "reference" : "create";
     setWorkflow(reopened);
@@ -2095,7 +2087,6 @@ export function ImagesPage({
     setLocalizedMode(reopened === "edit" ? (image.localized_edit ?? null) : null);
     setLocalizedLayer(null);
     setLocalizedColors([]);
-    // The recorded size IS the size that edit rendered, so replay it exactly.
     if (reopened === "edit") setEditSizing("custom");
     // The control image is not persisted, so clear any stale ControlNet selection.
     setControlnetId("");
@@ -3418,9 +3409,7 @@ export function ImagesPage({
     cancelLoadRef.current = () => void handleCancelLoad();
   }, [handleCancelLoad]);
 
-  // Seed the reference detail and the match-source area from the build's canvas tier: 512 on a
-  // quantised Qwen-Image-2.1 pipeline, 1024 otherwise. 2048 is only ever an explicit choice.
-  // Adjusted during render when the loaded build changes, the way DimensionSelect tracks its value.
+  // Seed reference detail and match-source area from the build's canvas tier when the loaded build changes.
   const buildKey = status?.loaded
     ? [
         status.repo_id,
@@ -3455,8 +3444,7 @@ export function ImagesPage({
     if (fitted.height !== height) setHeight(fitted.height);
   }
 
-  // The source's natural size (EXIF-oriented, as the backend decodes it) for match-source sizing,
-  // keyed to the image it was read from so a stale read never sizes a newer source.
+  // Keyed to the image it was read from, so a stale read never sizes a newer source.
   const [sourceRead, setSourceRead] = useState<{
     src: string;
     width: number;
@@ -3476,7 +3464,6 @@ export function ImagesPage({
     };
   }, [initImage]);
 
-  // The size the unified Edit sends, shown in the form exactly as sent.
   const editSize = useMemo(
     () =>
       resolveEditSize(editSizing, sourceDims, matchResolution, { width, height }, sizeLimits),
@@ -3488,8 +3475,7 @@ export function ImagesPage({
   const onLocalizedLayer = useCallback((dataUrl: string | null) => setLocalizedLayer(dataUrl), []);
   const onLocalizedColors = useCallback((names: string[]) => setLocalizedColors(names), []);
 
-  // The ordered additional-image slots Reference and the unified Edit share. `numberOf` is the
-  // image number the model sees for slot i (Image 2 onwards, or Image 3 onwards after a mask).
+  // `numberOf` is the image number the model sees for slot i.
   const renderAdditionalImages = (numberOf: (i: number) => number, hint: string) => (
     <>
       {referenceImages.map((img, i) => (
@@ -3655,8 +3641,6 @@ export function ImagesPage({
         condUpscale = upscaleFactor;
         condStrength = upscaleStrength;
       } else if (isReference || unifiedEditRun) {
-        // Reference conditioning, or the unified instruction edit: the source first, then every
-        // additional image in slot order, generated at the size the form shows.
         condFields = conditionedRequestFields({
           workflow: isReference ? "reference" : "edit",
           initImage: initImage!,
@@ -3669,8 +3653,7 @@ export function ImagesPage({
               : null,
         });
       } else if (isEdit) {
-        // Instruction editing on an edit-only model: send the source image; the prompt IS the
-        // instruction. No mask, no strength, and the output takes the source's size.
+        // Edit-only model: the source alone; the prompt IS the instruction and the output takes its size.
         condFields = { workflow: "edit", init_image: initImage ?? undefined };
       }
     } catch {
@@ -3690,8 +3673,7 @@ export function ImagesPage({
       baseSeed = Math.floor(Math.random() * 2 ** 32);
     }
 
-    // Snap custom dims to the model's grid and bounds so a half-typed value cannot 400. The unified
-    // edit sends the size it displays (Image 1's aspect ratio, or the custom size fitted).
+    // Snap to the model's grid and bounds so a half-typed value cannot 400.
     const sent = unifiedEditRun ? editSize : fitSize(width, height, sizeLimits);
     const w = sent.width;
     const h = sent.height;

@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Condition images and output geometry for the reference and unified-edit workflows.
+"""Condition images and output geometry for the reference and unified-edit workflows, shared by
+the diffusers and sd.cpp engines.
 
-Shared by the diffusers and sd.cpp engines, so both read the same request the same way: one
-ordered image list (primary first, never sorted), one alpha policy per family, one size rule,
-and one localized-edit contract.
-
-Localized editing follows the conventions of the official Qwen-Image-2.1 demo cases, which are
-generative guides rather than inpainting masks: nothing here keeps pixels outside the region.
+Localized editing follows the official Qwen-Image-2.1 demo conventions, which are generative
+guides rather than inpainting masks: nothing here keeps pixels outside the region.
 
 - ``annotate``: coloured marks (outlines, arrows) drawn ON the source. The instruction names the
   colours and asks for the marks to be left out of the result.
@@ -26,12 +23,9 @@ from typing import Any, Optional, Sequence
 
 LOCALIZED_EDIT_MODES = ("annotate", "paint", "mask")
 
-# Decoded source pixels across ALL condition images of one call. Each image already has its own
-# 4096 px side bound; ten of those would still decode to over 600 MB of RGBA, so the call as a whole
-# is bounded too, before any of them is loaded.
+# Decoded pixels across ALL condition images of one call: ten 4096 px images would be over 600 MB of RGBA.
 MAX_CONDITION_SOURCE_PIXELS = 64_000_000
 
-# The shortest output side any family accepts (DiffusionGenerateRequest's lower bound).
 MIN_OUTPUT_SIDE = 256
 
 # Upstream QwenImage21Pipeline's own ``output_resolution`` default.
@@ -72,19 +66,16 @@ def check_output_size(fam: Any, width: int, height: int) -> None:
 
 
 def match_source_size(fam: Any, source_size: tuple[int, int], resolution: int) -> tuple[int, int]:
-    """Output (width, height) with the source's aspect ratio at a ``resolution`` x ``resolution``
-    area, on the family grid and inside its bounds. Same rounding as upstream's
-    ``calculate_dimensions``, so an omitted size matches what the pipeline would pick from Image 1,
-    never from the LAST reference as upstream does. A source too elongated to keep its ratio with
-    both sides inside [MIN_OUTPUT_SIDE, max side] keeps the short side at the minimum and caps the
-    long side, so the size is always one the request would accept."""
+    """Output (width, height) with the source's aspect ratio at a ``resolution`` squared area, on
+    the family grid and inside its bounds. Upstream's ``calculate_dimensions`` rounding, but from
+    Image 1 rather than the LAST reference. A source too elongated for both bounds keeps the short
+    side at the minimum and caps the long side, so the size is always one the request accepts."""
     multiple = int(getattr(fam, "dimension_multiple", 16) or 16)
     max_side = int(getattr(fam, "max_output_side", 2048) or 2048)
     max_pixels = int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048)
     sw, sh = source_size
     ratio = max(1e-6, float(sw) / float(max(1, sh)))
     area = float(resolution) * float(resolution)
-    # Shrink the target area until the rounded result fits both bounds.
     for _ in range(64):
         w = max(multiple, int(round(math.sqrt(area * ratio) / multiple)) * multiple)
         h = max(multiple, int(round(math.sqrt(area / ratio) / multiple)) * multiple)
@@ -143,9 +134,8 @@ def _decode_bounded(data: str, mode: str, budget: list[int], what: str) -> Any:
 
 
 def _to_source_geometry(img: Any, source: Any, what: str, resample: Any) -> Any:
-    """``img`` at the source's pixel size. The localized-edit layers are drawn against the source
-    as displayed, so any size difference must be a pure scale; a different aspect ratio means the
-    layer belongs to another image."""
+    """``img`` at the source's pixel size. Only a pure scale is accepted: a different aspect ratio
+    means the layer was drawn over another image."""
     if img.size == source.size:
         return img
     sw, sh = source.size
@@ -193,9 +183,8 @@ def decode_condition_images(
     reference_images: Optional[Sequence[str]],
     localized: Optional[LocalizedEdit] = None,
 ) -> list[Any]:
-    """Decode the ordered condition list for one reference or unified-edit call: the (possibly
-    marked) source first, then a separate mask when there is one, then every reference in request
-    order. Refuses more images than the family takes instead of dropping the tail."""
+    """The ordered condition list: the (possibly marked) source, a separate mask if any, then every
+    reference in request order. More images than the family takes is refused, not truncated."""
     limit = int(getattr(fam, "max_condition_images", 4) or 4)
     mode = getattr(fam, "condition_image_mode", "RGB") or "RGB"
     refs = [r for r in (reference_images or []) if r]

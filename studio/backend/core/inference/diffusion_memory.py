@@ -558,9 +558,8 @@ def estimate_image_runtime_mib(
     condition_pixels: int = 0,
 ) -> int:
     """Per-call activation / latent headroom for an image gen, scaled by pixel area and batch.
-    Distilled / turbo models (few steps, no CFG) need less. ``condition_pixels`` is the area the
-    condition images are encoded at: they join the same token sequence as the target (Qwen-Image-2.1
-    prepends them as latent tokens), once per image in the batch, so they count like target pixels."""
+    Distilled / turbo models (few steps, no CFG) need less. ``condition_pixels`` (already weighted)
+    join the target's token sequence once per batch image, so they count like target pixels."""
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
     batch = max(1, int(batch_size or 1))
@@ -1077,12 +1076,9 @@ def _enable_vae_saver(pipe: Any, pipe_method: str, vae_method: str, logger: Any)
 def _pin_vision_embedding_device(module: Any) -> int:
     """Keep a leaf-offloaded Qwen3-VL vision tower's position embeddings on the compute device.
 
-    ``Qwen3VLVisionModel.fast_pos_embed_interpolate`` reads ``self.pos_embed.weight.device`` BEFORE
-    calling the embedding, and under leaf-level group offload that weight still sits on the CPU at
-    that moment, so the embeddings are built on the CPU and added to CUDA hidden states: every
-    image-conditioned Qwen-Image-2.1 call on a streamed encoder raised a device mismatch. The
-    interpolation indexes by ``grid_thw``, which the processor already put on the compute device,
-    so the result follows it. Per instance, not a class patch: only offloaded encoders change."""
+    ``Qwen3VLVisionModel.fast_pos_embed_interpolate`` reads ``self.pos_embed.weight.device`` while
+    group offload still holds that weight on the CPU, so every image-conditioned Qwen-Image-2.1 call
+    on a streamed encoder raised a device mismatch. The result follows ``grid_thw``'s device."""
     import types
 
     walk = getattr(module, "modules", None)

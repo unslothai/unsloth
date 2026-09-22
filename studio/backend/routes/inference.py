@@ -39280,8 +39280,7 @@ async def generate_diffusion_image(
     backend = get_active_diffusion_engine()
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_adapters, request)
-    # An edit that names no size matches Image 1's aspect ratio in the backend, which knows the family grid; the
-    # schema default would otherwise pin it to a 1024 square.
+    # An edit that names no size matches Image 1 in the backend instead of the schema's 1024 square default.
     size_omitted = request.workflow == "edit" and not (
         {"width", "height"} & request.model_fields_set
     )
@@ -39428,11 +39427,8 @@ async def generate_diffusion_image(
                             if request.controlnet and request.controlnet.strength > 0
                             else None
                         ),
-                        # Images BEYOND the source (reference_images only; a localized-edit mask is recorded
-                        # under localized_edit), as this count has always meant.
                         "reference_image_count": len(request.reference_images or []) or None,
-                        # Engaged values from the engine, not the request: an omitted resolution resolves to the
-                        # family default, and a restore must replay that.
+                        # From the engine, not the request: an omitted resolution resolves to the family default.
                         "reference_resolution": result.get("reference_resolution"),
                         "localized_edit": result.get("localized_edit"),
                         "created_at": created_at,

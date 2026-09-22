@@ -12,15 +12,8 @@ import {
 import type { LocalizedEditMode } from "./api";
 import { ANNOTATION_COLORS, TRANSPARENCY_CHECKER } from "./edit-conditioning";
 
-/** Draws the localized-edit layer over the source at the source's NATIVE resolution.
- *
- *  annotate: coloured strokes, exported as an RGBA layer the backend composites over the source.
- *  paint: white strokes, exported as a white-on-black mask the backend paints white onto the source.
- *  mask: the same white-on-black mask, sent as its own image after the source.
- *
- *  The display canvas maps pointer positions through its rendered box to natural pixels, so the
- *  stroke lands where it was drawn however the preview is scaled, and the <img> applies the same
- *  EXIF orientation the backend decode does. */
+/** Draws the localized-edit layer over the source at its NATIVE resolution: an RGBA layer of
+ *  coloured strokes for annotate, a white-on-black mask for paint and mask. */
 export function LocalizedEditCanvas({
   image,
   mode,
@@ -85,7 +78,7 @@ export function LocalizedEditCanvas({
 
   const radius = useCallback(() => {
     const base = Math.min(dims.current.w, dims.current.h) || 1024;
-    // Annotations are outlines, so their brush is a fraction of the region brush.
+    // Annotations are outlines, so a fraction of the region brush.
     const pct = mode === "annotate" ? brushPct / 4 : brushPct;
     return Math.max(1.5, (pct / 100) * base);
   }, [brushPct, mode]);
