@@ -529,7 +529,12 @@ def test_a_class_that_disagrees_with_the_built_model_is_still_caught(monkeypatch
     import unsloth.trainer as trainer_module
 
     class _StubSFTTrainer:
-        def __init__(self, model = None, args = None, **kwargs):
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            **kwargs,
+        ):
             # what actually gets built disagrees with what the config advertised
             self.model = _NoKwargs() if isinstance(model, str) else model
             self.args = args
@@ -607,7 +612,12 @@ def test_a_mixed_adapter_wrapper_is_unwrapped_to_the_checkpoint():
         )
 
     class _NarrowLlama(transformers.LlamaForCausalLM):
-        def forward(self, input_ids = None, attention_mask = None, labels = None):
+        def forward(
+            self,
+            input_ids = None,
+            attention_mask = None,
+            labels = None,
+        ):
             return super().forward(
                 input_ids = input_ids, attention_mask = attention_mask, labels = labels
             )
