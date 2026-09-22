@@ -519,7 +519,7 @@ const SHIKI_THEMES = [unslothLightTheme, unslothDarkTheme] as [
 ];
 const codePlugin = createCodePlugin({ themes: SHIKI_THEMES });
 
-function HighlightedCode({
+export function HighlightedCode({
   code,
   language,
   redactFromReload,

@@ -2,11 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export {
+  DOWNLOAD_KIND,
   DownloadProgressBar,
   downloadManager,
   finishExternalJob,
   jobKeyOf,
   pendingDrafterPresentation,
+  scopedVariant,
   startExternalJob,
   subscribeJobListeners,
   type TransportMode,
