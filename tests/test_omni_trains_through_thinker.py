@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """A composition with no forward of its own (Qwen3-Omni) trains through its thinker.
 
 `Qwen3OmniMoeForConditionalGeneration` composes a thinker, a talker and a
