@@ -794,6 +794,29 @@ def test_loaded_text_encoder_mib_counts_every_encoder_the_pipe_holds_once(monkey
     assert loaded_text_encoder_mib(types.SimpleNamespace(components = {"vae": Module(100)})) is None
 
 
+def test_largest_streamable_companion_mib_measures_only_the_text_encoders(monkeypatch):
+    """The loader checks this before quantising under whole-module offload, so it must size exactly
+    what refinement would stream besides the transformer."""
+    from core.inference.diffusion_memory import largest_streamable_companion_mib
+
+    Module = _install_sized_torch(monkeypatch)
+    transformer = Module(9000)
+    pipe = types.SimpleNamespace(
+        transformer = transformer,
+        components = {
+            "transformer": transformer,
+            "text_encoder": Module(1200),
+            "text_encoder_2": Module(4800),
+            "vae": Module(9500),
+        },
+    )
+    assert largest_streamable_companion_mib(pipe) == 4800
+    only_dit = types.SimpleNamespace(
+        transformer = transformer, components = {"transformer": transformer}
+    )
+    assert largest_streamable_companion_mib(only_dit) is None
+
+
 def test_refine_keeps_model_offload_for_a_torchao_transformer(monkeypatch):
     """Streaming cannot move torchao weights, and the loader quantised under whole-module offload
     only because the quantised transformer fits, so its bf16-shaped size must not force streaming."""

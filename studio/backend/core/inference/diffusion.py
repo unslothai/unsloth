@@ -97,6 +97,7 @@ from .diffusion_memory import (
     estimate_image_runtime_mib,
     estimate_safetensors_dense_mib,
     file_size_mib,
+    largest_streamable_companion_mib,
     loaded_text_encoder_mib,
     normalize_memory_mode,
     plan_diffusion_memory,
@@ -5256,7 +5257,8 @@ class DiffusionBackend:
                             # Only whole-module offload moves torchao weights through Studio's render: diffusers'
                             # group-offload stream cache aliases them (its .cpu() returns the live weight) and the
                             # streamless path cannot swap_tensors a compiled module's parameters. Whole-module offload
-                            # onloads the transformer alone, so it must fit resident by the planner's own accounting.
+                            # onloads one component at a time, so the transformer must fit resident by the planner's
+                            # own accounting and no text encoder may need the streaming this rules out.
                             quant_budget = int(plan.estimates.get("safe_device_budget_mib") or 0)
                             quant_overhead = int(
                                 plan.estimates.get("runtime_headroom_mib") or 0
@@ -5265,11 +5267,13 @@ class DiffusionBackend:
                                 plan.offload_policy != OFFLOAD_MODEL
                                 or estimate is None
                                 or estimate.steady_transformer_mib + quant_overhead > quant_budget
+                                or (largest_streamable_companion_mib(pipe) or 0) > quant_budget
                             ):
                                 if plan.offload_policy == OFFLOAD_MODEL:
                                     transformer_quant_decline = (
-                                        "whole-module offload onloads the transformer alone, and the "
-                                        "quantised transformer is not known to fit the device budget"
+                                        "whole-module offload onloads each component whole, and the "
+                                        "quantised transformer or a text encoder is not known to fit "
+                                        "the device budget"
                                     )
                                 else:
                                     transformer_quant_decline = (

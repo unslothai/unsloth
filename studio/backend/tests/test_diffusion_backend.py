@@ -11364,15 +11364,21 @@ def test_a_pipeline_pick_stays_dense_under_streamed_offload(
     backend.unload()
 
 
-@pytest.mark.parametrize(("budget_mib", "runtime_headroom_mib"), [(1, 0), (1_000_000, 1_000_000)])
+@pytest.mark.parametrize(
+    ("budget_mib", "runtime_headroom_mib", "companion_mib"),
+    [(1, 0, None), (1_000_000, 1_000_000, None), (1_000_000, 0, 2_000_000)],
+)
 def test_a_pipeline_pick_stays_dense_when_the_quantised_transformer_exceeds_the_budget(
-    fake_runtime, tmp_path, monkeypatch, budget_mib, runtime_headroom_mib
+    fake_runtime, tmp_path, monkeypatch, budget_mib, runtime_headroom_mib, companion_mib
 ):
-    """Whole-module offload onloads the transformer whole, beside the forward's runtime headroom,
-    and streaming cannot move torchao weights, so a quantised transformer that does not fit with
-    that headroom has nowhere to run."""
+    """Whole-module offload onloads each component whole, and streaming cannot move torchao
+    weights, so the quantised transformer (with the forward's runtime headroom) and every text
+    encoder must fit, or the dense plan keeps the streaming it may need."""
+    from core.inference import diffusion as dmod
+
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "largest_streamable_companion_mib", lambda pipe: companion_mib)
     monkeypatch.setattr(
         DiffusionBackend,
         "_plan_memory",

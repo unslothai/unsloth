@@ -942,6 +942,22 @@ def loaded_text_encoder_mib(pipe: Any) -> Optional[int]:
     return (storage_bytes + mib - 1) // mib if storage_bytes else None
 
 
+def largest_streamable_companion_mib(pipe: Any) -> Optional[int]:
+    """MiB of the largest text encoder ``refine_memory_plan_for_components`` could stream, measured as
+    loaded, or None when there is nothing to measure."""
+    try:
+        import torch
+        mib = 1024 * 1024
+        sizes = [
+            (_module_storage_bytes(module, set()) + mib - 1) // mib
+            for name, (module, offload_type) in _streamable_components(pipe, torch).items()
+            if offload_type == "leaf_level"
+        ]
+    except Exception:  # noqa: BLE001 - a sizing aid; the caller treats unknown as unmeasured
+        return None
+    return max(sizes) if sizes else None
+
+
 def _holds_torchao_tensors(module: Any) -> bool:
     """Whether ``module`` carries torchao-quantised weights."""
     try:
@@ -977,7 +993,7 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
         if not isinstance(components, dict) or not isinstance(transformer, torch.nn.Module):
             return plan
         # Streaming cannot move torchao weights, and the loader quantised under whole-module offload only because the
-        # quantised transformer fits the budget (its bf16-shaped numel would misread here).
+        # quantised transformer and every text encoder fit the budget (a torchao numel reads at its bf16 size here).
         if _holds_torchao_tensors(transformer):
             return plan
         streamable = _streamable_components(pipe, torch)
