@@ -1138,7 +1138,14 @@ def _set_attn_impl(config, impl):
     return impl
 
 
-_REMOTE_CODE_HUB_KWARGS = ("revision", "code_revision", "token", "cache_dir", "local_files_only", "force_download")
+_REMOTE_CODE_HUB_KWARGS = (
+    "revision",
+    "code_revision",
+    "token",
+    "cache_dir",
+    "local_files_only",
+    "force_download",
+)
 
 
 def _resolve_remote_model_class(auto_model, config, **hub_kwargs):

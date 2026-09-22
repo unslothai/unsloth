@@ -382,8 +382,10 @@ def test_force_download_bypasses_the_imported_sibling(monkeypatch):
         return type("Built", (), {})
 
     import transformers.dynamic_module_utils as dmu
+
     monkeypatch.setattr(dmu, "get_class_from_dynamic_module", fake_get_class)
     import sys, types
+
     module = types.ModuleType("transformers_modules.fake.configuration_fake")
     sys.modules["transformers_modules.fake.configuration_fake"] = module
     sibling = types.ModuleType("transformers_modules.fake.modeling_fake")
@@ -399,7 +401,11 @@ def test_force_download_bypasses_the_imported_sibling(monkeypatch):
         assert U._resolve_remote_model_class(auto, cfg) is sibling.FakeForCausalLM
         assert calls == []
         built = U._resolve_remote_model_class(auto, cfg, force_download = True)
-        assert built is not sibling.FakeForCausalLM and calls and calls[0][2].get("force_download") is True
+        assert (
+            built is not sibling.FakeForCausalLM
+            and calls
+            and calls[0][2].get("force_download") is True
+        )
         assert U._resolve_remote_model_class(auto, cfg, trust_remote_code = False) is None
     finally:
         sys.modules.pop("transformers_modules.fake.configuration_fake", None)
