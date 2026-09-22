@@ -16988,6 +16988,15 @@ def _requires_security_review_for_model(
         return False
 
 
+def _mlx_base_for_config(config) -> Optional[str]:
+    from core.inference.model_ids import mlx_host_bnb_base_repo
+    for candidate in (getattr(config, "identifier", None), getattr(config, "base_model", None)):
+        base = mlx_host_bnb_base_repo(candidate)
+        if base:
+            return base
+    return None
+
+
 @router.post("/validate", response_model = ValidateModelResponse)
 async def validate_model(
     request: ValidateModelRequest,
@@ -17368,6 +17377,7 @@ async def validate_model(
                 chat_template = chat_template,
                 requires_transformers_upgrade = transformers_upgrade is not None,
                 transformers_upgrade = transformers_upgrade,
+                mlx_loads_base_model = await asyncio.to_thread(_mlx_base_for_config, config),
             )
         )
 
@@ -18493,9 +18503,13 @@ async def clear_api_monitor(current_subject: str = Depends(get_current_subject))
 
 
 @studio_router.get("/monitor/{entry_id}")
-async def get_api_monitor_entry(entry_id: str, current_subject: str = Depends(get_current_subject)):
+async def get_api_monitor_entry(
+    entry_id: str,
+    current_subject: str = Depends(get_current_subject),
+    include_prompt: bool = True,
+):
     """Return full prompt/reply details for one OpenAI-compatible API request."""
-    entry = api_monitor.get(entry_id, subject = current_subject)
+    entry = api_monitor.get(entry_id, subject = current_subject, include_prompt = include_prompt)
     if entry is None:
         raise HTTPException(status_code = 404, detail = "Monitor entry not found")
     return entry
