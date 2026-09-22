@@ -229,6 +229,9 @@ def _extract_column_value(val, col: str, label_mapping: dict) -> str:
         else:
             str_val = json.dumps(val, ensure_ascii = False)
     elif isinstance(val, list):
+        names = label_mapping.get(col)
+        if isinstance(names, dict):
+            return ", ".join(names.get(str(v), str(v)) for v in val)
         str_val = val[0] if len(val) == 1 else ", ".join(str(v) for v in val)
     else:
         str_val = str(val) if val is not None else ""

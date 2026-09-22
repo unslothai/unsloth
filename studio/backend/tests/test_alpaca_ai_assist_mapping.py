@@ -82,6 +82,22 @@ def test_alpaca_mapping_renders_list_cells_as_text_across_batches():
     assert list(result["dataset"]["output"]) == ["0", "3", "1, 2", "4"]
 
 
+def test_alpaca_mapping_names_each_label_in_a_list_cell():
+    result = format_dataset(
+        Dataset.from_dict({"text": ["a", "b"], "labels": [[0], [1, 2]]}),
+        format_type = "alpaca",
+        batch_size = 2,
+        custom_format_mapping = {
+            "text": "instruction",
+            "labels": "output",
+            "__label_mapping": {"labels": {"0": "joy", "1": "anger", "2": "fear"}},
+        },
+    )
+
+    assert result["final_format"] == "alpaca", result["warnings"]
+    assert list(result["dataset"]["output"]) == ["joy", "anger, fear"]
+
+
 def test_chatml_mapping_with_advisor_keys_is_unchanged():
     result = _format("chatml", {"__label_mapping": LABEL_MAPPING, "__system_prompt": PROMPT})
 
