@@ -180,6 +180,21 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
                 "is not installed; loading it as published. `pip install compressed-tensors` to train it in 4-bit."
             )
         return None
+    # The plan is only useful if the installed compressed-tensors can still parse it. Fields do get
+    # retired between releases (`actorder = "group"` was removed in 0.19.0 and real published
+    # checkpoints carry it), and the parse happens deep inside `from_pretrained`, long after the
+    # checkpoint's own quantization config has been dropped from `config` below. Parse it here,
+    # while declining is still free.
+    try:
+        _build_quantization_config(plan)
+    except Exception as error:
+        if verbose:
+            print(
+                "Unsloth: This checkpoint is compressed-tensors packed INT4/INT8 but the installed "
+                f"compressed-tensors cannot read its quantization config ({type(error).__name__}); "
+                "loading it as published. Upgrading or downgrading `compressed-tensors` may help."
+            )
+        return None
     if not install_compressed_tensors_bnb_quantizer():
         # A foreign quantizer class owns the bitsandbytes slot: it would load the packed
         # tensors without the converters, so leave the checkpoint's own config in place.

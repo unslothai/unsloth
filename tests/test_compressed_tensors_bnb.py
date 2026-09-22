@@ -297,6 +297,26 @@ def test_arm_leaves_the_config_alone_when_the_quantizer_cannot_be_installed(monk
     assert not hasattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
 
 
+@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+def test_arm_declines_a_plan_the_installed_compressed_tensors_cannot_parse(monkeypatch):
+    """Fields get retired between compressed-tensors releases (`actorder = "group"` left in
+    0.19.0) and the parse used to happen inside `from_pretrained`, after the checkpoint's own
+    quantization config had already been stripped, so the load died with nothing to fall back
+    to. The plan is parsed before anything is touched."""
+    from transformers import LlamaConfig
+    from unsloth.models import compressed_tensors_bnb
+
+    def cannot_parse(plan):
+        raise ValueError("actorder='group' has been removed")
+
+    monkeypatch.setattr(compressed_tensors_bnb, "_build_quantization_config", cannot_parse)
+    config = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    config.quantization_config = _w4a16(weights = {"actorder": "group"})
+    assert compressed_tensors_bnb.arm_compressed_tensors_bnb_loading(config, verbose = False) is None
+    assert config.quantization_config["config_groups"]["group_0"]["weights"]["actorder"] == "group"
+    assert not hasattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
+
+
 
 @pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
 def test_the_planner_pass_does_not_consume_the_plan():
@@ -363,7 +383,10 @@ def _write_tiny_packed_llama(root, asymmetric = False, actorder = False, num_bit
                          intermediate_size = 128, vocab_size = 256, max_position_embeddings = 128, tie_word_embeddings = False)
     model = LlamaForCausalLM(config).to(torch.bfloat16)
     sd = {k: v.detach().contiguous() for k, v in model.state_dict().items()}
-    quant = _w4a16(weights = {"num_bits": num_bits, "group_size": group_size, "symmetric": not asymmetric, "actorder": "group" if actorder else None})
+    # `actorder = "group"` was deprecated in compressed-tensors 0.18.0 and removed in 0.19.0;
+    # "weight" is the spelling its validator still accepts and exercises the same `weight_g_idx`
+    # path in the compressor.
+    quant = _w4a16(weights = {"num_bits": num_bits, "group_size": group_size, "symmetric": not asymmetric, "actorder": "weight" if actorder else None})
     ctc = QuantizationConfig.model_validate(quant)
     scheme = list(ctc.config_groups.values())[0]
     comp = BaseCompressor.get_value_from_registry("pack-quantized")
