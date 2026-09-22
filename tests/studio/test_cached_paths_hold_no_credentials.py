@@ -417,9 +417,13 @@ def _units(job, doc, env = None, inputs = None, depth = 0):
         return [(job, env, inputs)]
     out = []
     for inner_job, inner_env, passed in inner:
-        out.extend(
-            _units(inner_job, doc, {**env, **inner_env}, passed, depth + 1)
-        )
+        # The called workflow's OWN env, not the caller's. GitHub does not propagate a
+        # calling workflow's `env:` into a reusable workflow -- only `with:` and
+        # `secrets:` cross that boundary -- so merging them reported a caller-level
+        # `HF_HOME: hf-cache` against a called job that saves an unrelated `hf-cache`
+        # and writes its token to the default home instead. The inputs still travel,
+        # because those are what the caller really passes.
+        out.extend(_units(inner_job, doc, inner_env, passed, depth + 1))
     return out
 
 
@@ -584,6 +588,14 @@ def _login_offenders_in_unit(job, job_env, unit_inputs):
         env = {**job_env, **inherited, **({str(k): str(v) for k, v in own.items()}
                                          if isinstance(own, dict) else {})}
         homes = {v: _expand(str(env[v]), env, inputs) for v in CREDENTIAL_HOMES if v in env}
+        # The two Hugging Face variables are alternatives with a precedence, not two
+        # places a login writes. `huggingface_hub` takes HF_TOKEN_PATH when it is set and
+        # falls back to `$HF_HOME/token` only when it is not, so a job with a cached
+        # HF_HOME and HF_TOKEN_PATH pointing outside it writes the token outside it. The
+        # report named HF_HOME anyway, which is a false failure that also misdescribes
+        # where the credential lives.
+        if "HF_TOKEN_PATH" in homes:
+            homes.pop("HF_HOME", None)
         if not homes:
             continue
         for var, home in sorted(homes.items()):
@@ -629,6 +641,45 @@ def _normalise(path: str) -> str:
 
 
 
+# Files a credential actually lands in, for deciding whether a restrictive glob could
+# capture one. Not exhaustive and not meant to be: it is consulted only to ACCEPT a
+# narrow pattern, and an unrecognised name falls through to the widening branch.
+_CREDENTIAL_FILENAMES = (
+    "token", "config.json", "credentials", "credentials.json", ".npmrc",
+    "credentials.db", "application_default_credentials.json", "hosts.yml", "stored-tokens",
+)
+
+
+def _glob_can_capture_credentials(pattern: str) -> bool:
+    """Could this persistence pattern actually include a credential file?
+
+    `path: hf-cache/**` takes everything beneath `hf-cache`, token included.
+    `path: hf-cache/*.bin` takes only the weight files, and the token is not one, so
+    widening both to `hf-cache` reported a login whose credential the upload cannot
+    contain. Dropping the wildcard segment is right for a recursive pattern and wrong
+    for a restrictive one, and they were being treated alike.
+
+    A single-star segment with no extension (`hf-cache/*`) matches any NAME at that
+    level, so it can capture `token` and still counts. Only a pattern narrow enough to
+    exclude every known credential filename is accepted, and an unfamiliar name is
+    treated as capturable rather than safe.
+    """
+    import fnmatch
+
+    tail = pattern.replace("\\", "/").split("/")
+    for i, segment in enumerate(tail):
+        if not any(ch in segment for ch in "*?["):
+            continue
+        if segment == "**" or "**" in segment:
+            return True
+        # Anything after this segment is a directory pattern, which says nothing about
+        # the filenames beneath it.
+        if i != len(tail) - 1:
+            return True
+        return any(fnmatch.fnmatch(name, segment) for name in _CREDENTIAL_FILENAMES)
+    return True
+
+
 def _deglob(path: str) -> str:
     """The fixed directory a glob pattern lives under.
 
@@ -651,6 +702,8 @@ def _inside(inner: str, outer: str) -> bool:
     `_inside("hf-cache", "hf-cache/**")` is false and the whole upload looked unrelated to
     the credential home it contains.
     """
+    if any(ch in outer for ch in "*?[") and not _glob_can_capture_credentials(outer):
+        return False
     inner, outer = _normalise(inner), _normalise(_deglob(outer))
     inner, outer = inner.strip("/"), outer.strip("/")
     if not inner or not outer:
@@ -659,19 +712,30 @@ def _inside(inner: str, outer: str) -> bool:
 
 
 def _offending_jobs():
-    """(label, var, path, home_value) for every job caching its own credential home."""
+    """(label, var, path, home_value) for every job caching its own credential home.
+
+    Resolved through `_units`, exactly as the login scan is. Reading the caller's own
+    job and step environments only meant a job that delegates to a reusable workflow
+    contributed nothing: the caller declares no credential home, and the called workflow
+    read on its own cannot resolve `HF_HOME: ${{ inputs.path }}` because the value lives
+    at the call site. So the parametrized guard below was never instantiated for that
+    shape, and `_login_offenders` -- which does detect it -- was never asked. A check
+    that works when called directly and is never called is not a check.
+    """
     for path, doc in _docs():
         for jid, job in _jobs(doc):
-            job_env = _env_of(job, doc)
-            for scope in [job_env] + _step_envs(job):
-                env = {**job_env, **scope}
-                homes = {v: env[v] for v in CREDENTIAL_HOMES if v in env}
-                if not homes:
-                    continue
-                for persisted, _step in _persisted_with_env(job, doc):
-                    for var, home in homes.items():
-                        if _inside(_expand(home, env), persisted):
-                            yield f"{path.name}:{jid}", var, persisted, home
+            for unit, unit_env, unit_inputs in _units(job, doc):
+                for scope in [unit_env] + _step_envs(unit):
+                    env = {**unit_env, **scope}
+                    homes = {v: env[v] for v in CREDENTIAL_HOMES if v in env}
+                    if "HF_TOKEN_PATH" in homes:
+                        homes.pop("HF_HOME", None)
+                    if not homes:
+                        continue
+                    for persisted, _s in _persisted_in_unit(unit, unit_env, unit_inputs):
+                        for var, home in homes.items():
+                            if _inside(_expand(home, env, unit_inputs), persisted):
+                                yield f"{path.name}:{jid}", var, persisted, home
 
 
 def test_the_scan_finds_the_jobs_it_claims_to():
@@ -1309,13 +1373,25 @@ def test_a_composite_input_default_is_applied(tmp_path, monkeypatch):
 
 
 def test_a_glob_path_still_contains_its_directory():
-    """`path: hf-cache/**` uploads whatever is beneath hf-cache, token included."""
+    """`path: hf-cache/**` uploads whatever is beneath hf-cache, token included.
+
+    A RESTRICTIVE glob does not. `hf-cache/*.bin` uploads the weight files and nothing
+    else, and the token is not one of them, so reporting a login against it was a false
+    failure. This assertion originally required the opposite, which recorded the
+    over-broad behaviour as if it were the intent; dropping the wildcard segment is
+    right for a recursive pattern and wrong for a narrow one.
+    """
     assert _deglob("hf-cache/**") == "hf-cache"
     assert _deglob("hf-cache/*.bin") == "hf-cache"
     assert _deglob("hf-cache") == "hf-cache"
     assert _inside("hf-cache", "hf-cache/**") is True
-    assert _inside("hf-cache", "hf-cache/*.bin") is True
+    assert _inside("hf-cache", "hf-cache/*.bin") is False
     assert _inside("other", "hf-cache/**") is False
+    # A bare `*` matches any NAME, `token` among them, so it still counts.
+    assert _inside("hf-cache", "hf-cache/*") is True
+    # And a narrow pattern that happens to match a real credential filename counts too:
+    # docker writes `config.json`.
+    assert _inside("docker-cache", "docker-cache/*.json") is True
 
 
 def test_a_login_action_is_matched_case_insensitively():
@@ -1604,3 +1680,152 @@ def test_a_reference_cycle_does_not_hang_the_expansion():
     env = {"A": "${{ env.B }}", "B": "${{ env.A }}"}
     out = _expand("${{ env.A }}", env)
     assert "${{" in out, f"an unresolvable cycle stays an expression, got {out!r}"
+
+
+def test_a_restrictive_glob_does_not_capture_a_token():
+    """`hf-cache/*.bin` uploads weight files. The token is not one of them.
+
+    Widening every glob to its containing directory was right for `**` and wrong here,
+    and the difference is whether the pattern can match a credential filename at all.
+    An unfamiliar name still counts as capturable, so the narrowing only ever accepts a
+    pattern that demonstrably excludes every credential file this check knows about.
+    """
+    assert _glob_can_capture_credentials("hf-cache/**") is True
+    assert _glob_can_capture_credentials("hf-cache/*") is True
+    assert _glob_can_capture_credentials("hf-cache/*.bin") is False
+    # docker writes config.json, so a `*.json` pattern does capture a credential.
+    assert _glob_can_capture_credentials("docker-cache/*.json") is True
+    # A wildcard DIRECTORY says nothing about the filenames beneath it.
+    assert _glob_can_capture_credentials("root/*/data") is True
+
+    safe = {
+        "env": {"HF_HOME": "hf-cache"},
+        "steps": [
+            {"run": "hf auth login --token x"},
+            {
+                "uses": "actions/upload-artifact@v4",
+                "with": {"path": "hf-cache/*.bin", "name": "w"},
+            },
+        ],
+    }
+    assert _login_offenders({}, safe) == [], (
+        f"the upload cannot contain the token: {_login_offenders({}, safe)}"
+    )
+
+
+def test_hf_token_path_overrides_the_home_when_both_are_set():
+    """They are alternatives with a precedence, not two places a login writes.
+
+    `huggingface_hub` uses HF_TOKEN_PATH when it is set and `$HF_HOME/token` only when
+    it is not, so a cached HF_HOME with HF_TOKEN_PATH pointing outside it holds no
+    token. Matching every Hugging Face pattern against both variables reported that
+    arrangement and named the wrong file while doing it.
+    """
+    safe = {
+        "env": {"HF_HOME": "hf-cache", "HF_TOKEN_PATH": "/tmp/token"},
+        "steps": [
+            {"run": "hf auth login --token x"},
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+        ],
+    }
+    assert _login_offenders({}, safe) == [], (
+        f"the token is written to /tmp/token: {_login_offenders({}, safe)}"
+    )
+
+    unsafe = {
+        "env": {"HF_HOME": "/tmp/hf", "HF_TOKEN_PATH": "hf-cache/token"},
+        "steps": [
+            {"run": "hf auth login --token x"},
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+        ],
+    }
+    assert _login_offenders({}, unsafe), (
+        "HF_TOKEN_PATH inside the cache is the finding, and it is the variable that "
+        "decides"
+    )
+
+
+def test_a_reusable_workflow_does_not_inherit_the_callers_env(tmp_path, monkeypatch):
+    """`env:` does not cross the reusable-workflow boundary. `with:` does.
+
+    Merging the caller's environment into every inner job meant a caller-level
+    `HF_HOME: hf-cache` was attributed to a called workflow that saves an unrelated
+    `hf-cache` and writes its token to the default home instead.
+    """
+    import sys
+
+    module = sys.modules[__name__]
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "inner.yml").write_text(
+        "name: inner\n"
+        "on:\n  workflow_call:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - run: hf auth login --token x\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: hf-cache\n          key: k\n"
+    )
+    monkeypatch.setattr(module, "REPO", tmp_path)
+
+    caller = {"env": {"HF_HOME": "hf-cache"}, "uses": "./.github/workflows/inner.yml"}
+    assert _login_offenders({}, caller) == [], (
+        f"the caller's HF_HOME never reaches the called workflow: "
+        f"{_login_offenders({}, caller)}"
+    )
+
+    # Passed as an INPUT, it does reach it, and that is still a finding.
+    (wf / "inner.yml").write_text(
+        "name: inner\n"
+        "on:\n  workflow_call:\n    inputs:\n      home:\n        type: string\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    env:\n      HF_HOME: ${{ inputs.home }}\n"
+        "    steps:\n      - run: hf auth login --token x\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: hf-cache\n          key: k\n"
+    )
+    passed = {
+        "uses": "./.github/workflows/inner.yml",
+        "with": {"home": "hf-cache"},
+    }
+    assert _login_offenders({}, passed), "an input does cross the boundary"
+
+
+def test_the_discovery_scan_reaches_a_reusable_workflow_unit(tmp_path, monkeypatch):
+    """The scan that DRIVES the parametrized guard has to resolve what the guard does.
+
+    `_login_offenders` detects a called workflow that sets `HF_HOME` from an input,
+    logs in and caches that input. The discovery generator read only the caller's own
+    job and step environments, so it yielded nothing for that shape: the caller declares
+    no credential home, and the called workflow read alone cannot resolve the input
+    because its value lives at the call site. The parametrized case was therefore never
+    created, and a check that is never called is not a check.
+    """
+    import sys
+
+    module = sys.modules[__name__]
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "inner.yml").write_text(
+        "name: inner\n"
+        "on:\n  workflow_call:\n    inputs:\n      path:\n        type: string\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    env:\n      HF_HOME: ${{ inputs.path }}\n"
+        "    steps:\n      - run: hf auth login --token x\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: ${{ inputs.path }}\n          key: k\n"
+    )
+    (wf / "caller.yml").write_text(
+        "name: caller\n"
+        "on:\n  push:\n"
+        "jobs:\n  go:\n    uses: ./.github/workflows/inner.yml\n"
+        "    with:\n      path: hf-cache\n"
+    )
+    monkeypatch.setattr(module, "REPO", tmp_path)
+    monkeypatch.setattr(module, "WORKFLOWS", wf)
+    monkeypatch.setattr(module, "ACTIONS", tmp_path / ".github" / "actions")
+
+    found = [f for f in _offending_jobs() if "caller.yml" in str(f[0])]
+    assert found, (
+        "the discovery scan has to reach the delegating job, or the guard below is "
+        "never instantiated for it"
+    )

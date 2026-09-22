@@ -2692,3 +2692,59 @@ def test_a_composite_key_is_not_counted_a_second_time_without_its_inputs(tmp_pat
         f"every caller passes `name: safe`, so the PR key can only be `prefix-safe` and "
         f"`prefix-other` is a different namespace:\n{proc.stdout}\n{proc.stderr}"
     )
+
+
+def test_two_differently_spelled_unresolved_keys_are_paired(tmp_path):
+    """Both sides unresolved, spelled differently, is the case the earlier fixes missed.
+
+    The identical-text rule only reaches keys written the same way, and an unresolved
+    publish key was compared against RESOLVED PR keys alone before continuing, so
+    `shared-${{ matrix.pr_part }}` and `shared-${{ matrix.pub_part }}` were never
+    paired even though both can become `shared-x`. Each earlier fix covered one
+    unresolved side at a time.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    strategy:\n      matrix:\n        pr_part: [a, b]\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: shared-${{ matrix.pr_part }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    strategy:\n      matrix:\n        pub_part: [x, y]\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: shared-${{ matrix.pub_part }}\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"both keys are headed `shared-` and neither tail is known, so they can be the "
+        f"same entry:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+    # Incompatible heads stay accepted, or every unresolved key in a tree would reject
+    # every other one.
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    strategy:\n      matrix:\n        pub_part: [x, y]\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: wheels-only-${{ matrix.pub_part }}\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"`shared-` and `wheels-only-` cannot become each other:\n{proc.stdout}\n"
+        f"{proc.stderr}"
+    )

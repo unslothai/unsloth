@@ -1065,6 +1065,7 @@ def main() -> int:
                     # candidate. Requiring a head silently exempted exactly the least
                     # decidable keys, which is the wrong way round.
                     heads = [h for h in _prefix_candidates(k) if h]
+                    reported = False
                     for literal in sorted(pr_keys):
                         if not heads or any(literal.startswith(h) for h in heads):
                             findings.append(
@@ -1073,6 +1074,35 @@ def main() -> int:
                                 "because this check cannot resolve the publish key's "
                                 "value. Give it a unique suffix (e.g. "
                                 "'-publish-only'), or make it literal."
+                            )
+                            reported = True
+                            break
+                    if reported:
+                        continue
+                    # BOTH sides unresolved, and spelled differently. The identical-text
+                    # rule above does not reach `shared-${{ matrix.pr_part }}` against
+                    # `shared-${{ matrix.pub_part }}`, and comparing an unresolved
+                    # publish key only against RESOLVED pr keys skipped the pairing
+                    # entirely -- so two keys that can both become `shared-x` passed.
+                    # Compatible when either head could lead to the other, which for two
+                    # truncated keys is the prefix test in both directions.
+                    for raw_pr, pr_heads in pr_undecided:
+                        fixed = [h for h in pr_heads if h]
+                        if (
+                            not heads
+                            or not fixed
+                            or any(
+                                h.startswith(f) or f.startswith(h)
+                                for h in heads
+                                for f in fixed
+                            )
+                        ):
+                            findings.append(
+                                f"{pub_path.name}: cache key {k!r} and the PR-reachable "
+                                f"key {raw_pr!r} can both resolve to the same value, "
+                                "and neither can be resolved here. Give the publish key "
+                                "a unique suffix (e.g. '-publish-only'), or make one of "
+                                "them literal."
                             )
                             break
                     continue
