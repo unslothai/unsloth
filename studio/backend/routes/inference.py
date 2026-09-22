@@ -3415,6 +3415,7 @@ from models.inference import (
     ChatCountTokensRequest,
     ChatCompletionChunk,
     ChatCompletion,
+    ToolApprovalStatusRequest,
     ToolConfirmRequest,
     ChatMessage,
     ChunkChoice,
@@ -3588,7 +3589,7 @@ def _request_used_api_key(request: Any) -> bool:
         return False
 
 
-from state.tool_approvals import resolve_tool_decision
+from state.tool_approvals import resolve_tool_decision, tool_decision_is_pending
 
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
@@ -18602,6 +18603,22 @@ async def confirm_tool_call(
     return {"resolved": True}
 
 
+@studio_router.post("/tool-approval-status")
+async def tool_approval_status(
+    request: ToolApprovalStatusRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Whether a parked approval is still waiting on a human.
+
+    A reopened tab restores Approve/Deny from a saved card that has no result and an approval id.
+    That shape is identical whether the call is still parked or the user already answered it and
+    the tool is mid-flight, since the result only arrives with tool_end. Without this the tab
+    re-arms the answered one and every press 404s.
+
+    POST rather than GET so the id travels in the body instead of a URL that lands in logs.
+    """
+    return {"pending": tool_decision_is_pending(request.approval_id, request.session_id)}
+
+
 @studio_router.get("/monitor")
 async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     """Return recent OpenAI-compatible API activity for Unsloth."""
@@ -21838,6 +21855,30 @@ def _messages_have_input_audio(messages) -> bool:
         and any(isinstance(part, InputAudioContentPart) for part in msg.content)
         for msg in messages
     )
+
+
+def _messages_have_embedded_image(messages) -> bool:
+    """True when any message carries an image as an inline base64 data URL.
+
+    Deliberately narrower than "has an image". A remote image_url is a short string and costs
+    nothing to persist, so it has no business forcing a turn off the durable path; an inline
+    data URL is the whole blob, and durable runs persist their request verbatim, so admitting
+    one writes it into request_json again on every follow-up turn for the life of the thread.
+    That is the exact cost the media guard exists to prevent, and it is reachable without any
+    top-level image field once the gate is turn-scoped: the history image still rides along
+    inside messages[].content.
+    """
+    for msg in messages:
+        content = getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if getattr(part, "type", None) != "image_url":
+                continue
+            url = getattr(getattr(part, "image_url", None), "url", None)
+            if isinstance(url, str) and url.startswith("data:"):
+                return True
+    return False
 
 
 def _normalise_chat_content_parts(payload) -> None:

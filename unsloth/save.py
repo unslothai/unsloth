@@ -278,6 +278,31 @@ def _filter_push_to_hub_kwargs(push_fn, kwargs):
     return kept
 
 
+def _honours_safe_serialization(save_fn):
+    """Does this `save_pretrained` still take `safe_serialization`?
+
+    transformers 5 removed the parameter and always writes safetensors, so an explicit `False`
+    is absorbed by `**kwargs` and the export is silently not the pickle that was asked for.
+    Probed from the signature, not a version, like `_filter_push_to_hub_kwargs`.
+
+    Answers True whenever it cannot tell, because a wrong warning is worse than none: an
+    unreadable signature, and a `(*args, **kwargs)` passthrough, which is the shape of
+    `patch_saving_functions`' own wrapper and says nothing about what it forwards to.
+    """
+    import inspect
+
+    try:
+        parameters = inspect.signature(save_fn).parameters
+    except (TypeError, ValueError):
+        return True
+    if "safe_serialization" in parameters:
+        return True
+    return not any(
+        p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        for p in parameters.values()
+    )
+
+
 def _is_adapter_save_method(save_method):
     """Is `save_method` the adapter-only save, i.e. "do not merge anything"?
 
@@ -711,17 +736,6 @@ def _preserve_tokenizer_eos_token(
         )
 
 
-def _config_mtp_holders(config, key):
-    """Every config declaring the MTP layer count: `text_config` on Qwen3.5 multimodal, top level on text-only."""
-    holders = []
-    for candidate in (config, getattr(config, "text_config", None)):
-        if candidate is None:
-            continue
-        if key in getattr(candidate, "__dict__", {}):
-            holders.append(candidate)
-    return holders
-
-
 def _strip_absent_mtp_declaration(config_dict, tensor_names):
     """Drop `mtp_num_hidden_layers` from a config dict when the tensors carry no MTP weights. Never raises. "Has a head" comes from the zoo's `mtp_head_is_present`, so this and `reconcile_mtp_config` cannot disagree."""
     # Unknown is not empty: editing a declaration blind is never justified.
@@ -761,57 +775,6 @@ def _strip_absent_mtp_declaration(config_dict, tensor_names):
             f"Unsloth: Could not reconcile the multi-token prediction config: {error}"
         )
         return False
-
-
-@contextmanager
-def _mtp_config_matching_tensors(model, tensor_names):
-    """Drop `mtp_num_hidden_layers` for the duration of a save when the tensors carry no `mtp.*` weights, then put it back. Never raises: a metadata repair must not fail a save."""
-    # Recorded before anything is removed, so a partial failure still restores.
-    restore = []
-    try:
-        if tensor_names is not None:
-            try:
-                from unsloth_zoo.saving_utils import MTP_CONFIG_KEY, mtp_head_is_present
-            except ImportError:
-                MTP_CONFIG_KEY = None
-            if MTP_CONFIG_KEY is None:
-                tensor_names = None
-        if tensor_names is not None:
-            config = getattr(model, "config", None)
-            holders = _config_mtp_holders(config, MTP_CONFIG_KEY)
-            # Materialised once: the rule runs per holder, and this may be a generator.
-            tensor_names = list(tensor_names)
-            # Against the LIVE config, so the extra-`layers.N` spelling is seen.
-            if holders and not any(
-                mtp_head_is_present(tensor_names, config, holder) for holder in holders
-            ):
-                for holder in holders:
-                    restore.append((holder, MTP_CONFIG_KEY, getattr(holder, MTP_CONFIG_KEY)))
-                    delattr(holder, MTP_CONFIG_KEY)
-                if restore:
-                    logger.warning_once(
-                        f"Unsloth: This checkpoint declares `{MTP_CONFIG_KEY}` but "
-                        f"the weights being exported carry no `mtp.*` tensors, so "
-                        f"the declaration is omitted from the exported config. "
-                        f"transformers does not load the multi-token prediction "
-                        f"head, so a merge or re-save cannot preserve it. The "
-                        f"export is otherwise complete and serves normally "
-                        f"without speculative decoding."
-                    )
-    except Exception as error:
-        logger.warning_once(
-            f"Unsloth: Could not reconcile the multi-token prediction config "
-            f"before saving: {error}"
-        )
-    try:
-        yield
-    finally:
-        # No import here: an exception from a finally block would mask the save's own.
-        for holder, key, value in restore:
-            try:
-                setattr(holder, key, value)
-            except Exception:
-                pass
 
 
 def _is_qwen3_5_vlm(model):
@@ -5411,7 +5374,10 @@ def _push_merged_to_hub_revision(save_kwargs):
             dict.fromkeys([*(card.data.tags or []), *(save_kwargs["tags"] or []), "unsloth"])
         )
         card.save(card_path)
-        return api.create_commit(
+        # The staged save prints the temp folder it wrote, which is not where the user asked the
+        # model to go and is deleted a moment later. Name the destination instead.
+        print(f"Unsloth: Uploading the merged model to '{repo_id}' ...")
+        commit = api.create_commit(
             repo_id = repo_id,
             repo_type = "model",
             operations = [
@@ -5431,6 +5397,23 @@ def _push_merged_to_hub_revision(save_kwargs):
             ),
             commit_description = save_kwargs["commit_description"],
         )
+        # Where the files ACTUALLY landed: a branch or a pull request is not the repository
+        # page, which for a fresh PR upload holds no model files at all.
+        destination = getattr(commit, "pr_url", None)
+        if destination is None:
+            destination = f"https://huggingface.co/{repo_id}"
+            # A pull request is checked first: with `create_pr` the files are in the PR, not on
+            # `revision`, which is only the branch it was opened against.
+            if save_kwargs["create_pr"]:
+                destination += "/discussions"
+            elif revision is not None:
+                destination += (
+                    f"/discussions/{revision.rsplit('/', 1)[-1]}"
+                    if revision.startswith("refs/pr/")
+                    else f"/tree/{revision}"
+                )
+        print(f"Saved model to {destination}")
+        return commit
 
 
 @_normalize_tied_weights_keys_for_save
@@ -5472,7 +5455,7 @@ def unsloth_generic_save(
     # this function's own keywords.
     safe_serialization = _normalize_safe_serialization(safe_serialization)
 
-    if push_to_hub and (create_pr or revision is not None):
+    if push_to_hub and (create_pr or revision is not None or not isinstance(model, PeftModel)):
         return _push_merged_to_hub_revision(dict(locals()))
 
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
@@ -5495,6 +5478,17 @@ def unsloth_generic_save(
             max_shard_size = max_shard_size,
             variant = variant,
         )
+        # Asked for a pickle and this transformers cannot give one: say so, rather than upload a
+        # format the caller explicitly declined. The same report `_filter_push_to_hub_kwargs`
+        # makes for the adapter path, which never reaches this branch. Against the ORIGINAL
+        # method, since `patch_saving_functions` wraps it in a `(*args, **kwargs)` passthrough
+        # that would hide a transformers which does honour the request.
+        _real_save = getattr(model, "original_model_save_pretrained", model.save_pretrained)
+        if safe_serialization is False and not _honours_safe_serialization(_real_save):
+            logger.warning_once(
+                "Unsloth: this transformers always writes safetensors, so "
+                "`safe_serialization = False` was not applied and the export is not a pickle."
+            )
         is_qwen3_5_vlm = _is_qwen3_5_vlm(model)
         if ("16bit" in save_method or is_qwen3_5_vlm) and state_dict is None:
             state_dict = model.state_dict()
@@ -5509,64 +5503,31 @@ def unsloth_generic_save(
         if state_dict is not None:
             _save_kwargs["state_dict"] = state_dict
 
-        if push_to_hub:
-            # A push has no local folder to repair afterwards, unlike a save, so the config
-            # has to match the tensors BEFORE they leave. Inside this branch, because that is
-            # the only consumer: a local save reconciles the written folder below, and reading
-            # the resident state dict for it was a second full collection on top of
-            # save_pretrained's own -- which on an offloaded or sharded model materialises
-            # every weight, and on a distributed one is a collective the other ranks are not
-            # making.
-            if state_dict is not None:
-                _mtp_tensor_names = list(state_dict.keys())
-            else:
-                # push_to_hub serialises the resident state dict, so None disarms the guard.
-                try:
-                    _mtp_tensor_names = list(model.state_dict().keys())
-                except Exception:
-                    # Cannot report its tensors: leave the config exactly as the caller had it.
-                    _mtp_tensor_names = None
-            print(f"Unsloth: Pushing full fine-tuned model to '{save_directory}' ...")
-            with _mtp_config_matching_tensors(model, _mtp_tensor_names):
-                model.push_to_hub(
-                    repo_id = save_directory,
-                    token = token,
-                    private = private,
-                    commit_message = commit_message,
-                    create_pr = create_pr,
-                    revision = revision,
-                    commit_description = commit_description,
-                    tags = tags,
-                    **_save_kwargs,
-                )
-            if tokenizer is not None:
-                _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-                old_padding_side = _tokenizer.padding_side
-                _tokenizer.padding_side = "left"
-                tokenizer.push_to_hub(
-                    save_directory,
-                    token = token,
-                    private = private,
-                    commit_message = commit_message,
-                    create_pr = create_pr,
-                    revision = revision,
-                )
-                _tokenizer.padding_side = old_padding_side
-        else:
-            print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
-            model.save_pretrained(save_directory, **_save_kwargs)
-            # Guarded: an older zoo must not raise once the weights are already on disk.
-            try:
-                from unsloth_zoo.saving_utils import reconcile_mtp_config
-                reconcile_mtp_config(save_directory)
-            except ImportError:
-                pass
-            if tokenizer is not None:
-                _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-                old_padding_side = _tokenizer.padding_side
-                _tokenizer.padding_side = "left"
-                tokenizer.save_pretrained(save_directory)
-                _tokenizer.padding_side = old_padding_side
+        # BEFORE the write: transformers 5 pops each tensor out of a supplied state dict as it
+        # writes the shard holding it ("remove it from state_dict to avoid keeping the ref",
+        # modeling_utils.py), so reading the keys afterwards reports an export with no tensors
+        # at all and would strip an `mtp_num_hidden_layers` the weights really do carry.
+        _written_tensor_names = list(state_dict.keys()) if state_dict is not None else None
+
+        print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
+        model.save_pretrained(save_directory, **_save_kwargs)
+        # Guarded: an older zoo must not raise once the weights are already on disk.
+        try:
+            from unsloth_zoo.saving_utils import reconcile_mtp_config
+
+            # The names we just wrote, when we know them: `_checkpoint_tensor_names` declines to
+            # unpickle an unindexed `pytorch_model.bin`, so a `safe_serialization = False` export
+            # would otherwise read back "unknown" and keep an `mtp_num_hidden_layers` the weights
+            # do not carry. Free here -- this state dict is already materialised.
+            reconcile_mtp_config(save_directory, tensor_names = _written_tensor_names)
+        except ImportError:
+            pass
+        if tokenizer is not None:
+            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+            old_padding_side = _tokenizer.padding_side
+            _tokenizer.padding_side = "left"
+            tokenizer.save_pretrained(save_directory)
+            _tokenizer.padding_side = old_padding_side
 
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
     elif _is_adapter_save_method(save_method):
