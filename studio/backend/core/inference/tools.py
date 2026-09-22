@@ -13963,10 +13963,11 @@ def _whatwg_codec(label: bytes) -> str | None:
 
 def _sniff_meta_charset(head: bytes, content_type: str) -> str | None:
     # Browsers prescan <meta> only in HTML (first usable one wins, XML prolog as fallback) and read
-    # only the prolog in XML. Other text types never declare their encoding in the body.
+    # only the prolog in XML. A headerless body counts as HTML only when it opens like HTML.
     is_xml = content_type in ("text/xml", "application/xml") or content_type.endswith("+xml")
-    if not is_xml and content_type not in ("", "text/html"):
-        return None
+    if not is_xml and content_type != "text/html":
+        if content_type or not _looks_like_html(head.decode("latin-1")):
+            return None
     for tag in () if is_xml else _META_TAG_RE.finditer(_HTML_COMMENT_RE.sub(b"", head)):
         attrs = {}
         for name, *values in _META_ATTR_RE.findall(tag.group(1)):

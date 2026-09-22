@@ -610,3 +610,11 @@ def test_meta_charset_read_when_content_type_missing(monkeypatch):
     out = _fetch_with(monkeypatch, body, None)
     assert _JAPANESE in out
     assert "�" not in out
+
+
+def test_meta_charset_in_headerless_non_html_body_is_ignored(monkeypatch):
+    text = "日本語のテキスト。価格比較とクチコミ。MARKERWORD "
+    body = ('# Encoding\n\nUse `<meta charset="shift_jis">` on old pages.\n\n' + text * 40).encode()
+    out = _fetch_with(monkeypatch, body, None)
+    assert text.strip() in out
+    assert "�" not in out
