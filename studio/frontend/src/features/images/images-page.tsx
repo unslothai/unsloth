@@ -138,7 +138,7 @@ import {
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
-import { DEFAULT_GEN, defaultsFor } from "./image-generation-defaults";
+import { DEFAULT_GEN, defaultsFor, resolutionFor } from "./image-generation-defaults";
 import { MAX_DIM, MIN_DIM, restorableSize, snapDim } from "./image-size";
 
 import {
@@ -1413,16 +1413,28 @@ export function ImagesPage({
     const recommended =
       pendingModelDefaults ??
       defaultsFor(status?.base_repo ?? status?.repo_id ?? "");
+    // Reset restores the resident build's canvas, the same one the seed above applied. A constant
+    // here would quietly undo it and put a 24 GB card back over its budget.
+    const size = resolutionFor(status?.base_repo ?? status?.repo_id ?? "", {
+      modelKind: status?.model_kind,
+      transformerQuant: status?.transformer_quant,
+    });
     return {
       negativePrompt: "",
-      width: 1024,
-      height: 1024,
+      width: size.width,
+      height: size.height,
       steps: recommended.steps,
       guidance: recommended.guidance,
       batchSize: 1,
       runs: 1,
     };
-  }, [pendingModelDefaults, status?.base_repo, status?.repo_id]);
+  }, [
+    pendingModelDefaults,
+    status?.base_repo,
+    status?.repo_id,
+    status?.model_kind,
+    status?.transformer_quant,
+  ]);
   const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
     setNegativePrompt(params.negativePrompt);
     // Same rule restoreSettings follows: a negative prompt in effect has to be visible, or the
@@ -2357,7 +2369,26 @@ export function ImagesPage({
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
-  }, [imagePresets.storedRecipe, status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
+    // The canvas is part of the resident model's defaults, not a constant: a quantised build shrinks
+    // the weights and leaves the activations alone, so on Qwen-Image-2.1 the canvas is what decides
+    // whether the load fits. Read from the ENGAGED build, so a declined quant request keeps 1024.
+    const size = resolutionFor(status?.base_repo ?? repoId, {
+      modelKind: status?.model_kind,
+      transformerQuant: status?.transformer_quant,
+    });
+    setWidth(size.width);
+    setHeight(size.height);
+    const matched = matchAspect(size.width, size.height);
+    setAspect(matched.key);
+    setPortrait(matched.portrait);
+  }, [
+    imagePresets.storedRecipe,
+    status?.loaded,
+    status?.repo_id,
+    status?.base_repo,
+    status?.model_kind,
+    status?.transformer_quant,
+  ]);
 
   // Reseed the Advanced selects from the LOADED build, so a declined request snaps to what
   // engaged and Precision never advertises a scheme the model is not running. Keyed on the
