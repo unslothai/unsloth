@@ -471,10 +471,13 @@ from core.inference.tool_loop_controller import (
     tool_call_limit_nudge,
 )
 from state.tool_approvals import (
+    DECISION_EXPIRED,
+    TOOL_APPROVAL_EXPIRED_MESSAGE,
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
     begin_tool_decision,
     new_approval_id,
+    decision_reason,
     wait_tool_decision,
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
@@ -36979,6 +36982,9 @@ class LlamaCppBackend:
                             if decision_slot is not None
                             else None
                         )
+                        # The slot is where the waiter says WHY: the user's refusal, or an approval
+                        # nobody answered. Read before decision_slot is dropped in the deny branch.
+                        _decision_reason = decision_reason(decision_slot)
                         if _decision is not None and _decision != "deny":
                             # Approved: now it really is running.
                             yield {"type": "status", "text": decision.status_text}
@@ -36986,17 +36992,25 @@ class LlamaCppBackend:
                             decision_slot = None
                             _forced_choice_resolved = True
                             resolved_provisional_tool_call_ids.add(decision.tool_call_id)
+                            # An approval nobody answered is not the user's decision, and this
+                            # string is the only account of the call both the model and the
+                            # reopened card get: the buttons are gone by the time it lands.
+                            _denied_text = (
+                                TOOL_APPROVAL_EXPIRED_MESSAGE
+                                if _decision_reason == DECISION_EXPIRED
+                                else TOOL_REJECTED_MESSAGE
+                            )
                             yield {
                                 "type": "tool_end",
                                 "tool_name": decision.tool_name,
                                 "tool_call_id": decision.tool_call_id,
-                                "result": TOOL_REJECTED_MESSAGE,
+                                "result": _denied_text,
                                 "provenance": decision.provenance,
                             }
                             denied_message = {
                                 "role": "tool",
                                 "name": decision.tool_name,
-                                "content": TOOL_REJECTED_MESSAGE,
+                                "content": _denied_text,
                             }
                             if decision.tool_call_id:
                                 denied_message["tool_call_id"] = decision.tool_call_id
