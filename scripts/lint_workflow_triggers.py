@@ -255,26 +255,39 @@ def _prefix_candidates(key: str) -> list[str]:
     which is comparable. Anything still expression-led afterwards is genuinely
     undecidable and is reported rather than dropped.
     """
-    keys = (
-        [_RUNNER_OS_EXPR.sub(v, key) for v in _RUNNER_OS_VALUES]
-        if _RUNNER_OS_EXPR.search(key)
-        else [key]
-    )
+    keys = [_RUNNER_OS_EXPR.sub(v, key) for v in _RUNNER_OS_VALUES] if _RUNNER_OS_EXPR.search(key) else [key]
     return [h for h in (_literal_prefix(k) for k in keys) if h]
 
 
-def _prefix_compatible(pr_head: str, publish_prefix: str) -> bool:
+def _is_truncated(key: str) -> bool:
+    """Did this key continue into an expression past its literal head?
+
+    Only then can a publish prefix LONGER than the head still reach the runtime key.
+    """
+    keys = [_RUNNER_OS_EXPR.sub(v, key) for v in _RUNNER_OS_VALUES] if _RUNNER_OS_EXPR.search(key) else [key]
+    return any("${{" in k for k in keys)
+
+def _prefix_compatible(pr_head: str, publish_prefix: str, truncated: bool = True) -> bool:
     """Can a key with this literal head be restored by this prefix?
 
-    `restore-keys` matching is left-anchored and exact, with no globbing, so the two are
-    compatible when either is a prefix of the other. The second direction is the one that
-    was missing: a PR key `pip-v2-${{ runner.os }}-abc` reduces to the head `pip-v2-`,
-    and a publish prefix `pip-v2-Linux-` is LONGER than that head, so a one-directional
-    `head.startswith(prefix)` test says no while the runtime key `pip-v2-Linux-abc` does
-    start with the prefix and would be restored.
-    """
-    return pr_head.startswith(publish_prefix) or publish_prefix.startswith(pr_head)
+    `restore-keys` matching is left-anchored and exact, with no globbing, so a publish
+    prefix restores a PR-written entry when the PR's runtime key starts with it.
 
+    A head is TRUNCATED when the key continued into an expression this check cannot
+    expand, and that is the only case where the reverse direction holds. A PR key
+    `pip-v2-${{ runner.os }}-abc` reduces to the head `pip-v2-`, and the publish prefix
+    `pip-v2-Linux-` is longer than that head, yet the runtime key `pip-v2-Linux-abc` does
+    start with it, so the pairing has to be treated as compatible.
+
+    For a head that is the WHOLE key, the reverse direction is simply wrong. A PR key
+    that is exactly `shared` is saved as `shared`, and `shared`.startswith(`shared-long`)
+    is false, so a publish fallback `shared-long` cannot reach it. Allowing the reverse
+    unconditionally rejected every longer fallback that merely shared an opening with a
+    complete key, which is a false failure on a correct configuration.
+    """
+    if pr_head.startswith(publish_prefix):
+        return True
+    return truncated and publish_prefix.startswith(pr_head)
 
 def _shell_built_key_prefixes(
     text: str, inputs: set | None = None, all_literal: bool = True,
@@ -348,7 +361,13 @@ def _input_namespaces(callers: list, targets: list) -> dict:
             if target.name.startswith("action.")
             else target.name
         )
-        for field, pair in _resolved_inputs(callers, name).items():
+        resolved = _resolved_inputs(callers, name)
+        # A declared default is a value the target really can be called with, so it
+        # belongs in the namespace even when no call site mentions the input.
+        for field, value in _declared_defaults(target).items():
+            vals, ok = resolved.get(field, (set(), True))
+            resolved[field] = (vals | {value}, ok)
+        for field, pair in resolved.items():
             vals, ok = merged.get(field, (set(), True))
             merged[field] = (vals | pair[0], ok and pair[1])
     return merged
@@ -369,6 +388,31 @@ def _expand_input_key(key: str, namespaces: dict) -> list[str]:
         return [key]
     values, _resolved = namespaces.get(match.group(1), (set(), False))
     return sorted(values) or [key]
+
+
+def _declared_defaults(path: Path) -> dict:
+    """`inputs.<name>.default` from an action or reusable workflow definition.
+
+    Actions applies a declared default when a caller omits the input, so a composite
+    declaring `cache_key` with default `shared-key` writes the `shared-key` namespace on
+    a bare invocation. Reading only the call sites left that key as an unexpanded
+    expression, the exact comparison matched nothing, and with no `restore-keys` in play
+    the undecidable-prefix path never reported it either: a silent pass.
+    """
+    doc = _parse(path)
+    out: dict = {}
+    if not isinstance(doc, dict):
+        return out
+    declared = doc.get("inputs")
+    if not isinstance(declared, dict):
+        on = doc.get(True) if True in doc else doc.get("on")
+        call = on.get("workflow_call") if isinstance(on, dict) else None
+        declared = call.get("inputs") if isinstance(call, dict) else None
+    if isinstance(declared, dict):
+        for name, spec in declared.items():
+            if isinstance(spec, dict) and spec.get("default") is not None:
+                out[str(name)] = str(spec["default"])
+    return out
 
 def _pr_reachable_action_dirs(workflows_dir: Path, pr_paths: list) -> set:
     """Composite actions a PR-triggered workflow actually uses.
@@ -750,13 +794,19 @@ def main() -> int:
     # and not only by what a workflow passes directly.
     pr_callers = pr_workflow_paths + pr_reachable
     composite_keys: list[str] = []
+    shell_built: set = set()
     for action_path in pr_reachable:
         composite_keys.extend(_extract_cache_keys(action_path))
         resolved = _resolved_inputs(pr_callers, action_path.parent.name)
         names, all_literal = resolved.get("name", (set(), False))
-        composite_keys.extend(
-            _shell_built_key_prefixes(action_path.read_text(ENC), names, all_literal)
-        )
+        built = _shell_built_key_prefixes(action_path.read_text(ENC), names, all_literal)
+        composite_keys.extend(built)
+        # A shell-built value is the literal HEAD of a key whose remainder is assembled
+        # at runtime, so it is truncated by construction even though no `${{` survives
+        # in the recorded string. Without this the reverse-direction rule below stopped
+        # comparing them, and a publish prefix longer than the head -- which is the usual
+        # shape, `pip-v2-shared-` against the head `pip-v2-` -- went unexamined.
+        shell_built.update(built)
 
     # The publish side delegates to local actions exactly as the pull-request side does,
     # and reading only the top-level workflow file left that half unexamined. A publish
@@ -809,11 +859,16 @@ def main() -> int:
     # workflow can adopt an entry a pull request wrote without the two keys ever being
     # equal, which is the only thing the check above compares.
     pr_heads: set = set()
+    # Heads whose key continued into an unexpandable expression. Only these may be
+    # reached by a publish prefix LONGER than the head itself.
+    truncated_heads: set = set()
     undecidable_pr_keys: list[str] = []
     for k in list(pr_keys) + composite_keys:
         cands = _prefix_candidates(k)
         if cands:
             pr_heads.update(cands)
+            if _is_truncated(k) or k in shell_built:
+                truncated_heads.update(cands)
         elif _INPUT_KEY.fullmatch(k.strip()):
             # `key: ${{ inputs.cache_key }}` in a reusable workflow or composite names no
             # namespace here, but unlike a `steps.*` reference it is not delegation
@@ -824,6 +879,8 @@ def main() -> int:
             vals, resolved = input_namespaces.get(field, (set(), False))
             heads = [h for v in sorted(vals) for h in _prefix_candidates(v)]
             pr_heads.update(heads)
+            truncated_heads.update(h for v in sorted(vals) if _is_truncated(v)
+                                   for h in _prefix_candidates(v))
             if not resolved:
                 # Some call site passes a value this check cannot expand, such as
                 # `${{ matrix.cache_name }}`, or omits the input so the action default
@@ -852,7 +909,14 @@ def main() -> int:
                 )
                 continue
             for pub_head in pub_heads:
-                hit = next((h for h in sorted(pr_heads) if _prefix_compatible(h, pub_head)), None)
+                hit = next(
+                    (
+                        h
+                        for h in sorted(pr_heads)
+                        if _prefix_compatible(h, pub_head, h in truncated_heads)
+                    ),
+                    None,
+                )
                 if hit is not None:
                     findings.append(
                         f"{pub_path.name}: restore-keys prefix {pub_head!r} matches "

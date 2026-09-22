@@ -2060,3 +2060,132 @@ def test_an_input_backed_key_is_resolved_before_the_exact_comparison(tmp_path):
         f"so this exact collision must be caught:\n{proc.stdout}\n{proc.stderr}"
     )
     assert "shared-key" in proc.stderr
+
+
+def test_a_longer_fallback_over_a_complete_pr_key_is_accepted(tmp_path):
+    """The reverse-prefix direction only holds for a head cut short by an expression.
+
+    A PR key that is exactly `shared` is saved as `shared`, and
+    `shared`.startswith(`shared-long`) is false, so a publish fallback `shared-long`
+    cannot restore it. Allowing the reverse unconditionally rejected every longer
+    fallback that merely shared an opening with a complete key, which is a false failure
+    on a correct configuration.
+    """
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "pr-build.yml").write_text(_pr_workflow("shared"))
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("shared-long-pub", "            shared-long-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"`shared-long-` cannot restore a key that is exactly `shared`, so this must "
+        f"pass:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+    # The truncated case still has teeth: the same fallback over an expression-completed
+    # key CAN meet it at runtime.
+    (wf / "pr-build.yml").write_text(_pr_workflow("shared-long-${{ runner.os }}-abc"))
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the runtime key here really does start with `shared-long-`:\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def _lint_module():
+    """The lint script loaded as a module, for testing its predicates directly.
+
+    The rest of this file drives the script as a subprocess, which is the right way to
+    test the tool but cannot reach a single function.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_lint_under_test", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_truncation_predicate_reads_the_key():
+    """The rule above is only as good as this predicate, so it is tested directly."""
+    lint = _lint_module()
+    _is_truncated = lint._is_truncated
+    _prefix_compatible = lint._prefix_compatible
+    # `runner.os` is expanded before the head is taken, so a key containing only that
+    # expression ends up with a COMPLETE head and is not truncated. It is the expressions
+    # this check cannot expand that cut a head short.
+    cases = [
+        ("shared", False),
+        ("shared-long-abc", False),
+        ("pip-v2-${{ runner.os }}-abc", False),
+        ("${{ runner.os }}-shared-abc", False),
+        ("pip-${{ hashFiles('x') }}", True),
+        ("pip-${{ matrix.flavour }}-abc", True),
+    ]
+    for key, expected in cases:
+        assert _is_truncated(key) is expected, f"_is_truncated({key!r})"
+
+    # A head cut short by an expression may be reached by a LONGER publish prefix; a
+    # complete key may not.
+    assert _prefix_compatible("pip-v2-", "pip-v2-Linux-", True) is True
+    assert _prefix_compatible("shared", "shared-long", False) is False
+    # Either way, a prefix the head already starts with is always compatible.
+    assert _prefix_compatible("shared-long-abc", "shared-", False) is True
+
+
+def test_a_declared_input_default_is_part_of_the_namespace(tmp_path):
+    """Actions applies a declared default when the caller omits the input.
+
+    A composite declaring `cache_key` with default `shared-key` writes that namespace on
+    a bare invocation. Reading only the call sites left the key as an unexpanded
+    expression, so the exact comparison matched nothing, and with no `restore-keys` in
+    play the undecidable-prefix path never reported it either. A silent pass.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "defaulted-cache"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: defaulted cache\n"
+        "inputs:\n"
+        "  cache_key:\n"
+        "    default: shared-key\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: actions/cache@v4\n"
+        "      with:\n"
+        "        path: wheels\n"
+        "        key: ${{ inputs.cache_key }}\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/defaulted-cache\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  publish:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n"
+        "          path: wheels\n"
+        "          key: shared-key\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the bare invocation writes the default namespace `shared-key`, which the "
+        f"publish workflow uses exactly:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "shared-key" in proc.stderr

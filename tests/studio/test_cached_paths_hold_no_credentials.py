@@ -133,6 +133,38 @@ LOGIN_PATTERNS = (
 )
 
 _CACHE_SAVE = ("actions/cache/save", "actions/cache@")
+# Actions that write a credential into a tool's credential home. Same hazard as a `run:`
+# login, with no shell body for a pattern to match.
+#
+# Each maps to the credential-home variables it ACTUALLY writes, and the pairing is the
+# whole point. Keying only on the action fired on eight live workflows where
+# `actions/setup-node` sat in a job whose cached directory was named by HF_HOME, a
+# variable setup-node has nothing to do with. A guard that reports a Hugging Face leak
+# because a job installs Node teaches people to switch it off.
+#
+# `condition` names a `with:` input that must be present before the action writes
+# anything: setup-node only creates an .npmrc token when `registry-url` is set, and
+# otherwise just installs a runtime.
+LOGIN_ACTIONS = {
+    "docker/login-action": {
+        "vars": ("DOCKER_CONFIG",),
+        "why": "registry auth into $DOCKER_CONFIG/config.json",
+    },
+    "aws-actions/configure-aws-credentials": {
+        "vars": ("AWS_SHARED_CREDENTIALS_FILE",),
+        "why": "aws credentials",
+    },
+    "google-github-actions/auth": {
+        "vars": ("GOOGLE_APPLICATION_CREDENTIALS",),
+        "why": "an application default credentials file",
+    },
+    "actions/setup-node": {
+        "vars": ("NPM_CONFIG_USERCONFIG",),
+        "why": "an .npmrc auth token",
+        "condition": "registry-url",
+    },
+}
+
 _PERSIST = _CACHE_SAVE + ("actions/upload-artifact",)
 
 
@@ -291,11 +323,25 @@ def _flat_steps(job, inherited = None, inputs = None, stack = None):
                 doc = yaml.safe_load(cand.read_text(encoding = "utf-8"))
             except yaml.YAMLError:
                 break
-            runs = doc.get("runs") if isinstance(doc, dict) else None
+            if not isinstance(doc, dict):
+                break
+            runs = doc.get("runs")
             if isinstance(runs, dict) and isinstance(runs.get("steps"), list):
                 with_ = step.get("with")
-                passed = ({str(k): str(v) for k, v in with_.items()}
-                          if isinstance(with_, dict) else {})
+                passed = {}
+                # A declared default is what Actions applies when the caller omits the
+                # input, so a composite invoked bare still names its real path.
+                declared = doc.get("inputs")
+                if isinstance(declared, dict):
+                    for field, spec in declared.items():
+                        if isinstance(spec, dict) and spec.get("default") is not None:
+                            passed[str(field)] = str(spec["default"])
+                if isinstance(with_, dict):
+                    for field, value in with_.items():
+                        # Resolved against the CALLER's env and inputs, so a forwarded
+                        # `${{ inputs.path }}` arrives as the value it stands for rather
+                        # than as the same expression one level down.
+                        passed[str(field)] = _expand(str(value), env, inputs)
                 out.extend(_flat_steps(
                     {"steps": runs["steps"]}, env, passed, stack + (cand,),
                 ))
@@ -347,6 +393,11 @@ def _login_offenders(doc, job):
     every login in the job flagged the second step even though its token cannot reach the
     cache. The effective environment of the step that actually runs the login is what
     decides, which is also the only thing the runtime cares about.
+
+    A login can be an ACTION as well as a shell command, and skipping every step without
+    a `run:` body missed that class entirely: `docker/login-action` writes registry
+    credentials into `$DOCKER_CONFIG/config.json` with no shell for a pattern to match.
+    An action only counts against the variables it really writes, per LOGIN_ACTIONS.
     """
     job_env = _env_of(job, doc)
     persisted = [path for path, _step in _persisted_with_env(job, doc)]
@@ -355,7 +406,15 @@ def _login_offenders(doc, job):
     offenders = []
     for step, inherited, inputs in _flat_steps(job):
         body = str(step.get("run") or "")
-        if not body:
+        uses = str(step.get("uses") or "").strip().strip("'\"")
+        action = uses.split("@")[0]
+        spec = LOGIN_ACTIONS.get(action)
+        if spec is not None:
+            with_ = step.get("with")
+            needed = spec.get("condition")
+            if needed and not (isinstance(with_, dict) and with_.get(needed) is not None):
+                spec = None
+        if not body and spec is None:
             continue
         own = step.get("env")
         env = {**job_env, **inherited, **({str(k): str(v) for k, v in own.items()}
@@ -367,14 +426,22 @@ def _login_offenders(doc, job):
             hit = next((p for p in persisted if _inside(home, p)), None)
             if hit is None:
                 continue
-            for pattern in LOGIN_PATTERNS:
-                if re.search(pattern, body, re.IGNORECASE):
-                    offenders.append(
-                        f"{step.get('name') or step.get('uses') or 'run'}: "
-                        f"{var}={home} is inside cached {hit!r}, and this step matches "
-                        f"/{pattern}/"
-                    )
-                    break
+            if spec is not None and var in spec["vars"]:
+                offenders.append(
+                    f"{step.get('name') or uses}: {var}={home} is inside cached "
+                    f"{hit!r}, and this step uses {action} ({spec['why']})"
+                )
+                break
+            matched = next(
+                (p for p in LOGIN_PATTERNS if body and re.search(p, body, re.IGNORECASE)),
+                None,
+            )
+            if matched is not None:
+                offenders.append(
+                    f"{step.get('name') or uses or 'run'}: {var}={home} is inside "
+                    f"cached {hit!r}, and this step matches /{matched}/"
+                )
+                break
     return offenders
 
 def _raw_persisted(job, doc = None):
@@ -894,4 +961,149 @@ def test_no_job_that_persists_anything_performs_a_login():
         "written on the default branch, so the token becomes readable by anyone who can "
         "open one. Read the token from the environment instead of logging in, or point "
         "the credential home outside the persisted path."
+    )
+
+
+def test_a_login_performed_by_an_action_is_seen():
+    """A login can be an action, with no shell body for a pattern to match.
+
+    `docker/login-action` writes registry credentials into `$DOCKER_CONFIG/config.json`,
+    so a job pointing DOCKER_CONFIG at a cached directory leaks exactly as a
+    `docker login` command would. Skipping every step without a `run:` missed the class.
+    """
+    job = {
+        "env": {"DOCKER_CONFIG": "docker-cache"},
+        "steps": [
+            {"uses": "docker/login-action@v3", "with": {"username": "u", "password": "p"}},
+            {"uses": "actions/cache/save@v4", "with": {"path": "docker-cache", "key": "k"}},
+        ],
+    }
+    offenders = _login_offenders({}, job)
+    assert offenders, "an action-performed login into a cached credential home must fire"
+    assert "docker/login-action" in offenders[0], offenders
+
+    safe = {
+        "env": {"DOCKER_CONFIG": "/tmp/docker"},
+        "steps": [
+            {"uses": "docker/login-action@v3"},
+            {"uses": "actions/cache/save@v4", "with": {"path": "docker-cache", "key": "k"}},
+        ],
+    }
+    assert _login_offenders({}, safe) == [], "the credential home is outside the cache"
+
+
+def test_a_login_action_only_counts_against_what_it_writes():
+    """The pairing is the point, and getting it wrong is how this rule cries wolf.
+
+    Keying only on the action name fired on eight live workflows where
+    `actions/setup-node` sat in a job whose cached directory was named by HF_HOME, a
+    variable setup-node has nothing to do with. And setup-node writes an .npmrc token
+    only when `registry-url` is set; otherwise it installs a runtime and touches no
+    credential at all.
+    """
+    unrelated = {
+        "env": {"HF_HOME": "hf-cache"},
+        "steps": [
+            {"uses": "actions/setup-node@v4", "with": {"node-version": "20"}},
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+        ],
+    }
+    assert _login_offenders({}, unrelated) == [], (
+        "setup-node does not write HF_HOME, so caching an HF_HOME directory beside it "
+        "is not a finding"
+    )
+
+    no_registry = {
+        "env": {"NPM_CONFIG_USERCONFIG": "npm-cache/.npmrc"},
+        "steps": [
+            {"uses": "actions/setup-node@v4", "with": {"node-version": "20"}},
+            {"uses": "actions/cache/save@v4", "with": {"path": "npm-cache", "key": "k"}},
+        ],
+    }
+    assert _login_offenders({}, no_registry) == [], (
+        "without `registry-url` setup-node writes no token"
+    )
+
+    with_registry = {
+        "env": {"NPM_CONFIG_USERCONFIG": "npm-cache/.npmrc"},
+        "steps": [
+            {"uses": "actions/setup-node@v4",
+             "with": {"registry-url": "https://registry.npmjs.org"}},
+            {"uses": "actions/cache/save@v4", "with": {"path": "npm-cache", "key": "k"}},
+        ],
+    }
+    assert _login_offenders({}, with_registry), (
+        "with `registry-url` it writes an .npmrc token into the cached config path"
+    )
+
+
+def test_an_input_forwarded_between_composites_is_resolved(tmp_path, monkeypatch):
+    """One composite handing `${{ inputs.path }}` to another kept the outer expression.
+
+    The inner step then expanded it back to itself and `_normalise` erased it, so a
+    wrapper receiving `path: hf-cache` could save that directory while the job logged
+    into `HF_HOME=hf-cache` and the guard reported nothing.
+    """
+    import sys
+
+    module = sys.modules[__name__]
+    inner = tmp_path / ".github" / "actions" / "save-in"
+    outer = tmp_path / ".github" / "actions" / "wrap"
+    inner.mkdir(parents = True)
+    outer.mkdir(parents = True)
+    (inner / "action.yml").write_text(
+        "name: save in\ninputs:\n  path:\n    required: true\nruns:\n"
+        "  using: composite\n  steps:\n    - uses: actions/cache/save@v4\n"
+        "      with:\n        path: ${{ inputs.path }}\n        key: k\n"
+    )
+    (outer / "action.yml").write_text(
+        "name: wrap\ninputs:\n  path:\n    required: true\nruns:\n"
+        "  using: composite\n  steps:\n    - uses: ./.github/actions/save-in\n"
+        "      with:\n        path: ${{ inputs.path }}\n"
+    )
+    monkeypatch.setattr(module, "REPO", tmp_path)
+
+    job = {
+        "env": {"HF_HOME": "hf-cache"},
+        "steps": [
+            {"name": "log in", "run": "hf auth login --token x"},
+            {"uses": "./.github/actions/wrap", "with": {"path": "hf-cache"}},
+        ],
+    }
+    paths = [p for p, _s in _persisted_with_env(job, {})]
+    assert paths == ["hf-cache"], f"the forwarded input did not resolve; got {paths}"
+    assert _login_offenders({}, job), "the nested composite saves the credential home"
+
+
+def test_a_composite_input_default_is_applied(tmp_path, monkeypatch):
+    """Actions applies a declared default when the caller omits the `with:` entirely.
+
+    A composite declaring `path` with default `hf-cache` and caching
+    `${{ inputs.path }}` was invoked bare, the empty input map left the expression
+    unresolved, `_normalise` erased it, and the composite looked as though it persisted
+    nothing at all.
+    """
+    import sys
+
+    module = sys.modules[__name__]
+    action = tmp_path / ".github" / "actions" / "save-default"
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: save default\ninputs:\n  path:\n    default: hf-cache\nruns:\n"
+        "  using: composite\n  steps:\n    - uses: actions/cache/save@v4\n"
+        "      with:\n        path: ${{ inputs.path }}\n        key: k\n"
+    )
+    monkeypatch.setattr(module, "REPO", tmp_path)
+
+    job = {
+        "env": {"HF_HOME": "hf-cache"},
+        "steps": [
+            {"name": "log in", "run": "hf auth login --token x"},
+            {"uses": "./.github/actions/save-default"},
+        ],
+    }
+    paths = [p for p, _s in _persisted_with_env(job, {})]
+    assert paths == ["hf-cache"], f"the declared default was not applied; got {paths}"
+    assert _login_offenders({}, job), (
+        "the composite persists the credential home via its default, and the job logs in"
     )
