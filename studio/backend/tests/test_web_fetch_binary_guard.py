@@ -476,6 +476,11 @@ def test_xml_prolog_encoding_read_when_header_names_none(monkeypatch, content_ty
         ("iso-8859-1", "cp1252", "“quoted” MARKERWORD"),
         ("windows-1251", "cp1251", "Привет MARKERWORD"),
         ("euc-jp", "euc_jp", _JAPANESE),
+        ("euc-kr", "cp949", "작성자: 김똠, 댓글: 햏햏 뷁 MARKERWORD"),
+        ("ks_c_5601-1987", "cp949", "작성자: 김똠, 댓글: 햏햏 뷁 MARKERWORD"),
+        ("big5", "big5hkscs", "台灣裏面恒春 碁盤 MARKERWORD"),
+        ("tis-620", "cp874", "ภาษาไทย “คำพูด” … MARKERWORD"),
+        ("iso-8859-9", "cp1254", "Türkiye’nin “Ankara”dır… MARKERWORD"),
     ],
 )
 def test_meta_charset_labels_decode_with_whatwg_codecs(monkeypatch, label, encoding, text):
@@ -502,7 +507,18 @@ def test_bom_wins_over_contradicting_meta(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "label", ["x-mac-fantasy", "utf8mb4", "base64", "rot13", "idna", "undefined"]
+    "label",
+    [
+        "x-mac-fantasy",
+        "utf8mb4",
+        "base64",
+        "rot13",
+        "idna",
+        "undefined",
+        "utf-7",
+        "utf-32",
+        "punycode",
+    ],
 )
 def test_unknown_meta_charset_falls_back_to_utf8_without_raising(monkeypatch, label):
     body = _html_page(f'<meta charset="{label}">', "MARKERWORD über " * 40).encode("utf-8")
@@ -535,3 +551,44 @@ def test_meta_charset_used_when_header_charset_unusable(monkeypatch, header_labe
     out = _fetch_with(monkeypatch, body, f"text/html; charset={header_label}")
     assert _JAPANESE in out
     assert "�" not in out
+
+
+def test_unusable_meta_charset_does_not_stop_the_scan(monkeypatch):
+    head = '<meta charset="bogus"><meta charset="Shift_JIS">'
+    body = _html_page(head, _JAPANESE * 40).encode("cp932")
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert _JAPANESE in out
+    assert "�" not in out
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        '<meta name="description" content="docs about charset=shift_jis">',
+        '<meta http-equiv="refresh" content="0; url=/next?charset=shift_jis">',
+        '<meta name="Content-Type" content="text/html; charset=shift_jis">',
+        '<meta property="og:title" content="a > b"><meta name="x" content="charset=shift_jis">',
+    ],
+)
+def test_charset_text_outside_a_declaration_is_ignored(monkeypatch, head):
+    text = "Ünïcödé “smart” 日本語 MARKERWORD "
+    body = _html_page(head, text * 20).encode("utf-8")
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert text.strip() in out
+    assert "�" not in out
+
+
+def test_meta_charset_wins_over_xml_prolog(monkeypatch):
+    text = "Café crème brûlée — MARKERWORD "
+    head = '<meta http-equiv="Content-Type" content="text/html; charset=utf-8">'
+    body = ('<?xml version="1.0" encoding="iso-8859-1"?>\n' + _html_page(head, text * 20)).encode()
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert text.strip() in out
+    assert "Ã" not in out
+
+
+def test_whatwg_charset_table_only_names_text_codecs():
+    for label, codec in tools._WHATWG_CHARSET_CODECS.items():
+        assert label == label.lower()
+        assert codecs.lookup(codec)._is_text_encoding, label
+        assert b"a\xff".decode(codec, "replace")

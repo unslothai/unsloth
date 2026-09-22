@@ -13840,36 +13840,87 @@ _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
 
 _META_CHARSET_SCAN_BYTES = 2048
-_META_CHARSET_RE = re.compile(rb"<meta\b[^>]*?charset\s*=\s*[\"']?\s*([\w.:-]+)", re.IGNORECASE)
+_META_TAG_RE = re.compile(rb"<meta\b((?:[^>\"']|\"[^\"]*\"|'[^']*')*)>", re.IGNORECASE)
+_META_ATTR_RE = re.compile(rb"([^\s\"'/=>]+)(?:\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]*)))?")
+_META_CONTENT_CHARSET_RE = re.compile(rb"charset\s*=\s*[\"']?\s*([^\s\"';]+)", re.IGNORECASE)
 _HTML_COMMENT_RE = re.compile(rb"<!--.*?(?:-->|\Z)", re.DOTALL)
 _XML_ENCODING_RE = re.compile(rb"^\s*<\?xml\b[^>]*?encoding\s*=\s*[\"']([\w.:-]+)", re.IGNORECASE)
-_META_CHARSET_ALIASES = {
-    "shift-jis": "cp932",
-    "sjis": "cp932",
-    "x-sjis": "cp932",
-    "ms-kanji": "cp932",
-    "csshiftjis": "cp932",
-    "gb2312": "gbk",
-    "gb-2312": "gbk",
-    "csgb2312": "gbk",
-    "chinese": "gbk",
-    "iso-ir-58": "gbk",
-    "x-gbk": "gbk",
-    "latin1": "cp1252",
-    "latin-1": "cp1252",
-    "l1": "cp1252",
-    "iso-8859-1": "cp1252",
-    "iso8859-1": "cp1252",
-    "iso-ir-100": "cp1252",
-    "csisolatin1": "cp1252",
-    "cp819": "cp1252",
-    "ibm819": "cp1252",
-    "ascii": "cp1252",
-    "us-ascii": "cp1252",
-    "x-user-defined": "cp1252",
-    "utf-16": "utf-8",
-    "utf-16le": "utf-8",
-    "utf-16be": "utf-8",
+# WHATWG Encoding labels by the Python codec that matches the browser decoder. A meta declaration
+# of UTF-16 or x-user-defined means UTF-8 or windows-1252; "replacement" labels are left out.
+_WHATWG_CHARSET_LABELS = {
+    "utf-8": (
+        "unicode-1-1-utf-8 unicode11utf8 unicode20utf8 utf-8 utf8 x-unicode20utf8 unicodefffe "
+        "utf-16be csunicode iso-10646-ucs-2 ucs-2 unicode unicodefeff utf-16 utf-16le"
+    ),
+    "cp866": "866 cp866 csibm866 ibm866",
+    "iso8859-2": (
+        "csisolatin2 iso-8859-2 iso-ir-101 iso8859-2 iso88592 iso_8859-2 iso_8859-2:1987 l2 "
+        "latin2"
+    ),
+    "iso8859-3": (
+        "csisolatin3 iso-8859-3 iso-ir-109 iso8859-3 iso88593 iso_8859-3 iso_8859-3:1988 l3 "
+        "latin3"
+    ),
+    "iso8859-4": (
+        "csisolatin4 iso-8859-4 iso-ir-110 iso8859-4 iso88594 iso_8859-4 iso_8859-4:1988 l4 "
+        "latin4"
+    ),
+    "iso8859-5": (
+        "csisolatincyrillic cyrillic iso-8859-5 iso-ir-144 iso8859-5 iso88595 iso_8859-5 "
+        "iso_8859-5:1988"
+    ),
+    "iso8859-6": (
+        "arabic asmo-708 csiso88596e csiso88596i csisolatinarabic ecma-114 iso-8859-6 "
+        "iso-8859-6-e iso-8859-6-i iso-ir-127 iso8859-6 iso88596 iso_8859-6 iso_8859-6:1987"
+    ),
+    "iso8859-7": (
+        "csisolatingreek ecma-118 elot_928 greek greek8 iso-8859-7 iso-ir-126 iso8859-7 iso88597 "
+        "iso_8859-7 iso_8859-7:1987 sun_eu_greek"
+    ),
+    "iso8859-8": (
+        "csiso88598e csisolatinhebrew hebrew iso-8859-8 iso-8859-8-e iso-ir-138 iso8859-8 "
+        "iso88598 iso_8859-8 iso_8859-8:1988 visual csiso88598i iso-8859-8-i logical"
+    ),
+    "iso8859-10": "csisolatin6 iso-8859-10 iso-ir-157 iso8859-10 iso885910 l6 latin6",
+    "iso8859-13": "iso-8859-13 iso8859-13 iso885913",
+    "iso8859-14": "iso-8859-14 iso8859-14 iso885914",
+    "iso8859-15": "csisolatin9 iso-8859-15 iso8859-15 iso885915 iso_8859-15 l9",
+    "iso8859-16": "iso-8859-16",
+    "koi8-r": "cskoi8r koi koi8 koi8-r koi8_r",
+    "koi8-u": "koi8-ru koi8-u",
+    "mac-roman": "csmacintosh mac macintosh x-mac-roman",
+    "cp874": "dos-874 iso-8859-11 iso8859-11 iso885911 tis-620 windows-874",
+    "cp1250": "cp1250 windows-1250 x-cp1250",
+    "cp1251": "cp1251 windows-1251 x-cp1251",
+    "cp1252": (
+        "ansi_x3.4-1968 ascii cp1252 cp819 csisolatin1 ibm819 iso-8859-1 iso-ir-100 iso8859-1 "
+        "iso88591 iso_8859-1 iso_8859-1:1987 l1 latin1 us-ascii windows-1252 x-cp1252 "
+        "x-user-defined"
+    ),
+    "cp1253": "cp1253 windows-1253 x-cp1253",
+    "cp1254": (
+        "cp1254 csisolatin5 iso-8859-9 iso-ir-148 iso8859-9 iso88599 iso_8859-9 iso_8859-9:1989 "
+        "l5 latin5 windows-1254 x-cp1254"
+    ),
+    "cp1255": "cp1255 windows-1255 x-cp1255",
+    "cp1256": "cp1256 windows-1256 x-cp1256",
+    "cp1257": "cp1257 windows-1257 x-cp1257",
+    "cp1258": "cp1258 windows-1258 x-cp1258",
+    "mac-cyrillic": "x-mac-cyrillic x-mac-ukrainian",
+    "gb18030": (
+        "chinese csgb2312 csiso58gb231280 gb2312 gb_2312 gb_2312-80 gbk iso-ir-58 x-gbk gb18030"
+    ),
+    "big5hkscs": "big5 big5-hkscs cn-big5 csbig5 x-x-big5",
+    "euc_jp": "cseucpkdfmtjapanese euc-jp x-euc-jp",
+    "iso2022_jp": "csiso2022jp iso-2022-jp",
+    "cp932": "csshiftjis ms932 ms_kanji shift-jis shift_jis sjis windows-31j x-sjis",
+    "cp949": (
+        "cseuckr csksc56011987 euc-kr iso-ir-149 korean ks_c_5601-1987 ks_c_5601-1989 ksc5601 "
+        "ksc_5601 windows-949"
+    ),
+}
+_WHATWG_CHARSET_CODECS = {
+    label: codec for codec, labels in _WHATWG_CHARSET_LABELS.items() for label in labels.split()
 }
 
 
@@ -13906,17 +13957,25 @@ def _has_single_byte_text_evidence(data: bytes) -> bool:
     return ascii_text_bytes / len(data) >= _MIN_SINGLE_BYTE_ASCII_RATIO
 
 
+def _whatwg_codec(label: bytes) -> str | None:
+    return _WHATWG_CHARSET_CODECS.get(label.strip(b"\t\n\f\r ").decode("latin-1").lower())
+
+
 def _sniff_meta_charset(head: bytes) -> str | None:
-    match = _XML_ENCODING_RE.match(head) or _META_CHARSET_RE.search(_HTML_COMMENT_RE.sub(b"", head))
-    if match is None:
-        return None
-    label = match.group(1).decode("ascii").lower().replace("_", "-")
-    try:
-        codec = codecs.lookup(_META_CHARSET_ALIASES.get(label, label)).name
-        b"x".decode(codec, "replace")
-    except (LookupError, ValueError):
-        return None
-    return codec
+    # Browser prescan order: the first usable <meta> declaration wins, the XML prolog is a fallback.
+    for tag in _META_TAG_RE.finditer(_HTML_COMMENT_RE.sub(b"", head)):
+        attrs = {}
+        for name, *values in _META_ATTR_RE.findall(tag.group(1)):
+            attrs.setdefault(name.lower(), b"".join(values))
+        label = attrs.get(b"charset")
+        if label is None and attrs.get(b"http-equiv", b"").strip().lower() == b"content-type":
+            match = _META_CONTENT_CHARSET_RE.search(attrs.get(b"content", b""))
+            label = match and match.group(1)
+        codec = label and _whatwg_codec(label)
+        if codec:
+            return codec
+    match = _XML_ENCODING_RE.match(head)
+    return match and _whatwg_codec(match.group(1))
 
 
 def _extract_pdf_text(data: bytes) -> str:
