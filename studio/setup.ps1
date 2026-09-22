@@ -6133,6 +6133,9 @@ function Remove-WoaMergedOverrides {
         Remove-Item -LiteralPath $script:WoaMergedOverrides -Force -ErrorAction SilentlyContinue
         $script:WoaMergedOverrides = $null
     }
+    # This helper is the script-scope terminating-error cleanup hook. Keep the
+    # current-run ROCm verdict from leaking back into an interactive caller too.
+    Remove-Item Env:UNSLOTH_ROCM_TORCH_POLICY_BLOCKED -ErrorAction SilentlyContinue
 }
 
 function Restore-WoaResolverEnvironment {
@@ -7677,12 +7680,8 @@ if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {
 }
 # A terminating error after this point reaches neither Exit-SetupFailure nor the last statement,
 # so the merged override file, which can carry the caller's credentials, would stay on disk. The
-# policy marker is current-run evidence too and must not survive in an interactive caller process.
-trap {
-    Remove-WoaMergedOverrides
-    Remove-Item Env:UNSLOTH_ROCM_TORCH_POLICY_BLOCKED -ErrorAction SilentlyContinue
-    break
-}
+# policy marker is current-run evidence too and is cleared by the same script-scope cleanup hook.
+trap { Remove-WoaMergedOverrides; break }
 Restore-WoaResolverEnvironment
 
 # install_python_stack.py drops the manifest before its own dependency pass, but

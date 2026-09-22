@@ -418,12 +418,10 @@ Check "the Python handoff trusts only a current-run settled ROCm verdict" {
     ($clearedAfter -gt $python)
 }
 Check "a terminating error also clears the current-run verdict" {
-    $trapStart = $setupText.IndexOf('trap {')
-    $trapEnd = $setupText.IndexOf("`n}", $trapStart)
-    ($trapStart -ge 0) -and ($trapEnd -gt $trapStart) -and
-    $setupText.Substring($trapStart, $trapEnd - $trapStart).Contains(
-        'Remove-Item Env:UNSLOTH_ROCM_TORCH_POLICY_BLOCKED'
-    )
+    $trap = 'trap { Remove-WoaMergedOverrides; break }'
+    $cleanup = Get-FunctionText -Path $setup -Name "Remove-WoaMergedOverrides"
+    $setupText.Contains($trap) -and
+    $cleanup.Contains('Remove-Item Env:UNSLOTH_ROCM_TORCH_POLICY_BLOCKED')
 }
 
 if ($failures.Count) {
