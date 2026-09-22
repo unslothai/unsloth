@@ -33,6 +33,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 import {
@@ -830,7 +831,19 @@ export function FloatingMonitor() {
     const observer = new ResizeObserver(measure);
     observer.observe(sidebar);
     return () => observer.disconnect();
-  }, []);
+  }, [isMobile]);
+
+  // `useIsMobile` only notifies when the 768 px breakpoint is crossed, and the
+  // two width stores stop notifying at their maxima, so the capacity decision
+  // needs its own subscription or a plain resize never re-evaluates it.
+  const viewportWidth = useSyncExternalStore(
+    (onChange) => {
+      window.addEventListener("resize", onChange);
+      return () => window.removeEventListener("resize", onChange);
+    },
+    () => window.innerWidth,
+    () => 0,
+  );
 
   const settingsWidth =
     paintedSettingsWidth > 0 ? paintedSettingsWidth : committedSettingsWidth;
@@ -849,7 +862,7 @@ export function FloatingMonitor() {
       // A pinned sidebar holds its column; an unpinned one overlays the content
       // or collapses to an icon rail, so neither takes the monitor's room.
       sidebarWidth: pinned ? sidebarWidth : 0,
-      viewportWidth: typeof window === "undefined" ? 0 : window.innerWidth,
+      viewportWidth,
       monitorWidth,
     });
   const systemInfo = useSystemInfo({ enabled: visible, pollMs: 5000 });

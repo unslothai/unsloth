@@ -422,3 +422,24 @@ test("docking reserves the width the monitor actually renders", () => {
   assert.equal(dockedMonitorFits(wide), true);
   assert.equal(dockedMonitorFits({ ...wide, monitorWidth: 500 }), false);
 });
+
+test("the sidebar observer survives the responsive swap", () => {
+  // Sidebar swaps its desktop element for a sheet and back, so the lookup has to
+  // rerun on the breakpoint or the stale width keeps overriding the committed one.
+  const effect = source.slice(source.indexOf('data-slot="sidebar"'));
+  assert.match(
+    effect,
+    /\}, \[isMobile\]\);/,
+    "the sidebar observer must reattach when the responsive element changes",
+  );
+});
+
+test("capacity is re-evaluated on every viewport resize", () => {
+  // useIsMobile only notifies at 768 px and the width stores stop at their
+  // maxima, so the capacity check needs its own resize subscription.
+  assert.match(source, /useSyncExternalStore\(/);
+  assert.match(source, /window\.addEventListener\("resize", onChange\)/);
+  assert.match(source, /const viewportWidth = useSyncExternalStore\(/);
+  assert.match(source, /^\s+viewportWidth,$/m);
+});
+
