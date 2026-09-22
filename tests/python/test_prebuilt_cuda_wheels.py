@@ -622,7 +622,7 @@ class TestWorkflow:
             if step.get("name", "").startswith("Smoke test")
         )
         run = smoke["run"]
-        assert 'Requires-Dist' in run
+        assert "Requires-Dist" in run
         assert '"torch", "flash-attn"' in run and '"mamba-ssm"' in run and '"causal-conv1d"' in run
         assert "--constraint" in run
         assert "pip freeze | grep -E '^(torch|triton)=='" in run
@@ -631,7 +631,7 @@ class TestWorkflow:
         lines = run.splitlines()
         start = next(i for i, line in enumerate(lines) if line.endswith("<<'PY'"))
         end = next(i for i, line in enumerate(lines) if line == "PY")
-        compile("\n".join(lines[start + 1:end]), "<smoke>", "exec")
+        compile("\n".join(lines[start + 1 : end]), "<smoke>", "exec")
 
     def test_the_build_runs_on_the_older_ubuntu(self, workflow):
         """The wheels are tagged linux_x86_64, which pip installs without a glibc check, so the

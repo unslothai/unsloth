@@ -624,9 +624,9 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
         src[src.index("const [override,") :],
         re.S,
     )
-    assert handler and f"{writes}(open);" in handler.group(1), (
-        "the hand toggle must store the requested open state directly"
-    )
+    assert handler and f"{writes}(open);" in handler.group(
+        1
+    ), "the hand toggle must store the requested open state directly"
 
     # And a new round clears it. Regenerate reuses this component instance, so without this a
     # block opened by hand over the last answer stays pinned open over the next one.
