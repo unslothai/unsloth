@@ -1486,7 +1486,12 @@ class FastBaseModel:
         )
 
         load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
-            auto_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
+            auto_config,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+            # Re-quantizing a packed compressed-tensors checkpoint needs the transformers 4-bit load: not under
+            # vLLM, which reads the packed weights itself, and not under full finetuning, which turns 4-bit off below.
+            requantize_packed = not fast_inference and not full_finetuning,
         )
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env was built before remap/disable). gpt-oss only.
         sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)

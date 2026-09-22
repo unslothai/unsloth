@@ -264,6 +264,38 @@ def test_check_and_disable_still_disables_8bit_and_other_methods():
         assert hasattr(config, "quantization_config")
 
 
+@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+def test_check_and_disable_does_not_arm_when_the_4bit_load_is_not_happening():
+    """`fast_inference` hands the packed checkpoint to vLLM and `full_finetuning` turns 4-bit off
+    right after this call: arming there stripped the checkpoint's own quantization config with
+    nothing left to consume the plan, so the packed tensors loaded as unmatched keys."""
+    from transformers import LlamaConfig
+
+    config = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    config.quantization_config = _w4a16()
+    load_in_4bit, load_in_8bit, method = check_and_disable_bitsandbytes_loading(
+        config, load_in_4bit = True, load_in_8bit = False, verbose = False, requantize_packed = False
+    )
+    assert (load_in_4bit, load_in_8bit, method) == (False, False, "compressed-tensors")
+    assert hasattr(config, "quantization_config")
+    assert not hasattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
+
+
+@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+def test_arm_leaves_the_config_alone_when_the_quantizer_cannot_be_installed(monkeypatch):
+    """A foreign class in the bitsandbytes quantizer slot would load the packed tensors without
+    the converters; the config must then keep its own quantization config."""
+    from transformers import LlamaConfig
+    from unsloth.models import compressed_tensors_bnb
+
+    monkeypatch.setattr(compressed_tensors_bnb, "install_compressed_tensors_bnb_quantizer", lambda: False)
+    config = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    config.quantization_config = _w4a16()
+    assert compressed_tensors_bnb.arm_compressed_tensors_bnb_loading(config, verbose = False) is None
+    assert hasattr(config, "quantization_config")
+    assert not hasattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
+
+
 @pytest.mark.skipif(not HAS_CONVERTERS, reason = "needs the transformers 5 loader")
 def test_quantizer_registration_is_idempotent_and_a_subclass():
     from transformers.quantizers import auto as quantizers_auto

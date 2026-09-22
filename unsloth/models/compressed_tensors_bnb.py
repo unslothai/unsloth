@@ -180,7 +180,15 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
                 "is not installed; loading it as published. `pip install compressed-tensors` to train it in 4-bit."
             )
         return None
-    install_compressed_tensors_bnb_quantizer()
+    if not install_compressed_tensors_bnb_quantizer():
+        # A foreign quantizer class owns the bitsandbytes slot: it would load the packed
+        # tensors without the converters, so leave the checkpoint's own config in place.
+        if verbose:
+            print(
+                "Unsloth: This checkpoint is compressed-tensors packed INT4/INT8 but another library owns "
+                "the bitsandbytes quantizer; loading it as published."
+            )
+        return None
     # Composite configs (Kimi-K2.7: KimiK25Config over a DeepseekV3Config text config) copy the
     # checkpoint's quantization config onto their sub-configs, and transformers also looks at
     # the decoder text config when deciding whether the model is pre-quantized.

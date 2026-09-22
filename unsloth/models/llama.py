@@ -2601,7 +2601,11 @@ class FastLlamaModel:
 
         # Disable bitsandbytes loading if the model has non-bitsandbytes quantization.
         load_in_4bit, load_in_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
-            model_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
+            model_config,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+            # vLLM reads a packed compressed-tensors checkpoint itself; only the transformers 4-bit load re-quantizes it.
+            requantize_packed = not fast_inference,
         )
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env
         # was built before remap/disable). gpt-oss only.

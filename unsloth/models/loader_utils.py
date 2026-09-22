@@ -1469,8 +1469,11 @@ def check_and_disable_bitsandbytes_loading(
     load_in_4bit = True,
     load_in_8bit = False,
     verbose = True,
+    requantize_packed = True,
 ):
-    """Disable bitsandbytes loading (load_in_4bit/load_in_8bit) when the model already carries a non-bitsandbytes quantization config. Returns ``(load_in_4bit, load_in_8bit, quant_method)``, with both flags False if they were disabled and quant_method the detected method or None."""
+    """Disable bitsandbytes loading (load_in_4bit/load_in_8bit) when the model already carries a non-bitsandbytes quantization config. Returns ``(load_in_4bit, load_in_8bit, quant_method)``, with both flags False if they were disabled and quant_method the detected method or None.
+
+    ``requantize_packed`` lets a compressed-tensors packed INT4/INT8 checkpoint be re-quantized to bitsandbytes 4-bit on the fly. Pass False when the weights are not going through the transformers loader as 4-bit at all (``fast_inference``, where vLLM reads the packed checkpoint itself, and ``full_finetuning``, which turns 4-bit off after this call): arming there would strip the checkpoint's own quantization config with nothing left to consume the plan."""
     quant_method = get_quant_type(model_config)
 
     if quant_method is None or quant_method == "bitsandbytes":
@@ -1481,7 +1484,7 @@ def check_and_disable_bitsandbytes_loading(
     # 4-bit, which is the only form PEFT can attach a LoRA to. When that applies the
     # checkpoint's own quantization config is dropped from `model_config` here and
     # `load_in_4bit` stays on.
-    if load_in_4bit and not load_in_8bit and quant_method == "compressed-tensors":
+    if requantize_packed and load_in_4bit and not load_in_8bit and quant_method == "compressed-tensors":
         from .compressed_tensors_bnb import arm_compressed_tensors_bnb_loading
 
         if arm_compressed_tensors_bnb_loading(model_config, verbose = verbose) is not None:
