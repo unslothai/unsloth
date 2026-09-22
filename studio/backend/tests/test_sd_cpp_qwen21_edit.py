@@ -161,6 +161,24 @@ def test_edit_is_advertised_only_with_the_projector_and_an_edit_capable_build(tm
             assert any("raise Guidance above 1" in n for n in c["notes"])
 
 
+def test_an_unreadable_build_advertises_no_edit_and_no_fidelity(tmp_path):
+    # The arch gate lets an unreadable binary through; these optional capabilities must not.
+    binary = tmp_path / "sd-server"
+    binary.write_bytes(FAM.sd_cpp_edit_marker.encode() + b" " + bk._REFERENCE_FIDELITY_MARKER.encode())
+    binary.chmod(0o111)
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    b._state = _state(
+        mode = "server",
+        server = types.SimpleNamespace(binary = str(binary), is_alive = lambda: True),
+    )
+    try:
+        assert "edit" not in b.status()["workflows"]
+        assert b._native_reference_fidelity(b._state) is False
+        assert bk.binary_carries_marker(str(binary), "anything") is True
+    finally:
+        binary.chmod(0o644)
+
+
 def test_oneshot_edit_stages_ordered_pngs_and_records_the_workflow(monkeypatch):
     engine = _FakeEngine()
     b = SdCppDiffusionBackend(engine = engine)

@@ -1574,7 +1574,9 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
 _ARCH_MARKER_CACHE: dict[tuple[str, int, int, str], bool] = {}
 
 
-def binary_carries_marker(binary: Optional[str], marker: Optional[str]) -> bool:
+def binary_carries_marker(
+    binary: Optional[str], marker: Optional[str], *, unreadable: bool = True
+) -> bool:
     """Whether the sd.cpp executable at ``binary`` contains the literal ``marker``.
 
     An architecture upstream has not implemented leaves no trace in the build, so this answers
@@ -1585,7 +1587,8 @@ def binary_carries_marker(binary: Optional[str], marker: Optional[str]) -> bool:
     No marker means no claim, so an unmarked family is True and nothing changes for it. An
     unreadable binary is True as well: refusing a load because a stat failed would take the native
     route away on a host where it works, and the old behaviour (attempt, fail, surface the error)
-    is no worse than what this replaces.
+    is no worse than what this replaces. An optional capability passes ``unreadable = False`` to fail
+    closed instead.
 
     Scanned in chunks with an overlap, since the literal can straddle a boundary, and memoised on
     (path, size, mtime) so a reinstall is noticed while repeated loads read 100+ MB once.
@@ -1598,7 +1601,7 @@ def binary_carries_marker(binary: Optional[str], marker: Optional[str]) -> bool:
         st = os.stat(binary)
         key = (str(binary), int(st.st_size), int(st.st_mtime_ns), marker)
     except OSError:
-        return True
+        return unreadable
     hit = _ARCH_MARKER_CACHE.get(key)
     if hit is not None:
         return hit
@@ -1617,7 +1620,7 @@ def binary_carries_marker(binary: Optional[str], marker: Optional[str]) -> bool:
                     break
                 tail = block[-(len(needle) - 1) :] if len(needle) > 1 else b""
     except OSError:
-        return True
+        return unreadable
     _ARCH_MARKER_CACHE[key] = found
     return found
 
@@ -3342,7 +3345,9 @@ class SdCppDiffusionBackend:
         if state is None:
             return False
         binary = self._native_binary(state)
-        return bool(binary) and binary_carries_marker(binary, _REFERENCE_FIDELITY_MARKER)
+        return bool(binary) and binary_carries_marker(
+            binary, _REFERENCE_FIDELITY_MARKER, unreadable = False
+        )
 
     def _native_edit_ready(self, state: Optional[_SdState]) -> bool:
         """Whether this load can run the unified edit workflow natively: a unified-edit family, its
@@ -3356,7 +3361,7 @@ class SdCppDiffusionBackend:
         binary = self._native_binary(state)
         if not binary:
             return False
-        return binary_carries_marker(binary, marker)
+        return binary_carries_marker(binary, marker, unreadable = False)
 
     def generate(
         self,
