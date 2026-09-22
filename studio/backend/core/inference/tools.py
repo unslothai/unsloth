@@ -14667,7 +14667,9 @@ def _fetch_url_raw(
         if bom_codec is None:
             meta_codec = _sniff_meta_charset(raw_bytes[:_META_CHARSET_SCAN_BYTES])
         try:
-            raw_html = raw_bytes.decode(declared or bom_codec or meta_codec or "utf-8", errors = "replace")
+            raw_html = raw_bytes.decode(
+                declared or bom_codec or meta_codec or "utf-8", errors = "replace"
+            )
         except (LookupError, ValueError):
             # Survives lookup, fails the decode: base64/hex/zlib are not text codecs, "undefined" always raises, idna
             # rejects replace. The fallback cannot raise.
