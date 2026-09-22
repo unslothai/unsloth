@@ -163,3 +163,14 @@ def test_the_notice_on_a_real_bare_call():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+@pytest.mark.parametrize("index", [0, 1, 2, 3])
+def test_the_notice_names_a_route_to_4bit_that_exists(index):
+    """Some releases exist only under a '-bf16' name (CohereLabs/command-a-plus-05-2026-bf16
+    has no 4bit sibling), so "point at the 4bit repo" alone leaves no way to QLoRA them. A
+    user quantization_config survives the '-bf16' branch and quantizes while loading."""
+    guards = _bf16_notice_guards()
+    assert len(guards) == 4, "the notice moved; update this test"
+    text = ast.get_source_segment(SRC, guards[index].body[0]) or ""
+    assert "quantization_config" in text and "BitsAndBytesConfig" in text, text

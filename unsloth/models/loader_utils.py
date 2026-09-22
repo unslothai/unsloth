@@ -1404,6 +1404,57 @@ def _restore_dropped_fp8_scales(
         return (0, 0)
 
 
+_BNB_QUANTIZED_TYPES = ("Params4bit", "Int8Params", "Linear4bit", "Linear8bitLt")
+
+
+def _bnb_bits_requested(quantization_config):
+    """4 or 8 when ``quantization_config`` (a config object or a dict) asks bitsandbytes to quantize, else None."""
+    if quantization_config is None:
+        return None
+    if isinstance(quantization_config, dict):
+        get = quantization_config.get
+    else:
+        get = lambda key, default = None: getattr(quantization_config, key, default)
+    method = get("quant_method", "") or ""
+    method = str(getattr(method, "value", method)).lower()
+    if "bitsandbytes" not in method:
+        return None
+    if get("load_in_4bit", False):
+        return 4
+    if get("load_in_8bit", False):
+        return 8
+    return None
+
+
+def warn_if_bitsandbytes_quantized_nothing(
+    model,
+    quantization_config,
+    model_name = "",
+):
+    """Print a warning when a load handed transformers a bitsandbytes config but no weight came out quantized.
+
+    Every branch that turns 4bit or 8bit off says so; this catches the load that kept the request and still built a
+    16bit model (every Linear in the skip list, or weights in module types bitsandbytes does not replace), which
+    otherwise only surfaces as an out of memory error or a 16bit run labelled 4bit. Returns True when it warned."""
+    bits = _bnb_bits_requested(quantization_config)
+    if bits is None or model is None:
+        return False
+    try:
+        for module in model.modules():
+            if type(module).__name__ in _BNB_QUANTIZED_TYPES:
+                return False
+            for param in module.parameters(recurse = False):
+                if type(param).__name__ in _BNB_QUANTIZED_TYPES:
+                    return False
+    except Exception:
+        return False
+    print(
+        f"Unsloth: WARNING: {bits}bit loading was on, but no weight of `{model_name}` was quantized, "
+        f"so the model is in 16bit and needs far more VRAM than a {bits}bit load."
+    )
+    return True
+
+
 def check_and_disable_bitsandbytes_loading(
     model_config,
     load_in_4bit = True,

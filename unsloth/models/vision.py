@@ -98,6 +98,7 @@ from .loader_utils import (
     planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
+    warn_if_bitsandbytes_quantized_nothing,
 )
 # `unsloth.save` imports `.models.loader_utils`, so binding a name out of it here at module
 # scope closes a cycle and a cold `import unsloth.save` fails on the half-built module.
@@ -1752,6 +1753,9 @@ class FastBaseModel:
                     token = token,
                     trust_remote_code = trust_remote_code,
                     **kwargs,
+                )
+                warn_if_bitsandbytes_quantized_nothing(
+                    model, kwargs.get("quantization_config", None), model_name
                 )
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
                 offload_embedding = _resolve_offload_embedding(

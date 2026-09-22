@@ -666,8 +666,9 @@ class FastLanguageModel(FastLlamaModel):
                     f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                     f"4bit/8bit/fp8 loading is disabled and the model will "
                     f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                    f"4bit by default; point at the 4bit repo instead if you "
-                    f"wanted that."
+                    f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                    f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True), "
+                    f"which quantizes this checkpoint while it loads."
                 )
             load_in_4bit = False
             load_in_8bit = False
@@ -855,8 +856,9 @@ class FastLanguageModel(FastLlamaModel):
                         f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                         f"4bit/8bit/fp8 loading is disabled and the model will "
                         f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                        f"4bit by default; point at the 4bit repo instead if you "
-                        f"wanted that."
+                        f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                        f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True), "
+                        f"which quantizes this checkpoint while it loads."
                     )
                 load_in_4bit = False
                 load_in_8bit = False
@@ -1449,8 +1451,9 @@ class FastModel(FastBaseModel):
                     f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                     f"4bit/8bit/fp8 loading is disabled and the model will "
                     f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                    f"4bit by default; point at the 4bit repo instead if you "
-                    f"wanted that."
+                    f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                    f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True), "
+                    f"which quantizes this checkpoint while it loads."
                 )
             load_in_4bit = False
             load_in_8bit = False
@@ -1788,8 +1791,9 @@ class FastModel(FastBaseModel):
                         f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                         f"4bit/8bit/fp8 loading is disabled and the model will "
                         f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                        f"4bit by default; point at the 4bit repo instead if you "
-                        f"wanted that."
+                        f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                        f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True), "
+                        f"which quantizes this checkpoint while it loads."
                     )
                 load_in_4bit = False
                 load_in_8bit = False
