@@ -23,18 +23,13 @@ def _format(format_type, mapping):
 
 
 def test_alpaca_mapping_keeps_label_names_and_system_prompt():
-    result = _format(
-        "alpaca", {"__label_mapping": LABEL_MAPPING, "__system_prompt": PROMPT}
-    )
+    result = _format("alpaca", {"__label_mapping": LABEL_MAPPING, "__system_prompt": PROMPT})
 
     assert result["final_format"] == "alpaca", result["warnings"]
     rows = result["dataset"]
     assert list(rows["output"]) == ["pos", "neg"]
     assert all(PROMPT in instruction for instruction in rows["instruction"])
-    assert list(rows["instruction"]) == [
-        f"{PROMPT}\n\nLoved it",
-        f"{PROMPT}\n\nHated it",
-    ]
+    assert list(rows["instruction"]) == [f"{PROMPT}\n\nLoved it", f"{PROMPT}\n\nHated it"]
     assert list(rows["input"]) == ["", ""]
 
 
@@ -88,9 +83,7 @@ def test_alpaca_mapping_renders_list_cells_as_text_across_batches():
 
 
 def test_chatml_mapping_with_advisor_keys_is_unchanged():
-    result = _format(
-        "chatml", {"__label_mapping": LABEL_MAPPING, "__system_prompt": PROMPT}
-    )
+    result = _format("chatml", {"__label_mapping": LABEL_MAPPING, "__system_prompt": PROMPT})
 
     assert result["final_format"] == "chatml_conversations", result["warnings"]
     assert list(result["dataset"]["conversations"]) == [
