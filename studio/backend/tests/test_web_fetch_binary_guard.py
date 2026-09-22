@@ -568,6 +568,7 @@ def test_unusable_meta_charset_does_not_stop_the_scan(monkeypatch):
         '<meta http-equiv="refresh" content="0; url=/next?charset=shift_jis">',
         '<meta name="Content-Type" content="text/html; charset=shift_jis">',
         '<meta property="og:title" content="a > b"><meta name="x" content="charset=shift_jis">',
+        '<meta-info charset="shift_jis"><metadata charset="shift_jis">',
     ],
 )
 def test_charset_text_outside_a_declaration_is_ignored(monkeypatch, head):

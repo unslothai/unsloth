@@ -13840,7 +13840,7 @@ _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
 
 _META_CHARSET_SCAN_BYTES = 2048
-_META_TAG_RE = re.compile(rb"<meta\b((?:[^>\"']|\"[^\"]*\"|'[^']*')*)>", re.IGNORECASE)
+_META_TAG_RE = re.compile(rb"<meta(?=[\s/])((?:[^>\"']|\"[^\"]*\"|'[^']*')*)>", re.IGNORECASE)
 _META_ATTR_RE = re.compile(rb"([^\s\"'/=>]+)(?:\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]*)))?")
 _META_CONTENT_CHARSET_RE = re.compile(rb"charset\s*=\s*[\"']?\s*([^\s\"';]+)", re.IGNORECASE)
 _HTML_COMMENT_RE = re.compile(rb"<!--.*?(?:-->|\Z)", re.DOTALL)
