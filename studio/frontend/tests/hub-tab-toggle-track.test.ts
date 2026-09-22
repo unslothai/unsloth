@@ -42,6 +42,24 @@ test("the page track is left on its own wash", () => {
   assert.match(base[1] ?? "", /var\(--foreground\)/);
 });
 
+test("the panel track stops just under the panel rather than far below it", () => {
+  const rule = HUB_CSS.match(MENU_TRACK);
+  // 13% of #181818 over #272727 is #252525.
+  assert.match(rule?.[1] ?? "", /var\(--background\) 13%/);
+});
+
+test("hovering the selected tab lightens it instead of darkening it", () => {
+  const tabs = readSrc(
+    "features/model-picker/components/model-selector/pill-tabs.tsx",
+  );
+  const hover = tabs.match(/dark:hover:!bg-\[([^\]]*)\]/);
+  assert.ok(hover, "the active tab has no dark hover");
+  // Over --accent, not over the track: a wash on the track composites below
+  // the pill, which is what made the selected tab darken under the pointer.
+  assert.match(hover[1] ?? "", /var\(--accent\)\)$/);
+  assert.doesNotMatch(hover[1] ?? "", /transparent/);
+});
+
 test("an option menu rests at its trigger's tone, not the panel's", () => {
   const menu = HUB_CSS.match(/html\.dark \.hub-menu-instant \{([^}]*)\}/);
   assert.ok(menu);

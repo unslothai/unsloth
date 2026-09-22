@@ -722,12 +722,13 @@
      the selected pill depends on that surface: 21 levels below --accent on the
      page, but only 7 on an elevated panel, where the two halves of the control
      stop reading apart. Panels therefore sink the track toward the page
-     instead of lifting it off the panel. No wash gain here: that guard keeps
-     lit washes from fading out, and this one darkens. */
+     instead of lifting it off the panel, stopping just under it at #252525.
+     No wash gain here: that guard keeps lit washes from fading out, and this
+     one darkens. */
   html.dark .menu-soft-surface .hub-tab-toggle,
   html.dark .menu-soft-surface-up .hub-tab-toggle,
   html.dark [data-slot="dialog-content"] .hub-tab-toggle {
-    background-color: color-mix(in srgb, var(--background) 40%, transparent);
+    background-color: color-mix(in srgb, var(--background) 13%, transparent);
   }
 
   html:not(.dark) .hub-tab-toggle-pill {
