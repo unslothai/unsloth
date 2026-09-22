@@ -16,7 +16,15 @@ import re
 
 import pytest
 
-from unsloth.models.rl_replacements import RL_PRE_ITEMS, grpo_trainer_compute_loss
+# Unlike the cap-site suites this one has to read the real rewriter, and `import unsloth` raises
+# its own ImportError("Unsloth: torch not found") on a runner with no torch. A bare module-scope
+# import makes that a COLLECTION ERROR, which reds the Windows and macOS legs instead of skipping
+# them. `pytest.importorskip` does NOT cover it: that skips a module which is ABSENT, and
+# re-raises an ImportError the module body raised itself, which is exactly this case.
+try:
+    from unsloth.models.rl_replacements import RL_PRE_ITEMS, grpo_trainer_compute_loss
+except ImportError as exc:
+    pytest.skip(f"needs unsloth: {exc}", allow_module_level = True)
 
 
 class _Stop(Exception):

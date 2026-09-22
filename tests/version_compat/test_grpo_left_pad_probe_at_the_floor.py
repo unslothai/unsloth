@@ -16,7 +16,14 @@ import re
 
 import pytest
 
-from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_completions
+# Guarded for the reason its sibling gives: `import unsloth` raises its own ImportError when
+# torch is absent, and a bare module-scope import makes that a COLLECTION ERROR that reds the
+# Windows and macOS legs. `pytest.importorskip` does not help, since it re-raises an ImportError
+# the module body raised itself.
+try:
+    from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_completions
+except ImportError as exc:
+    pytest.skip(f"needs unsloth: {exc}", allow_module_level = True)
 
 
 ANCHOR = 'batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size'
