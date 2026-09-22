@@ -90,7 +90,7 @@ function LoadedModelRow({
   const label = shortModelLabel(entry.name);
   const target = loadedModelTarget(entry.source);
   return (
-    <div className="flex items-center gap-2 rounded-[14px] px-1.5 py-1 transition-colors hover:bg-foreground/[0.04]">
+    <div className="flex items-center gap-2 rounded-[14px] px-1.5 py-1 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
       {/* Only the label half is the link: the eject button cannot nest inside it. */}
       <Tooltip>
         <TooltipTrigger asChild={true}>
@@ -100,7 +100,7 @@ function LoadedModelRow({
             onClick={onOpen}
             className="flex min-w-0 flex-1 items-center gap-2 text-left"
           >
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-foreground/[0.05] text-muted-foreground">
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] text-muted-foreground">
               <HugeiconsIcon
                 icon={KIND_ICONS[entry.kind]}
                 strokeWidth={1.75}
@@ -138,7 +138,7 @@ function LoadedModelRow({
               aria-label={`Eject ${label}`}
               disabled={ejecting}
               onClick={onEject}
-              className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground disabled:pointer-events-none disabled:opacity-60"
+              className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground disabled:pointer-events-none disabled:opacity-60"
             >
               {ejecting ? (
                 <Spinner className="size-3.5" label="Ejecting" />
@@ -307,7 +307,7 @@ export function LoadedModelsIndicator({
                   // Not a button, so no click follows to consume the drag sentinel: say so, or the
                   // collapsed pill's next click reads this drag as its own and refuses to expand.
                   onPointerDown={startDrag}
-                  className="flex size-6 shrink-0 cursor-grab touch-none items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-foreground/[0.07] hover:text-foreground active:cursor-grabbing"
+                  className="flex size-6 shrink-0 cursor-grab touch-none items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground active:cursor-grabbing"
                 >
                   <HugeiconsIcon
                     icon={DragDropVerticalIcon}
@@ -326,7 +326,7 @@ export function LoadedModelsIndicator({
                   type="button"
                   aria-label="Collapse loaded models"
                   onClick={() => setCollapsed(true)}
-                  className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground"
+                  className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground"
                 >
                   <HugeiconsIcon
                     icon={ChevronDownStandardIcon}
@@ -345,7 +345,7 @@ export function LoadedModelsIndicator({
                   type="button"
                   aria-label="Close loaded models"
                   onClick={() => setLoadedModelsDismissed(true)}
-                  className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground"
+                  className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground"
                 >
                   <HugeiconsIcon
                     icon={Cancel01Icon}
