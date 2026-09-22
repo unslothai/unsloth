@@ -165,3 +165,26 @@ def test_offload_embedding_declines_a_model_it_cannot_inspect(requested, capsys)
         assert "Not offloading embeddings" not in printed
     else:
         assert "Not offloading embeddings" in printed
+
+
+def test_omni_reaches_the_vllm_guard_rather_than_the_language_model_path():
+    """fast_inference on an omni checkpoint must hit the unsupported guard.
+
+    `Qwen3OmniMoeConfig` keeps its vision config under `thinker_config`, so the
+    `hasattr(auto_config, "vision_config")` term is False and, with `is_vlm`
+    correctly narrowed to the image-text classes, `is_vlm_config` would have
+    been False too. That skips the guard and calls load_vllm with
+    `is_vision_model=False` for a model `VLLM_SUPPORTED_VLM` does not list.
+    """
+    from unsloth.models.vision import VLLM_SUPPORTED_VLM
+
+    config = _omni_config()
+    assert not hasattr(config, "vision_config"), "premise: vision lives under thinker_config"
+    assert "qwen3_omni_moe" not in VLLM_SUPPORTED_VLM, "premise: vLLM does not support it"
+
+    # what is_vlm_config now computes for it
+    resolved = _resolve_omni_auto_model(config)
+    is_vlm = resolved in [IMAGE_TEXT_CLASS]
+    needs_processor = is_vlm or resolved in _multimodal_auto_classes()
+    is_vlm_config = is_vlm or needs_processor or hasattr(config, "vision_config")
+    assert is_vlm_config, "must reach the fast_inference guard"

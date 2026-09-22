@@ -1321,11 +1321,22 @@ class FastBaseModel:
         ]:
             auto_model = AutoModelForCausalLM
         is_vlm = auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText]
-        # A repo-code VLM may register only AutoModel / AutoModelForCausalLM (DeepSeek-OCR, Nemotron-VL), so auto_model is not a VLM class though the config is a vision model. Keep is_vlm for processor selection, but treat it as a VLM on the vLLM path so a vision_config model is never silently loaded as text-only.
-        is_vlm_config = is_vlm or (not text_only and hasattr(auto_config, "vision_config"))
         is_whisper = whisper_language is not None and whisper_task is not None
         # Audio and omni auto classes take a processor too, but they are NOT image models: is_vlm additionally arms the image-processor repair path below, which would try to build one for Whisper.
         needs_processor = is_vlm or auto_model in _multimodal_auto_classes()
+        # A repo-code VLM may register only AutoModel / AutoModelForCausalLM (DeepSeek-OCR, Nemotron-VL), so auto_model is not a VLM class though the config is a vision model. Keep is_vlm for processor selection, but treat it as a VLM on the vLLM path so a vision_config model is never silently loaded as text-only.
+        is_vlm_config = (
+            is_vlm
+            # An omni checkpoint keeps its vision config under thinker_config, so the
+            # hasattr below does not see it and the fast_inference guard would let it
+            # into the language-model vLLM path with is_vision_model=False. It is
+            # multimodal whatever the attribute says, and qwen3_omni_moe is not in
+            # VLLM_SUPPORTED_VLM, so this turns a confusing failure into that guard's
+            # clean message. Kept out of is_vlm itself, which arms the image-processor
+            # repair path.
+            or needs_processor
+            or (not text_only and hasattr(auto_config, "vision_config"))
+        )
         auto_processor = AutoProcessor if (needs_processor or is_whisper) else AutoTokenizer
 
         model_type_arch = model_types[0]
