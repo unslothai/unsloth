@@ -117,6 +117,52 @@ def _is_remote_code(cls):
     return "transformers_modules" in (getattr(cls, "__module__", "") or "")
 
 
+_OUTPUT_HEAD_ATTRIBUTES = ("lm_head", "output", "embed_out", "output_layer")
+
+
+def find_output_head(module):
+    """The output projection of `module` without going through its accessor."""
+    for name in _OUTPUT_HEAD_ATTRIBUTES:
+        child = getattr(module, name, None)
+        if isinstance(child, torch.nn.Module) and hasattr(child, "weight"):
+            return child
+    return None
+
+
+def _repair_output_accessor(cls):
+    """`get_output_embeddings` that returns None while the class owns an `lm_head`.
+
+    Step-3.7 delegates it to the inner model, which has no head; everything that
+    resizes, ties or repairs the vocabulary then dereferences None.
+    """
+    original = cls.__dict__.get("get_output_embeddings")
+    if original is None or getattr(cls, "_unsloth_original_get_output_embeddings", None) is not None:
+        return False
+
+    @functools.wraps(original)
+    def get_output_embeddings(self, *args, **kwargs):
+        try:
+            head = original(self, *args, **kwargs)
+        except (AttributeError, TypeError, NotImplementedError):
+            head = None
+        if head is None and not args and not kwargs:
+            head = find_output_head(self)
+        return head
+
+    cls.get_output_embeddings = get_output_embeddings
+    cls._unsloth_original_get_output_embeddings = original
+    return True
+
+
+def _output_accessor_is_broken(model):
+    if find_output_head(model) is None:
+        return False
+    try:
+        return model.get_output_embeddings() is None
+    except (AttributeError, TypeError, NotImplementedError):
+        return True
+
+
 def _fill_missing_loss(cls):
     """Wrap `cls.forward` so a call with labels always yields a loss.
 
@@ -200,6 +246,8 @@ def apply_remote_code_shims(model):
         if accessor_requires_arguments(cls.get_input_embeddings) and _repair_accessor(cls):
             repaired.append(f"{cls.__name__}.get_input_embeddings")
     cls = type(model)
+    if _is_remote_code(cls) and _output_accessor_is_broken(model) and _repair_output_accessor(cls):
+        repaired.append(f"{cls.__name__}.get_output_embeddings")
     if _is_remote_code(cls) and _fill_missing_loss(cls):
         repaired.append(f"{cls.__name__}.forward")
     if repaired:

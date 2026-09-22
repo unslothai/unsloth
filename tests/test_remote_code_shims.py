@@ -50,6 +50,9 @@ class Outer(PreTrainedModel):
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()
 
+    def get_output_embeddings(self):
+        return self.model.get_output_embeddings()  # the inner model has no head: None
+
     def forward(self, input_ids = None, labels = None, **kwargs):
         logits = self.lm_head(self.model(input_ids))
         if labels is not None:
@@ -83,6 +86,13 @@ def test_accessor_serves_both_contracts_after_the_shim(model):
     torch.testing.assert_close(model.model.get_input_embeddings(ids), model.model.embed_tokens(ids))
     # The training-side hook that failed on Step-3.7 now attaches.
     model.enable_input_require_grads()
+
+
+def test_output_accessor_finds_the_head_the_port_forgot(model):
+    from unsloth.models.remote_code_shims import apply_remote_code_shims
+    assert model.get_output_embeddings() is None or Outer._unsloth_original_get_output_embeddings is not None
+    apply_remote_code_shims(model)
+    assert model.get_output_embeddings() is model.lm_head
 
 
 def test_forward_gains_a_loss_when_the_original_has_none(model):
