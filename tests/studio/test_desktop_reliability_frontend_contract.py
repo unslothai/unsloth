@@ -2534,6 +2534,10 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
 # it lets `hover:h-[...]` answer for `h-[...]`, and a height that only applies under the
 # pointer is not the fixed band any of these contracts measure.
 _CLASS_STARTS = r"(?:(?<=[\s\"'`])|^)"
+# And where it may end. A trailing `:broken` is not a suffix on the utility, it is a
+# different candidate entirely: Tailwind emits nothing for it, while the normalised source
+# still shows the length this file asks about.
+_CLASS_ENDS = r"(?=[\s\"'`]|$)"
 
 
 # The same blind spot in colour, and it needs the same answer. `_MIXED_TOKEN` reads a
@@ -2582,14 +2586,14 @@ def test_the_colours_these_contracts_read_still_carry_their_gain():
             f"{utility}-[color-mix(in_oklab,var({colour})_"
             f"calc({amount}%*var(--contrast-{gain}-gain,1)),transparent)]"
         )
-        found = len(re.findall(_CLASS_STARTS + re.escape(scaled), source))
+        found = len(re.findall(_CLASS_STARTS + re.escape(scaled) + _CLASS_ENDS, source))
         assert found == expected, (
             f"{path.name} states {found} gain-scaled {utility} {colour} at {amount}%, "
             f"not {expected}"
         )
         bare = f"{utility}-{colour.removeprefix('--')}/{amount}"
         assert not re.search(
-            _CLASS_STARTS + re.escape(bare), source
+            _CLASS_STARTS + re.escape(bare) + _CLASS_ENDS, source
         ), f"{path.name} has a bare {bare}, which stops following the contrast setting"
 
 
@@ -2600,11 +2604,12 @@ def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
         scaled = len(
             re.findall(
                 _CLASS_STARTS
-                + re.escape(f"{variant}{utility}-[calc({length}*var(--ui-space-scale,1))]"),
+                + re.escape(f"{variant}{utility}-[calc({length}*var(--ui-space-scale,1))]")
+                + _CLASS_ENDS,
                 source,
             )
         )
         assert scaled == expected, f"{path.name} states {scaled} scaled {named}, not {expected}"
         assert not re.search(
-            _CLASS_STARTS + re.escape(f"{variant}{utility}-[{length}]"), source
+            _CLASS_STARTS + re.escape(f"{variant}{utility}-[{length}]") + _CLASS_ENDS, source
         ), f"{path.name} has a bare {named}, which stays put while its text grows"
