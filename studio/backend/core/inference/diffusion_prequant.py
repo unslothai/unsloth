@@ -995,7 +995,7 @@ def _resolve_checkpoint_path(
         expanded = os.path.expanduser(source.location)
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
-        EntryNotFoundError, _ = _entry_not_found_errors()
+        EntryNotFoundError, LocalEntryNotFoundError = _entry_not_found_errors()
         names = list(candidate_filenames_of(source))
         if scheme is not None:
             readable = [n for n in names if restricted_prequant_load_supported(scheme, n)]
@@ -1019,6 +1019,17 @@ def _resolve_checkpoint_path(
                     propagate_missing = not last,
                     local_files_only = local_files_only,
                 )
+            except LocalEntryNotFoundError:
+                # Caught BEFORE the base it subclasses, because the two mean different things and
+                # only the mode says which. huggingface_hub documents this one as "not on the disk
+                # when network is disabled OR UNAVAILABLE (connection issue). The entry may exist
+                # on the Hub", so online it is the Hub being unreachable, not this name being
+                # absent: advancing would spend a full attempt on every remaining candidate and
+                # then report the LAST one's error instead of the connection failure that actually
+                # happened. Offline, a cache miss is the only verdict there is, so the chain is
+                # walked exactly as for a 404.
+                if not local_files_only or last:
+                    raise
             except EntryNotFoundError:
                 if last:
                     raise
