@@ -65,7 +65,9 @@ test("a different pick supersedes the pending load instead of being rejected", (
   assert.match(loop, /while \(true\) \{/);
   assert.match(loop, /const stopped = await cancelLoadRun\(activeRun, true\);/);
   assert.match(loop, /if \(!stopped\) \{/);
-  assert.match(loop, /if \(!inFlightLoad\) break;/);
+  // The loop keeps waiting while a run still owns the slot, even after its picker
+  // was cleared by cancellation.
+  assert.match(loop, /if \(!inFlightLoad && !activeRun\) break;/);
 });
 
 test("the pending load is stopped at the backend before the replacement claims the slot", () => {
@@ -233,6 +235,62 @@ test("the picker no longer refuses a different model mid-load", () => {
   assert.match(guard, /return;/);
 });
 
+
+test("a pick arriving mid-cancel waits for the run that still holds the slot", () => {
+  const runtime = read(RUNTIME);
+  const loop = section(
+    runtime,
+    "// A different pick supersedes the load in flight.",
+    "// A local pick that is superseded by a later selection must not keep the slot.",
+  );
+  // Cancellation clears the picker before its unload settles while the run keeps the
+  // slot and the lifecycle lease, so the loop must not break on the picker alone.
+  assert.match(loop, /if \(!inFlightLoad && !activeRun\) break;/);
+  assert.equal(
+    /if \(!inFlightLoad\) break;/.test(loop),
+    false,
+    "the loop must not break while a cancelling run still owns the slot",
+  );
+  assert.match(loop, /if \(inFlightLoad\) \{/);
+  // The run it waits for still has to be the one the pick asked to cancel.
+  assert.match(loop, /const stopped = await cancelLoadRun\(activeRun, true\);/);
+});
+
+test("cancelling during the preliminary unload reconciles the removed resident model", () => {
+  const runtime = read(RUNTIME);
+  // Only a real preliminary /unload removes the resident model; the forced path leaves
+  // it to /load, so it must not be recorded as gone.
+  assert.match(runtime, /residentModelUnloaded: boolean;/);
+  assert.match(runtime, /residentModelUnloaded: false,/);
+  const pre = section(
+    runtime,
+    "if (!forceCancelActive) {",
+    "// Set either way: /load can still leave no model resident",
+  );
+  const unload = pre.indexOf("await unloadModel({ model_path: currentCheckpoint });");
+  const mark = pre.indexOf("loadRun.residentModelUnloaded = true;");
+  assert.notEqual(unload, -1, "expected the preliminary unload");
+  assert.notEqual(mark, -1, "the preliminary unload must record the removal");
+  assert.ok(mark > unload, "the flag must be set after the unload, not before");
+  // A run that stopped before POSTing its own /load leaves nothing registered, so the
+  // store's checkpoint has to be reconciled rather than preserved.
+  const cancel = section(
+    runtime,
+    "const cancelLoadRun = useCallback(",
+    "const cancelLoadingWithCheckpointPolicy = useCallback(",
+  );
+  assert.match(
+    cancel,
+    /if \(!run\.loadAttemptPath && run\.residentModelUnloaded\) \{[\s\S]*?clearCheckpoint\(\);[\s\S]*?await refresh\(\);/,
+    "an aborted pre-load cancellation must reconcile the removed resident model",
+  );
+  // The reconciliation has to happen before the slot is handed over.
+  const reconcile = cancel.indexOf("run.residentModelUnloaded");
+  const release = cancel.indexOf("activeLoadRunRef.current = releaseOwnedModelLoadRun(");
+  assert.notEqual(reconcile, -1, "expected the reconciliation");
+  assert.notEqual(release, -1, "expected the slot release");
+  assert.ok(reconcile < release, "the slot must be released only after reconciling");
+});
 
 test("a cancelled preflight keeps the slot until its coroutine unwinds", () => {
   const runtime = read(RUNTIME);

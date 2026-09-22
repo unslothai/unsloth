@@ -188,6 +188,10 @@ type ActiveModelLoadRun = {
   cancelPromise: Promise<boolean> | null;
   rollbackCheckpoint: string | null;
   rollbackConfig?: PerModelConfig;
+  /** Set once the preliminary unload has removed the model that was resident before
+   *  this load. A cancellation before this run POSTs its own /load leaves the backend
+   *  with nothing, so the store's checkpoint must be reconciled, not preserved. */
+  residentModelUnloaded: boolean;
   /** Resolves once the coroutine that owns this run has unwound. Cancellation
    *  holds the slot until then, so an aborted load cannot apply or restore
    *  configuration while the replacement that superseded it owns the slot. */
@@ -969,6 +973,20 @@ export function useChatModelRuntime() {
             // it from touching shared state, but hold the slot until it has actually
             // unwound, or a replacement could overlap the run it just replaced.
             await run.settledPromise;
+            // The aborted run may have stopped during its preliminary unload without ever
+            // POSTing its own /load. The backend then serves nothing while the store still
+            // advertises that checkpoint, and a replacement that bails during validation
+            // would leave the UI naming a model that is gone. Reconcile before releasing
+            // the slot. The run's rollback target lives on the run, not in the store, so
+            // this cannot lose the replacement's target.
+            if (!run.loadAttemptPath && run.residentModelUnloaded) {
+              try {
+                clearCheckpoint();
+                await refresh();
+              } catch {
+                // The cancel's own error reporting stands; the slot is still released.
+              }
+            }
             activeLoadRunRef.current = releaseOwnedModelLoadRun(
               activeLoadRunRef.current,
               run,
@@ -1150,21 +1168,29 @@ export function useChatModelRuntime() {
         const inFlightLoad =
           loadingModelRef.current ??
           useChatRuntimeStore.getState().loadingModelPick;
-        if (!inFlightLoad) break;
-        const loadingSamePick =
-          inFlightLoad.id === modelId &&
-          (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
-          (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
-        if (loadingSamePick && !activeRun?.cancelPromise) {
-          restorePreviousConfig();
-          return;
+        // Cancellation clears the picker before its unload settles, yet the run keeps
+        // the slot and the lifecycle lease until then. Break only when neither is left:
+        // a pick arriving mid-cancel would otherwise find the lease held and be dropped.
+        if (!inFlightLoad && !activeRun) break;
+        if (inFlightLoad) {
+          const loadingSamePick =
+            inFlightLoad.id === modelId &&
+            (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
+            (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
+          if (loadingSamePick && !activeRun?.cancelPromise) {
+            restorePreviousConfig();
+            return;
+          }
+          if (!activeRun) {
+            // Published to the store but no run owns it yet: the other caller is still
+            // in preflight, so this pick cannot safely take the slot from it.
+            restorePreviousConfig();
+            return;
+          }
         }
-        if (!activeRun) {
-          // Published to the store but no run owns it yet: the other caller is still
-          // in preflight, so this pick cannot safely take the slot from it.
-          restorePreviousConfig();
-          return;
-        }
+        // Only a run that still owns the slot can be superseded; the picker-only case
+        // returned above. This also narrows the run for the cancellation below.
+        if (!activeRun) break;
         // Keep the working checkpoint as the rollback target for the replacement.
         // A standalone Stop still clears the selection.
         inheritCancelledRunRollback(activeRun);
@@ -1552,6 +1578,7 @@ export function useChatModelRuntime() {
         cancelPromise: null,
         rollbackCheckpoint: previousCheckpoint,
         rollbackConfig: previousConfigForReplacement,
+        residentModelUnloaded: false,
         settledPromise: loadRunSettled,
         markSettled: markLoadRunSettled,
 
@@ -2019,6 +2046,9 @@ export function useChatModelRuntime() {
               // unload first and free VRAM early.
               if (!forceCancelActive) {
                 await unloadModel({ model_path: currentCheckpoint });
+                // Only a real /unload removes the resident model. The forced path leaves
+                // it to /load, so cancellation must not treat it as gone.
+                loadRun.residentModelUnloaded = true;
               }
               // Set either way: /load can still leave no model resident, and an unneeded rollback hits
               // already_loaded before the gate.
