@@ -23,10 +23,8 @@ import pytest
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 
-# The floor we owe compatibility to, READ from pyproject rather than repeated, for the
-# same reason the ceiling is (see _CAP): a hardcoded 4.57.6 stayed put when the declared
-# floor moved to 4.52.4, so _release_tags() discarded every 4.52 through 4.56 release and
-# this matrix went green while claiming support for versions it never checked.
+# READ from pyproject, not repeated: a hardcoded 4.57.6 stayed put when the floor moved to
+# 4.52.4, so every 4.52-4.56 release was discarded and the matrix went green regardless.
 _FLOOR_RE = re.compile(r"^\s*\"transformers[^\"]*?>=\s*([0-9]+(?:\.[0-9]+)*)", re.M)
 _FLOOR_FALLBACK = (4, 52, 4)
 
@@ -41,31 +39,22 @@ def _declared_floor() -> tuple[int, ...]:
         return _FLOOR_FALLBACK
     if not found:
         return _FLOOR_FALLBACK
-    # The lowest, so a marker-gated half declaring a higher floor cannot raise it and hide
-    # the releases the other half still admits.
+    # The lowest, so a marker-gated half cannot raise it and hide releases the other admits.
     return min(tuple(int(part) for part in v.split(".")) for v in found)
 
 
 _FLOOR = _declared_floor()
 
-# Always present whatever PyPI says, because each one is load-bearing somewhere else:
-# 4.57.6 is the floor, 5.5.0 is the old ceiling and still the Apple Silicon cap, and 5.16.0
-# first required tokenizers>=0.23.1, which broke the Apple Silicon install when an unbounded
-# override let it in (tests/studio/install/test_transformers_tokenizers_pair.py).
+# Always present whatever PyPI says: 4.57.6 is the floor, 5.5.0 the Apple Silicon cap, and
+# 5.16.0 first required tokenizers>=0.23.1, which broke that install (test_transformers_tokenizers_pair).
 _ALWAYS = ("v4.57.6", "v5.5.0", "v5.16.0", "v5.10.1", "v5.15.1")
 
-# The two extra entries are exact pins real users run, not just versions the window admits:
-# several notebooks pin 5.10.1 and 5.15.x (notebooks-ci.yml says so, and both are in this
-# repo's own NEWLY_ADMITTED list). One tag per minor would replace 5.10.1 with 5.10.4, so a
-# symbol this repo needs that only arrived in a later 5.10 patch would leave those pinned
-# notebooks broken while the matrix stayed green. 5.15.1 is the newest 5.15 today and so is
-# covered anyway; anchored because the next 5.15 patch would evict it exactly like 5.10.1.
+# Exact pins real users run: notebooks pin 5.10.1 and 5.15.x. One tag per minor would replace
+# 5.10.1 with 5.10.4, so a symbol arriving in a later 5.10 patch would break those notebooks
+# while the matrix stayed green. 5.15.1 is anchored because the next patch would evict it too.
 
-# pyproject's own transformers cap, read rather than repeated. The matrix keeps one tag per
-# minor, so the day upstream ships 5.17.1 the (5, 17) slot becomes 5.17.1 and 5.17.0, the
-# exact maximum `transformers<=5.17.0` admits, stops being checked at all while a version
-# no user can resolve is checked instead. Deriving the anchor from the cap means lifting
-# the cap moves the anchor with it.
+# pyproject's cap, read not repeated: one tag per minor means a published 5.17.1 would evict
+# 5.17.0, the exact maximum the window admits, and check a version no user can resolve instead.
 _CAP = re.compile(r"^\s*\"transformers[^\"]*?<=\s*([0-9]+(?:\.[0-9]+)*)", re.M)
 
 
@@ -80,27 +69,19 @@ def _declared_ceiling_tag() -> tuple[str, ...]:
         return ()
     # The highest, so a lower marker-gated half of a split cap cannot lower the anchor.
     ceiling = max(found, key = lambda v: tuple(int(p) for p in v.split(".")))
-    # Through the override table, for the reason that table exists: upstream does not always
-    # tag a release under its own name, so "v" + version can name a tag that was never
-    # pushed and every check against it would fail on the fetch rather than on the symbol.
+    # Through the override table: "v" + version can name a tag upstream never pushed, and every
+    # check against it would then fail on the fetch rather than on the symbol.
     return (_TAG_OVERRIDES.get(ceiling, "v" + ceiling),)
 
 
-# PyPI version -> the tag that actually carries it, where upstream disagrees with itself.
-# Upstream tagged PyPI 5.10.4 as v5.10.3 (that tag's __init__ says 5.10.4); there is no
-# v5.10.4 tag and no 5.10.3 on PyPI, so the tag name is not "v" + the release name.
-# 4.54.1 is on PyPI and inside the window, but upstream never pushed a v4.54.1 tag: the
-# only 4.54 refs are v4.54.0 (whose __init__ says 4.54.0, so it is NOT this release) and
-# v4.54-release, whose __init__ says 4.54.1. Without this entry every check against 4.54.1
-# fails on the fetch rather than on the symbol.
+# PyPI version -> the tag that carries it, where upstream disagrees with itself. PyPI 5.10.4 is
+# tagged v5.10.3 (its __init__ says 5.10.4, and no v5.10.4 exists); PyPI 4.54.1 is tagged
+# v4.54-release (v4.54.0's __init__ says 4.54.0, so it is a different release).
 _TAG_OVERRIDES = {"5.10.4": "v5.10.3", "4.54.1": "v4.54-release"}
 
-# Used when PyPI cannot be reached. A frozen list is the point: a network failure must not
-# quietly shrink the matrix to nothing and report green. It has to START at the declared
-# floor for the same reason _FLOOR is derived: a fallback beginning at 4.57.6 silently
-# drops every 4.52 through 4.56 check on any outage, and _ALWAYS does not restore them, so
-# CI could pass through a regression at the newly supported low end.
-# test_the_outage_fallback_reaches_the_declared_floor holds this to the declared floor.
+# Used when PyPI is unreachable; frozen so an outage cannot shrink the matrix and report green.
+# It must START at the declared floor: beginning at 4.57.6 dropped every 4.52-4.56 check, and
+# _ALWAYS does not restore them. test_the_outage_fallback_reaches_the_declared_floor pins this.
 _TAGS_FALLBACK = (
     "v4.52.4",
     "v4.53.3",
@@ -130,18 +111,11 @@ _TAGS_FALLBACK = (
 )
 
 
-# Where the resolved matrix is shared between processes. pytest-xdist requires every worker
-# to collect the SAME parameters, and each worker imports this module and resolves the matrix
-# itself during collection, so four independent PyPI reads are four chances to disagree: one
-# timing out while the others succeed gives that worker the fallback list, the parameter sets
-# diverge and xdist aborts the run instead of executing the fallback matrix it intended
-# (https://pytest-xdist.readthedocs.io/en/stable/known-limitations.html). With this set, the
-# first process to resolve writes the answer and the rest read it, so all four agree.
-#
-# PYTEST_, deliberately not UNSLOTH_: this is a test-harness knob, read by this module and
-# nothing else, and it is inert at runtime. Nothing under unsloth/ or studio/ consults it,
-# so a user who sets it changes no behaviour of the package. A name in the product's own
-# UNSLOTH_ namespace would read like a supported setting, which it is not.
+# Where the resolved matrix is shared between processes. xdist requires every worker to collect
+# the SAME parameters, but each resolves the matrix during collection, so one worker timing out
+# takes the fallback list, the parameter sets diverge and xdist aborts the run
+# (https://pytest-xdist.readthedocs.io/en/stable/known-limitations.html). PYTEST_ and not UNSLOTH_
+# because it is a harness knob, inert at runtime and read by nothing under unsloth/ or studio/.
 _MATRIX_CACHE_ENV = "PYTEST_TRANSFORMERS_MATRIX_FILE"
 
 
@@ -176,20 +150,16 @@ def _write_cached_matrix(tags: list[str]) -> None:
 def _resolved_tags() -> list[str]:
     """`_release_tags()`, resolved once per run and shared across xdist workers.
 
-    Every return here goes through `_with_always` as well, the published one included.
-    Sharing is a way to agree on the PyPI half of the answer, not a second source of truth
-    for the anchors: a file written by a different revision, left over from an earlier run,
-    or pointed at by hand carries whatever it carries, and returning it verbatim dropped
-    the floor, the old ceiling, the notebook pins and the declared ceiling while reporting
-    green. Re-merging is also what keeps the workers identical, since `_with_always` is a
-    pure function of the checkout they all share.
+    Every return goes through `_with_always`, the published one included: the cache agrees on the
+    PyPI half of the answer, it is not a second source of truth for the anchors. A file written by
+    another revision and returned verbatim dropped the floor, the old ceiling and the notebook pins
+    while reporting green.
     """
     cached = _cached_matrix()
     if cached is not None:
         return _with_always(cached)
     tags = _release_tags()
-    # Re-read before publishing: another worker may have resolved it while this one was
-    # waiting on PyPI, and its answer is the one already in use.
+    # Re-read before publishing: another worker may have resolved it, and its answer is in use.
     cached = _cached_matrix()
     if cached is not None:
         return _with_always(cached)
@@ -200,13 +170,10 @@ def _resolved_tags() -> list[str]:
 def _release_tags() -> list[str]:
     """Every transformers minor at or above the floor, latest patch of each, oldest first.
 
-    Read from PyPI rather than pinned, because this suite exists to say which versions the
-    cap may be lifted to, and a hand-maintained list answers for the day it was edited. One
-    tag per minor keeps the matrix bounded as upstream keeps releasing; a patch that broke
-    something specific earns its place in `_ALWAYS`, not a blanket every-patch sweep.
-
-    Yanked releases are skipped: pip will not install them, so we owe them nothing. So are
-    rc/dev/post builds, for the same reason.
+    Read from PyPI, not pinned: this suite says which versions the cap may be lifted to, and a
+    hand-maintained list answers for the day it was edited. One tag per minor bounds the matrix; a
+    patch that broke something earns a place in `_ALWAYS`. Yanked and rc/dev/post builds are
+    skipped, since pip will not install them.
     """
     try:
         with urllib.request.urlopen(
@@ -242,17 +209,14 @@ def _release_tags() -> list[str]:
 def _with_always(tags) -> list[str]:
     """`tags` with every `_ALWAYS` anchor present, sorted, deduplicated.
 
-    Every return path goes through here, the fallback ones included. `_ALWAYS` names the
-    patches a specific check exists for, and `_TAGS_FALLBACK` carries one tag per minor, so
-    it does not hold v5.5.0 or v5.16.0: returning it unmerged let a PyPI outage drop the
-    Apple Silicon ceiling and the tokenizers breakpoint and still report green. The
-    declared ceiling is merged here too, for the reason `_declared_ceiling_tag` gives.
+    Every return path goes through here, the fallback ones included: `_TAGS_FALLBACK` carries one
+    tag per minor so it holds neither v5.5.0 nor v5.16.0, and returning it unmerged let an outage
+    drop the Apple Silicon ceiling and the tokenizers breakpoint and still report green.
     """
     return sorted(set(tuple(tags) + _ALWAYS + _declared_ceiling_tag()), key = _sort_key)
 
 
-# release version -> tag, inverted, so a tag whose NAME is not its version still sorts by
-# the release it carries. v4.54-release is exactly that case.
+# Inverted so a tag whose NAME is not its version still sorts by the release it carries.
 _TAG_TO_RELEASE = {tag: release for release, tag in _TAG_OVERRIDES.items()}
 
 
@@ -554,9 +518,8 @@ def test_training_args_parallel_mode_importable(tag: str):
 def test_the_matrix_starts_at_the_declared_floor(tag: str) -> None:
     """The matrix is only a compatibility claim if it begins where the claim does.
 
-    `_FLOOR` was a literal 4.57.6 while pyproject declared 4.51.3 and then 4.52.4, so every
-    4.52 through 4.56 release was discarded and a symbol or source-pattern change landing
-    after the floor could break supported users with this matrix still green.
+    `_FLOOR` was a literal 4.57.6 while pyproject declared 4.52.4, so every 4.52-4.56 release was
+    discarded and a change landing after the floor could break supported users, matrix still green.
     """
     declared = _declared_floor()
     assert _FLOOR == declared, (
@@ -572,10 +535,11 @@ def test_the_matrix_starts_at_the_declared_floor(tag: str) -> None:
 
 
 def test_trainer_training_step_model_train_call_is_standalone(tag: str):
-    """unsloth#11238 rewrites the FIRST `model.train()` inside Trainer.training_step into
-    `_unsloth_train_if_needed(model)`. A release that wrote `self.model.train()` earlier in that
-    method would turn the same replace into `self._unsloth_train_if_needed(model)`, and every
-    training step would die with AttributeError. Nothing else in the rewrite guards that."""
+    """unsloth#11238 rewrites the FIRST `model.train()` in Trainer.training_step.
+
+    A release writing `self.model.train()` earlier in that method turns the same replace into
+    `self._unsloth_train_if_needed(model)` and every training step dies with AttributeError.
+    """
     candidates = ["src/transformers/trainer.py", "src/transformers/trainer/__init__.py"]
     hit = first_match("huggingface/transformers", tag, candidates)
     assert hit is not None
