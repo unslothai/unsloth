@@ -117,19 +117,46 @@ def _cuda_is_available():
 
 @pytest.mark.skipif(not _cuda_is_available(), reason = "needs a GPU to load a 4-bit model")
 def test_native_model_with_trust_remote_code_keeps_fast_lora(tmp_path, monkeypatch):
-    """The arm that fails without the fix: PEFT's Linear4bit forward is left in place."""
+    """The arm that fails without the fix: PEFT's Linear4bit forward is left in place.
+
+    The checkpoint is fetched from the Hub and is a Gemma-4, so three things this
+    test cannot control can stop it before it has measured anything: a
+    transformers that predates the architecture (`ValueError: ... model type
+    gemma4 ... Transformers does not recognize this architecture` on 4.57.6), a
+    host without torchvision (`ImportError: Unsloth: Could not load the vision
+    processor`), and no network. All three were live on the declared support
+    range, and each turned into a hard failure that says nothing about the fix.
+    Skip on them; still fail on anything else, which is the arm that matters.
+    """
     monkeypatch.chdir(tmp_path)  # fresh unsloth_compiled_cache
     import torch
     import unsloth  # noqa: F401
     from unsloth import FastModel
 
-    model, _ = FastModel.from_pretrained(
-        "tiny-random/gemma-4-moe",
-        max_seq_length = 256,
-        dtype = torch.bfloat16,
-        load_in_4bit = True,
-        trust_remote_code = True,
-    )
+    try:
+        model, _ = FastModel.from_pretrained(
+            "tiny-random/gemma-4-moe",
+            max_seq_length = 256,
+            dtype = torch.bfloat16,
+            load_in_4bit = True,
+            trust_remote_code = True,
+        )
+    except Exception as exception:
+        text = str(exception)
+        if any(
+            marker in text
+            for marker in (
+                "does not recognize this architecture",
+                "is not supported yet in",
+                "torchvision",
+                "Could not load the vision processor",
+                "We couldn't connect to",
+                "offline mode",
+                "Connection error",
+            )
+        ):
+            pytest.skip(f"the checkpoint cannot be built on this host ({type(exception).__name__}: {text[:160]})")
+        raise
     model = FastModel.get_peft_model(model, r = 8, lora_alpha = 16, lora_dropout = 0, bias = "none")
     from peft.tuners.lora.bnb import Linear4bit
 

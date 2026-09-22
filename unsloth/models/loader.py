@@ -229,7 +229,32 @@ def _config_uses_remote_code(config):
 
     if _remote(config):
         return True
-    for sub in ("text_config", "vision_config", "audio_config"):
+    # The three usual names are not the whole set. transformers keys its own composite
+    # configs off `sub_configs` (present since 4.x), and Qwen-Omni calls its children
+    # thinker_config / talker_config / token2wav_config, Nemotron-3-Nano-Omni llm_config
+    # and sound_config. A sub-config carrying a model `auto_map` under a name not listed
+    # here would read as native and put the compiler back on code it cannot trace, which
+    # is the one direction this predicate must never get wrong.
+    subs = ["text_config", "vision_config", "audio_config"]
+    for sub in getattr(type(config), "sub_configs", None) or ():
+        if sub not in subs:
+            subs.append(sub)
+    if isinstance(config, dict):
+        # A dict config carries its children as plain dicts under arbitrary keys, and
+        # nests them (omnivinci puts audio_config two levels down), so walk them all.
+        pending = [config]
+        seen = set()
+        while pending:
+            current = pending.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            for value in current.values():
+                if isinstance(value, dict):
+                    if _remote(value):
+                        return True
+                    pending.append(value)
+    for sub in subs:
         cfg = getattr(config, sub, None)
         if cfg is None and isinstance(config, dict):
             cfg = config.get(sub)
