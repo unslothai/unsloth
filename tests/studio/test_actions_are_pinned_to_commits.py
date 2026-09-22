@@ -103,8 +103,8 @@ def test_the_sha_predicate_reads_the_revision():
     forty = "3d3c42e5aac5ba805825da76410c181273ba90b1"
     cases = [
         (forty, True),
-        (forty.upper(), False),           # git object names are lowercase hex
-        (forty[:39], False),              # short SHAs are ambiguous and not pins
+        (forty.upper(), False),  # git object names are lowercase hex
+        (forty[:39], False),  # short SHAs are ambiguous and not pins
         (forty + "a", False),
         ("v7", False),
         ("v7.0.1", False),

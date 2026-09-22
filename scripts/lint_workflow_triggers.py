@@ -87,7 +87,7 @@ def _extract_restore_key_prefixes(path: Path) -> list[str]:
             prefixes.append(inline)
             continue
         # Block scalar: take the more-indented lines that follow.
-        rest = text[m.end():]
+        rest = text[m.end() :]
         for line in rest.split("\n"):
             if not line.strip():
                 break
