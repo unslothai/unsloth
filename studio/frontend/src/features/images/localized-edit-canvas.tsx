@@ -43,10 +43,18 @@ export function LocalizedEditCanvas({
   const [readyFor, setReadyFor] = useState<string | null>(null);
   const ready = readyFor === layerKey;
 
-  // A new source, a new mode or Clear starts a blank layer at the source's natural size.
+  // A new source, a new mode or Clear starts a blank layer at the source's natural size. The old
+  // layer is dropped at once, not on load, so Generate never pairs it with the new source.
   useEffect(() => {
+    let live = true;
+    drawing.current = false;
+    dirty.current = false;
+    used.current = new Set();
+    onLayerChange(null);
+    onColorsChange([]);
     const img = new Image();
     img.onload = () => {
+      if (!live) return;
       const w = img.naturalWidth;
       const h = img.naturalHeight;
       dims.current = { w, h };
@@ -67,13 +75,12 @@ export function LocalizedEditCanvas({
         lctx.fillRect(0, 0, w, h);
       }
       dctx.clearRect(0, 0, w, h);
-      used.current = new Set();
-      dirty.current = false;
       setReadyFor(`${resetKey}|${mode}|${image}`);
-      onLayerChange(null);
-      onColorsChange([]);
     };
     img.src = image;
+    return () => {
+      live = false;
+    };
   }, [image, mode, resetKey, onLayerChange, onColorsChange]);
 
   const radius = useCallback(() => {

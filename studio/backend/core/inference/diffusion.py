@@ -79,6 +79,7 @@ from .diffusion_device import (
 )
 from .diffusion_conditioning import (
     LocalizedEdit,
+    check_conditioned_fields,
     check_output_size,
     conditioning_capabilities,
     decode_condition_images,
@@ -6966,27 +6967,15 @@ class DiffusionBackend:
                         raise ValueError(
                             f"The {requested_workflow} workflow requires a source image (init_image)."
                         )
-                if requested_workflow is not None:
-                    # One pipeline call over the ordered images would drop these, so refuse rather than ignore them.
-                    for present, name in (
-                        (mask_image is not None, "mask_image"),
-                        (strength is not None, "strength"),
-                        (upscale is not None and upscale > 1.0, "upscale"),
-                        (
-                            controlnet is not None and controlnet[3] not in (None, 0, 0.0),
-                            "controlnet",
-                        ),
-                    ):
-                        if present:
-                            raise ValueError(
-                                f"{name} is not supported by the {requested_workflow} workflow."
-                            )
-                if localized_edit is not None and not (
-                    requested_workflow == "edit" and getattr(fam, "unified_edit", False)
-                ):
-                    raise ValueError(
-                        "localized_edit needs the edit workflow on a model that supports it."
-                    )
+                check_conditioned_fields(
+                    requested_workflow,
+                    fam,
+                    mask_image = mask_image,
+                    strength = strength,
+                    upscale = upscale,
+                    controlnet = controlnet,
+                    localized_edit = localized_edit,
+                )
                 if reference_images and not getattr(fam, "reference", False):
                     raise ValueError(
                         f"Reference images are not supported for the '{fam.name}' model family."

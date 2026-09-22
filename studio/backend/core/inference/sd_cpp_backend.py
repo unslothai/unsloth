@@ -3392,14 +3392,6 @@ class SdCppDiffusionBackend:
         if conditioned:
             if init_image is None:
                 raise ValueError(f"The {workflow} workflow requires a source image (init_image).")
-            for present, name in (
-                (mask_image is not None, "mask_image"),
-                (strength is not None, "strength"),
-                (upscale is not None and upscale > 1.0, "upscale"),
-                (controlnet is not None and controlnet[3] not in (None, 0, 0.0), "controlnet"),
-            ):
-                if present:
-                    raise ValueError(f"{name} is not supported by the {workflow} workflow.")
             if reference_resolution is not None:
                 # No such control natively: sd.cpp sizes every input image to the output area itself.
                 raise ValueError(
@@ -3463,6 +3455,17 @@ class SdCppDiffusionBackend:
             try:
                 ref_pngs: list[bytes] = []
                 if conditioned:
+                    from core.inference.diffusion_conditioning import check_conditioned_fields
+
+                    check_conditioned_fields(
+                        workflow,
+                        state.family,
+                        mask_image = mask_image,
+                        strength = strength,
+                        upscale = upscale,
+                        controlnet = controlnet,
+                        localized_edit = localized_edit,
+                    )
                     if not self._native_edit_ready(state):
                         raise ValueError(
                             f"Image editing is not available for '{state.family.name}' on the native "
@@ -3480,6 +3483,10 @@ class SdCppDiffusionBackend:
                     )
                 elif width is None or height is None:
                     raise ValueError("width and height are required for this workflow.")
+                else:
+                    from core.inference.diffusion_conditioning import check_output_size
+
+                    check_output_size(state.family, int(width), int(height))
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)
                 else:

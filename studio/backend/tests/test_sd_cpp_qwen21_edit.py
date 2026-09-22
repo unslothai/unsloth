@@ -8,6 +8,7 @@ pinned build's alpha and crop workarounds."""
 from __future__ import annotations
 
 import base64
+import dataclasses
 import io
 import types
 
@@ -217,10 +218,36 @@ def test_native_refuses_what_it_cannot_honour(monkeypatch):
         b.generate(prompt = "p", workflow = "edit", init_image = _png(), reference_resolution = 1024)
     with pytest.raises(ValueError, match = "not yet supported"):
         b.generate(prompt = "p", init_image = _png())  # an omitted workflow keeps its refusal
+    # Same refusal as the diffusers engine: a localized edit belongs to the edit workflow only.
+    with pytest.raises(ValueError, match = "localized_edit needs the edit workflow"):
+        b.generate(
+            prompt = "p",
+            workflow = "reference",
+            init_image = _png(),
+            width = 512,
+            height = 256,
+            localized_edit = LocalizedEdit("paint", _png()),
+        )
     # Without an edit-capable build and projector, the workflow is refused rather than sent.
     monkeypatch.setattr(SdCppDiffusionBackend, "_native_edit_ready", lambda self, st: False)
     with pytest.raises(ValueError, match = "Image editing is not available"):
         b.generate(prompt = "p", workflow = "edit", init_image = _png(), width = 512, height = 512)
+
+
+@pytest.mark.parametrize(
+    "family, width, height, match",
+    [
+        ("z-image", 2560, 1024, "at most 2048px"),
+        ("qwen-image-2.1", 1040, 1024, "multiples of 32"),
+        ("qwen-image-2.1", 2752, 2752, "pixels"),
+    ],
+)
+def test_native_text_to_image_keeps_the_family_size_bounds(family, width, height, match):
+    # The request schema admits 2752 for Qwen-Image-2.1's 2K presets; every other bound is the family's.
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    b._state = dataclasses.replace(_state(), family = detect_family(family))
+    with pytest.raises(ValueError, match = match):
+        b.generate(prompt = "p", steps = 2, width = width, height = height)
 
 
 def test_a_padded_mask_adds_no_region_and_stays_aligned_with_the_source():

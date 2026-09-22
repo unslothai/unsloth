@@ -38,6 +38,33 @@ class LocalizedEdit:
     image: str
 
 
+def check_conditioned_fields(
+    workflow: Optional[str],
+    fam: Any,
+    *,
+    mask_image: Any = None,
+    strength: Optional[float] = None,
+    upscale: Optional[float] = None,
+    controlnet: Any = None,
+    localized_edit: Optional[LocalizedEdit] = None,
+) -> None:
+    """Refuse request fields an explicit ``workflow`` would drop, on either engine."""
+    if workflow is not None:
+        # One pipeline call over the ordered images would drop these, so refuse rather than ignore them.
+        for present, name in (
+            (mask_image is not None, "mask_image"),
+            (strength is not None, "strength"),
+            (upscale is not None and upscale > 1.0, "upscale"),
+            (controlnet is not None and controlnet[3] not in (None, 0, 0.0), "controlnet"),
+        ):
+            if present:
+                raise ValueError(f"{name} is not supported by the {workflow} workflow.")
+    if localized_edit is not None and not (
+        workflow == "edit" and getattr(fam, "unified_edit", False)
+    ):
+        raise ValueError("localized_edit needs the edit workflow on a model that supports it.")
+
+
 def check_output_size(fam: Any, width: int, height: int) -> None:
     """Refuse an output size the loaded family cannot render as asked. A size the pipeline would
     silently floor to its own grid is refused rather than changed behind the caller's back."""
