@@ -46,8 +46,8 @@ import {
   Download01Icon,
   Folder01Icon,
   PinIcon,
-  Message01Icon,
 } from "@hugeicons/core-free-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
@@ -463,7 +463,7 @@ export function ManageChatsView() {
                     })}
                   />
                   <HugeiconsIcon
-                    icon={Message01Icon}
+                    icon={MessageCircleIcon}
                     className="size-4 shrink-0 text-muted-foreground"
                   />
                 </>

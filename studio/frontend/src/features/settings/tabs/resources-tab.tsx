@@ -12,6 +12,11 @@ import {
   pickHuggingFaceCacheDir,
 } from "@/features/native-intents";
 import {
+  gpuMemoryDisplay,
+  hasSharedMemoryHeadroom,
+  sharedMemoryAvailableGb,
+} from "@/hooks/gpu-memory-display";
+import {
   gpuMemoryTotalsGb,
   gpuVramUsedIsPerDevice,
   resolveGpuVramUsedGb,
@@ -27,19 +32,23 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type HuggingFaceCacheSettings,
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { CacheStorageRows } from "../components/cache-storage-rows";
 import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
-import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
+import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { FolderOpenIcon, LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
 
@@ -112,6 +121,8 @@ function MetricTile({
   value,
   detail,
   percent,
+  showUsage = true,
+  extraDetail,
 }: {
   label: string;
   value: string;
@@ -119,25 +130,29 @@ function MetricTile({
   // null = usage unknown (e.g. Windows ROCm perf counter): show a dash and
   // empty bar rather than a fabricated 0%.
   percent: number | null;
+  showUsage?: boolean;
+  extraDetail?: string;
 }) {
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
-    <div className="flex min-w-0 flex-col gap-2.5 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-white/[0.06]">
+    <div className="flex min-w-0 flex-col gap-2.5 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
       <div className="flex items-center justify-between gap-3">
         <span className="truncate text-ui-11 font-semibold uppercase tracking-[0.08em] text-muted-foreground">
           {label}
         </span>
-        <span
-          className={cn(
-            "shrink-0 font-mono text-xs tabular-nums",
-            percentKnown
-              ? usageTextClass(safePercent)
-              : "text-muted-foreground",
-          )}
-        >
-          {percentKnown ? formatPercent(safePercent) : "--"}
-        </span>
+        {showUsage && (
+          <span
+            className={cn(
+              "shrink-0 font-mono text-xs tabular-nums",
+              percentKnown
+                ? usageTextClass(safePercent)
+                : "text-muted-foreground",
+            )}
+          >
+            {percentKnown ? formatPercent(safePercent) : "--"}
+          </span>
+        )}
       </div>
       {/* Both lines truncate, so carry the full text: the GPU states are sentences. */}
       <div className="min-w-0">
@@ -147,16 +162,26 @@ function MetricTile({
         >
           {value}
         </div>
-        <div title={detail} className="mt-0.5 truncate text-xs text-muted-foreground">
+        <div
+          title={detail}
+          className="mt-0.5 truncate text-xs text-muted-foreground"
+        >
           {detail}
         </div>
       </div>
-      <Progress
-        value={percentKnown ? safePercent : 0}
-        aria-label={label}
-        className="h-1.5 rounded-full bg-muted dark:bg-black/40"
-        indicatorClassName={usageIndicatorClass(safePercent)}
-      />
+      {showUsage && (
+        <Progress
+          value={percentKnown ? safePercent : 0}
+          aria-label={label}
+          className="h-1.5 rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]"
+          indicatorClassName={usageIndicatorClass(safePercent)}
+        />
+      )}
+      {extraDetail && (
+        <div className="whitespace-pre-line text-xs text-muted-foreground">
+          {extraDetail}
+        </div>
+      )}
     </div>
   );
 }
@@ -228,6 +253,12 @@ export function ResourcesTab() {
   const systemInfo = useSystemInfo({
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
+  const storageSectionRef = useRef<HTMLElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore(
+    (s) => s.consumeScrollTarget,
+  );
+  const openDialog = useSettingsDialogStore((s) => s.openDialog);
   const [hfCache, setHfCache] = useState<HuggingFaceCacheSettings | null>(null);
   const [hfCacheLoaded, setHfCacheLoaded] = useState(false);
   const [cacheBrowserOpen, setCacheBrowserOpen] = useState(false);
@@ -241,8 +272,10 @@ export function ResourcesTab() {
     systemInfo.inference_gpu.backend !== systemInfo.gpu.backend
       ? systemInfo.inference_gpu
       : null;
+  const memoryDisplay = gpuMemoryDisplay(displayedGpu);
+  const inferenceDisplay = gpuMemoryDisplay(separateInferenceGpu);
   const inferenceVramTotal = separateInferenceGpu
-    ? aggregateGpuMemoryTotalGb(separateInferenceGpu.devices)
+    ? aggregateGpuMemoryTotalGb(inferenceDisplay.usageDevices)
     : 0;
 
   useEffect(() => {
@@ -262,6 +295,19 @@ export function ResourcesTab() {
     };
   }, []);
 
+  useEffect(() => {
+    if (scrollTarget !== "resources-caches") return;
+    const frame = window.requestAnimationFrame(() => {
+      storageSectionRef.current?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
+      consumeScrollTarget("resources-caches");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
+
+
   const metrics = useMemo(() => {
     const devices = displayedGpu?.devices ?? [];
     const ramTotal = systemInfo.memory?.total_gb ?? 0;
@@ -271,16 +317,18 @@ export function ResourcesTab() {
     const diskFree = systemInfo.disk?.free_gb ?? 0;
     const diskUsed = Math.max(0, diskTotal - diskFree);
     const diskPercent = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
-    const gpuMemoryTotals = gpuMemoryTotalsGb(devices);
+    const display = gpuMemoryDisplay(displayedGpu);
+    const usageDevices = display.usageDevices;
+    const gpuMemoryTotals = gpuMemoryTotalsGb(usageDevices);
     const vramTotal = gpuMemoryTotals.total;
     // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
     // total, so the device's own row stays unknown. The host figure can still be
     // known when no device's is (#7452).
-    const perDeviceKnown = gpuVramUsedIsPerDevice(devices);
-    const vramUsed = resolveGpuVramUsedGb(displayedGpu);
+    const perDeviceKnown = gpuVramUsedIsPerDevice(usageDevices);
+    const vramUsed = resolveGpuVramUsedGb(display.usageGpu);
     const vramUsageKnown = vramUsed !== null;
     const vramFree = perDeviceKnown
-      ? devices.reduce(
+      ? usageDevices.reduce(
           (sum, device) =>
             sum +
             (device.vram_free_gb ??
@@ -523,14 +571,25 @@ export function ResourcesTab() {
             percent={hostUnread ? null : metrics.diskPercent}
           />
           <MetricTile
-            label={t("settings.resources.liveMonitor.vram")}
+            label={t(
+              memoryDisplay.sharedOnly
+                ? "settings.resources.gpu.memory"
+                : "settings.resources.liveMonitor.vram",
+            )}
             value={
               gpuUnknown
                 ? unknownLabel
                 : hasGpu
-                  ? metrics.vramUsageKnown
-                    ? `${formatGiB(metrics.vramUsed)} / ${vramCapacityLabel}`
-                    : `${unknownLabel} / ${vramCapacityLabel}`
+                  ? memoryDisplay.sharedOnly
+                    ? t("settings.resources.gpu.estimatedAvailable", {
+                        value:
+                          memoryDisplay.sharedAvailableGb === null
+                            ? unknownLabel
+                            : formatGiB(memoryDisplay.sharedAvailableGb),
+                      })
+                    : metrics.vramUsageKnown
+                      ? `${formatGiB(metrics.vramUsed)} / ${vramCapacityLabel}`
+                      : `${unknownLabel} / ${vramCapacityLabel}`
                   : gpuMismatch
                     ? t("settings.resources.liveMonitor.gpuUnusable")
                     : t("settings.resources.liveMonitor.noGpu")
@@ -539,14 +598,23 @@ export function ResourcesTab() {
               gpuUnknown
                 ? gpuUnknownLabel
                 : hasGpu
-                  ? metrics.vramUsageKnown
-                    ? t("settings.resources.liveMonitor.free", {
-                        value: formatGiB(metrics.vramFree),
-                      })
-                    : unknownLabel
+                  ? memoryDisplay.sharedOnly
+                    ? t("settings.resources.gpu.sharedWithSystemRam")
+                    : metrics.vramUsageKnown
+                      ? t("settings.resources.liveMonitor.free", {
+                          value: formatGiB(metrics.vramFree),
+                        })
+                      : unknownLabel
                   : gpuMismatch
                     ? t("settings.resources.liveMonitor.gpuUnusableDetail")
                     : backendLabel
+            }
+            showUsage={!memoryDisplay.sharedOnly}
+            extraDetail={
+              !memoryDisplay.sharedOnly &&
+              memoryDisplay.sharedDevices.length > 0
+                ? `${t("settings.resources.gpu.sharedWithSystemRam")}\n${t("settings.resources.gpu.estimatedAvailable", { value: memoryDisplay.sharedAvailableGb === null ? unknownLabel : formatGiB(memoryDisplay.sharedAvailableGb) })}`
+                : undefined
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
@@ -586,13 +654,31 @@ export function ResourcesTab() {
             <span className="text-muted-foreground">
               {t("settings.resources.gpu.ggufInference")}
             </span>
-            <span className="text-right font-mono text-xs uppercase text-foreground">
-              {separateInferenceGpu.backend ?? "GPU"}
-              {separateInferenceGpu.available
-                ? inferenceVramTotal
-                  ? ` · ${formatGiB(inferenceVramTotal)}`
-                  : ""
-                : ` · ${t("settings.resources.gpu.unavailable")}`}
+            <span className="text-right font-mono text-xs text-foreground">
+              {separateInferenceGpu.backend?.toUpperCase() ?? "GPU"}
+              {separateInferenceGpu.available ? (
+                inferenceVramTotal ? (
+                  <span className="block">
+                    {t("settings.resources.gpu.vramUtilization")}:{" "}
+                    {formatGiB(inferenceVramTotal)}
+                  </span>
+                ) : (
+                  ""
+                )
+              ) : (
+                ` · ${t("settings.resources.gpu.unavailable")}`
+              )}
+              {separateInferenceGpu.available &&
+                inferenceDisplay.sharedDevices.length > 0 && (
+                  <span className="block normal-case">
+                    {t("settings.resources.gpu.sharedEstimatedAvailable", {
+                      value:
+                        inferenceDisplay.sharedAvailableGb === null
+                          ? unknownLabel
+                          : formatGiB(inferenceDisplay.sharedAvailableGb),
+                    })}
+                  </span>
+                )}
             </span>
           </div>
         )}
@@ -648,10 +734,16 @@ export function ResourcesTab() {
                     </span>
                     {/* Same accent pill as the New tags, which stays legible
                         on the light background. */}
-                    <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
-                      {percentText}{" "}
-                      {t("settings.resources.gpu.vramUtilization")}
-                    </span>
+                    {hasSharedMemoryHeadroom(device) ? (
+                      <span className="text-xs text-muted-foreground">
+                        {t("settings.resources.gpu.sharedWithSystemRam")}
+                      </span>
+                    ) : (
+                      <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                        {percentText}{" "}
+                        {t("settings.resources.gpu.vramUtilization")}
+                      </span>
+                    )}
                   </div>
                 </div>
                 {/* Meter under the figures, so it spans their width instead of
@@ -659,34 +751,51 @@ export function ResourcesTab() {
                     Model downloads control, so both blocks start on one edge.
                     Below 992px the dialog stops filling its 960px cap and the
                     device name would truncate, so the row stacks instead. */}
-                <div className="flex w-[392px] shrink-0 flex-col items-stretch gap-2.5 max-[992px]:w-full">
-                  {/* Ruled between the three readings: run together they are
+                {hasSharedMemoryHeadroom(device) ? (
+                  <div className="text-xs font-mono text-muted-foreground">
+                    {t("settings.resources.gpu.estimatedAvailable", {
+                      value:
+                        sharedMemoryAvailableGb([device]) === null
+                          ? unknownLabel
+                          : formatGiB(device.vram_free_gb),
+                    })}
+                  </div>
+                ) : (
+                  <div className="flex w-[392px] shrink-0 flex-col items-stretch gap-2.5 max-[992px]:w-full">
+                    {/* Ruled between the three readings: run together they are
                       easy to misread as one number. */}
-                  {/* min-w-0 on each reading, or truncate cannot fire: a flex
+                    {/* min-w-0 on each reading, or truncate cannot fire: a flex
                       item defaults to min-width:auto and the longest locales
                       would push past the block instead of ellipsizing. */}
-                  <div className="flex items-center justify-between gap-3 font-mono text-ui-11 tabular-nums text-muted-foreground">
-                    <span className="min-w-0 truncate">
-                      {t("settings.resources.gpu.used", { value: usedText })}
-                    </span>
-                    <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
-                    <span className="min-w-0 truncate">
-                      {t("settings.resources.gpu.free", { value: freeText })}
-                    </span>
-                    <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
-                    <span className="min-w-0 truncate">
-                      {t("settings.resources.gpu.total", {
-                        value: totalText,
-                      })}
-                    </span>
+                    <div className="flex items-center justify-between gap-3 font-mono text-ui-11 tabular-nums text-muted-foreground">
+                      <span className="min-w-0 truncate">
+                        {t("settings.resources.gpu.used", { value: usedText })}
+                      </span>
+                      <span
+                        aria-hidden
+                        className="h-3 w-px shrink-0 bg-border"
+                      />
+                      <span className="min-w-0 truncate">
+                        {t("settings.resources.gpu.free", { value: freeText })}
+                      </span>
+                      <span
+                        aria-hidden
+                        className="h-3 w-px shrink-0 bg-border"
+                      />
+                      <span className="min-w-0 truncate">
+                        {t("settings.resources.gpu.total", {
+                          value: totalText,
+                        })}
+                      </span>
+                    </div>
+                    <Progress
+                      value={safePercent}
+                      aria-label={device.name ?? "GPU"}
+                      className="h-1.5 w-full rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]"
+                      indicatorClassName={usageIndicatorClass(safePercent)}
+                    />
                   </div>
-                  <Progress
-                    value={safePercent}
-                    aria-label={device.name ?? "GPU"}
-                    className="h-1.5 w-full rounded-full bg-muted dark:bg-black/40"
-                    indicatorClassName={usageIndicatorClass(safePercent)}
-                  />
-                </div>
+                )}
               </div>
             );
           })
@@ -709,7 +818,10 @@ export function ResourcesTab() {
 
       <ModelMemorySection />
 
-      <SettingsSection title={t("settings.resources.storage.title")}>
+      <SettingsSection
+        ref={storageSectionRef}
+        title={t("settings.resources.storage.title")}
+      >
         <InfoRow
           label={t("settings.resources.storage.systemDisk")}
           value={t("settings.resources.storage.diskUsage", {
@@ -754,7 +866,7 @@ export function ResourcesTab() {
                 {isTauri ? (
                   <FolderOpenIcon className="size-3.5" />
                 ) : (
-                  <CopyIcon className="size-3.5" />
+                  <HugeiconsIcon icon={Copy01Icon} className="size-3.5" />
                 )}
               </button>
             </div>
@@ -792,6 +904,7 @@ export function ResourcesTab() {
             ) : null}
           </div>
         </SettingsRow>
+        <CacheStorageRows />
       </SettingsSection>
 
       <FolderBrowser

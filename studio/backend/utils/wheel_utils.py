@@ -105,6 +105,55 @@ def prebuilt_wheel_torch_mm(torch_mm: str) -> str:
     return _PREBUILT_WHEEL_TORCH_MM.get(torch_mm, torch_mm)
 
 
+# ── Wheels we build ourselves ─────────────────────────────────────────────────
+# Upstream stops at torch 2.11 and the reuse window above stops at 2.12, because torch 2.13 broke the extension ABI again -- it changed c10::impl::cow::materialize_cow_storage and the signature of c10::cuda::c10_cuda_check_implementation, so an upstream wheel raises "undefined symbol" at import -- and 2.14 changed it once more. There is no upstream asset to point at and no older one that loads, so from 2.13 on we build the wheels and resolve to our own release. Built by .github/workflows/prebuilt-cuda-wheels.yml, one per (package, torch minor, interpreter), Sigstore-signed, on the tag below.
+UNSLOTH_PREBUILT_RELEASE_BASE_URL = "https://github.com/unslothai/unsloth/releases/download"
+UNSLOTH_PREBUILT_RELEASE_TAG = "prebuilt-wheels-cu13"
+
+# Keyed on the torch minor, and exact rather than a floor: a wheel is built against one minor and there is no evidence any future one will load it, which is exactly the assumption that made the upstream wheels stop working here. A new torch minor adds a row only after the workflow has built and smoke-tested it.
+_UNSLOTH_PREBUILT_TORCH_MM = frozenset({"2.13", "2.14"})
+
+# The package version published on that tag, which is not the version the upstream branches resolve: the builds are newer because they had to be cut from a source revision that compiles against torch 2.13 at all. flash-attn 2.8.4 in particular exists only as a commit upstream, carrying the c++20 switch from Dao-AILab/flash-attention#2899.
+_UNSLOTH_PREBUILT_VERSIONS = {
+    "flash_attn": "2.8.4",
+    "causal_conv1d": "1.7.0",
+    "mamba_ssm": "2.3.2.post1",
+}
+
+
+def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | None) -> str | None:
+    """Our own prebuilt wheel for this environment, or None to leave resolution unchanged.
+
+    Every gate here is narrower than it strictly has to be, because the cost of the two answers is not symmetric: returning None costs a source build the user was already facing, and returning a URL for a combination we did not publish costs a 404 and the same source build with a misleading log line in front of it. So it answers only for the exact cells the workflow builds, and the torch minor, CUDA major, ABI, interpreter and platform must all match. Linux x86_64 only: nothing else is built, and Windows, macOS and linux_aarch64 keep whatever behaviour they have today.
+    """
+    if env is None:
+        return None
+    if env.get("torch_mm") not in _UNSLOTH_PREBUILT_TORCH_MM:
+        return None
+    # cu13 only. The workflow builds against the CUDA 13 toolkit and nothing else.
+    if env.get("cuda_major") != "13":
+        return None
+    if env.get("platform_tag") != "linux_x86_64":
+        return None
+    # Every torch pip wheel from 2.7 on is built with _GLIBCXX_USE_CXX11_ABI=1, so there is no abiFALSE variant to publish. A torch built otherwise -- a source build, an NGC image -- is not something these wheels can serve.
+    if env.get("cxx11abi") != "TRUE":
+        return None
+    python_tag = env.get("python_tag")
+    if not python_tag:
+        return None
+    package_version = _UNSLOTH_PREBUILT_VERSIONS.get(filename_prefix)
+    if package_version is None:
+        return None
+
+    filename = (
+        f"{filename_prefix}-{package_version}"
+        f"+cu{env['cuda_major']}torch{env['torch_mm']}"
+        f"cxx11abi{env['cxx11abi']}-{python_tag}-{python_tag}"
+        f"-{env['platform_tag']}.whl"
+    )
+    return f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{filename}"
+
+
 def direct_wheel_url(
     *,
     filename_prefix: str,
@@ -115,6 +164,11 @@ def direct_wheel_url(
 ) -> str | None:
     if env is None or not env.get("cuda_major"):
         return None
+
+    # Checked before the upstream filename is built, not after: for torch 2.13+ the upstream URL this would otherwise return names an asset that has never existed, so there is nothing to fall back to and no reason to prefer it. Every caller -- causal-conv1d and mamba-ssm on both the training and the inference path -- picks this up without changing its own arguments, which is why the override lives here rather than at each call site.
+    ours = unsloth_prebuilt_wheel_url(filename_prefix = filename_prefix, env = env)
+    if ours is not None:
+        return ours
 
     filename = (
         f"{filename_prefix}-{package_version}"
@@ -278,6 +332,10 @@ def flash_attn_package_version(torch_mm: str) -> str | None:
 def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     if env is None:
         return None
+    # flash-attn does not reach direct_wheel_url on torch 2.13+: flash_attn_package_version returns None there and this function bails before the URL is ever built, so the override has to be asked here too. It is the same predicate and the same table; only the entry point differs.
+    ours = unsloth_prebuilt_wheel_url(filename_prefix = "flash_attn", env = env)
+    if ours is not None:
+        return ours
     package_version = flash_attn_package_version(prebuilt_wheel_torch_mm(env["torch_mm"]))
     if package_version is None:
         return None

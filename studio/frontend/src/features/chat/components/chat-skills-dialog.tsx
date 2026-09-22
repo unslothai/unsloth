@@ -14,7 +14,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { BookOpen01Icon } from "@hugeicons/core-free-icons";
+import { Scroll01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { RefreshCwIcon } from "lucide-react";
 import { type ReactElement, useEffect, useState } from "react";
@@ -64,7 +64,7 @@ export function ChatSkillsDialog({
         <DialogHeader>
           <div className="flex items-center gap-2">
             <HugeiconsIcon
-              icon={BookOpen01Icon}
+              icon={Scroll01Icon}
               strokeWidth={1.75}
               className="size-5 text-primary"
             />
@@ -105,7 +105,7 @@ export function ChatSkillsDialog({
             return (
               <div
                 key={`${skill.source}:${skill.name}`}
-                className="rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-white/[0.06]"
+                className="rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
               >
                 <div className="flex items-start gap-3">
                   <div className="min-w-0 flex-1">

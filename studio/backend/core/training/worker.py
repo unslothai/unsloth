@@ -2835,6 +2835,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
             if info.get("success", True):
                 dataset = info.get("dataset", dataset)
+            else:
+                errors = info.get("errors", [])
+                raise ValueError(f"Dataset format conversion failed: {'; '.join(errors)}")
+            if info.get("dropped_rows_warning"):
+                _send("warning", message = info["dropped_rows_warning"])
             dataset_final_format = str(info.get("final_format", "") or "").lower()
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
@@ -2848,6 +2853,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
+                else:
+                    eval_errors = ev.get("errors", [])
+                    raise ValueError(
+                        f"Eval dataset format conversion failed: {'; '.join(eval_errors)}"
+                    )
+                if ev.get("dropped_rows_warning"):
+                    _send("warning", message = f"Eval dataset: {ev['dropped_rows_warning']}")
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
 
@@ -4212,6 +4224,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             ),
             xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
+
+        def _report_model_repo(repo_id):
+            # Local cache loads have no active Hub download to track.
+            if os.path.isdir(os.path.expanduser(repo_id)):
+                return
+            event_queue.put({"type": "model_load_resolved", "repo_id": repo_id, "ts": time.time()})
+
         # Latest-sidecar models load 16-bit: bnb 4-bit feeds quantized experts into unvalidated paths.
         try:
             _train_load_in_4bit = _effective_training_load_in_4bit(
@@ -4226,6 +4245,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     model_load_name,
                 )
             success = trainer.load_model(
+                on_model_resolved = _report_model_repo,
                 model_name = model_name,
                 max_seq_length = config["max_seq_length"],
                 load_in_4bit = _train_load_in_4bit,
@@ -4291,6 +4311,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     success = False
                 else:
                     success = trainer.load_model(
+                        on_model_resolved = _report_model_repo,
                         model_name = model_name,
                         max_seq_length = config["max_seq_length"],
                         load_in_4bit = _train_load_in_4bit,

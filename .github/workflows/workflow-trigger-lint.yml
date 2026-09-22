@@ -134,6 +134,7 @@ jobs:
             tests/studio/test_backend_ci_matrix.py \
             tests/studio/test_backend_ci_parallel_isolation.py \
             tests/studio/test_cache_budget_discipline.py \
+            tests/studio/test_cached_paths_hold_no_credentials.py \
             tests/studio/test_local_actions_are_in_path_filters.py \
             tests/studio/test_chat_ui_shards_cover_everything.py \
             tests/studio/test_ui_shard_engines.py \
@@ -159,6 +160,9 @@ jobs:
             tests/studio/test_macos_slots_per_commit.py \
             tests/studio/test_main_runs_survive_merge_bursts.py \
             tests/studio/test_pull_requests_cancel_superseded_runs.py \
+            tests/studio/test_push_filters_match_pull_request_filters.py \
+            tests/studio/test_probe_cost_claim_is_measured.py \
+            tests/studio/test_merge_ref_age_is_reported.py \
             tests/studio/test_pester_bootstrap_hardening.py \
             tests/studio/test_playwright_suites_run_in_ci.py \
             tests/studio/test_sdk_installs_are_major_bounded.py \

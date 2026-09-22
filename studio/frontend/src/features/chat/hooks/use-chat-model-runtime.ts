@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  CACHE_MISS_DOWNLOAD_DESCRIPTION,
+  EMPTY_CACHE_MISS_WATCH,
+  watchCacheMissDownload,
+} from "../lib/cache-miss-download";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import {
   type ServerTuningValues,
@@ -1181,7 +1186,7 @@ export function useChatModelRuntime() {
           nativePathToken != null ||
           model?.isGguf === true);
       const loraIsAdapter = lora?.exportType === "lora";
-      const isLora =
+      let isLora =
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
       const displayName = model?.name || lora?.name || modelId;
       const toastDisplayName = shortModelLabel(displayName);
@@ -1203,7 +1208,7 @@ export function useChatModelRuntime() {
         previousModel?.isLora ?? (previousLora?.exportType === "lora");
       const isLocal = isLocalModelPath(modelId);
       const isCachedLora = isLora && isLocal;
-      const loadingDescription = [
+      let loadingDescription = [
         currentCheckpoint ? "Switching models." : null,
         extraLoadingDescription ?? null,
         isDownloaded ? "Loading cached model into memory." : null,
@@ -1234,6 +1239,9 @@ export function useChatModelRuntime() {
       loadAbortRef.current = abortCtrl;
       let hfToken = useChatRuntimeStore.getState().hfToken || null;
       const postLoadRefresh = { needed: false };
+      let progressModelIds = [modelId];
+      let mlxLoadProgress = false;
+      let downloadComplete = isDownloaded || isCachedLora;
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
       try {
@@ -1595,6 +1603,32 @@ export function useChatModelRuntime() {
                   }
                 : {}),
             });
+            isLora = validation.is_lora ?? isLora;
+            if (validation.mlx_loads_base_model) {
+              mlxLoadProgress = true;
+              const mlxBaseDescription = isLora
+                ? `Loading the adapter with ${validation.mlx_loads_base_model} in place of its bitsandbytes base, downloading it first if needed.`
+                : `Loading ${validation.mlx_loads_base_model} instead, downloading it first if needed.`;
+              progressModelIds = isLora && !isLocal
+                ? [modelId, validation.mlx_loads_base_model]
+                : [validation.mlx_loads_base_model];
+              downloadComplete = false;
+              loadingDescription = [
+                currentCheckpoint ? "Switching models." : null,
+                extraLoadingDescription ?? null,
+                mlxBaseDescription,
+              ]
+                .filter(Boolean)
+                .join(" ");
+              setLoadProgress({
+                percent: 0,
+                label: "Preparing download",
+                phase: "downloading",
+              });
+              toast.info("MLX cannot use 4-bit bitsandbytes weights", {
+                description: mlxBaseDescription,
+              });
+            }
             // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
             if (validation.requires_transformers_upgrade) {
               const upgraded = await confirmTransformersUpgradeIfNeeded({
@@ -2311,7 +2345,7 @@ export function useChatModelRuntime() {
           }
         }
 
-        const isCachedLoad = isDownloaded || isCachedLora;
+        const isCachedLoad = downloadComplete;
         const toastTitle = isCachedLoad ? "Starting model…" : "Downloading model…";
         const modelLoadToastOptions = (description: ReturnType<typeof renderLoadDescription>) => ({
           description,
@@ -2393,7 +2427,21 @@ export function useChatModelRuntime() {
             : `${base} • ${rateStr}`;
         }
 
-        let downloadComplete = isDownloaded || isCachedLora;
+  // A load that believes the weights are cached can still turn into a download (#9094): the
+  // backend re-fetches a blob it judged unsafe to resume. MOVEMENT is the only proof accepted,
+  // since bytes below the expected total is the ordinary state of a partial revision.
+        const watchForCacheMiss =
+          isDownloaded && !isLocal && nativePathToken == null && !isOllamaModelId(modelId);
+        const cacheMissDescription = [
+          currentCheckpoint ? "Switching models." : null,
+          extraLoadingDescription ?? null,
+          CACHE_MISS_DOWNLOAD_DESCRIPTION,
+        ]
+          .filter(Boolean)
+          .join(" ");
+        let activeLoadingDescription = loadingDescription;
+        let cacheMissWatch = EMPTY_CACHE_MISS_WATCH;
+        let cacheMissDownload = false;
 
         const pollDownload = async () => {
           if (abortCtrl.signal.aborted || !loadingModelRef.current) {
@@ -2401,16 +2449,49 @@ export function useChatModelRuntime() {
             return;
           }
           try {
-            const prog =
+            const progressModelIdsAtRequest = [...progressModelIds];
+            const progressResponses =
               ggufVariant && expectedBytes > 0
-                ? await getGgufDownloadProgress(
-                    modelId,
-                    ggufVariant,
-                    expectedBytes,
-                    hfToken,
-                  )
-                : await getDownloadProgress(modelId, hfToken);
+                ? [
+                    await getGgufDownloadProgress(
+                      modelId,
+                      ggufVariant,
+                      expectedBytes,
+                      hfToken,
+                    ),
+                  ]
+                : await Promise.all(
+                    progressModelIdsAtRequest.map((progressModelId) =>
+                      getDownloadProgress(progressModelId, hfToken, mlxLoadProgress),
+                    ),
+                  );
             if (!loadingModelRef.current) return;
+            if (
+              progressModelIdsAtRequest.length !== progressModelIds.length ||
+              progressModelIdsAtRequest.some(
+                (progressModelId, index) =>
+                  progressModelId !== progressModelIds[index],
+              )
+            ) {
+              return;
+            }
+            const allDownloadsComplete = progressResponses.every(
+              ({ progress }) => progress >= 1,
+            );
+            const firstProgress = progressResponses[0];
+            if (!firstProgress) return;
+            const prog =
+              progressResponses.find(
+                ({ progress }) => progress > 0 && progress < 1,
+              ) ??
+              progressResponses.find(
+                ({ downloaded_bytes, expected_bytes, progress }) =>
+                  downloaded_bytes > 0 &&
+                  expected_bytes === 0 &&
+                  progress === 0,
+              ) ??
+              progressResponses.find(({ progress }) => progress < 1) ??
+              firstProgress;
 
             if (prog.progress > 0 && prog.progress < 1) {
               hasShownProgress = true;
@@ -2439,7 +2520,7 @@ export function useChatModelRuntime() {
                 ...modelLoadToastOptions(
                   renderLoadDescription(
                     "Downloading model…",
-                    loadingDescription,
+                    activeLoadingDescription,
                     pct,
                     progressLabel,
                   ),
@@ -2455,15 +2536,36 @@ export function useChatModelRuntime() {
               const est = estimate(dlSamples, prog.downloaded_bytes, 0);
               const rateSuffix =
                 est.stable ? ` • ${formatRate(est.rate)}` : "";
+              const unknownTotalLabel = `${dlGb.toFixed(1)} GB downloaded${rateSuffix}`;
               // Inline-status-only state; skip the chat-page re-render unless it is shown.
               if (loadToastDismissedRef.current) {
                 setLoadProgress({
                   percent: null,
-                  label: `${dlGb.toFixed(1)} GB downloaded${rateSuffix}`,
+                  label: unknownTotalLabel,
                   phase: "downloading",
                 });
+              } else {
+                // The toast is UP and would otherwise say "Loading cached model into
+                // memory" for the whole download. A missing total is supported, not an error.
+                toast(null, {
+                  id: toastId,
+                  ...modelLoadToastOptions(
+                    renderLoadDescription(
+                      "Downloading model…",
+                      activeLoadingDescription,
+                      null,
+                      unknownTotalLabel,
+                    ),
+                  ),
+                });
               }
-            } else if (prog.progress >= 1 && hasShownProgress) {
+            } else if (
+              allDownloadsComplete &&
+              (hasShownProgress ||
+                progressModelIds.some(
+                  (progressModelId) => progressModelId !== modelId,
+                ))
+            ) {
               downloadComplete = true;
               if (loadToastDismissedRef.current) {
                 setLoadProgress({
@@ -2477,9 +2579,11 @@ export function useChatModelRuntime() {
                   ...modelLoadToastOptions(
                     renderLoadDescription(
                       "Starting model…",
-                      "Download complete. Loading the model into memory.",
-                      100,
-                      "Download complete",
+                      hasShownProgress
+                        ? "Download complete. Loading the model into memory."
+                        : loadingDescription,
+                      hasShownProgress ? 100 : null,
+                      hasShownProgress ? "Download complete" : null,
                     ),
                   ),
                 });
@@ -2543,12 +2647,44 @@ export function useChatModelRuntime() {
           }
         };
 
+        /** Whether this "cached" load has quietly become a download. */
+        const cacheMissDownloadStarted = async (): Promise<boolean> => {
+          try {
+            const reading = await getDownloadProgress(modelId, hfToken);
+              // Re-read AFTER the await, as pollDownload does: the load can finish or be
+              // cancelled in flight, and `finally` then calls resetLoadingUi().
+            if (abortCtrl.signal.aborted || !loadingModelRef.current) return false;
+            const verdict = watchCacheMissDownload(cacheMissWatch, reading);
+            cacheMissWatch = verdict.watch;
+            if (!verdict.started) return false;
+            cacheMissDownload = true;
+              // pollDownload's completion branch is gated on it; leaving it false leaves
+              // `downloadComplete` false forever and suppresses later progress.
+            hasShownProgress = true;
+            downloadComplete = false;
+            activeLoadingDescription = cacheMissDescription;
+            setLoadProgress({
+              percent: verdict.percent,
+              label: "Downloading the rest of the model",
+              phase: "downloading",
+            });
+            return true;
+          } catch {
+            // Ignore polling errors; the next poll asks again.
+            return false;
+          }
+        };
+
         const pollProgress = async () => {
           if (!downloadComplete) {
             await pollDownload();
-          } else {
-            await pollLoad();
+            return;
           }
+          if (watchForCacheMiss && !cacheMissDownload && (await cacheMissDownloadStarted())) {
+            await pollDownload();
+            return;
+          }
+          await pollLoad();
         };
 
         let hasShownProgress = false;
