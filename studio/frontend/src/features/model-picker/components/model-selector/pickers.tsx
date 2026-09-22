@@ -5442,7 +5442,7 @@ export function HubModelPicker({
               onEject(modelId);
             }}
             aria-label={`Eject ${modelId}`}
-            className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-black/5 hover:text-red-500 dark:hover:bg-white/10"
+            className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-red-500 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
           >
             <HugeiconsIcon
               icon={RemoveCircleIcon}

@@ -662,6 +662,14 @@ def _run_llama_phase(
                         backend.unload_model()
             except Exception as exc:
                 logger.debug("llama update: load coordination failed", error = str(exc))
+        # Servers kept alongside run from the same tree, so they stop too.
+        try:
+            from routes.inference import _extra_slots, unload_extra_models
+            if _extra_slots:
+                model_was_active = True
+                unload_extra_models(stash = True)
+        except Exception as exc:
+            logger.debug("llama update: could not stop models kept alongside", error = str(exc))
 
         # The mtmd dictation sidecar serves Qwen3-ASR from this same llama-server out of this same tree, so a live one locks the exe on Windows and a concurrent load would start against a half-swapped install.
         model_was_active = _block_mtmd_sidecar(mtmd_guard) or model_was_active

@@ -1941,6 +1941,9 @@ test("legacy status without reasoning request echoes keeps its comparison", () =
 
 test("a pick asks the status about its own model, so one loaded alongside is adopted", () => {
   assert.equal(USE_CHAT_MODEL_RUNTIME.match(/await readPickStatus\(\)/g)?.length, 2);
-  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(currentCheckpoint && !keepModelsLoaded\)/);
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /if \(currentCheckpoint && \(!keepModelsLoaded \|\| forceReload\)\)/,
+  );
   assert.match(USE_CHAT_MODEL_RUNTIME, /alongside: keepModelsLoaded,/);
 });

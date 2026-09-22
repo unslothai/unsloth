@@ -491,7 +491,7 @@ function publishLoadedModels(ids: string[]): void {
     next.length === current.length && next.every((m, i) => m === current[i]);
   if (!unchanged) useChatRuntimeStore.setState({ loadedModels: next });
   // Status names the models; only /v1/models carries each one's quant, so look it up once per model.
-  if (ids.length < 2 || next.every((m) => m.quant !== undefined)) return;
+  if (next.every((m) => m.quant !== undefined)) return;
   void listOpenAIModels().then(
     (models) => {
       // Not dropped when a newer sync started: it applies by id to whatever is loaded now.
@@ -1758,7 +1758,9 @@ export function useChatModelRuntime() {
 
             cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
             requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
-            if (currentCheckpoint && !keepModelsLoaded) {
+            // Applying settings reloads the model in place, so a failed reload must roll back even when
+            // the other models are kept.
+            if (currentCheckpoint && (!keepModelsLoaded || forceReload)) {
               // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
               // preflight, so a rejected target truncates replies for a model that never loads. Idle,
               // unload first and free VRAM early.
@@ -2341,6 +2343,8 @@ export function useChatModelRuntime() {
                   // unloaded the live server.
                   cpu_fallback: stateBeforeUnload.loadedCpuFallback,
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
+                  // Back beside the kept models, not in place of the primary.
+                  alongside: keepModelsLoaded,
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
                   // The failed swap already unloaded the server those runs used.
@@ -2519,7 +2523,11 @@ export function useChatModelRuntime() {
         const watchForCacheMiss =
           isDownloaded && !isLocal && nativePathToken == null && !isOllamaModelId(modelId);
         const cacheMissDescription = [
-          currentCheckpoint ? "Switching models." : null,
+          currentCheckpoint
+            ? keepModelsLoaded && !forceReload
+              ? "Keeping the loaded models."
+              : "Switching models."
+            : null,
           extraLoadingDescription ?? null,
           CACHE_MISS_DOWNLOAD_DESCRIPTION,
         ]
