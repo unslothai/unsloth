@@ -316,7 +316,67 @@ test("a monitor with nowhere to dock yields instead of covering the sidebar", ()
   const wide = { ...narrow, settingsWidth: 560, viewportWidth: 1440 };
   assert.equal(dockedMonitorFits(wide), true);
   assert.equal(getFloatingMonitorLayout(wide).dockedBesideRunSettings, true);
-  assert.match(source, /sidebarWidth: pinned \? sidebarWidth : 0/);
+  assert.match(source, /sidebarWidth,$/m);
+});
+
+test("leaving suppression reconciles before the observers can", () => {
+  // Suppressed and undocked both paint the full-width container, so neither
+  // ResizeObserver fires on the way out and the position restore has to be
+  // applied by the transition itself.
+  assert.match(
+    source,
+    /if \(!narrowed\) \{\s*restoreLeftRef\.current = chosenLeftRef\.current;\s*reconcileRef\.current\?\.\(\);/,
+  );
+  assert.match(
+    source,
+    /const reconcileRef = useRef<\(\(\) => void\) \| null>\(null\)/,
+  );
+  assert.match(source, /reconcileRef\.current = reconcileGeometry;/);
+});
+
+test("the unpinned web sidebar's icon rail is reserved", () => {
+  // `collapseToZero` is desktop-app only, so an unpinned web sidebar still
+  // paints the 3rem rail as a column and docking must clear it.
+  assert.match(
+    source,
+    /const unpinnedSidebarWidth = sidebarHoldsRail \? paintedSidebarWidth : 0/,
+  );
+  assert.match(
+    source,
+    /const sidebarWidth = pinned \? pinnedSidebarWidth : unpinnedSidebarWidth/,
+  );
+  assert.match(
+    source,
+    /setSidebarHoldsRail\(\s*sidebar\.getAttribute\("data-collapsible"\) === "icon",\s*\)/,
+  );
+  assert.match(source, /`collapseToZero` is desktop-app only/);
+});
+
+test("the collapsed icon rail reaches the capacity check", () => {
+  // 804px viewport, 272px panel and the 48px rail leave 484px, which does not
+  // fit a hand-resized 500px monitor; docking there would sit on the rail.
+  assert.equal(
+    dockedMonitorFits({
+      viewportWidth: 804,
+      sidebarWidth: 48,
+      settingsWidth: 272,
+      monitorWidth: 500,
+    }),
+    false,
+  );
+  assert.equal(
+    getFloatingMonitorLayout({
+      isOpen: true,
+      isMobile: false,
+      isChatRoute: true,
+      settingsPanelOpen: true,
+      settingsWidth: 272,
+      sidebarWidth: 48,
+      viewportWidth: 804,
+      monitorWidth: 500,
+    }).dockedBesideRunSettings,
+    false,
+  );
 });
 
 test("undocking restores where the user dragged the monitor", () => {

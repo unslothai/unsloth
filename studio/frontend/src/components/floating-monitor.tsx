@@ -139,6 +139,9 @@ function useMonitorLayout(
   const restoreLeftRef = useRef<number | null>(null);
   const remeasureRef = useRef(0);
   const [layout, setLayout] = useState<MonitorLayout | null>(null);
+  // Reconcile normally arrives from the observers. A transition that leaves the
+  // constraint geometry untouched -- suppressed to undocked -- fires none.
+  const reconcileRef = useRef<(() => void) | null>(null);
 
   useLayoutEffect(() => {
     const monitor = monitorRef.current;
@@ -247,6 +250,7 @@ function useMonitorLayout(
       });
     };
 
+    reconcileRef.current = reconcileGeometry;
     reconcileGeometry();
     const observer = new ResizeObserver(reconcileGeometry);
     observer.observe(constraints);
@@ -258,6 +262,7 @@ function useMonitorLayout(
     }
     return () => {
       observer.disconnect();
+      reconcileRef.current = null;
       useMonitorFrameStore.getState().clearFrame(publisher);
       if (remeasureRef.current) {
         cancelAnimationFrame(remeasureRef.current);
@@ -291,6 +296,7 @@ function useMonitorLayout(
     narrowedRef.current = narrowed;
     if (!narrowed) {
       restoreLeftRef.current = chosenLeftRef.current;
+      reconcileRef.current?.();
     }
   }, [narrowed]);
 
@@ -816,15 +822,23 @@ export function FloatingMonitor() {
   // Same lag as the settings panel: the sidebar paints per frame and commits
   // on release, so a docked monitor could sit under a grown sidebar.
   const [paintedSidebarWidth, setPaintedSidebarWidth] = useState(0);
+  // Unpinning still holds the collapsed icon rail as a column on the web shell;
+  // `collapseToZero` is desktop-app only, and that rail is the one unpinned
+  // state that takes the monitor's room.
+  const [sidebarHoldsRail, setSidebarHoldsRail] = useState(false);
   useEffect(() => {
     const sidebar = document.querySelector('[data-slot="sidebar"]');
     if (!sidebar) {
       setPaintedSidebarWidth(0);
+      setSidebarHoldsRail(false);
       return;
     }
     const measure = () => {
       if (sidebar.isConnected) {
         setPaintedSidebarWidth(sidebar.getBoundingClientRect().width);
+        setSidebarHoldsRail(
+          sidebar.getAttribute("data-collapsible") === "icon",
+        );
       }
     };
     measure();
@@ -847,8 +861,13 @@ export function FloatingMonitor() {
 
   const settingsWidth =
     paintedSettingsWidth > 0 ? paintedSettingsWidth : committedSettingsWidth;
-  const sidebarWidth =
+  const pinnedSidebarWidth =
     paintedSidebarWidth > 0 ? paintedSidebarWidth : committedSidebarWidth;
+  // A pinned sidebar holds its column; an unpinned one overlays the content, but
+  // the web shell still paints its collapsed icon rail as a column, so reserve
+  // that measured rail while it really is one.
+  const unpinnedSidebarWidth = sidebarHoldsRail ? paintedSidebarWidth : 0;
+  const sidebarWidth = pinned ? pinnedSidebarWidth : unpinnedSidebarWidth;
   // The panel is natively resizable, so what it renders is what docking has to
   // reserve. Before the first measure the constant is the floor.
   const [monitorWidth, setMonitorWidth] = useState(FLOATING_MONITOR_WIDTH);
@@ -859,9 +878,7 @@ export function FloatingMonitor() {
       isChatRoute,
       settingsPanelOpen,
       settingsWidth,
-      // A pinned sidebar holds its column; an unpinned one overlays the content
-      // or collapses to an icon rail, so neither takes the monitor's room.
-      sidebarWidth: pinned ? sidebarWidth : 0,
+      sidebarWidth,
       viewportWidth,
       monitorWidth,
     });
