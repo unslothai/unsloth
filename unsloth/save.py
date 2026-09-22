@@ -284,14 +284,23 @@ def _honours_safe_serialization(save_fn):
     transformers 5 removed the parameter and always writes safetensors, so an explicit `False`
     is absorbed by `**kwargs` and the export is silently not the pickle that was asked for.
     Probed from the signature, not a version, like `_filter_push_to_hub_kwargs`.
+
+    Answers True whenever it cannot tell, because a wrong warning is worse than none: an
+    unreadable signature, and a `(*args, **kwargs)` passthrough, which is the shape of
+    `patch_saving_functions`' own wrapper and says nothing about what it forwards to.
     """
     import inspect
 
     try:
-        return "safe_serialization" in inspect.signature(save_fn).parameters
+        parameters = inspect.signature(save_fn).parameters
     except (TypeError, ValueError):
-        # Unreadable signature: say nothing rather than warn about a guess.
         return True
+    if "safe_serialization" in parameters:
+        return True
+    return not any(
+        p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        for p in parameters.values()
+    )
 
 
 def _is_adapter_save_method(save_method):
@@ -5471,8 +5480,11 @@ def unsloth_generic_save(
         )
         # Asked for a pickle and this transformers cannot give one: say so, rather than upload a
         # format the caller explicitly declined. The same report `_filter_push_to_hub_kwargs`
-        # makes for the adapter path, which never reaches this branch.
-        if safe_serialization is False and not _honours_safe_serialization(model.save_pretrained):
+        # makes for the adapter path, which never reaches this branch. Against the ORIGINAL
+        # method, since `patch_saving_functions` wraps it in a `(*args, **kwargs)` passthrough
+        # that would hide a transformers which does honour the request.
+        _real_save = getattr(model, "original_model_save_pretrained", model.save_pretrained)
+        if safe_serialization is False and not _honours_safe_serialization(_real_save):
             logger.warning_once(
                 "Unsloth: this transformers always writes safetensors, so "
                 "`safe_serialization = False` was not applied and the export is not a pickle."

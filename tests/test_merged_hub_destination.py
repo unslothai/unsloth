@@ -630,17 +630,29 @@ def test_a_pickle_request_this_transformers_cannot_honour_is_reported(saving):
     env["logger"] = SimpleNamespace(warning_once = lambda message, *a, **kw: said.append(message))
 
     class NoSafeSerialization(FullModel):
-        """transformers 5's shape: `**kwargs` absorbs the request, nothing honours it."""
+        """transformers 5's shape: named parameters, but nothing that honours the request."""
 
-        def save_pretrained(self, directory, **kwargs):
+        def save_pretrained(self, directory, max_shard_size = "50GB", variant = None, **kwargs):
             super().save_pretrained(directory)
 
     class HonoursIt(FullModel):
         def save_pretrained(self, directory, safe_serialization = True, **kwargs):
             super().save_pretrained(directory)
 
-    assert env["_honours_safe_serialization"](NoSafeSerialization().save_pretrained) is False
-    assert env["_honours_safe_serialization"](HonoursIt().save_pretrained) is True
+    class Patched(FullModel):
+        """`patch_saving_functions` wraps the real method in a passthrough that tells us nothing,
+        and keeps the original, which is what has to be probed."""
+
+        def save_pretrained(self, *args, **kwargs):
+            FullModel.save_pretrained(self, args[0])
+
+        original_model_save_pretrained = HonoursIt.save_pretrained
+
+    honours = env["_honours_safe_serialization"]
+    assert honours(NoSafeSerialization().save_pretrained) is False
+    assert honours(HonoursIt().save_pretrained) is True
+    # Cannot tell, so it must not warn: a wrong warning is worse than none.
+    assert honours(Patched().save_pretrained) is True
 
     def push(model, **kwargs):
         said.clear()
@@ -648,6 +660,8 @@ def test_a_pickle_request_this_transformers_cannot_honour_is_reported(saving):
         return [message for message in said if "not a pickle" in message]
 
     assert push(NoSafeSerialization(), safe_serialization = False)
-    # A transformers that still takes it, and the default `True`, are never reported.
+    # A transformers that still takes it, a patched model whose original does, and the default
+    # `True`, are all silent.
     assert push(HonoursIt(), safe_serialization = False) == []
+    assert push(Patched(), safe_serialization = False) == []
     assert push(NoSafeSerialization()) == []
