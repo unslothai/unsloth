@@ -931,6 +931,38 @@ def _torch_reports_a_hip_runtime() -> bool:
         return False
 
 
+def _torch_reports_another_vendors_runtime() -> bool:
+    """Whether the installed torch is a CUDA or XPU build, whatever its label says.
+
+    The mirror of _torch_reports_a_hip_runtime, and needed for the same reason in reverse.
+    A conda or locally built CUDA wheel carries no +cu tag, so the label names no vendor,
+    and the intent fallback then reads a stale recorded ROCm flavor as "this wheel targets
+    AMD" -- on a host whose real repair is reinstalling ROCm torch. torch.version.cuda is
+    written by the build itself and settles it.
+
+    An import failure is answered from disk, as _torch_reports_a_hip_runtime and
+    _torch_reports_an_xpu_runtime already answer it: torch/version.py records the runtime
+    whether or not the package imports. Returning False there made the clearing above inert
+    on the path it exists for, letting a stale ROCm flavor speak for a CUDA or XPU wheel.
+    """
+    if TORCH_IMPORT_ERROR is not None:
+        # A ROCm build records hip and may record cuda besides.
+        if _torch_reports_a_hip_runtime():
+            return False
+        _markers = _installed_torch_markers_on_disk()
+        return bool(_markers["cuda"]) or bool(_markers["xpu"])
+    try:
+        import torch
+
+        _version = getattr(torch, "version", None)
+        # A ROCm build sets hip and can carry cuda besides, so hip is read first.
+        if getattr(_version, "hip", None) is not None:
+            return False
+        return bool(getattr(_version, "cuda", None)) or bool(getattr(_version, "xpu", None))
+    except Exception:
+        return False
+
+
 # Marketing name -> gfx, mirroring setup.ps1's $nameArchTable and install_python_stack._WIN_GPU_NAME_ARCH_TABLE. Only names those two route to a wheel family, since this decides whether a repair could change anything. Most specific first.
 _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
     (r"9070|9080|R9700", "gfx1201"),
@@ -1563,6 +1595,11 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
     return (reason, detail) if frozen_but_measurable else ("no_gpu", None)
 
 
+# A wheel label naming another vendor's accelerator: +cu128, +xpu. Matched on the local
+# part so a version like 2.9.0 can never look like one.
+_WHEEL_LABEL_OTHER_VENDOR_RE = re.compile(r"\+[a-z]*(?:cu\d|xpu)")
+
+
 def _gpu_present_but_unusable_message(
     feature: str, verdict: Optional[tuple[Optional[str], Optional[str]]] = None
 ) -> Optional[str]:
@@ -1572,18 +1609,62 @@ def _gpu_present_but_unusable_message(
     if reason not in ("torch_cpu_build", "torch_cuda_unavailable"):
         return None
     installed = f" (installed {detail})" if detail else ""
+    # No reinstall changes group membership (#10466), so a closed node is not a mismatch.
+    # Recording AMD is necessary but not sufficient: a hybrid host on CUDA torch records
+    # both vendors, and there the verdict is about the NVIDIA card.
+    vendors = {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}
+    # Worth MENTIONING is about the hardware; REPLACES the reinstall advice is about the
+    # wheel, and only a ROCm one is repaired by opening a node. Conflating them was the bug.
+    _label = (detail or "").lower()
+    # Intent is the LAST resort: it outlives the wheel, so a venv that recorded ROCm and
+    # then had CUDA installed over it still answers yes. Label and live runtime describe
+    # what is installed NOW; a bare +cpu names no vendor, so intent still gets its say.
+    wheel_targets_amd = (
+        "rocm" in _label
+        or "hip" in _label
+        or _torch_reports_a_hip_runtime()
+        or (
+            not _WHEEL_LABEL_OTHER_VENDOR_RE.search(_label)
+            # An untagged CUDA build (conda, or local) names no vendor, so the regex
+            # clears it and stale intent would speak for a wheel that is not AMD's.
+            and not _torch_reports_another_vendors_runtime()
+            and _expected_rocm_flavor_was_chosen()
+        )
+    )
+    amd_is_the_target = vendors == {"amd"} or wheel_targets_amd
+    node_hint = None
+    if "amd" in vendors and amd_is_the_target:
+        try:
+            from utils.hardware.amd import (
+                amd_closed_nodes_block_the_runtime,
+                amd_node_permission_hint,
+            )
+
+            # Only when the closed set leaves the runtime no way in: an open sibling
+            # render node means ROCm had a complete path and failed anyway.
+            if amd_closed_nodes_block_the_runtime():
+                node_hint = amd_node_permission_hint()
+        except Exception:
+            node_hint = None
+    # Replaces the reinstall advice only for a ROCm wheel, which the closed node fully
+    # explains. A CPU-only or other-vendor wheel needs BOTH repairs and is given both.
+    if node_hint and reason == "torch_cuda_unavailable" and wheel_targets_amd:
+        return f"This host has a GPU, but {feature} cannot use it. {node_hint}"
     # Both routes, always. The repair row exists only in the desktop app and only for a backend it manages, so a browser-hosted Studio, or a desktop attached to a server someone started from a terminal, was being sent to a control that is not on the page.
     if reason == "torch_cpu_build":
         return (
             f"This host has a GPU, but the installed PyTorch is a CPU-only build{installed}, "
             f"so {feature} cannot use it. Reinstall the GPU build: use Repair installation "
             f"in Settings in the desktop app, or re-run the Unsloth installer."
+            + (f" {node_hint}" if node_hint else "")
         )
     return (
         f"This host has a GPU, but the installed PyTorch{installed} cannot initialise it, so "
         f"{feature} cannot use it. This is usually a driver or runtime mismatch; reinstalling "
         f"a matching PyTorch build fixes it. Use Repair installation in Settings in the "
-        f"desktop app, or re-run the Unsloth installer."
+        f"desktop app, or re-run the Unsloth installer." + (f" {node_hint}" if node_hint else "")
+        # Appended, not substituted: the wheel is still the repair, but the node is
+        # still closed and the matching ROCm build will need it.
     )
 
 
@@ -4099,8 +4180,44 @@ def _rocm_linux_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) -> D
             continue
         _used, sysfs_total = entry
         torch_total = dev.get("total_gb") or 0.0
-        if sysfs_total > 0 and torch_total - sysfs_total > 0.1 * torch_total:
-            shared[index] = round(torch_total - sysfs_total, 2)
+        if sysfs_total <= 0:
+            # sysfs could not be read for this card, so the split is genuinely
+            # UNKNOWN and the index stays absent. WSL reaches here.
+            continue
+        excess = torch_total - sysfs_total
+        # A readable sysfs total that torch does not exceed means the whole torch
+        # budget IS the driver's dedicated heap, i.e. the host-backed part is a
+        # measured ZERO. Omitting the index said "unknown" instead, and the tile
+        # renders unknown as "all of it is host memory": on a gfx1151 whose
+        # mem_info_vram_total is the full 64 GiB carve-out, Settings > System read
+        # `0.00 GiB VRAM + 64.00 GiB shared`. Measured on the AMD CI Strix Halo
+        # against main; unsloth#7449 defect 1.
+        #
+        # The 0.1 band is the threshold for BELIEVING an excess, not for publishing a
+        # figure at all. It is NOT a rounding allowance: both totals carry 0.01 GiB, so
+        # rounding cannot reach a whole GiB, and a 4 GiB gap on a 64 GiB part is a real
+        # disagreement between two sources that count different things.
+        #
+        # Inside the band the split is genuinely undecided, and all three answers are
+        # imperfect. Publishing the excess would call the budget shared (see the caller:
+        # host_gb > 0 sets shared_memory, which collapses several rows into one pool) on
+        # a difference we do not trust. Omitting the index renders as "all of it is host
+        # memory", which IS unsloth#7449 defect 1 and the thing this function exists to
+        # stop. Zero attributes the disagreement to the dedicated heap, which is the
+        # smallest error of the three: at 64 vs 60 GiB it overstates dedicated memory by
+        # 4 GiB, where omitting understates it by all 64.
+        #
+        # Not settled on hardware: neither AMD CI runner has a small BIOS carve-out, so
+        # the in-band case was never measured, only reasoned about.
+        # sysfs far ABOVE torch is not a small disagreement, it is a different scope:
+        # a partitioned device where sysfs reports the whole card and torch reports one
+        # partition. `_rocm_system_wide_vram_by_index` treats a mismatch over the same
+        # 10% as a scope change in EITHER direction, and publishing 0.0 here would call
+        # the whole partition dedicated, overstating independent capacity in the
+        # direction that admits a load. Leave the index absent, which means unknown.
+        if -excess > 0.1 * torch_total:
+            continue
+        shared[index] = round(excess, 2) if excess > 0.1 * torch_total else 0.0
     return shared
 
 
@@ -4982,7 +5099,13 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
         except Exception:
             continue
 
-    return resolve_attention_implementation(model_class, config_copy)
+    impl = resolve_attention_implementation(model_class, config_copy)
+    # A per-sub-config mapping collapses to the decoder's name for the frozenset lookup. Inlined
+    # because callers stub the unsloth import.
+    if isinstance(impl, dict):
+        named = [value for key, value in impl.items() if key != "" and value is not None]
+        impl = named[0] if named else impl.get("", "eager")
+    return impl
 
 
 def _estimate_fp16_model_size_bytes_from_config(config) -> Optional[int]:
@@ -5725,8 +5848,19 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                 shared_host_gb = _rocm_linux_shared_pool_host_gb_by_index(torch_devices)
                 for td in torch_devices:
                     if td["index"] in shared_host_gb:
-                        td["shared_memory"] = True
-                        td["shared_memory_host_backed_gb"] = shared_host_gb[td["index"]]
+                        host_gb = shared_host_gb[td["index"]]
+                        # A measured ZERO is an answer, not a miss: it says the whole
+                        # budget is the driver's dedicated heap. Publish it either way,
+                        # because the consumer renders an ABSENT figure as "all of it is
+                        # host memory" and that is how a 64 GiB carve-out came out as
+                        # `0.00 GiB VRAM + 64.00 GiB shared` (unsloth#7449 defect 1).
+                        td["shared_memory_host_backed_gb"] = host_gb
+                        # But only call the budget shared when some of it really is.
+                        # `shared_memory` additionally means "several rows are views of
+                        # ONE pool", which collapses them; a two-socket MI300A with no
+                        # host-backed part must stay additive.
+                        if host_gb > 0:
+                            td["shared_memory"] = True
             elif IS_ROCM and platform.system() == "Windows":
                 shared_host_gb = _windows_rocm_shared_pool_host_gb_by_index(torch_devices)
                 for td in torch_devices:

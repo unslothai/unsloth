@@ -83,7 +83,11 @@ import {
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
-import { type GgufFitClass, requiredGgufMemoryGb } from "@/lib/gguf-fit";
+import {
+  type GgufFitClass,
+  ggufVariantFitSizeBytes,
+  requiredGgufMemoryGb,
+} from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -167,6 +171,7 @@ import {
   curatedRowLabelFor,
   curatedSizeBytesFor,
   curatedTotalParamsFor,
+  recommendedQuantForDevice,
   groupForRepoId,
 } from "./model-catalog";
 import { curatedArtifactIsOfferable } from "./host-artifact-policy";
@@ -437,7 +442,7 @@ function ListLabel({
     <div
       className={cn(
         "flex items-center justify-between gap-1 px-2.5 pb-1",
-        divider ? "mt-3 border-t border-border/50 pt-3" : "pt-3",
+        divider ? "mt-3 border-t border-border pt-3" : "pt-3",
       )}
     >
       <span className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
@@ -452,7 +457,7 @@ function ListLabel({
               type="button"
               onClick={onToggle}
               aria-label={collapsed ? "Expand section" : "Collapse section"}
-              className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+              className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
             >
               {collapsed ? (
                 <ChevronRightIcon className="size-3" />
@@ -545,7 +550,7 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
           key={key}
           title={title}
           aria-label={title}
-          className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 text-muted-foreground"
+          className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground"
         >
           <Glyph className="size-3" />
         </span>
@@ -561,7 +566,7 @@ function VisionBadge() {
       <TooltipTrigger asChild={true}>
         <span
           aria-label="Vision"
-          className="flex h-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 px-1.5 text-indigo-700 dark:text-indigo-300"
+          className="flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border px-1.5 text-indigo-700 dark:text-indigo-300"
         >
           <HugeiconsIcon icon={ViewIcon} className="size-3" strokeWidth={1.8} />
         </span>
@@ -575,10 +580,10 @@ function VisionBadge() {
 
 function ParamChip({ label }: { label: string }) {
   return (
-    // h-[18px], the height every other chip in the row band pins (quant, vision, the disk mark, the
+    // h-[calc(18px*var(--ui-space-scale,1))], the height every other chip in the row band pins (quant, vision, the disk mark, the
     // Loaded tag). py-px sized this one by its line box instead, the one height here that scales with
     // --ui-font-scale, so the row only looked level at the scale where the two happened to cross.
-    <span className="inline-flex h-[18px] shrink-0 items-center whitespace-nowrap rounded-md border border-border/60 px-1.5 text-ui-10 font-medium text-muted-foreground tabular-nums">
+    <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center whitespace-nowrap rounded-md border border-border px-1.5 text-ui-10 font-medium text-muted-foreground tabular-nums">
       {label}
     </span>
   );
@@ -624,7 +629,7 @@ function DownloadedBadge() {
       <TooltipTrigger asChild={true}>
         <span
           aria-label="On device"
-          className="flex h-[18px] w-[14px] shrink-0 items-center justify-center"
+          className="flex h-[calc(18px*var(--ui-space-scale,1))] w-[calc(14px*var(--ui-space-scale,1))] shrink-0 items-center justify-center"
         >
           <span
             aria-hidden="true"
@@ -649,7 +654,7 @@ function PartialBadge({ resumable }: { resumable?: boolean }) {
       <TooltipTrigger asChild={true}>
         <span
           aria-label="Partial download"
-          className="flex h-[18px] w-[14px] shrink-0 items-center justify-center"
+          className="flex h-[calc(18px*var(--ui-space-scale,1))] w-[calc(14px*var(--ui-space-scale,1))] shrink-0 items-center justify-center"
         >
           <span
             aria-hidden="true"
@@ -843,13 +848,13 @@ export function GgufDownloadFootprint({
   return (
     <span
       data-model-download-footprint={true}
-      className="flex items-center gap-1 whitespace-nowrap text-foreground/80"
+      className="flex items-center gap-1 whitespace-nowrap text-muted-foreground"
     >
       <SizeText value={totalLabel} />
       <span
         data-model-download-footprint-help={true}
         aria-hidden={true}
-        className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/70"
+        className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/80"
       >
         <HugeiconsIcon icon={HelpCircleIcon} className="size-3" strokeWidth={1.8} />
       </span>
@@ -877,7 +882,7 @@ export function GgufDownloadFootprintExplanation({
 
 function QuantChip({ label }: { label: string }) {
   return (
-    <span className="inline-flex h-[18px] max-w-full items-center overflow-hidden rounded-md bg-black/[0.06] px-1 font-mono text-ui-9 text-muted-foreground dark:bg-white/[0.1]">
+    <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] max-w-full items-center overflow-hidden rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1 font-mono text-ui-9 text-muted-foreground dark:bg-muted">
       {label}
     </span>
   );
@@ -922,17 +927,17 @@ const META_COLUMN = {
   // Each width below is the widest set its scope can draw: anything wider makes min-w-min expand the
   // slot and shift every column after it. This slot holds capability glyphs (18px), the vision badge
   // (24px) and the "on disk" mark (14px), gap-1 between them; scope draws no glyph.
-  badge: "min-w-min min-[560px]:w-[24px]",
+  badge: "min-w-min min-[560px]:w-[calc(24px*var(--ui-space-scale,1))]",
   // One glyph plus the disk mark (18 + 4 + 14).
-  badgeMid: "min-w-min min-[560px]:w-[36px]",
+  badgeMid: "min-w-min min-[560px]:w-[calc(36px*var(--ui-space-scale,1))]",
   // On Device draws the vision badge (26px) and, since partials are listed, the partial mark
   // (14px) beside it. 44px is that pair with its gap: reserving only the badge let a row drawing
   // both grow past the slot and carry its quant chip 18px left of every other row.
-  badgeDevice: "min-w-min min-[560px]:w-[44px]",
+  badgeDevice: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
   // Hub draws the disk mark and no vision badge (18+4+14). A second glyph grows it via min-w-min.
-  badgeWide: "min-w-min min-[560px]:w-[36px]",
+  badgeWide: "min-w-min min-[560px]:w-[calc(36px*var(--ui-space-scale,1))]",
   // The fit mark (Hub rows), one 18px glyph.
-  vram: "min-w-min min-[560px]:w-[18px]",
+  vram: "min-w-min min-[560px]:w-[calc(18px*var(--ui-space-scale,1))]",
   // Device rows reserve the slot rather than hug the chip. This is the last variable column, so
   // hugging it let each row's meta cluster set its own width and left the quant column ragged. 4.4em
   // is the widest these lists draw at text-ui-10 ("235B" 38.4px, "0.35B" 40.9px), so nothing routine
@@ -942,13 +947,13 @@ const META_COLUMN = {
   // formatBytes writes no space ("536MB"), so the widest this holds is 29.5px, not the ~40px a spaced "536 MB" needs.
   size: "min-w-min min-[560px]:w-[3.2em]",
   // The format dot that leads the row; the name lives in its tooltip.
-  format: "min-[560px]:w-[14px]",
+  format: "min-[560px]:w-[calc(14px*var(--ui-space-scale,1))]",
 } as const;
 
 // One gutter for every row, gear or no gear, so the columns never shift by a button; the
 // buttons show on hover or while their menu is open.
 const ROW_ACTIONS_CLASS =
-  "mr-0.5 flex w-[38px] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
+  "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
 
 // Partial rows keep their buttons on screen. Everywhere else the gutter hides until hover because
 // the row itself is the action, but a partial cannot be loaded at all: the menu IS its only
@@ -958,7 +963,7 @@ const ROW_ACTIONS_PINNED_CLASS = cn(ROW_ACTIONS_CLASS, "opacity-100");
 // Same box and glyph size as ModelLoadSettingsAction, so a heading's buttons sit in the same
 // column and hover the same size as the ones on the rows under it.
 const HEADING_ACTION_CLASS =
-  "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10";
+  "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
 
 /** A Connected group label. Wider than the On Device section labels, since nothing divides these
  *  groups but the gap, and foldable the same way. */
@@ -1167,11 +1172,11 @@ function ModelRow({
       }}
       onClick={onClick}
       className={cn(
-        // pl-[5.5px]: the dot is centred in a 14px hover target, so 5.5 + (14 - 5) / 2 lands it on
+        // pl-[calc(5.5px*var(--ui-space-scale,1))]: the dot is centred in a 14px hover target, so 5.5 + (14 - 5) / 2 lands it on
         // 10px, level with the section labels at px-2.5.
-        "group/row flex w-full flex-col items-stretch py-1.5 pl-[5.5px] pr-2 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        "group/row flex w-full flex-col items-stretch py-1.5 pl-[calc(5.5px*var(--ui-space-scale,1))] pr-2 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         showMemoryBar ? "rounded-2xl" : "rounded-full",
-        selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
+        selected && "bg-sidebar-accent",
         className,
       )}
     >
@@ -1201,9 +1206,9 @@ function ModelRow({
             </span>
           ) : null}
           {showOwner ? (
-            <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-ui-13 text-muted-foreground/90">
+            <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-ui-13 text-muted-foreground/80">
               <span className="truncate">{owner}</span>
-              <span className="shrink-0 text-muted-foreground/45">/</span>
+              <span className="shrink-0 text-muted-foreground/80">/</span>
             </span>
           ) : null}
           <span className="min-w-0 flex-1 truncate">{name}</span>
@@ -1212,12 +1217,12 @@ function ModelRow({
             <DotTag
               tone="success"
               label="Loaded"
-              className="ml-2 h-[18px] shrink-0 gap-1 rounded-md px-1.5"
+              className="ml-2 h-[calc(18px*var(--ui-space-scale,1))] shrink-0 gap-1 rounded-md px-1.5"
               dotClassName="size-[5px]"
             />
           )}
           {alignMeta !== "device" && quantChip ? (
-            <span className="ml-2 shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-white/[0.1]">
+            <span className="ml-2 shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-muted">
               {quantChip}
             </span>
           ) : null}
@@ -1276,7 +1281,7 @@ function ModelRow({
                 <DotTag
                   tone="success"
                   label="Loaded"
-                  className="h-[18px] gap-1 rounded-md px-1.5"
+                  className="h-[calc(18px*var(--ui-space-scale,1))] gap-1 rounded-md px-1.5"
                   dotClassName="size-[5px]"
                 />
               )}
@@ -1414,9 +1419,6 @@ function isValidGgufVariant(variant: unknown): variant is GgufVariantDetail {
     typeof candidate.size_bytes === "number" &&
     Number.isFinite(candidate.size_bytes) &&
     candidate.size_bytes >= 0 &&
-    (candidate.shard_count === undefined ||
-      (Number.isSafeInteger(candidate.shard_count) &&
-        candidate.shard_count >= 0)) &&
     (candidate.downloaded === undefined ||
       typeof candidate.downloaded === "boolean") &&
     (candidate.pending_drafter_filename === undefined ||
@@ -1832,6 +1834,17 @@ function GgufVariantExpander({
     ],
   );
 
+  // One verdict per variant, so the badge, the ordering and the star cannot
+  // disagree. Judged on the download footprint, which covers the companion
+  // GGUFs the loader charges for: a vision projector, or a drafter `auto`
+  // promotes to. On the bare checkpoint a vision quant could sort and badge as
+  // fitting while the recommendation had already ruled it OOM.
+  const getVariantFit = useCallback(
+    (variant: GgufVariantDetail): GgufFitClass =>
+      getGgufFit(ggufVariantFitSizeBytes(variant)),
+    [getGgufFit],
+  );
+
   const variantGroups = useMemo(
     () => groupGgufVariantsForPicker(variants ?? []),
     [variants],
@@ -1841,8 +1854,9 @@ function GgufVariantExpander({
     [variantGroups, defaultVariant],
   );
 
-  // Each workflow gets its own recommendation: if its preferred variant is OOM use the largest
-  // that can run, and if all are OOM the smallest.
+  // Each workflow gets its own recommendation: the largest quant the device runs with room to
+  // spare, else the largest that runs at all, else the smallest. The repo default only decides it
+  // when nothing has been measured, so a big machine is not held at the default's size.
   const effectiveRecommendedByGroup = useMemo(() => {
     const recommended = new Map<string, string>();
     for (const group of variantGroups) {
@@ -1851,21 +1865,9 @@ function GgufVariantExpander({
         if (preferred) recommended.set(group.key, preferred.quant);
         continue;
       }
-      if (preferred && getGgufFit(preferred.size_bytes) !== "oom") {
-        recommended.set(group.key, preferred.quant);
-        continue;
-      }
-      const fitting = group.variants
-        .filter((variant) => getGgufFit(variant.size_bytes) !== "oom")
-        .sort((left, right) => right.size_bytes - left.size_bytes);
-      if (fitting[0]) {
-        recommended.set(group.key, fitting[0].quant);
-        continue;
-      }
-      const smallest = [...group.variants].sort(
-        (left, right) => left.size_bytes - right.size_bytes,
-      )[0];
-      if (smallest) recommended.set(group.key, smallest.quant);
+      // Null when the group carries no sizes at all, so there is nothing to measure.
+      const pick = recommendedQuantForDevice(group.variants, getGgufFit) ?? preferred;
+      if (pick) recommended.set(group.key, pick.quant);
     }
     return recommended;
   }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit]);
@@ -1886,7 +1888,7 @@ function GgufVariantExpander({
     if (!variants) return variants;
     // Tier: 0 = downloaded+fits, 1 = downloaded+tight, 2 = fits, 3 = tight, 4 = OOM
     const tierOf = (v: GgufVariantDetail) => {
-      const f = getGgufFit(v.size_bytes);
+      const f = getVariantFit(v);
       if (f === "oom") return 4;
       const base = f === "fits" ? 0 : 1;
       return v.downloaded ? base : base + 2;
@@ -1910,7 +1912,7 @@ function GgufVariantExpander({
           : a.size_bytes - b.size_bytes;
       });
     });
-  }, [variants, variantGroups, effectiveRecommendedByGroup, getGgufFit]);
+  }, [variants, variantGroups, effectiveRecommendedByGroup, getVariantFit]);
 
   // On Device only: with Show all quantizations off, list quants already on disk, torn ones included.
   const showAllQuantizations = useChatRuntimeStore(
@@ -2123,7 +2125,7 @@ function GgufVariantExpander({
         const isRecommended =
           group != null &&
           effectiveRecommendedByGroup.get(group.key) === v.quant;
-        const fit = getGgufFit(v.size_bytes);
+        const fit = getVariantFit(v);
         const oom = fit === "oom";
         const expectedBytes = ggufVariantExpectedBytes(v);
         // This row's own dependency group, never the listing's: see the footprintVariants comment above.
@@ -2148,7 +2150,7 @@ function GgufVariantExpander({
               )
             }
             className={cn(
-              "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+              "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               unusableLocal &&
                 "cursor-default opacity-50 hover:bg-transparent dark:hover:bg-transparent",
             )}
@@ -2160,11 +2162,6 @@ function GgufVariantExpander({
                   hideH3PrunedBuild,
                 })}
               </span>
-              {(v.shard_count ?? 0) > 1 ? (
-                <span className="ml-1.5 text-ui-9 font-sans font-medium text-sky-700 dark:text-sky-300">
-                  Sharded · {v.shard_count} parts
-                </span>
-              ) : null}
               {unusableLocal ? (
                 <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
                   incomplete
@@ -2185,7 +2182,7 @@ function GgufVariantExpander({
                   partial
                 </span>
               ) : isRecommended ? (
-                <span className="ml-1.5 text-ui-9 font-sans font-medium text-primary/70">
+                <span className="ml-1.5 text-ui-9 font-sans font-medium text-primary">
                   recommended
                 </span>
               ) : null}
@@ -5278,11 +5275,13 @@ export function HubModelPicker({
           onClick={() => setFitOnDeviceOnly(!fitOnDeviceOnly)}
           className="flex w-full cursor-pointer select-none items-center gap-1.5 rounded-[10px] px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
         >
+          {/* --input is a hairline tuned for the page; on the menu surface this
+              14px control needs an outline you can actually find. */}
           <Checkbox
             checked={fitOnDeviceOnly}
             tabIndex={-1}
             aria-hidden={true}
-            className="pointer-events-none size-3.5 rounded-full [&_svg]:!size-2.5"
+            className="pointer-events-none size-3.5 rounded-full border-muted-foreground/70 [&_svg]:!size-2.5"
           />
           Only show models that fit
         </button>
@@ -5298,7 +5297,7 @@ export function HubModelPicker({
       <HugeiconsIcon
         icon={ArrowUpDownIcon}
         strokeWidth={1.75}
-        className="size-3.5 shrink-0 text-muted-foreground"
+        className="size-3.5 shrink-0 text-foreground"
       />
       <span className="truncate">{label}</span>
     </span>
@@ -5369,9 +5368,9 @@ export function HubModelPicker({
     hasMemoryBar = false,
   ) =>
     cn(
-      "group flex items-center transition-colors hover:bg-[#ececec] has-[:focus-visible]:bg-[#ececec] has-[[data-state=open]]:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)] dark:has-[:focus-visible]:bg-[var(--sidebar-accent)] dark:has-[[data-state=open]]:bg-[var(--sidebar-accent)]",
+      "group flex items-center transition-colors hover:bg-sidebar-accent has-[:focus-visible]:bg-sidebar-accent has-[[data-state=open]]:bg-sidebar-accent",
       hasMemoryBar ? "rounded-2xl" : "rounded-full",
-      selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
+      selected && "bg-sidebar-accent",
     );
 
   // One connected model, through ModelRow like every On Device row, so the badges and the hover
@@ -6126,7 +6125,7 @@ export function HubModelPicker({
                   type="button"
                   onClick={onBrowseHub}
                   aria-label="Search more models on the Hub"
-                  className="hub-tab-toggle-pill flex h-(--picker-control-h) w-(--picker-control-w) shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-foreground transition-colors"
+                  className="hub-tab-toggle-pill hub-pill-action flex h-(--picker-control-h) w-(--picker-control-w) shrink-0 items-center justify-center gap-[calc(5px*var(--ui-space-scale,1))] rounded-full border-0 text-xs text-foreground transition-colors"
                 >
                   <HugeiconsIcon
                     icon={DashboardCircleIcon}
@@ -6209,8 +6208,8 @@ export function HubModelPicker({
               "overlay-scrollbar-gutter",
               // On Device pulls the heading block tight to the controls; Recommended keeps more top room
               // above its first row.
-              showDownloaded ? "pt-0" : "pt-[4px]",
-              onEject ? "pb-[60px]" : "pb-4",
+              showDownloaded ? "pt-0" : "pt-[calc(4px*var(--ui-space-scale,1))]",
+              onEject ? "pb-[calc(60px*var(--ui-space-scale,1))]" : "pb-4",
             )}
           >
             {showConnected ? (
@@ -6353,7 +6352,7 @@ export function HubModelPicker({
                                   type="button"
                                   onClick={scrollToOtherModels}
                                   aria-label="Go to other models"
-                                  className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                                  className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                                 >
                                   <HugeiconsIcon
                                     icon={Flag01Icon}
@@ -6376,7 +6375,7 @@ export function HubModelPicker({
                                   type="button"
                                   onClick={scrollToFineTuned}
                                   aria-label="Go to fine-tuned models"
-                                  className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                                  className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                                 >
                                   <HugeiconsIcon
                                     icon={TrainIcon}
@@ -6398,7 +6397,7 @@ export function HubModelPicker({
                                 type="button"
                                 onClick={scrollToCustomFolders}
                                 aria-label="Go to custom folders"
-                                className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                                className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                               >
                                 <HugeiconsIcon
                                   icon={Folder02Icon}
@@ -6460,7 +6459,7 @@ export function HubModelPicker({
                   <>
                     <div
                       ref={fineTunedSectionRef}
-                      className="mt-3 flex items-center gap-1 border-t border-border/50 px-2.5 pb-1 pt-3"
+                      className="mt-3 flex items-center gap-1 border-t border-border px-2.5 pb-1 pt-3"
                     >
                       <span className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
                         <HugeiconsIcon icon={TrainIcon} className="size-3.5" />
@@ -6476,7 +6475,7 @@ export function HubModelPicker({
                           }
                           title={fineTunedCollapsed ? "Expand" : "Collapse"}
                           onClick={() => setFineTunedCollapsed((v) => !v)}
-                          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                          className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           {fineTunedCollapsed ? (
                             <ChevronRightIcon className="size-3" />
@@ -6509,7 +6508,7 @@ export function HubModelPicker({
                   <>
                     <div
                       ref={customFolderSectionRef}
-                      className="mt-3 flex items-center gap-1 border-t border-border/50 px-2.5 pb-1 pt-3"
+                      className="mt-3 flex items-center gap-1 border-t border-border px-2.5 pb-1 pt-3"
                     >
                       <button
                         type="button"
@@ -6543,7 +6542,7 @@ export function HubModelPicker({
                               return !open;
                             });
                           }}
-                          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                          className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           <HugeiconsIcon
                             icon={showFolderInput ? Cancel01Icon : Add01Icon}
@@ -6555,7 +6554,7 @@ export function HubModelPicker({
                           aria-label="Browse for a folder on the server"
                           title="Browse folders on the server"
                           onClick={() => setShowFolderBrowser(true)}
-                          className="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
+                          className="shrink-0 rounded p-0.5 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           <HugeiconsIcon
                             icon={Search01Icon}
@@ -6573,7 +6572,7 @@ export function HubModelPicker({
                           }
                           title={customFoldersCollapsed ? "Expand" : "Collapse"}
                           onClick={() => setCustomFoldersCollapsed((v) => !v)}
-                          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                          className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           {customFoldersCollapsed ? (
                             <ChevronRightIcon className="size-3" />
@@ -6595,11 +6594,11 @@ export function HubModelPicker({
                           >
                             <HugeiconsIcon
                               icon={Folder02Icon}
-                              className="size-3 shrink-0 text-muted-foreground/40"
+                              className="size-3 shrink-0 text-muted-foreground/80"
                             />
                             <div className="min-w-0 flex-1">
                               <span
-                                className="block truncate font-mono text-ui-10 text-muted-foreground/70"
+                                className="block truncate font-mono text-ui-10 text-muted-foreground/80"
                                 title={f.path}
                               >
                                 {f.path}
@@ -6617,7 +6616,7 @@ export function HubModelPicker({
                               type="button"
                               onClick={() => handleRemoveFolder(f.id)}
                               aria-label={`Remove folder ${f.path}`}
-                              className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+                              className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
                             >
                               <HugeiconsIcon
                                 icon={Cancel01Icon}
@@ -6647,7 +6646,7 @@ export function HubModelPicker({
                                 onClick={() => void handleAddFolder(p)}
                                 disabled={folderLoading}
                                 title={`Add ${p}`}
-                                className="rounded-full border border-dashed border-border/50 px-2 py-0.5 font-mono text-ui-10 text-muted-foreground/70 transition-colors hover:border-foreground/30 hover:bg-accent hover:text-foreground disabled:opacity-40"
+                                className="rounded-full border border-dashed border-border px-2 py-0.5 font-mono text-ui-10 text-muted-foreground/80 transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:bg-accent hover:text-foreground disabled:opacity-40"
                               >
                                 <span className="text-ui-11 font-semibold">
                                   +
@@ -6665,7 +6664,7 @@ export function HubModelPicker({
                         <div className="flex items-center gap-1">
                           <HugeiconsIcon
                             icon={Folder02Icon}
-                            className="size-3 shrink-0 text-muted-foreground/40"
+                            className="size-3 shrink-0 text-muted-foreground/80"
                           />
                           <input
                             value={folderInput}
@@ -6687,7 +6686,7 @@ export function HubModelPicker({
                               }
                             }}
                             placeholder="/path/to/models"
-                            className="h-6 min-w-0 flex-1 rounded border border-border/50 bg-transparent px-1.5 font-mono text-ui-10 text-foreground outline-none placeholder:text-muted-foreground/40 focus:border-foreground/20"
+                            className="h-6 min-w-0 flex-1 rounded border border-border bg-transparent px-1.5 font-mono text-ui-10 text-foreground outline-none placeholder:text-muted-foreground/80 focus:border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]"
                             disabled={folderLoading}
                             autoFocus={true}
                           />
@@ -6697,7 +6696,7 @@ export function HubModelPicker({
                             disabled={folderLoading}
                             aria-label="Browse for folder"
                             title="Browse folders on the server"
-                            className="flex h-6 shrink-0 items-center justify-center rounded border border-border/50 px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                            className="flex h-6 shrink-0 items-center justify-center rounded border border-border px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
                           >
                             <HugeiconsIcon
                               icon={Search01Icon}
@@ -6710,7 +6709,7 @@ export function HubModelPicker({
                               void handleAddFolder();
                             }}
                             disabled={folderLoading || !folderInput.trim()}
-                            className="h-6 shrink-0 rounded border border-border/50 px-1.5 text-ui-10 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
+                            className="h-6 shrink-0 rounded border border-border px-1.5 text-ui-10 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
                           >
                             Add
                           </button>
@@ -7501,7 +7500,7 @@ export function HubModelPicker({
           </div>
         </div>
         {onEject ? (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[19px]">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[calc(19px*var(--ui-space-scale,1))]">
             <button
               type="button"
               onClick={onEject}

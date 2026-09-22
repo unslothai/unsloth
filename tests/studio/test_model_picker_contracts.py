@@ -2355,10 +2355,18 @@ def test_remembered_slots_are_read_through_the_cached_repo_alias():
     blanks on the model change and the next Save writes the blank over the saved
     ``n_parallel``, locally and through the server mirror."""
     config = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
-    # The raw identifier still wins, so a path-keyed record is never shadowed.
+    # The raw identifier still wins, so a path-keyed record is never shadowed. A standalone
+    # file drops the reported quant first, since nothing is ever written under that key.
     assert (
-        "const direct = resolveInitialConfig(modelId, ggufVariant); "
+        "const direct = resolveInitialConfig(modelId, standalone ? null : ggufVariant); "
         "if (direct.remembered) {" in config
+    )
+    # Then the label, the order override_lookup_candidates reads a loose .gguf in: a picker
+    # before #7473 keyed the label, and those records are still on disk.
+    assert (
+        "if (standalone && ggufVariant) { const labelled = "
+        "resolveInitialConfig(modelId, ggufVariant); if (labelled.remembered) { "
+        "return labelled; } }" in config
     )
     assert "const alias = publicModelId(modelId);" in config
     # Only a namespaced collapse, the rule residentModelIdMatches applies: every other

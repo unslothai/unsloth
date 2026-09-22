@@ -35,7 +35,6 @@ class GgufVariantDetail(BaseModel):
     pending_drafter_size_bytes: int = Field(
         0, description = "Remote size of pending_drafter_filename"
     )
-    shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
     download_remaining_bytes: Optional[int] = Field(
         None,
         description = (
@@ -250,6 +249,8 @@ class CachedRepoBase(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``, stable for the server's life and not reversible.
+    cache_ref: Optional[str] = None
     last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
@@ -383,6 +384,8 @@ class OrphanCompanionInfo(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``, stable for the server's life and not reversible.
+    cache_ref: Optional[str] = None
 
 
 class OrphanCompanionsResponse(BaseModel):
