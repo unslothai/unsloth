@@ -99,10 +99,8 @@ def _declared_window() -> SpecifierSet:
 
 
 def _ceiling(window: SpecifierSet) -> Version:
-    """The TIGHTEST upper bound, since that is what decides what resolves.
-
-    `max` is WRONG: `<=0.24.0,<=1.13.0` still resolves at 0.24.0, so reporting 1.13.0 let the
-    assertions pass on exactly the stale cap this file exists to catch. `<` wins ties.
+    """The TIGHTEST upper bound: `max` reported 1.13.0 for `<=0.24.0,<=1.13.0`, which resolves at
+    0.24.0, so the assertions passed on exactly the stale cap this file exists to catch.
     """
     tops = [
         (Version(str(spec.version)), spec.operator)
@@ -186,10 +184,8 @@ def _pyproject_zoo() -> list[Requirement]:
 
 
 def test_the_declared_zoo_floor_can_supply_the_declared_trl_window() -> None:
-    """Widening the window does nothing while the resolvable zoo still caps TRL lower.
-
-    pip gives the user the LOWER ceiling, and every zoo up to 2026.9.4 says `trl<=0.24.0`, under
-    which the guards above stay unreachable. 2026.9.5 is the release that carries the lift.
+    """pip gives the user the LOWER ceiling, and every zoo up to 2026.9.4 says `trl<=0.24.0`, under
+    which the guards above stay unreachable. 2026.9.5 is the release carrying the lift.
     """
     ceiling = _ceiling(_declared_window())
     if ceiling <= ZOO_TRL_CEILING_BEFORE_THE_LIFT:
@@ -246,10 +242,8 @@ def _trl_version_guards() -> list[tuple[int, Version]]:
 
 
 def test_no_trl_runtime_guard_is_unreachable_through_the_declared_window() -> None:
-    """A patch gated on a TRL newer than the cap admits is dead code that ships green.
-
-    The `<=0.24.0` cap failed this: `openenv_vllm_reload_weights` (>=0.26.0) and
-    `vllm_generation_init_patch` (>=0.28.0) both returned early on every resolvable install.
+    """A patch gated on a TRL newer than the cap admits is dead code that ships green: under
+    `<=0.24.0` both `openenv_vllm_reload_weights` and `vllm_generation_init_patch` returned early.
     """
     window = _declared_window()
     guards = _trl_version_guards()
@@ -300,10 +294,8 @@ def test_no_workflow_lane_sits_below_the_declared_ceiling() -> None:
 
 
 def _blocking_trl_lanes(path: Path) -> list[tuple[str, str, str]]:
-    """Every (job, lane, trl spec) in a workflow that can actually fail the run.
-
-    Shape-agnostic on purpose: the lane installing the newest TRL has been an explicit pin and an
-    unpinned `latest`, blocking and `continue-on-error`. Reads the YAML rather than a literal.
+    """Every (job, lane, trl spec) that can actually fail the run. Shape-agnostic: that lane has been
+    an explicit pin and an unpinned `latest`, blocking and `continue-on-error`.
     """
     if sys.version_info < (3, 11):
         pytest.skip("yaml parsing here needs the 3.11+ interpreter the job uses")
@@ -333,11 +325,8 @@ def _blocking_trl_lanes(path: Path) -> list[tuple[str, str, str]]:
 
 
 def test_a_blocking_lane_installs_a_trl_from_the_newly_admitted_major() -> None:
-    """A TRL 1.x regression has to be able to fail this workflow.
-
-    Satisfied by a blocking lane pinning an explicit 1.x, or one leaving trl unpinned. NOT
-    satisfied when the only lane reaching 1.x is `continue-on-error`: lifting the cap while the
-    sole 1.x lane is a canary advertises a range no gate defends.
+    """Satisfied by a blocking lane pinning an explicit 1.x or leaving trl unpinned, NOT by a
+    `continue-on-error` one: a canary as the sole 1.x lane advertises a range no gate defends.
     """
     window = _declared_window()
     lanes = _blocking_trl_lanes(WORKFLOWS / "version-compat-ci.yml")
@@ -450,12 +439,9 @@ _NON_WINDOWS_TOKENS = ("ubuntu", "linux", "macos", "darwin", "mac-", "'mac'")
 
 
 def _gated_off_windows(condition: str) -> bool:
-    """Whether an `if:` keeps its step off the Windows leg.
-
-    Naming a non-Windows OS excludes Windows only when the test is POSITIVE:
-    `matrix.os != 'ubuntu-latest'` is precisely the condition that RUNS there, so a negated
-    condition stays reported as exposed. A false alarm costs a `shell: bash`, a false clear
-    costs a silently different Windows command.
+    """Whether an `if:` keeps its step off the Windows leg. Naming a non-Windows OS excludes Windows
+    only when POSITIVE: `matrix.os != 'ubuntu-latest'` is precisely the condition that RUNS there,
+    so a negated condition stays reported as exposed.
     """
     lowered = condition.lower()
     if not any(token in lowered for token in _NON_WINDOWS_TOKENS):
@@ -464,10 +450,8 @@ def _gated_off_windows(condition: str) -> bool:
 
 
 def _steps_exposed_to_the_powershell_default(workflows: Path) -> list[tuple[str, str, str]]:
-    """Every `run:` step a Windows runner hands to PowerShell, GitHub's default there.
-
-    A step escapes only via `shell:` on itself, its job or the workflow; an `if:` that gates it
-    off Windows is not exposed.
+    """Every `run:` step a Windows runner hands to PowerShell. A step escapes only via `shell:` on
+    itself, its job or the workflow; an `if:` gating it off Windows is not exposed.
     """
     import yaml
 
@@ -503,11 +487,9 @@ def _steps_exposed_to_the_powershell_default(workflows: Path) -> list[tuple[str,
 
 
 def test_no_windows_step_uses_a_bash_line_continuation() -> None:
-    r"""A trailing `\` is a bash continuation and NOT a PowerShell one.
-
-    PowerShell passes it through as a literal argument: pytest read it as the path `\`, collected
-    the whole working drive and died with 162 collection errors having asserted nothing, while
-    Linux and macOS split it correctly and the gate looked healthy.
+    r"""PowerShell passes a trailing `\` through as a literal argument: pytest read it as the path
+    `\`, collected the whole drive and died with 162 collection errors having asserted nothing,
+    while Linux and macOS split it correctly and the gate looked healthy.
     """
     if sys.version_info < (3, 11):
         pytest.skip("yaml parsing here needs the 3.11+ interpreter the job uses")
@@ -612,11 +594,8 @@ def _ceiling_lane_trl_pins(workflows: Path) -> list[tuple[str, str, str]]:
 
 
 def test_a_ceiling_lane_pins_the_declared_ceiling() -> None:
-    """The assertion the range sweep structurally cannot make.
-
-    That sweep exempts exact `==` pins, since a pin is a point not a cap. The shipped tree fell in
-    the hole: the `ceiling` lane pinned `transformers==5.17.0` next to `trl==0.24.0`, and nothing
-    went red because 0.24.0 is still inside the window, just no longer its top.
+    """The range sweep exempts exact `==` pins, and the shipped tree fell in that hole: the `ceiling`
+    lane pinned `transformers==5.17.0` beside `trl==0.24.0`, still inside the window, no longer its top.
     """
     if sys.version_info < (3, 11):
         pytest.skip("yaml parsing here needs the 3.11+ interpreter the job uses")
@@ -685,12 +664,9 @@ TRL_DATASETS_FLOORS = (
 
 
 def _pyproject_requirement(name: str) -> SpecifierSet:
-    """The single declared WINDOW for `name`, by the same one-window rule trl gets.
-
-    Exact `==` pins are skipped rather than counted as a second window: a window says what a
-    `pip install` may resolve, a pin says what the fully-pinned Studio single-env ships
-    (`datasets==4.3.0` sits amongst `fastapi==`, `uvicorn==`), and moving one needs its own
-    lockfile. Counting them together would fire on a deliberate disagreement.
+    """The single declared WINDOW for `name`. Exact `==` pins are skipped rather than counted as a
+    second window: a pin says what the fully-pinned Studio single-env ships, and moving one needs
+    its own lockfile, so counting them together would fire on a deliberate disagreement.
     """
     data = _toml()
     project = data.get("project") or {}
@@ -811,12 +787,8 @@ def _workflow_datasets_specs(path: Path) -> list[tuple[str, Requirement]]:
 
 
 def test_no_workflow_lane_installs_a_datasets_the_runtime_guard_refuses() -> None:
-    """A CI lane must not resolve a datasets that `patch_datasets` then raises on.
-
-    `notebooks-ci.yml` carried `datasets>=3.4,<5`, admitting 4.4.x and 4.5.0; that lane imports
-    unsloth, so the job dies at import having tested nothing, and stayed green only because pip
-    happened to pick a newer release. Declaring the window in pyproject is not enough if a lane
-    re-spells it loosely.
+    """`notebooks-ci.yml` carried `datasets>=3.4,<5`, admitting 4.4.x and 4.5.0; that lane imports
+    unsloth, so the job dies at import having tested nothing, green only because pip picked newer.
     """
     low, high = _runtime_forbidden_datasets_range()
     refused = [v for v in _datasets_releases() if low <= v <= high]
@@ -862,11 +834,8 @@ def test_the_workflow_datasets_check_can_fail(tmp_path, monkeypatch) -> None:
 
 
 def test_the_datasets_window_still_excludes_exactly_what_the_runtime_guard_refuses() -> None:
-    """`patch_datasets` raises on 4.4.0 through 4.5.0; the metadata must say the same thing.
-
-    Not "at least as strict": a WIDER window installs a release the guard refuses at import, and a
-    NARROWER one (the shipped `<4.4.0`) forbids releases nothing objects to, which is how the trl
-    ceiling became unreachable.
+    """Not "at least as strict": a WIDER window installs a release the guard refuses at import, and a
+    NARROWER one (the shipped `<4.4.0`) forbids releases nothing objects to, stranding the ceiling.
     """
     low, high = _runtime_forbidden_datasets_range()
 
