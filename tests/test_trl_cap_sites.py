@@ -810,12 +810,11 @@ def test_the_resolvability_check_can_fail() -> None:
     assert [v for v in _datasets_releases() if str(v) in opened and v >= needed]
 
 
-def test_the_datasets_window_still_excludes_exactly_what_the_runtime_guard_refuses() -> None:
-    """`patch_datasets` raises on 4.4.0 through 4.5.0. The metadata must say the same thing.
+def _runtime_forbidden_datasets_range() -> tuple[Version, Version]:
+    """The (low, high) datasets range `patch_datasets` refuses at import, read off the guard.
 
-    Not "at least as strict": a metadata window WIDER than the guard installs a release the
-    guard then refuses at import, and one NARROWER (the shipped `<4.4.0`) forbids releases
-    nothing objects to, which is how the trl ceiling became unreachable.
+    Read rather than restated so the range cannot be edited in one place only; every check
+    that needs to know what the runtime rejects derives it from here.
     """
     guard = RL_REPLACEMENTS.parent.parent / "import_fixes.py"
     source = guard.read_text(encoding = "utf-8")
@@ -825,7 +824,85 @@ def test_the_datasets_window_still_excludes_exactly_what_the_runtime_guard_refus
         re.S,
     )
     assert match, "patch_datasets no longer states its forbidden range in the shape this reads"
-    high, low = Version(match.group(1)), Version(match.group(2))
+    return Version(match.group(2)), Version(match.group(1))
+
+
+def _workflow_datasets_specs(path: Path) -> list[tuple[str, Requirement]]:
+    """Every `datasets<spec>` requirement spelled inside a workflow's shell steps."""
+    text = path.read_text(encoding = "utf-8")
+    out = []
+    for match in re.finditer(r"""['"](datasets[<>=!,.*\d\s]*)['"]""", text):
+        try:
+            req = Requirement(match.group(1))
+        except InvalidRequirement:
+            continue
+        if req.name.lower() == "datasets" and str(req.specifier):
+            out.append((match.group(1), req))
+    return out
+
+
+def test_no_workflow_lane_installs_a_datasets_the_runtime_guard_refuses() -> None:
+    """A CI lane must not be able to resolve a datasets that `patch_datasets` then raises on.
+
+    `notebooks-ci.yml` carried `datasets>=3.4,<5`, which admits 4.4.x and 4.5.0. That lane
+    imports unsloth, so the guard fires and the job dies at import having tested nothing --
+    and it only stayed green because pip happened to pick a newer release. This is the
+    workflow-side twin of
+    `test_the_datasets_window_still_excludes_exactly_what_the_runtime_guard_refuses`:
+    declaring the window in pyproject is not enough if a lane re-spells it loosely.
+    """
+    low, high = _runtime_forbidden_datasets_range()
+    refused = [v for v in _datasets_releases() if low <= v <= high]
+    assert refused, "no recorded datasets release falls in the guard's forbidden range"
+
+    offenders: dict[str, list[str]] = {}
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        for raw, req in _workflow_datasets_specs(path):
+            # Exact pins are NOT exempt here, unlike the trl ceiling check: `datasets==4.4.0`
+            # is a deliberate choice of a release that cannot import, not a deliberate point
+            # inside a supported range.
+            admitted = [v for v in refused if str(v) in req.specifier]
+            if admitted:
+                offenders.setdefault(path.name, []).append(
+                    f"{raw.strip()} admits {', '.join(str(v) for v in admitted)}"
+                )
+    assert not offenders, (
+        f"these workflow lanes can resolve a datasets that patch_datasets refuses at import "
+        f"[{low}, {high}], so the job dies on `import unsloth` rather than testing anything: "
+        f"{offenders}. Spell the declared pyproject window instead."
+    )
+
+
+def test_the_workflow_datasets_check_can_fail(tmp_path, monkeypatch) -> None:
+    """NEGATIVE CONTROL: the loose bound that shipped must be caught."""
+    workflows = tmp_path / "workflows"
+    workflows.mkdir()
+    (workflows / "example-ci.yml").write_text(
+        "jobs:\n  gate:\n    steps:\n      - run: pip install 'datasets>=3.4,<5'\n",
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(sys.modules[__name__], "WORKFLOWS", workflows)
+    with pytest.raises(AssertionError) as raised:
+        test_no_workflow_lane_installs_a_datasets_the_runtime_guard_refuses()
+    assert "example-ci.yml" in str(raised.value)
+
+    # ... and the declared window is accepted.
+    (workflows / "example-ci.yml").write_text(
+        "jobs:\n  gate:\n    steps:\n      - run: pip install "
+        "'datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0'\n",
+        encoding = "utf-8",
+    )
+    test_no_workflow_lane_installs_a_datasets_the_runtime_guard_refuses()
+
+
+def test_the_datasets_window_still_excludes_exactly_what_the_runtime_guard_refuses() -> None:
+    """`patch_datasets` raises on 4.4.0 through 4.5.0. The metadata must say the same thing.
+
+    Not "at least as strict": a metadata window WIDER than the guard installs a release the
+    guard then refuses at import, and one NARROWER (the shipped `<4.4.0`) forbids releases
+    nothing objects to, which is how the trl ceiling became unreachable.
+    """
+    low, high = _runtime_forbidden_datasets_range()
 
     window = _pyproject_requirement("datasets")
     for release in _datasets_releases():

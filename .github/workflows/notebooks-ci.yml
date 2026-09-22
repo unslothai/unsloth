@@ -347,8 +347,12 @@ jobs:
           # excluded the 5.15.x and 5.10.1 transformers pins several notebooks carry, and
           # `<0.26` excluded the 0.26.2, 0.28.0, 0.29.1 and 1.9.2 trl pins that 30 notebooks
           # carry, so this job dumped an API surface those notebooks never run on.
+          # datasets spells pyproject's window rather than a loose `>=3.4,<5`, which admitted
+          # 4.4.0-4.5.0 -- the range patch_datasets raises NotImplementedError on. This job
+          # imports unsloth, so resolving one of those kills it at import having tested
+          # nothing; it stayed green only because pip happened to pick a newer release.
           pip install 'transformers>=4.56,<=5.17.0' 'trl>=0.22,<=1.13.0' 'accelerate>=1.0' \
-                      'datasets>=3.4,<5' 'peft>=0.15,<0.20' \
+                      'datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0' 'peft>=0.15,<0.20' \
                       'bitsandbytes>=0.43' 'sentencepiece' 'protobuf' triton \
                       Pillow safetensors tqdm packaging psutil
           # Converter deps (nbformat for notebook_to_python.py).
