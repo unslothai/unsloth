@@ -149,9 +149,9 @@ function ReasoningRoot({
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
-      if (!open) {
-        lockScroll();
-      }
+      // Native scroll anchoring can move the focused header when a long transcript
+      // opens below it. Preserve its position through either direction of the animation.
+      lockScroll();
       if (!isControlled) {
         setUncontrolledOpen(open);
       }

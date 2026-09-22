@@ -44,7 +44,9 @@ async (page) => {
   check(Math.abs((await afterThreshold.boundingBox()).y - thresholdAnchor.top) < 30, "threshold activation moved the reading passage");
   await page.waitForFunction(() => window.__reasoning.stats().done);
 
-  await page.evaluate(() => window.__reasoning.run({ size: 250000, kind: "mixed", chunk: 1024, gap: 30 }));
+  await page.evaluate(() => window.__reasoning.run({ size: 250000, kind: "mixed", chunk: 1024, gap: 30,
+    userPrompt: "Create a dynamic demonstration with electrical arcs and interactive objects. ".repeat(30),
+  }));
   await page.waitForSelector('[data-slot="reasoning-transcript"]');
   await page.waitForTimeout(400);
   await page.mouse.move(550, 350);
@@ -96,6 +98,15 @@ async (page) => {
     userPrompt: "Create a dynamic demonstration with electrical arcs and interactive objects. ".repeat(30),
   }));
   await page.waitForTimeout(500);
+  await trigger.click();
+  await page.waitForTimeout(300);
+  const longPromptHeaderTop = (await trigger.boundingBox()).y;
+  await trigger.click();
+  await page.waitForTimeout(400);
+  check(Math.abs((await trigger.boundingBox()).y - longPromptHeaderTop) < 3, "long prompt reopening moved the header");
+  await page.mouse.move(550, 350);
+  await page.mouse.wheel(0, 100000);
+  await page.waitForTimeout(300);
   await page.mouse.move(550, 350);
   await page.mouse.wheel(0, -1500);
   await page.waitForTimeout(400);
