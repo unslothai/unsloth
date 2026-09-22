@@ -16347,6 +16347,9 @@ def _check_signal_escape_patterns(code: str):
                 for method in ("urlopen", "request_encode_url", "request_encode_body")
             },
             **{f"{client}.connection_from_url": (0, ("url",), "url") for client in _POOL_CLIENTS},
+            **{
+                f"{client}.connection_from_host": (0, ("host",), "host") for client in _POOL_CLIENTS
+            },
             # Each urllib3 URL factory under the top-level name and under the module defining it.
             **{
                 f"{module}.{factory}": (0, ("url",), "url")

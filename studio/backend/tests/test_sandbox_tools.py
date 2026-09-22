@@ -930,6 +930,11 @@ class TestNetworkTargetResolution:
                 f"import aiohttp\naiohttp.ClientSession('https://pypi.org').get('//{_H}/x')",
                 id = "authority_relative_url",
             ),
+            pytest.param(
+                f"import urllib3\np = urllib3.PoolManager()\npool = p.connection_from_host('{_H}')\n"
+                "pool.request('GET', '/')",
+                id = "pool_connection_from_host",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1052,6 +1057,7 @@ class TestNetworkTargetResolution:
             "import requests\ndef get():\n    return requests.Session()\nd = {}\n"
             "y = d.get('k')\ny.get('http://203.0.113.5/')",
             "import httpx\nhttpx.Client(base_url='https://pypi.org').get('/simple/')",
+            "import urllib3\nurllib3.PoolManager().connection_from_host('pypi.org', 443, 'https')",
         ],
     )
     def test_known_trusted_host_runs(self, code):
