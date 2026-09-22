@@ -1404,6 +1404,15 @@ def test_fork_title_base(title, base):
     assert studio_db.fork_title_base(title) == base
 
 
+@pytest.mark.parametrize(
+    "title",
+    ["Budget (2026)", "Release (2)", "Chat (2) (3)", "(2)", "Plain"],
+)
+def test_an_ordinary_chat_keeps_its_own_number(title):
+    """Only a fork's "(n)" is ours to replace; on any other chat it is the user's."""
+    assert studio_db.fork_title_base(title, source_is_fork = False) == title
+
+
 def _fork(source: str, new_id: str, title: str, at: int):
     return studio_db.fork_chat_thread(
         source_thread_id = source,
@@ -1413,6 +1422,17 @@ def _fork(source: str, new_id: str, title: str, at: int):
         created_at = at,
         id_factory = lambda: uuid.uuid4().hex,
     )
+
+
+def test_fork_of_an_ordinary_chat_keeps_a_numeric_suffix(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Budget (2026)"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+
+    # The year is the user's, not a fork number, so it survives into the fork's name.
+    assert _fork("src", "f0", "Budget (2026)", 10)["title"] == "Budget (2026) (1)"
+    # And a fork of that fork still numbers from the same base rather than nesting again.
+    assert _fork("f0", "f1", "Budget (2026) (1)", 11)["title"] == "Budget (2026) (2)"
 
 
 def test_fork_titles_number_from_the_original_name(tmp_path, monkeypatch):

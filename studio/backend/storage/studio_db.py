@@ -3920,8 +3920,15 @@ class ChatForkActiveGenerationError(RuntimeError):
 _FORK_TITLE_SUFFIX = re.compile(r"^(?P<base>.*?)\s*\((?P<n>\d+)\)\s*$", re.DOTALL)
 
 
-def fork_title_base(title: str) -> str:
-    """The name a fork numbers from. Forking "Chat (2)" gives "Chat (3)", not "Chat (2) (1)"."""
+def fork_title_base(title: str, source_is_fork: bool = True) -> str:
+    """The name a fork numbers from.
+
+    Only a fork's own "(n)" is ours to replace, so forking "Chat (2)" gives "Chat (3)".
+    On an ordinary chat the number is the user's: "Budget (2026)" forks to
+    "Budget (2026) (1)", not to "Budget (1)".
+    """
+    if not source_is_fork:
+        return title.strip() or title
     match = _FORK_TITLE_SUFFIX.match(title)
     base = match.group("base").strip() if match else title.strip()
     # A title that is only a number keeps it: "(2)" numbers from "(2)", not from "".
@@ -4025,7 +4032,12 @@ def fork_chat_thread(
         id_map: dict[str, str] = {row["id"]: id_factory() for row in ancestry}
         src_dict = dict(src)
         # Numbered under the write lock, so two concurrent forks cannot take the same number.
-        title = _next_fork_title(conn, fork_title_base(new_title))
+        title = _next_fork_title(
+            conn,
+            fork_title_base(
+                new_title, source_is_fork = src_dict.get("forked_from_thread_id") is not None
+            ),
+        )
         # Anchor for the "Continued from chat" divider. Not derivable later: copies keep the
         # source's timestamps and take fresh ids.
         boundary_message_id = id_map[ancestry[-1]["id"]]
