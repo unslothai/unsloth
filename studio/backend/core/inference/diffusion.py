@@ -1073,6 +1073,98 @@ def _install_gguf_prefix_strip(transformer_cls: Any, logger: Any) -> None:
         logger.warning("diffusion.gguf: prefix-strip shim not installed: %s", exc)
 
 
+def _qwen_image_21_checkpoint_to_diffusers(checkpoint = None, **kwargs):
+    """sd.cpp / ComfyUI Qwen-Image-2.1 single file -> diffusers ``QwenImage21Transformer2DModel``.
+
+    The two layouts differ in exactly one way once the ``model.diffusion_model.`` container prefix
+    is gone: each block stores its MLP input projection FUSED, ``img_mlp.gate_up`` [24576, 4096],
+    where diffusers keeps ``img_mlp.gate_layer`` and ``img_mlp.proj`` [12288, 4096] apart. That is
+    265 tensors against 297, 32 blocks times one fused pair, and every other name and shape
+    matches. The order is gate first, then proj, checked against the upstream bf16 weights rather
+    than read off a reference implementation: both halves are bit-identical to their diffusers
+    tensors, and the swapped assignment is off by up to 1.08.
+
+    Splitting a GGUF tensor by rows is safe at any quant type: GGML packs blocks along the last
+    (input) dimension, so a row is always a whole number of blocks and ``GGUFParameter`` keeps its
+    quant type through the slice.
+
+    One-dimensional tensors are dequantised here, because diffusers only dequantises inside the
+    ``nn.Linear`` layers its GGUF quantizer swaps in. Everything 1-D in this model is a norm weight,
+    read straight off ``self.weight``, so a norm stored in any wrapped type reaches the forward as
+    raw bytes: the public Q4_K_M keeps ``txt_in.text_norm`` in BF16 and dies on the first step with
+    "size of tensor a (4096) must match ... b (8192)", and a build without the norm=f32 pin puts all
+    64 attention norms in Q8_0 the same way. They are a few KB in total, so there is nothing to save
+    by keeping them packed.
+    """
+    prefix = "model.diffusion_model."
+    fused = "img_mlp.gate_up.weight"
+    converted = {}
+    for key, value in (checkpoint or {}).items():
+        if key.startswith(prefix):
+            key = key[len(prefix) :]
+        quant_shape = getattr(value, "quant_shape", None)
+        if quant_shape is not None and len(quant_shape) == 1:
+            from diffusers.quantizers.gguf.utils import dequantize_gguf_tensor
+            value = dequantize_gguf_tensor(value)
+        if key.endswith("." + fused):
+            rows = int(value.shape[0])
+            if rows % 2:
+                raise ValueError(
+                    f"{key}: a fused gate_up with an odd row count ({rows}) cannot be split into "
+                    "gate_layer and proj; this is not a Qwen-Image-2.1 checkpoint"
+                )
+            stem = key[: -len("gate_up.weight")]
+            converted[stem + "gate_layer.weight"] = value[: rows // 2]
+            converted[stem + "proj.weight"] = value[rows // 2 :]
+            continue
+        converted[key] = value
+    return converted
+
+
+# Transformer classes the installed diffusers cannot load from a single file, with the converter
+# that lets it. Without an entry ``from_single_file`` refuses before reading a byte ("FromOriginalModelMixin is
+# currently only compatible with ..."), and on a CUDA, ROCm or XPU host that is every GGUF load of the
+# family, because a GPU backend routes GGUFs to diffusers. The native engine is no way round it
+# there: the pinned sd.cpp prebuilt carries no Windows GPU build at all.
+_UNREGISTERED_SINGLE_FILE_CLASSES: dict = {
+    "QwenImage21Transformer2DModel": _qwen_image_21_checkpoint_to_diffusers,
+}
+
+
+def _register_unregistered_single_file_classes(logger: Any = None) -> tuple:
+    """Add single-file support for the classes above that the installed diffusers lacks.
+
+    Never overwrites: a class diffusers registers itself wins, since upstream's mapping is
+    authoritative and ours only fills the gap until it lands. A class this diffusers does not ship
+    is skipped rather than registered, and that is load-bearing, not tidiness: diffusers resolves
+    EVERY registry entry with ``getattr(diffusers, name)`` on each ``from_single_file`` call, so one
+    entry naming a missing class would break single-file loads for every other family too.
+    Idempotent and best-effort; returns the names it added.
+    """
+    added: list = []
+    try:
+        import diffusers
+        from diffusers.loaders import single_file_model as sfm
+    except Exception:  # noqa: BLE001 - no diffusers, nothing to register into
+        return ()
+    for name, mapping_fn in _UNREGISTERED_SINGLE_FILE_CLASSES.items():
+        if name in sfm.SINGLE_FILE_LOADABLE_CLASSES:
+            continue
+        try:
+            if getattr(diffusers, name, None) is None:
+                continue
+        except Exception:  # noqa: BLE001 - a class whose module fails to import is not loadable
+            continue
+        sfm.SINGLE_FILE_LOADABLE_CLASSES[name] = {
+            "checkpoint_mapping_fn": mapping_fn,
+            "default_subfolder": "transformer",
+        }
+        added.append(name)
+    if added and logger is not None:
+        logger.info("diffusion.single_file: registered %s", ", ".join(added))
+    return tuple(added)
+
+
 def _restore_gguf_trimmed_dims(model: Any, state_dict: Any) -> Any:
     """Put back the leading size-1 dimensions GGUF drops when it stores a tensor.
 
@@ -5077,6 +5169,9 @@ class DiffusionBackend:
                                 # pipeline assembly below was already guarded; this call was not.
                                 "local_files_only": local_files_only,
                             }
+                            # Before the prefix shim below, which wraps whatever entry it finds and
+                            # finds nothing for a class that is not registered yet.
+                            _register_unregistered_single_file_classes(logger)
                             if kind == "gguf":
                                 # Dequantise the GGUF transformer on-device at the compute dtype.
                                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
