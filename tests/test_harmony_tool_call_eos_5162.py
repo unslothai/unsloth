@@ -59,9 +59,16 @@ def _namespace():
     wanted_functions = {
         "_harmony_tool_call_token_id",
         "patch_harmony_tool_call_eos",
+        "_vllm_generation_config_fields",
+        "patch_harmony_tool_call_eos_vllm",
         "patch_tokenizer",
     }
-    wanted_constants = {"_HARMONY_TOOL_CALL_TOKEN", "_HARMONY_FINGERPRINT_TOKENS"}
+    wanted_constants = {
+        "_HARMONY_TOOL_CALL_TOKEN",
+        "_HARMONY_FINGERPRINT_TOKENS",
+        "_VLLM_GENERATION_CONFIG_FIELD_PATHS",
+        "_VLLM_MAX_STOP_TOKEN_IDS",
+    }
     ns = {"logger": _StubLogger()}
     found = set()
     for node in mod.body:
@@ -151,6 +158,20 @@ def test_a_missing_stop_set_is_left_alone(ns, harmony_tokenizer):
     model = _Model(None)
     ns["patch_harmony_tool_call_eos"](model, harmony_tokenizer)
     assert model.generation_config.eos_token_id is None
+
+
+@pytest.mark.parametrize("empty", [[], ()])
+def test_an_empty_stop_set_is_left_alone(ns, harmony_tokenizer, empty):
+    """The same reasoning as the `None` case, in a shape that passes the list check.
+
+    `isinstance([], list)` is true, so an empty list reaches the list branch, the loop over
+    its entries adds nothing, and an unguarded append would leave `[CALL_ID]`: `<|call|>` as
+    the only terminator, with `<|return|>` gone. That is the reported defect pointed the
+    other way, which is exactly what the missing-stop-set branch refuses to do.
+    """
+    model = _Model(empty)
+    ns["patch_harmony_tool_call_eos"](model, harmony_tokenizer)
+    assert model.generation_config.eos_token_id == empty
 
 
 @pytest.mark.parametrize(
@@ -271,8 +292,203 @@ def test_patch_tokenizer_applies_the_harmony_fix():
                 if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
             }
             assert "patch_harmony_tool_call_eos" in called, sorted(called)
+            assert "patch_harmony_tool_call_eos_vllm" in called, sorted(called)
             return
     raise AssertionError("patch_tokenizer not found in _utils.py")
+
+
+# ── The vLLM stop set, which `model.generate` never touches ────────────────────
+#
+# `fast_inference = True` binds `model.fast_generate` straight to `vllm_engine.generate`
+# before the tokenizer exists, so the HF `generation_config` edit above cannot reach it.
+# These cover the second patch, which widens the dict vLLM applies per request.
+
+
+class _InputProcessor:
+    def __init__(self, fields):
+        self.generation_config_fields = fields
+
+
+class _Engine:
+    """Shaped like `vllm.LLM`: the dict hangs off `llm_engine.input_processor`."""
+
+    def __init__(self, fields):
+        self.llm_engine = type("_LLMEngine", (), {})()
+        self.llm_engine.input_processor = _InputProcessor(fields)
+
+
+class _VLLMModel(_Model):
+    def __init__(self, eos_token_id, fields):
+        super().__init__(eos_token_id)
+        self.vllm_engine = _Engine(fields)
+
+
+def test_the_vllm_stop_set_gains_the_tool_call_token(ns, harmony_tokenizer):
+    model = _VLLMModel([RETURN_ID, ENDOFTEXT_ID], {"eos_token_id": [RETURN_ID, ENDOFTEXT_ID]})
+    ns["patch_harmony_tool_call_eos_vllm"](model, harmony_tokenizer)
+    fields = model.vllm_engine.llm_engine.input_processor.generation_config_fields
+    assert fields["eos_token_id"] == [RETURN_ID, ENDOFTEXT_ID, CALL_ID]
+
+
+def test_the_vllm_patch_is_idempotent(ns, harmony_tokenizer):
+    model = _VLLMModel([RETURN_ID], {"eos_token_id": [RETURN_ID, ENDOFTEXT_ID, CALL_ID]})
+    for _ in range(3):
+        ns["patch_harmony_tool_call_eos_vllm"](model, harmony_tokenizer)
+    fields = model.vllm_engine.llm_engine.input_processor.generation_config_fields
+    assert fields["eos_token_id"] == [RETURN_ID, ENDOFTEXT_ID, CALL_ID]
+
+
+@pytest.mark.parametrize("fields", [{}, {"eos_token_id": None}, {"eos_token_id": []}])
+def test_an_absent_vllm_eos_key_is_seeded(ns, harmony_tokenizer, fields):
+    """`to_diff_dict()` omits defaults, and vLLM ignores an absent or empty list entirely.
+
+    Seeding `[CALL_ID]` is safe on THIS side, unlike the HF side, because vLLM tracks the
+    primary eos separately off the tokenizer and this dict only ever adds to it. Leaving the
+    key absent means the widening never fires at all.
+    """
+    model = _VLLMModel([RETURN_ID], dict(fields))
+    ns["patch_harmony_tool_call_eos_vllm"](model, harmony_tokenizer)
+    got = model.vllm_engine.llm_engine.input_processor.generation_config_fields
+    assert got["eos_token_id"] == [CALL_ID]
+
+
+def test_a_non_harmony_model_leaves_the_vllm_stop_set_alone(ns):
+    qwen_like = _Tokenizer({"<|im_start|>": 151644, "<|im_end|>": 151645})
+    model = _VLLMModel([151645], {"eos_token_id": [151645, 151643]})
+    ns["patch_harmony_tool_call_eos_vllm"](model, qwen_like)
+    fields = model.vllm_engine.llm_engine.input_processor.generation_config_fields
+    assert fields["eos_token_id"] == [151645, 151643]
+
+
+def test_no_engine_means_no_work(ns, harmony_tokenizer):
+    """The overwhelmingly common case: `fast_inference` was never asked for."""
+    model = _Model([RETURN_ID, ENDOFTEXT_ID])
+    assert ns["patch_harmony_tool_call_eos_vllm"](model, harmony_tokenizer) is model
+    assert not hasattr(model, "vllm_engine")
+
+
+def test_an_unreachable_engine_dict_does_not_raise(ns, harmony_tokenizer):
+    """A vLLM whose internals moved must cost the stop token, never the model load."""
+
+    class _Opaque:
+        pass
+
+    model = _Model([RETURN_ID])
+    model.vllm_engine = _Opaque()
+    assert ns["patch_harmony_tool_call_eos_vllm"](model, harmony_tokenizer) is model
+
+
+def test_an_engine_that_raises_on_attribute_access_does_not_raise(ns, harmony_tokenizer):
+    class _Hostile:
+        def __getattr__(self, name):
+            raise RuntimeError("engine is shutting down")
+
+    model = _Model([RETURN_ID])
+    model.vllm_engine = _Hostile()
+    assert ns["patch_harmony_tool_call_eos_vllm"](model, harmony_tokenizer) is model
+
+
+@pytest.mark.parametrize("shape", [True, ["<|call|>"], [None], object()])
+def test_an_unparseable_vllm_stop_set_declines(ns, harmony_tokenizer, shape):
+    model = _VLLMModel([RETURN_ID], {"eos_token_id": shape})
+    ns["patch_harmony_tool_call_eos_vllm"](model, harmony_tokenizer)
+    fields = model.vllm_engine.llm_engine.input_processor.generation_config_fields
+    assert fields["eos_token_id"] is shape
+
+
+def test_the_vllm_stop_token_cap_is_respected(ns, harmony_tokenizer):
+    """vLLM rejects a request whose stop set exceeds its cap when `min_tokens > 0`."""
+    cap = ns["_VLLM_MAX_STOP_TOKEN_IDS"]
+    full = list(range(cap))
+    model = _VLLMModel([RETURN_ID], {"eos_token_id": list(full)})
+    ns["patch_harmony_tool_call_eos_vllm"](model, harmony_tokenizer)
+    fields = model.vllm_engine.llm_engine.input_processor.generation_config_fields
+    assert fields["eos_token_id"] == full
+
+
+@pytest.mark.parametrize("path", [("llm_engine", "input_processor"), ("input_processor",), ("processor",)])
+def test_every_supported_attribute_path_is_found(ns, harmony_tokenizer, path):
+    """vLLM has moved this attribute between releases; each spelling must resolve."""
+    engine = type("_Engine", (), {})()
+    holder = engine
+    for attribute in path[:-1]:
+        setattr(holder, attribute, type("_Node", (), {})())
+        holder = getattr(holder, attribute)
+    setattr(holder, path[-1], _InputProcessor({"eos_token_id": [RETURN_ID]}))
+
+    model = _Model([RETURN_ID])
+    model.vllm_engine = engine
+    ns["patch_harmony_tool_call_eos_vllm"](model, harmony_tokenizer)
+    assert ns["_vllm_generation_config_fields"](engine)["eos_token_id"] == [RETURN_ID, CALL_ID]
+
+
+# ── Against the real vLLM, when it is installed ───────────────────────────────
+
+
+def _real_sampling_params(**kwargs):
+    vllm = pytest.importorskip("vllm", reason = "vLLM is not installed")
+    return vllm.SamplingParams(**kwargs)
+
+
+def test_the_widened_dict_really_reaches_vllms_stop_token_ids(ns, harmony_tokenizer):
+    """The claim under test is vLLM's, so assert it with vLLM's own code.
+
+    `SamplingParams.update_from_generation_config` is what the engine applies to every
+    request. A hand-rolled stand-in would only prove the stand-in.
+    """
+    fields = {"eos_token_id": [RETURN_ID, ENDOFTEXT_ID]}
+    model = _VLLMModel([RETURN_ID, ENDOFTEXT_ID], fields)
+
+    before = _real_sampling_params()
+    before.update_from_generation_config(dict(fields), RETURN_ID)
+    assert CALL_ID not in (before.stop_token_ids or [])
+
+    ns["patch_harmony_tool_call_eos_vllm"](model, harmony_tokenizer)
+    after = _real_sampling_params()
+    after.update_from_generation_config(dict(fields), RETURN_ID)
+    assert CALL_ID in after.stop_token_ids
+
+
+def test_an_explicit_sampling_params_still_gets_the_tool_call_token(ns, harmony_tokenizer):
+    """GRPO always passes its own `SamplingParams`, so defaults-only would not cover it.
+
+    The caller's own stop ids must survive alongside.
+    """
+    fields = {"eos_token_id": [RETURN_ID, ENDOFTEXT_ID]}
+    model = _VLLMModel([RETURN_ID], fields)
+    ns["patch_harmony_tool_call_eos_vllm"](model, harmony_tokenizer)
+
+    explicit = _real_sampling_params(stop_token_ids = [42])
+    explicit.update_from_generation_config(dict(fields), RETURN_ID)
+    assert CALL_ID in explicit.stop_token_ids
+    assert 42 in explicit.stop_token_ids
+
+
+def test_ignore_eos_still_opts_out(ns, harmony_tokenizer):
+    """A caller who asked not to stop on eos must not be given a new way to stop."""
+    fields = {"eos_token_id": [RETURN_ID, ENDOFTEXT_ID]}
+    model = _VLLMModel([RETURN_ID], fields)
+    ns["patch_harmony_tool_call_eos_vllm"](model, harmony_tokenizer)
+
+    opted_out = _real_sampling_params(ignore_eos = True)
+    opted_out.update_from_generation_config(dict(fields), RETURN_ID)
+    assert CALL_ID not in (opted_out.stop_token_ids or [])
+
+
+def test_the_ordinary_terminator_survives_a_seeded_stop_set(ns, harmony_tokenizer):
+    """Seeding `[CALL_ID]` into an empty dict must not cost `<|return|>`.
+
+    That is the one thing the HF side refuses to do, and the reason it is safe here is
+    vLLM-specific, so prove it with vLLM rather than by reading the source.
+    """
+    model = _VLLMModel([RETURN_ID], {})
+    ns["patch_harmony_tool_call_eos_vllm"](model, harmony_tokenizer)
+    fields = model.vllm_engine.llm_engine.input_processor.generation_config_fields
+
+    params = _real_sampling_params()
+    params.update_from_generation_config(dict(fields), RETURN_ID)
+    assert CALL_ID in params.all_stop_token_ids
+    assert RETURN_ID in params.all_stop_token_ids
 
 
 # ── The real artefact, when it happens to be on disk ───────────────────────────
@@ -289,7 +505,9 @@ def test_the_real_shipped_generation_config_is_the_short_list(ns, harmony_tokeni
     no-op rather than a silent change of meaning."""
     import json
 
-    shipped = json.load(open(os.path.join(_LOCAL_GPT_OSS, "generation_config.json")))
+    shipped = json.load(
+        open(os.path.join(_LOCAL_GPT_OSS, "generation_config.json"), encoding = "utf-8")
+    )
     eos = shipped["eos_token_id"]
     assert isinstance(eos, list)
     model = _Model(list(eos))

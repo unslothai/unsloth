@@ -31,6 +31,7 @@ __all__ = [
     "platform_system",
     "patch_tokenizer",
     "patch_harmony_tool_call_eos",
+    "patch_harmony_tool_call_eos_vllm",
     "get_statistics",
     "Unsloth_Offloaded_Gradient_Checkpointer",
     "offload_to_disk",
@@ -4066,6 +4067,12 @@ def patch_harmony_tool_call_eos(model, tokenizer):
         return model
     if call_id in eos_ids:
         return model
+    if not eos_ids:
+        # An EMPTY list or tuple is the `current is None` case wearing a different shape:
+        # there is nothing to widen, and appending here would leave `<|call|>` as the only
+        # terminator with `<|return|>` gone. `isinstance([], list)` is true, so this has to
+        # be caught after the shape check rather than with it.
+        return model
 
     generation_config.eos_token_id = eos_ids + [call_id]
     logger.warning(
@@ -4076,11 +4083,119 @@ def patch_harmony_tool_call_eos(model, tokenizer):
     return model
 
 
+# `fast_inference = True` does not go through `model.generate`, so the edit above cannot
+# reach it. `llama.py` builds the vLLM engine and binds `model.fast_generate =
+# model.vllm_engine.generate` BEFORE the tokenizer is even loaded, and vLLM reads
+# `generation_config.json` into its own process state, so the HF `generation_config` it
+# snapshotted is the SHORT list and stays that way.
+#
+# vLLM applies the model's generation stop set per request, in
+# `Processor.process_inputs` -> `SamplingParams.update_from_generation_config`, reading a
+# plain dict it captured at engine construction. That dict is the seam: it is re-read on
+# EVERY request, for a caller-supplied `SamplingParams` as much as for the default one, which
+# matters because GRPO always passes its own. Widening it there is additive (vLLM merges into
+# the caller's `stop_token_ids` rather than replacing them) and is skipped entirely when the
+# caller sets `ignore_eos = True`, so the opt-out keeps working.
+#
+# The attribute is internal and has moved between vLLM versions, so every lookup is
+# defensive. Failing to widen costs a user the tool-call stop token; raising here would cost
+# them the model load, on the inference path, for a model that was loading fine before.
+_VLLM_GENERATION_CONFIG_FIELD_PATHS = (
+    ("llm_engine", "input_processor"),
+    ("input_processor",),
+    ("llm_engine", "processor"),
+    ("processor",),
+)
+# vLLM refuses a request whose stop set exceeds this, but only when `min_tokens > 0`.
+# Never reached by a harmony stop set of three, and cheap to respect.
+_VLLM_MAX_STOP_TOKEN_IDS = 128
+
+
+def _vllm_generation_config_fields(engine):
+    """The engine's per-request generation-config dict, if this vLLM exposes one."""
+    for path in _VLLM_GENERATION_CONFIG_FIELD_PATHS:
+        holder = engine
+        for attribute in path:
+            holder = getattr(holder, attribute, None)
+            if holder is None:
+                break
+        else:
+            fields = getattr(holder, "generation_config_fields", None)
+            if isinstance(fields, dict):
+                return fields
+    return None
+
+
+def patch_harmony_tool_call_eos_vllm(model, tokenizer):
+    """Add `<|call|>` to the stop set a vLLM engine applies to every request.
+
+    A no-op unless `fast_inference = True` actually built an engine and the tokenizer
+    fingerprints as harmony. Additive and idempotent.
+    """
+    engine = getattr(model, "vllm_engine", None)
+    if engine is None:
+        return model
+    try:
+        call_id = _harmony_tool_call_token_id(tokenizer)
+        if call_id is None:
+            return model
+        fields = _vllm_generation_config_fields(engine)
+        if fields is None:
+            logger.warning(
+                f"Unsloth: Could not reach the vLLM stop-token set, so `{_HARMONY_TOOL_CALL_TOKEN}` "
+                "was not added to it. Tool calls under `fast_inference = True` may not stop on "
+                "their own terminator. Pass `stop_token_ids` to work around it."
+            )
+            return model
+
+        current = fields.get("eos_token_id", None)
+        if isinstance(current, bool):
+            # bool is an int subclass and would otherwise be read as a token id.
+            return model
+        elif isinstance(current, int):
+            eos_ids = [current]
+        elif isinstance(current, (list, tuple)):
+            eos_ids = []
+            for token_id in current:
+                if isinstance(token_id, bool) or not isinstance(token_id, int):
+                    return model
+                eos_ids.append(token_id)
+        elif current is None:
+            # Absent key, or explicitly null. Unlike the HF branch above, seeding
+            # `[<|call|>]` here does NOT drop the ordinary terminator: vLLM tracks the
+            # primary eos separately, off the tokenizer, and this dict only ever ADDS to it.
+            # An empty list is the same case, and is inert until it is seeded.
+            eos_ids = []
+        else:
+            return model
+
+        if call_id in eos_ids:
+            return model
+        if len(eos_ids) + 1 > _VLLM_MAX_STOP_TOKEN_IDS:
+            return model
+
+        fields["eos_token_id"] = eos_ids + [call_id]
+        logger.warning(
+            f"Unsloth: Added `{_HARMONY_TOOL_CALL_TOKEN}` (id {call_id}) to the vLLM stop "
+            "tokens. Harmony ends a tool call with it, and without it generation runs past a "
+            "finished tool call into plain-text harmony markup."
+        )
+    except Exception as error:
+        # Never turn a working load into a failed one over a stop token.
+        logger.warning(
+            f"Unsloth: Could not add `{_HARMONY_TOOL_CALL_TOKEN}` to the vLLM stop tokens "
+            f"({error}). Tool calls under `fast_inference = True` may not stop on their own "
+            "terminator."
+        )
+    return model
+
+
 def patch_tokenizer(model, tokenizer):
     model, tokenizer = _patch_tokenizer(model, tokenizer)
     if model is not None:
         model.config.update({"unsloth_version": __version__})
     model = patch_harmony_tool_call_eos(model, tokenizer)
+    model = patch_harmony_tool_call_eos_vllm(model, tokenizer)
     return model, tokenizer
 
 
