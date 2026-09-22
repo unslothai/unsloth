@@ -2593,13 +2593,21 @@ _CHAT_GEOMETRY_THAT_MUST_KEEP_THE_SCALE = (
 
 def test_every_platform_chat_header_geometry_still_follows_the_ui_scale():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
-    for name in _CHAT_GEOMETRY_THAT_MUST_KEEP_THE_SCALE:
-        stated = re.findall(rf'"{re.escape(name)}":\s*"([^"]+)"', source)
-        assert stated, f"{name} is gone from the provider"
-        for value in stated:
-            assert re.fullmatch(
-                r"calc\(\s*[\d.]+px\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)", value
-            ), f"{name} is stated as {value!r}, which stays put while the rest of the row grows"
+    blocks = dict(re.findall(r"const (\w+_CHROME_STYLE) = \{(.*?)\n\}", source, re.S))
+    assert len(blocks) >= 2, f"the provider states {sorted(blocks)}, so a chrome has gone missing"
+    # Per block, not across the file: the chromes are alternatives, and one of them holding a
+    # declaration says nothing about the other. Dropping all three from the custom chrome
+    # leaves its users on the root geometry rather than the padding and control height this
+    # row is laid out against, while the mac block's copies answer for it in a global search.
+    for chrome, body in blocks.items():
+        for name in _CHAT_GEOMETRY_THAT_MUST_KEEP_THE_SCALE:
+            stated = re.findall(rf'"{re.escape(name)}":\s*"([^"]+)"', body)
+            assert stated, f"{chrome} no longer states {name}"
+            for value in stated:
+                assert re.fullmatch(
+                    r"calc\(\s*[\d.]+px\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)",
+                    value,
+                ), f"{chrome} states {name} as {value!r}, which stays put while the row grows"
 
 
 def test_the_sidebar_action_geometry_still_follows_the_ui_scale():
