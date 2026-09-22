@@ -184,6 +184,11 @@ def test_a_lora_run_started_before_this_can_still_resume():
     new.load_state_dict(old.state_dict())  # ValueError if the group count moved
 
 
+def _decay_names(torch, model):
+    from transformers import Trainer
+    return Trainer.get_decay_parameter_names(None, model)
+
+
 def _legacy_optimizer(
     torch,
     model,
@@ -272,3 +277,61 @@ def test_the_scheduler_survives_the_same_resume():
     new_scheduler.load_state_dict(saved)
     new_scheduler.step()  # ValueError from zip(strict=True) if base_lrs was not expanded
     assert len(new_scheduler.base_lrs) == len(new_optimizer.param_groups)
+
+
+def test_a_checkpoint_with_the_same_group_count_but_a_different_shape_migrates():
+    # No trainable embedding: legacy is [all non-embeddings, empty], new is
+    # [decayed, non-decayed]. Two groups either way, so a count check misses it.
+    torch = pytest.importorskip("torch")
+    nn = torch.nn
+    from unsloth.trainer import _create_unsloth_optimizer
+
+    model = nn.Module()
+    model.proj = nn.Linear(4, 4)  # .weight decays, .bias does not
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    old = torch.optim.AdamW(
+        [
+            {"params": trainable, "lr": 2e-4, "weight_decay": 0.0},
+            {"params": [], "lr": 5e-5, "weight_decay": 0.0},
+        ],
+        lr = 2e-4,
+    )
+    for index, param in enumerate(model.parameters()):
+        param.grad = torch.full_like(param, float(index + 1))
+    old.step()
+    saved = old.state_dict()
+
+    new = _create_unsloth_optimizer(
+        model,
+        torch.optim.AdamW,
+        {"lr": 2e-4},
+        5e-5,
+        weight_decay = 0.1,
+        decay_parameter_names = _decay_names(torch, model),
+    )
+    assert len(new.param_groups) == len(saved["param_groups"]), "count check would have caught it"
+    assert [len(g["params"]) for g in new.param_groups] != [
+        len(g["params"]) for g in saved["param_groups"]
+    ]
+    new.load_state_dict(saved)
+    assert sum(len(g["params"]) for g in new.param_groups) == len(trainable)
+
+
+def test_the_plateau_scheduler_min_lrs_are_remapped_too():
+    torch = pytest.importorskip("torch")
+    nn = torch.nn
+    from torch.optim.lr_scheduler import ReduceLROnPlateau
+    from unsloth.trainer import _install_legacy_scheduler_resume
+
+    model = _model(torch, nn)
+    old = ReduceLROnPlateau(_legacy_optimizer(torch, model), min_lr = [1e-7, 2e-7])
+    saved = old.state_dict()
+
+    new_optimizer = _optimizer(torch, model, 0.1)
+    new_scheduler = _install_legacy_scheduler_resume(
+        ReduceLROnPlateau(new_optimizer, min_lr = 1e-7), new_optimizer
+    )
+    new_scheduler.load_state_dict(saved)
+    assert len(new_scheduler.min_lrs) == len(new_optimizer.param_groups)
+    for _ in range(14):
+        new_scheduler.step(1.0)  # RuntimeError if min_lrs is still the legacy length

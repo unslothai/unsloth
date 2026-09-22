@@ -604,7 +604,9 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
     @wraps(original)
     def load_state_dict(state_dict):
         state_dict = dict(state_dict)
-        for key in ("base_lrs", "_last_lr"):
+        # min_lrs is reduce_lr_on_plateau's per-group floor; left at two entries it
+        # replaces a correctly sized list and the next reduction indexes past its end.
+        for key in ("base_lrs", "_last_lr", "min_lrs"):
             saved = state_dict.get(key)
             if isinstance(saved, list) and len(saved) == len(_LEGACY_ROLE_ORDER) != len(roles):
                 by_role = dict(zip(_LEGACY_ROLE_ORDER, saved))
@@ -623,7 +625,11 @@ def _install_legacy_resume(optimizer, legacy_params, legacy_sizes, group_roles):
     @wraps(original)
     def load_state_dict(state_dict):
         saved = state_dict.get("param_groups") or []
-        if len(saved) != len(optimizer.param_groups):
+        # Keyed on the SHAPE, not the count: a model with no trainable embedding has a
+        # legacy [all non-embeddings, empty embeddings] and a new [decayed, non-decayed],
+        # two groups either way but different sizes, which torch rejects just the same.
+        current_shape = [len(group["params"]) for group in optimizer.param_groups]
+        if [len(group["params"]) for group in saved] != current_shape:
             migrated = _migrate_legacy_optimizer_state(
                 state_dict, optimizer, legacy_params, legacy_sizes, group_roles
             )
