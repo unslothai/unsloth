@@ -45,6 +45,10 @@ def test_bits_requested_reads_objects_and_dicts():
     assert _bnb_bits_requested({"quant_method": "bitsandbytes", "load_in_4bit": True}) == 4
     assert _bnb_bits_requested({"quant_method": "fp8", "load_in_4bit": True}) is None
     assert _bnb_bits_requested({"quant_method": "gptq", "bits": 4}) is None
+    # The dict shorthand without quant_method is still bitsandbytes.
+    assert _bnb_bits_requested({"load_in_4bit": True}) == 4
+    assert _bnb_bits_requested({"load_in_8bit": True}) == 8
+    assert _bnb_bits_requested({}) is None
 
 
 def test_warns_when_a_4bit_load_quantized_nothing(capsys):

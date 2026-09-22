@@ -1417,6 +1417,10 @@ def _bnb_bits_requested(quantization_config):
         get = lambda key, default = None: getattr(quantization_config, key, default)
     method = get("quant_method", "") or ""
     method = str(getattr(method, "value", method)).lower()
+    # The dict shorthand {"load_in_4bit": True} carries no quant_method; the loader and
+    # AutoQuantizationConfig.from_dict both read bitsandbytes off the flags.
+    if not method and isinstance(quantization_config, dict):
+        method = "bitsandbytes"
     if "bitsandbytes" not in method:
         return None
     if get("load_in_4bit", False):
