@@ -822,7 +822,7 @@ def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
         source_thread_id = "src",
         branch_message_id = "m3",
         new_thread_id = "fork-1",
-        new_title = "fork · Original",
+        new_title = "Original",
         created_at = 99,
         id_factory = id_factory,
     )
@@ -878,7 +878,7 @@ def test_fork_chat_thread_preserves_project_id(tmp_path, monkeypatch):
         source_thread_id = "src",
         branch_message_id = "m1",
         new_thread_id = "fork-1",
-        new_title = "fork · Original",
+        new_title = "Original",
         created_at = 99,
         id_factory = lambda: "new-1",
     )
@@ -1380,3 +1380,102 @@ def test_repeated_identical_sends_in_flat_thread_persist_separately(tmp_path, mo
     messages = studio_db.sync_chat_messages("thread-1", payload)
     assert len(messages) == 2
     assert [m["id"] for m in messages] == ["u1", "u2"]
+
+
+# ---------------------------------------------------------------------------
+# fork titles and the inherited-history boundary
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "title,base",
+    [
+        ("Chat", "Chat"),
+        ("Chat (2)", "Chat"),
+        ("Chat (2) (3)", "Chat (2)"),  # only the last suffix is a number we own
+        ("Chat(4)", "Chat"),
+        ("Chat (0)", "Chat"),
+        ("Weird (x)", "Weird (x)"),  # not a number, so part of the name
+        ("(2)", "(2)"),  # nothing left over, so the title stands
+        ("  Spaced  ", "Spaced"),
+    ],
+)
+def test_fork_title_base(title, base):
+    assert studio_db.fork_title_base(title) == base
+
+
+def _fork(source: str, new_id: str, title: str, at: int):
+    return studio_db.fork_chat_thread(
+        source_thread_id = source,
+        branch_message_id = None,
+        new_thread_id = new_id,
+        new_title = title,
+        created_at = at,
+        id_factory = lambda: uuid.uuid4().hex,
+    )
+
+
+def test_fork_titles_number_from_the_original_name(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Research notes"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1), _msg("m2", "m1", 2)])
+
+    titles = [_fork("src", f"f{i}", "Research notes", 10 + i)["title"] for i in range(3)]
+    assert titles == ["Research notes (1)", "Research notes (2)", "Research notes (3)"]
+
+    # Forking a fork numbers from the same base rather than nesting suffixes.
+    assert _fork("f0", "deep", "Research notes (1)", 20)["title"] == "Research notes (4)"
+
+
+def test_fork_title_fills_the_lowest_free_number(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+    for i in range(3):
+        _fork("src", f"f{i}", "Notes", 10 + i)
+    studio_db.delete_chat_threads(["f1"])  # frees "Notes (2)"
+
+    assert _fork("src", "f-new", "Notes", 30)["title"] == "Notes (2)"
+
+
+def test_fork_title_ignores_other_names_and_archived_state(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+    # A different chat whose name merely starts with the base must not consume a number.
+    studio_db.upsert_chat_thread({**_thread("other"), "title": "Notes extra (1)"})
+    # An archived chat still holds its number, so restoring it cannot collide.
+    studio_db.upsert_chat_thread(
+        {**_thread("old"), "title": "Notes (1)", "archived": True}
+    )
+
+    assert _fork("src", "f-new", "Notes", 30)["title"] == "Notes (2)"
+
+
+def test_fork_records_the_last_inherited_message(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages(
+        "src", [_msg("m1", None, 1), _msg("m2", "m1", 2), _msg("m3", "m2", 3)]
+    )
+
+    forked = studio_db.fork_chat_thread(
+        source_thread_id = "src",
+        branch_message_id = "m2",
+        new_thread_id = "fork-1",
+        new_title = "Notes",
+        created_at = 99,
+        id_factory = lambda: uuid.uuid4().hex,
+    )
+    copied = studio_db.list_chat_messages("fork-1")
+    boundary = forked["forkBoundaryMessageId"]
+    # The fork's own copy of the branch message, not the source's id.
+    assert boundary == copied[-1]["id"]
+    assert boundary not in {"m1", "m2", "m3"}
+    assert studio_db.get_chat_thread("fork-1")["forkBoundaryMessageId"] == boundary
+
+
+def test_plain_thread_has_no_fork_boundary(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("plain"))
+    assert studio_db.get_chat_thread("plain")["forkBoundaryMessageId"] is None

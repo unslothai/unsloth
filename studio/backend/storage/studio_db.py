@@ -423,6 +423,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             anthropic_code_exec_container_id TEXT,
             forked_from_thread_id TEXT,
             forked_from_message_id TEXT,
+            fork_boundary_message_id TEXT,
             settings_json TEXT,
             FOREIGN KEY(project_id) REFERENCES chat_projects(id) ON DELETE CASCADE
         )
@@ -453,6 +454,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN forked_from_thread_id TEXT")
     if "forked_from_message_id" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN forked_from_message_id TEXT")
+    # Null on forks taken before this column: those threads simply show no divider.
+    if "fork_boundary_message_id" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN fork_boundary_message_id TEXT")
     if "updated_at" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN updated_at INTEGER")
         # Floor at created_at: forked threads copy older ancestor messages, so the fork's creation time wins.
@@ -1953,6 +1957,7 @@ def _chat_thread_from_row(row: sqlite3.Row, include_settings: bool = True) -> di
         "anthropicCodeExecContainerId": data.get("anthropic_code_exec_container_id"),
         "forkedFromThreadId": data.get("forked_from_thread_id"),
         "forkedFromMessageId": data.get("forked_from_message_id"),
+        "forkBoundaryMessageId": data.get("fork_boundary_message_id"),
     }
     if include_settings:
         thread["settings"] = _json_loads(data.get("settings_json"), None)
@@ -2014,8 +2019,8 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, settings_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, fork_boundary_message_id, settings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
@@ -2034,6 +2039,7 @@ def upsert_chat_thread(thread: dict) -> dict:
                 anthropic_code_exec_container_id = excluded.anthropic_code_exec_container_id,
                 forked_from_thread_id = excluded.forked_from_thread_id,
                 forked_from_message_id = excluded.forked_from_message_id,
+                fork_boundary_message_id = excluded.fork_boundary_message_id,
                 -- an absent snapshot keeps the stored one: most writers rebuild the record without it.
                 settings_json = COALESCE(excluded.settings_json, chat_threads.settings_json)
             """,
@@ -2052,6 +2058,7 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread.get("anthropicCodeExecContainerId"),
                 thread.get("forkedFromThreadId"),
                 thread.get("forkedFromMessageId"),
+                thread.get("forkBoundaryMessageId"),
                 json.dumps(thread["settings"]) if thread.get("settings") is not None else None,
             ),
         )
@@ -3910,6 +3917,34 @@ class ChatForkActiveGenerationError(RuntimeError):
     """A durable generation prevents copying a settled chat."""
 
 
+_FORK_TITLE_SUFFIX = re.compile(r"^(?P<base>.*?)\s*\((?P<n>\d+)\)\s*$", re.DOTALL)
+
+
+def fork_title_base(title: str) -> str:
+    """The name a fork numbers from. Forking "Chat (2)" gives "Chat (3)", not "Chat (2) (1)"."""
+    match = _FORK_TITLE_SUFFIX.match(title)
+    base = match.group("base").strip() if match else title.strip()
+    # A title that is only a number keeps it: "(2)" numbers from "(2)", not from "".
+    return base or title.strip()
+
+
+def _next_fork_title(conn: sqlite3.Connection, base: str) -> str:
+    """Lowest free `base (n)`, n >= 1. Called inside the fork's write lock, so two
+    concurrent forks of one chat cannot pick the same number."""
+    taken: set[int] = set()
+    for row in conn.execute(
+        "SELECT title FROM chat_threads WHERE title = ? OR title LIKE ? ESCAPE '\\'",
+        (base, _like_escape(base) + " (%)"),
+    ):
+        match = _FORK_TITLE_SUFFIX.match(row["title"] or "")
+        if match and match.group("base").strip() == base:
+            taken.add(int(match.group("n")))
+    n = 1
+    while n in taken:
+        n += 1
+    return f"{base} ({n})"
+
+
 def fork_chat_thread(
     source_thread_id: str,
     branch_message_id: Optional[str],
@@ -3989,17 +4024,22 @@ def fork_chat_thread(
         ancestry.reverse()  # root .. branch msg
         id_map: dict[str, str] = {row["id"]: id_factory() for row in ancestry}
         src_dict = dict(src)
+        # Numbered under the write lock, so two concurrent forks cannot take the same number.
+        title = _next_fork_title(conn, fork_title_base(new_title))
+        # Anchor for the "Continued from chat" divider. Not derivable later: copies keep the
+        # source's timestamps and take fresh ids.
+        boundary_message_id = id_map[ancestry[-1]["id"]]
         conn.execute(
             """
             INSERT INTO chat_threads
                 (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at,
                  openai_code_exec_container_id, anthropic_code_exec_container_id,
-                 forked_from_thread_id, forked_from_message_id, settings_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?)
+                 forked_from_thread_id, forked_from_message_id, fork_boundary_message_id, settings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?, ?)
             """,
             (
                 new_thread_id,
-                new_title,
+                title,
                 src_dict["model_type"],
                 src_dict.get("model_id") or "",
                 src_dict.get("model_gguf_variant"),
@@ -4008,6 +4048,7 @@ def fork_chat_thread(
                 int(created_at),
                 source_thread_id,
                 branch_message_id,
+                boundary_message_id,
                 src_dict.get("settings_json"),
             ),
         )

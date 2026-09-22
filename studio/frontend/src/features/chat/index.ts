@@ -111,6 +111,11 @@ export {
   type ReasoningRoundState,
 } from "./stores/reasoning-round-store";
 export {
+  setForkBoundary,
+  useForkBoundaryStore,
+  type ForkBoundaryState,
+} from "./stores/fork-boundary-store";
+export {
   folderRingKey,
   planKey,
   planSidebarDrop,

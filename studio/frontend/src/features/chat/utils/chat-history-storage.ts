@@ -39,6 +39,8 @@ import {
   markChatThreadsDeleted,
 } from "./chat-thread-tombstones";
 import { ThreadRecordWriteCoordinator } from "./thread-record-write-coordinator";
+// eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
+import { setForkBoundary } from "../stores/fork-boundary-store";
 
 // Thread ids belonging to a temporary/incognito session. A thread is tagged once at creation
 // and stays tagged for life; readers and writers consult this set, never the live toggle.
@@ -741,6 +743,9 @@ export async function listStoredChatMessages(
       throw error;
     }),
   ]);
+  if (backendThread) {
+    setForkBoundary(threadId, backendThread.forkBoundaryMessageId);
+  }
   if (backendMessages && (backendThread || backendMessages.length > 0)) {
     const merged = mergeMessages(backendMessages, legacyMessages, {
       includeLegacyOnly:
