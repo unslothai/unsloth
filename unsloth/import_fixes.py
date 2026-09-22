@@ -1543,6 +1543,39 @@ def _transformers_rope_scaling_assignment_drops_theta():
         return False
 
 
+def fix_transformers_validate_rope_ignore_keys():
+    """Let remote configuration code call ``validate_rope(ignore_keys = ...)`` on a transformers
+    that dropped that parameter.
+
+    transformers 5.0 declared ``RotaryEmbeddingConfigMixin.validate_rope(self, ignore_keys)``
+    and 5.1 removed the parameter. Remote code written against 5.0 (sarvamai/sarvam-105b-fp8's
+    ``configuration_sarvam_moe.py`` calls it from ``convert_rope_params_to_dict``) then dies in
+    ``AutoConfig.from_pretrained`` with ``TypeError: validate_rope() got an unexpected keyword
+    argument 'ignore_keys'`` before a single weight is read. The wrapper accepts and drops the
+    keyword; on a build whose validator still takes it, or has no mixin at all (4.x), nothing
+    is changed."""
+    try:
+        from transformers.modeling_rope_utils import RotaryEmbeddingConfigMixin
+    except Exception:
+        return
+    original = RotaryEmbeddingConfigMixin.__dict__.get("validate_rope")
+    if original is None or getattr(original, "_unsloth_ignore_keys", False):
+        return
+    try:
+        if "ignore_keys" in inspect.signature(original).parameters:
+            return
+    except (TypeError, ValueError):
+        return
+
+    @functools.wraps(original)
+    def validate_rope(self, *args, ignore_keys = None, **kwargs):
+        return original(self, *args, **kwargs)
+
+    validate_rope._unsloth_ignore_keys = True
+    RotaryEmbeddingConfigMixin.validate_rope = validate_rope
+    logger.info("Unsloth: Patched transformers `validate_rope` to accept the 5.0 `ignore_keys` argument.")
+
+
 def fix_transformers_rope_scaling_drops_theta():
     """Stop a replaced ``rope_scaling`` silently unscaling RoPE (issue #2405).
 
