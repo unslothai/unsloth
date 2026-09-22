@@ -66,20 +66,52 @@ def is_remote_deepseek_gate(module) -> bool:
     )
 
 
+def _calls_moe_infer(nodes) -> bool:
+    import ast
+    return any(
+        isinstance(sub, ast.Attribute) and sub.attr == "moe_infer"
+        for node in nodes
+        for sub in ast.walk(node)
+    )
+
+
+def _has_own_training_dispatch(body) -> bool:
+    """Whether a `self.training` branch computes the output itself: non-empty and not
+    through the no-grad `moe_infer`."""
+    import ast
+
+    for node in body:
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.If):
+                continue
+            test = sub.test
+            negated = isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not)
+            inner = test.operand if negated else test
+            if isinstance(inner, ast.Attribute) and inner.attr == "training":
+                # `if self.training:` trains in the body; `if not self.training:` in the else.
+                branch = sub.orelse if negated else sub.body
+                if branch and not _calls_moe_infer(branch):
+                    return True
+    return False
+
+
 def _forward_has_no_training_branch(cls) -> bool:
-    """The inference-only ports compute the output only under `if not self.training` and
-    leave nothing for training; the training-capable DeepSeek-V2/V3 implementations have an
-    `if self.training:` dispatch of their own (and a gate that returns an auxiliary loss).
-    Only the former is shimmed. A forward whose source cannot be read is left alone."""
+    """Inference-only ports reach the no-grad `moe_infer` in training or leave training
+    empty (sarvam's `else:` calls it too; Kimi's port has no `else:`); training-capable
+    DeepSeek-V2/V3 code dispatches its own experts under `self.training`, in either branch
+    order. Only the former is shimmed. A forward whose source cannot be read is left alone."""
+    import ast
     import inspect
+    import textwrap
 
     try:
-        source = inspect.getsource(cls.forward)
-    except (OSError, TypeError):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(cls.forward)))
+    except (OSError, TypeError, SyntaxError):
         return False
-    # The port: `if not self.training: y = self.moe_infer(...)` and nothing for training.
-    # The training-capable implementation: `if self.training: ... else: ... moe_infer(...)`.
-    return "moe_infer" in source and "if self.training" not in source
+    function = tree.body[0] if tree.body else None
+    if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    return _calls_moe_infer(function.body) and not _has_own_training_dispatch(function.body)
 
 
 def is_remote_deepseek_moe(module) -> bool:

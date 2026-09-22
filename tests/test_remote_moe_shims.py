@@ -362,3 +362,34 @@ def test_a_renamed_port_with_a_no_grad_else_branch_is_shimmed(shared):
     )
     if shared:
         assert block.shared_experts.down_proj.weight.grad is not None
+
+
+def test_an_eval_first_training_capable_remote_moe_is_left_alone():
+    """`if not self.training: moe_infer(...) else: <training dispatch>` trains on its own."""
+    import sys, types
+    from unsloth.models.remote_moe_shims import is_remote_deepseek_moe
+
+    module = types.ModuleType("transformers_modules.eval_first.modeling_deepseek")
+
+    class EvalFirstMoE(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = nn.ModuleList([nn.Linear(2, 2)])
+            self.gate = nn.Linear(2, 1)
+
+        def forward(self, hidden_states):
+            if not self.training:
+                y = self.moe_infer(hidden_states)
+            else:
+                y = self.experts[0](hidden_states)
+            return y
+
+        def moe_infer(self, x):
+            return x
+
+    EvalFirstMoE.__module__ = module.__name__
+    sys.modules[module.__name__] = module
+    try:
+        assert not is_remote_deepseek_moe(EvalFirstMoE())
+    finally:
+        sys.modules.pop(module.__name__, None)
