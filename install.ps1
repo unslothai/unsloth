@@ -4225,6 +4225,24 @@ exit 1
     # environment that fails later with nothing to point at; ignoring it installs packages the
     # operator excluded. So neither: the run stops and names the setting.
     function Assert-CarryablePipPolicy {
+        # uv's --cert is a CA BUNDLE and uv has no client-certificate option at all, so an
+        # index requiring mutual TLS cannot be reached by it, and the pip fallback that
+        # could present the certificate has already been declined.
+        $clientCert = "$env:PIP_CLIENT_CERT".Trim()
+        if (-not $clientCert) {
+            foreach ($line in (Get-PmPipConfigListing)) {
+                if ("$line" -match "^(global|install)\.client[-_]cert\s*=\s*'?([^']*)'?\s*$") {
+                    $clientCert = $Matches[2].Trim()
+                }
+            }
+        }
+        if ($clientCert) {
+            throw ("UNSLOTH_RESPECT_PM_POLICY is set and pip is configured with a client " +
+                "certificate for mutual TLS. uv has no option for one, so it cannot present " +
+                "it to your index, and this stops rather than attempting an install that " +
+                "cannot reach the source. Unset UNSLOTH_RESPECT_PM_POLICY for one run to let " +
+                "the pip fallback use it.")
+        }
         $keyring = Get-PipPolicyKeyring
         if ($keyring -and @('auto', 'disabled', 'subprocess') -notcontains $keyring) {
             throw ("UNSLOTH_RESPECT_PM_POLICY is set and pip is configured to authenticate " +
@@ -4391,6 +4409,8 @@ exit 1
         # #6898 stays closed. Never over a uv value the operator set.
         foreach ($pair in @(
             @('PIP_CONSTRAINT', 'UV_CONSTRAINT', 'constraint'),
+            @('PIP_BUILD_CONSTRAINT', 'UV_BUILD_CONSTRAINT', 'build[-_]constraint'),
+            @('PIP_TRUSTED_HOST', 'UV_INSECURE_HOST', 'trusted[-_]host'),
             @('PIP_INDEX_URL', 'UV_INDEX_URL', 'index[-_]url'),
             @('PIP_EXTRA_INDEX_URL', 'UV_EXTRA_INDEX_URL', 'extra[-_]index[-_]url')
         )) {

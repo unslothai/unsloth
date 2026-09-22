@@ -487,6 +487,18 @@ _resolve_only_binary_policy() {
 # only. pip also has `import`, which uv has no equivalent for, so that one stops the run:
 # carrying the index without the means to authenticate to it sends uv somewhere it will be
 # refused, and the pip fallback that could have used the keyring is declined on purpose.
+# uv's --cert is a CA BUNDLE and uv has no client-certificate option at all, so an index
+# requiring mutual TLS cannot be reached by it, and the pip fallback that could present the
+# certificate has already been declined.
+_require_no_client_cert() {
+    _pm_cc="${PIP_CLIENT_CERT:-}"
+    [ -z "$_pm_cc" ] && _pm_cc=$(_pm_config_rows "client[-_]cert" | tail -n 1)
+    [ -z "$_pm_cc" ] && return 0
+    step "error" "pip's client certificate has no uv equivalent" "$C_ERR" >&2
+    substep "UNSLOTH_RESPECT_PM_POLICY is set and pip is configured with a client certificate for mutual TLS. uv has no option for one, so it cannot present it to your index, and this stops rather than attempting an install that cannot reach the source. Unset UNSLOTH_RESPECT_PM_POLICY for one run to let the pip fallback use it." "$C_ERR" >&2
+    exit 1
+}
+
 _carry_pip_keyring_into_uv() {
     [ -n "${UV_KEYRING_PROVIDER:-}" ] && return 0
     _pm_kr="${PIP_KEYRING_PROVIDER:-}"
@@ -591,8 +603,17 @@ _pm_policy_ready() {
     # uv binds --constraints to UV_CONSTRAINT and reads no pip spelling for it, so a
     # constraint file the operator required was invisible and uv could resolve a version
     # they had prohibited. Restrictive, so it is carried for pinned commands too.
+    _require_no_client_cert
     _carry_pip_keyring_into_uv
     _carry_pip_index_into_uv PIP_CONSTRAINT UV_CONSTRAINT "constraint"
+    # Build dependencies are resolved when uv builds an sdist, and are the ones the operator
+    # cannot see in a lockfile, so a build-constraint left behind means an sdist pulls its
+    # build backend from wherever it likes.
+    _carry_pip_index_into_uv PIP_BUILD_CONSTRAINT UV_BUILD_CONSTRAINT "build[-_]constraint"
+    # A deliberate exception for named hosts, which uv spells --allow-insecure-host. Carried
+    # with the CA rather than with the index URLs, because a kept find-links host needs it on
+    # a pinned command too; it relaxes only the hosts the operator listed.
+    _carry_pip_index_into_uv PIP_TRUSTED_HOST UV_INSECURE_HOST "trusted[-_]host"
     _carry_pip_index_into_uv PIP_INDEX_URL UV_INDEX_URL "index[-_]url"
     _carry_pip_index_into_uv PIP_EXTRA_INDEX_URL UV_EXTRA_INDEX_URL "extra[-_]index[-_]url"
     return 0

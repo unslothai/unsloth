@@ -1274,6 +1274,9 @@ class TestPackageManagerPolicyOptOut:
         "PIP_CONSTRAINT",
         "PIP_CERT",
         "PIP_KEYRING_PROVIDER",
+        "PIP_BUILD_CONSTRAINT",
+        "PIP_TRUSTED_HOST",
+        "PIP_CLIENT_CERT",
         "PIP_CONFIG_FILE",
         "UV_REQUIRE_HASHES",
         "UV_OFFLINE",
@@ -1285,6 +1288,8 @@ class TestPackageManagerPolicyOptOut:
         "UV_INDEX_URL",
         "UV_EXTRA_INDEX_URL",
         "UV_KEYRING_PROVIDER",
+        "UV_BUILD_CONSTRAINT",
+        "UV_INSECURE_HOST",
         "UV_CONFIG_FILE",
         "UV_NO_CONFIG",
     )
@@ -2694,6 +2699,91 @@ class TestPackageManagerPolicyOptOut:
             "run_install_cmd" in body[: body.index("uv pip install")][-200:]
         ), f"the uv pip bootstrap bypasses the policy wrapper: {bootstrap}"
 
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "expected"),
+        [
+            (
+                {"PIP_BUILD_CONSTRAINT": "/etc/build.txt"},
+                b"",
+                {"UV_BUILD_CONSTRAINT": "/etc/build.txt"},
+            ),
+            (
+                {},
+                b"global.build-constraint='/etc/build.txt'\n",
+                {"UV_BUILD_CONSTRAINT": "/etc/build.txt"},
+            ),
+            (
+                {"PIP_TRUSTED_HOST": "mirror.internal other.internal"},
+                b"",
+                {"UV_INSECURE_HOST": "mirror.internal,other.internal"},
+            ),
+            (
+                {},
+                b"global.trusted-host='mirror.internal'\n",
+                {"UV_INSECURE_HOST": "mirror.internal"},
+            ),
+            ({}, b"", {}),
+        ],
+    )
+    def test_reaching_the_index_is_carried_as_a_whole(
+        self, environment, listing, expected, monkeypatch
+    ):
+        """An index the installer cannot reach is not a carried index.
+
+        build-constraint governs the dependencies uv resolves when it BUILDS an sdist, which
+        are the ones an operator cannot see in a lockfile. trusted-host is their deliberate
+        exception for a plain-HTTP or self-signed host, which uv spells --allow-insecure-host
+        and relaxes for those hosts only. Both apply on the pinned arm as well: a kept
+        find-links host needs the exception too, and a build constraint only narrows.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment(environment, opt_out = "1"):
+            unpinned = ips._pip_policy_as_uv_env()
+            pinned = ips._pip_policy_as_uv_env(pinned = True)
+        for name, value in expected.items():
+            assert unpinned.get(name) == value
+            assert pinned.get(name) == value, f"{name} narrows or authenticates, so a pin keeps it"
+        if not expected:
+            assert "UV_BUILD_CONSTRAINT" not in unpinned
+            assert "UV_INSECURE_HOST" not in unpinned
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "stops"),
+        [
+            ({"PIP_CLIENT_CERT": "/etc/client.pem"}, b"", True),
+            ({}, b"global.client-cert='/etc/client.pem'\n", True),
+            ({}, b"", False),
+        ],
+    )
+    def test_a_client_certificate_stops_the_run(
+        self, environment, listing, stops, monkeypatch, capsys
+    ):
+        """uv's --cert is a CA bundle, and uv has no client-certificate option at all.
+
+        So an index requiring mutual TLS cannot be reached by uv under any translation, and
+        the pip fallback that could present the certificate has already been declined. The
+        third member of the stop list, and the plainest: there is nothing to translate it
+        to, rather than a choice between two bad translations.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        monkeypatch.setattr(ips, "_POLICY_UNCARRYABLE_REPORTED", False)
+        with self._environment(environment, opt_out = "1"):
+            if stops:
+                with pytest.raises(SystemExit) as stopped:
+                    ips._require_carryable_pip_policy()
+                assert stopped.value.code == 1
+                assert "client certificate" in capsys.readouterr().out
+            else:
+                ips._require_carryable_pip_policy()
+        # and the default path is never stopped, however pip is configured
+        monkeypatch.setattr(ips, "_POLICY_UNCARRYABLE_REPORTED", False)
+        with self._environment(environment):
+            ips._require_carryable_pip_policy()
+
     def test_the_shell_declines_the_forced_pip_amd_wheel_too(self):
         """install.sh runs the same direct-URL install through pip, for the same reason.
 
@@ -3457,7 +3547,12 @@ class TestDuplicateCoreMetadataRepair:
             "PIP_NO_BINARY",
             "PIP_ONLY_BINARY",
             "UV_KEYRING_PROVIDER",
+            "UV_BUILD_CONSTRAINT",
+            "UV_INSECURE_HOST",
             "PIP_KEYRING_PROVIDER",
+            "PIP_BUILD_CONSTRAINT",
+            "PIP_TRUSTED_HOST",
+            "PIP_CLIENT_CERT",
         ):
             monkeypatch.delenv(var, raising = False)
 

@@ -9239,7 +9239,11 @@ def _require_readable_pip_policy() -> None:
 def _require_carryable_pip_policy() -> None:
     """Under the opt-out, a pip setting uv cannot be told and we must not ignore stops.
 
-    Two settings are named here. pip's `import` keyring mode has no uv equivalent at all --
+    Three settings are named here. pip's client certificate is the plainest: uv's --cert is
+    a CA bundle and uv has no client-certificate option at all, so an index requiring mutual
+    TLS simply cannot be reached by it.
+
+     pip's `import` keyring mode has no uv equivalent at all --
     uv accepts `disabled` or `subprocess` only -- so an index carried without the means to
     authenticate to it sends uv somewhere it will be refused, while the pip fallback that
     could have used the keyring is declined on purpose.
@@ -9258,6 +9262,42 @@ def _require_carryable_pip_policy() -> None:
     global _POLICY_UNCARRYABLE_REPORTED
     if not _respect_pm_policy():
         return
+    # Mutual TLS: `uv pip install --help` has --cert, which is a CA BUNDLE, and no client
+    # certificate option at all. So an index that requires one cannot be reached by uv, and
+    # the pip fallback that could present it has already been declined.
+    client_cert = _effective_pip_policy("PIP_CLIENT_CERT", "client-cert")
+    if client_cert:
+        if not _POLICY_UNCARRYABLE_REPORTED:
+            _POLICY_UNCARRYABLE_REPORTED = True
+            _step("error", "pip's client certificate has no uv equivalent", _red)
+            _safe_print(
+                _red(
+                    f"   {_POLICY_OPT_OUT_ENV} is set and pip is configured with a client "
+                    "certificate for mutual TLS. uv has no option for one, so it cannot "
+                    "present it to your index, and this stops rather than attempting an "
+                    f"install that cannot reach the source. Unset {_POLICY_OPT_OUT_ENV} "
+                    "for one run to let the pip fallback use it."
+                )
+            )
+        sys.exit(1)
+    # Mutual TLS: `uv pip install --help` has --cert, which is a CA BUNDLE, and no client
+    # certificate option at all. So an index that requires one cannot be reached by uv, and
+    # the pip fallback that could present it has already been declined.
+    client_cert = _effective_pip_policy("PIP_CLIENT_CERT", "client-cert")
+    if client_cert:
+        if not _POLICY_UNCARRYABLE_REPORTED:
+            _POLICY_UNCARRYABLE_REPORTED = True
+            _step("error", "pip's client certificate has no uv equivalent", _red)
+            _safe_print(
+                _red(
+                    f"   {_POLICY_OPT_OUT_ENV} is set and pip is configured with a client "
+                    "certificate for mutual TLS. uv has no option for one, so it cannot "
+                    "present it to your index, and this stops rather than attempting an "
+                    f"install that cannot reach the source. Unset {_POLICY_OPT_OUT_ENV} "
+                    "for one run to let the pip fallback use it."
+                )
+            )
+        sys.exit(1)
     keyring = (_effective_pip_policy("PIP_KEYRING_PROVIDER", "keyring-provider") or "").lower()
     if keyring and keyring not in ("auto", "disabled", "subprocess"):
         if not _POLICY_UNCARRYABLE_REPORTED:
@@ -9375,10 +9415,26 @@ def _pip_policy_as_uv_env(pinned: bool = False) -> "dict[str, str]":
     # so a constraint file the operator required was invisible and uv could resolve a
     # version they had prohibited. Restrictive rather than a source, so it applies to pinned
     # commands too: it can only narrow what may be selected.
-    if not os.environ.get("UV_CONSTRAINT", "").strip():
-        constraint = _effective_pip_policy("PIP_CONSTRAINT", "constraint")
-        if constraint:
-            carried["UV_CONSTRAINT"] = constraint
+    for pip_name, uv_name, option in (
+        ("PIP_CONSTRAINT", "UV_CONSTRAINT", "constraint"),
+        # Build dependencies are resolved when uv builds an sdist, and they are exactly the
+        # ones the operator cannot see in a lockfile, so a build-constraint left behind
+        # means an sdist pulls its build backend from wherever it likes.
+        ("PIP_BUILD_CONSTRAINT", "UV_BUILD_CONSTRAINT", "build-constraint"),
+    ):
+        if os.environ.get(uv_name, "").strip():
+            continue
+        value = _effective_pip_policy(pip_name, option)
+        if value:
+            carried[uv_name] = value
+    # An operator who has allowed a plain-HTTP or self-signed index has made a deliberate
+    # exception for named hosts, and uv reads none of pip's spelling for it. Carried with
+    # the CA rather than with the index URLs, because a kept find-links host needs it on a
+    # pinned command too. It relaxes only the hosts they listed.
+    if not os.environ.get("UV_INSECURE_HOST", "").strip():
+        trusted = _effective_pip_policy("PIP_TRUSTED_HOST", "trusted-host")
+        if trusted:
+            carried["UV_INSECURE_HOST"] = _uv_find_links_value(trusted)
     # uv binds --keyring-provider to UV_KEYRING_PROVIDER and accepts `disabled` or
     # `subprocess` only. Restrictive in the sense that matters here: it is how uv is allowed
     # to authenticate, so carrying an index without it sends uv somewhere it will be
