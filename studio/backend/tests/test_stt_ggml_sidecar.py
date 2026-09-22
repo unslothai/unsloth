@@ -572,6 +572,9 @@ def test_child_env_appends_vendored_cuda_runtime(monkeypatch, tmp_path):
     reset_caches()
     monkeypatch.setattr(rl, "python_runtime_dirs", lambda: [str(wheel_dir)])
     monkeypatch.setattr(rl, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),))
+    # The host's loader may already carry this CUDA major, which correctly
+    # withholds the dir; pin the answer so the append itself is under test.
+    monkeypatch.setattr(rl, "_loader_already_provides_runtime", lambda _major: False)
     env = ggml_module._whisper_server_child_env(str(bindir / _SERVER_NAME))
     reset_caches()
 
@@ -580,6 +583,28 @@ def test_child_env_appends_vendored_cuda_runtime(monkeypatch, tmp_path):
     assert parts.index(str(bindir.resolve())) < parts.index(str(vendored.resolve()))
     assert parts.index(str(wheel_dir.resolve())) < parts.index(str(vendored.resolve()))
 
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
+def test_child_env_keeps_vendored_runtime_off_a_resolvable_runtime(monkeypatch, tmp_path):
+    # A runtime the loader already finds is never displaced by the private one.
+    import utils.prebuilt.runtime_libs as rl
+    from utils.whisper_cpp_freshness import reset_caches
+
+    bindir = _make_cuda_bundle(tmp_path)
+    vendored = tmp_path / "ollama" / "cuda_v13"
+    vendored.mkdir(parents = True)
+    (vendored / "libcudart.so.13").write_text("")
+    (vendored / "libcublas.so.13").write_text("")
+
+    reset_caches()
+    monkeypatch.setattr(rl, "python_runtime_dirs", lambda: [])
+    monkeypatch.setattr(rl, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),))
+    monkeypatch.setattr(rl, "_loader_already_provides_runtime", lambda _major: True)
+    env = ggml_module._whisper_server_child_env(str(bindir / _SERVER_NAME))
+    reset_caches()
+
+    assert str(vendored.resolve()) not in env[_loader_path_var()].split(os.pathsep)
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
 def test_slim_child_env_reads_vendored_cuda_runtime_from_paired_llama(monkeypatch, tmp_path):
@@ -604,6 +629,7 @@ def test_slim_child_env_reads_vendored_cuda_runtime_from_paired_llama(monkeypatc
     reset_whisper_caches()
     monkeypatch.setattr(rl, "python_runtime_dirs", lambda: [])
     monkeypatch.setattr(rl, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),))
+    monkeypatch.setattr(rl, "_loader_already_provides_runtime", lambda _major: False)
     env = ggml_module._whisper_server_child_env(str(bindir / _SERVER_NAME))
     reset_llama_caches()
     reset_whisper_caches()
