@@ -57,8 +57,10 @@ from core.training.diffusion_train_common import (
     discover_image_caption_pairs,
     has_functional_torchao,
     native_bf16_supported,
+    native_bf16_supported_xpu,
     PermutationBatchSampler,
     repo_is_prequantized,
+    resolve_train_device,
     resolve_train_steps,
     restore_resume_state,
     write_resume_checkpoint,
@@ -268,13 +270,14 @@ def _bnb_4bit_config():
 _repo_is_prequantized = repo_is_prequantized
 
 
-def _load_quantized_transformer(transformer_cls, cfg):
+def _load_quantized_transformer(transformer_cls, cfg, device):
     """Load ``cfg.base_model``'s transformer subfolder as a trainable nf4 QLoRA module."""
     import torch
     return transformer_cls.from_pretrained(
         cfg.base_model,
         subfolder = "transformer",
         quantization_config = _bnb_4bit_config(),
+        device_map = {"": device},
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     )
@@ -307,7 +310,7 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
 
     if base_precision == "nf4":
         if not repo_is_prequantized(cfg.base_model):
-            return _load_quantized_transformer(transformer_cls, cfg)
+            return _load_quantized_transformer(transformer_cls, cfg, device)
         transformer = transformer_cls.from_pretrained(
             cfg.base_model,
             subfolder = "transformer",
@@ -1853,15 +1856,20 @@ def run_dit_lora_training(
             save_on_stop = False
         return True
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    # Fail fast on pre-Ampere CUDA, gating on NATIVE bf16 (capability major >= 8), since is_bf16_supported() counts
-    # emulation.
+    device = resolve_train_device()
+    # bf16 throughout (fp32 on a CPU-only box, to keep import/unit tests architecture-agnostic). Both accelerator
+    # guards gate on NATIVE bf16, since is_bf16_supported() counts emulation on CUDA and on XPU alike.
     if device == "cuda" and not native_bf16_supported():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
             "this CUDA device does not support bf16."
         )
-    weight_dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    if device == "xpu" and not native_bf16_supported_xpu():
+        raise ValueError(
+            "This trainer requires a bfloat16-capable GPU; this XPU device does not "
+            "support bf16 natively."
+        )
+    weight_dtype = torch.bfloat16 if device in ("cuda", "xpu") else torch.float32
 
     _assert_trusted_base_model(cfg.base_model)
     # Check the repo this run will FETCH: the canonical id would raise for a gated base already redirected to its
@@ -2002,6 +2010,8 @@ def _train_dit(
         gc.collect()
         if device == "cuda":
             torch.cuda.empty_cache()
+        elif device == "xpu":
+            torch.xpu.empty_cache()
 
         # The cache keeps the posterior affine parameters, so per-step sampling noise is preserved.
         if use_cache:
@@ -2043,6 +2053,8 @@ def _train_dit(
         gc.collect()
         if device == "cuda":
             torch.cuda.empty_cache()
+        elif device == "xpu":
+            torch.xpu.empty_cache()
     # Variant picks use their own stream so the training loop index/noise draws stay seed-deterministic.
     variant_rng = random.Random(cfg.seed + 1)
 
@@ -2209,8 +2221,8 @@ def _train_dit(
     # bf16 autocast around the forward + loss, matching the diffusers dreambooth scripts: it reconciles the fp32 LoRA
     # params with the bnb 4-bit base matmuls.
     autocast = (
-        torch.autocast(device_type = "cuda", dtype = torch.bfloat16)
-        if device == "cuda"
+        torch.autocast(device_type = device, dtype = torch.bfloat16)
+        if device in ("cuda", "xpu")
         else nullcontext()
     )
     for opt_step in range(resumed, cfg.train_steps):
