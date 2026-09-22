@@ -64,6 +64,46 @@ def _shared_setup_5(tmp_path):
 
 
 STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
+INSTALL_SH = Path(__file__).resolve().parents[2] / "install.sh"
+# Windows has no /bin/sh, and the two tests below execute install.sh's real functions
+# rather than restating them, so there is nothing to run there. Skipped rather than
+# silently passing, which is what the dedicated shell parity suite does too.
+HAVE_SH = Path("/bin/sh").exists()
+requires_sh = pytest.mark.skipif(not HAVE_SH, reason = "needs a POSIX /bin/sh")
+
+
+# Stashed by the autouse fixture before it installs its stand-in. Every other test wants
+# the host's pip files answered "none"; the one test that is about the function itself
+# needs the real one back.
+_REAL_CONFIG_PRESENCE: list = []
+
+
+def _real_config_presence():
+    """The real _pip_config_files_present, past the autouse fixture's stand-in."""
+    assert _REAL_CONFIG_PRESENCE, "the autouse fixture did not run"
+    return _REAL_CONFIG_PRESENCE[0]
+
+
+def _shell_function_source(name: str) -> str:
+    """The body of one POSIX shell function in install.sh, by brace depth.
+
+    Ordering inside these functions is load-bearing -- a guard that declines below a step
+    that has already mutated the venv is not a decline -- and only the real file can show
+    it, so the text is read rather than restated here.
+    """
+    text = INSTALL_SH.read_text(encoding = "utf-8")
+    start = text.index(f"\n{name}() {{")
+    depth = 0
+    for offset in range(start, len(text)):
+        if text[offset] == "{":
+            depth += 1
+        elif text[offset] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : offset + 1]
+    raise AssertionError(f"{name}() is not closed in install.sh")
+
+
 sys.path.insert(0, str(STUDIO_DIR))
 
 import install_python_stack as ips
@@ -77,13 +117,24 @@ STACK_SOURCE = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "ut
 def _hermetic_pinned_pip_config(request):
     ips._PINNED_PIP_CONFIG_LISTING = None
     ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
-    if "reads_real_pip_config" in request.keywords:
-        yield
-    else:
-        with mock.patch.object(ips, "_pinned_pip_config_overrides", lambda *a, **k: {}):
+    ips._POLICY_UNREADABLE_REPORTED = False
+    if not _REAL_CONFIG_PRESENCE:
+        _REAL_CONFIG_PRESENCE.append(ips._pip_config_files_present)
+    # This fixture leaves the listing unavailable for every test, which is exactly the
+    # condition _require_readable_pip_policy() stops on. Whether it fires then depends on
+    # whether the MACHINE happens to have a pip.conf, so the opt-out tests passed on a
+    # developer box and exited 1 on a CI runner that ships /etc/pip.conf. The host's files
+    # are not part of any test here, so they are answered "none" and the tests that are
+    # about the stop say so themselves.
+    with mock.patch.object(ips, "_pip_config_files_present", lambda: False):
+        if "reads_real_pip_config" in request.keywords:
             yield
+        else:
+            with mock.patch.object(ips, "_pinned_pip_config_overrides", lambda *a, **k: {}):
+                yield
     ips._PINNED_PIP_CONFIG_LISTING = None
     ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
+    ips._POLICY_UNREADABLE_REPORTED = False
 
 
 class TestUvOnlyBinaryOnPinnedCommands:
@@ -1151,6 +1202,1604 @@ class TestHardenedPipConfigRelaxation:
             assert name in seen["cmd"], "the fallback lost the source-build exemptions"
 
 
+class TestPackageManagerPolicyOptOut:
+    """UNSLOTH_RESPECT_PM_POLICY declines the #8530 relaxations, and only those.
+
+    #8530 set parts of a hardened host's pip/uv policy aside for the installer's OWN
+    dependency installs, because every requirements file we ship is unhashed and a few
+    requirements have no wheel at any version. That is still the operator's control being
+    overridden, and until now it could not be refused. An operator who would rather the
+    install STOP than proceed unhashed sets this variable: each relaxation is withheld and
+    the install then fails on the first step their policy forbids, which is the answer they
+    asked for.
+
+    What the opt-out must NOT reopen is #6898: a discovered uv.toml or a stale PIP_INDEX_URL
+    outranking an explicit --index-url is a provenance hole, not a policy the operator chose
+    on this command, so the pinned branch still strips the ADDITIVE index variables on both
+    arms. The variables that CARRY policy rather than add a source stay, or every offline and
+    every private-index install breaks for the operators this variable exists to serve.
+
+    The tests below pair every opt-out assertion with the same call without the variable:
+    a guard that is never asked answers "declined" for free, and this whole class would then
+    pass over a predicate wired to nothing.
+    """
+
+    HOSTILE = {
+        "PIP_REQUIRE_HASHES": "1",
+        "UV_REQUIRE_HASHES": "1",
+        "PIP_ONLY_BINARY": ":all:",
+        "UV_NO_BUILD": "1",
+        "UV_NO_BINARY": ":all:",
+        "PIP_NO_BINARY": ":all:",
+        "UV_EXCLUDE_NEWER": "2024-01-01T00:00:00Z",
+    }
+
+    # A pinned command: the branch #6898 hardened, and the one the opt-out treats specially.
+    PINNED = ["uv", "pip", "install", "torch", "--index-url", "https://pin.example/whl"]
+    # A plain pip install of our own unhashed requirements: the command #8530 died on.
+    UNPINNED = ["python", "-m", "pip", "install", "-r", "extras.txt"]
+
+    # Policy, not a source: uv's config file, a config-level no-index, and the two
+    # find-links that are the ONLY permitted source once that no-index is in force.
+    POLICY_CARRYING = {
+        "UV_CONFIG_FILE": "/etc/uv/uv.toml",
+        "PIP_NO_INDEX": "1",
+        "PIP_FIND_LINKS": "/opt/wheels",
+        "UV_FIND_LINKS": "/opt/wheels",
+    }
+    # Each of these ADDS a candidate source to, or redirects, the pinned command (#6898).
+    ADDITIVE = {
+        "UV_INDEX_URL": "https://mirror.internal/simple",
+        "UV_EXTRA_INDEX_URL": "https://extra.internal/simple",
+        "UV_DEFAULT_INDEX": "https://default.internal/simple",
+        "PIP_INDEX_URL": "https://mirror.internal/simple",
+        "PIP_EXTRA_INDEX_URL": "https://extra.internal/simple",
+        "UV_TORCH_BACKEND": "cu128",
+    }
+
+    # Every setting this feature reads, cleared before `extra` is applied. Two staging legs
+    # were lost to ambient values deciding a result -- a runner's PIP_CERT appending --cert
+    # to an exact-list assertion, a machine's own uv.toml making three negative cases
+    # vacuous -- and the fix each time was to answer the host "unset" for one more name.
+    # Doing it once, for the whole surface, is what stops the next one.
+    POLICY_SURFACE = (
+        "PIP_REQUIRE_HASHES",
+        "PIP_ONLY_BINARY",
+        "PIP_NO_BINARY",
+        "PIP_NO_INDEX",
+        "PIP_NO_DEPS",
+        "PIP_FIND_LINKS",
+        "PIP_INDEX_URL",
+        "PIP_EXTRA_INDEX_URL",
+        "PIP_CONSTRAINT",
+        "PIP_CERT",
+        "PIP_KEYRING_PROVIDER",
+        "PIP_BUILD_CONSTRAINT",
+        "PIP_TRUSTED_HOST",
+        "PIP_CLIENT_CERT",
+        "PIP_CONFIG_FILE",
+        "UV_REQUIRE_HASHES",
+        "UV_OFFLINE",
+        "UV_EXCLUDE_NEWER",
+        "UV_CONSTRAINT",
+        "UV_OVERRIDE",
+        "UV_EXCLUDE",
+        "UV_FIND_LINKS",
+        "UV_INDEX_URL",
+        "UV_EXTRA_INDEX_URL",
+        "UV_KEYRING_PROVIDER",
+        "UV_BUILD_CONSTRAINT",
+        "UV_INSECURE_HOST",
+        "UV_CONFIG_FILE",
+        "UV_NO_CONFIG",
+    )
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _environment(extra, opt_out = None):
+        """``extra`` exported over a cleared policy surface, opt-out set or definitively absent.
+
+        mock.patch.dict cannot express "not set", and a host or CI image that happens to
+        export UNSLOTH_RESPECT_PM_POLICY would otherwise turn every control arm below into
+        a second opt-out arm that agrees with anything. The same is true of every other name
+        this feature reads, so the whole surface is cleared rather than the one variable.
+        The pops are inside the patch, so the environment is restored on exit either way.
+        """
+        with mock.patch.dict(os.environ, {}):
+            for name in TestPackageManagerPolicyOptOut.POLICY_SURFACE:
+                os.environ.pop(name, None)
+            os.environ.pop(ips._POLICY_OPT_OUT_ENV, None)
+            os.environ.update({name: value for name, value in extra.items()})
+            if opt_out is not None:
+                os.environ[ips._POLICY_OPT_OUT_ENV] = opt_out
+            yield
+
+    def test_the_hash_relaxation_is_withheld(self):
+        """PIP_REQUIRE_HASHES=0 is the whole of #8530's pip-side fix, so declining it is
+        what makes the install stop where the operator's policy says it should."""
+        with self._environment(self.HOSTILE, opt_out = "1"):
+            assert ips._relaxed_pip_policy_env(self.UNPINNED) == {}
+            # ...and with nothing to relax there is no child env at all: the command
+            # inherits the operator's require-hashes and fails on it.
+            assert ips._install_env_for_cmd(self.UNPINNED) is None
+        with self._environment(self.HOSTILE):
+            assert ips._relaxed_pip_policy_env(self.UNPINNED) == {"PIP_REQUIRE_HASHES": "0"}
+            assert ips._install_env_for_cmd(self.UNPINNED)["PIP_REQUIRE_HASHES"] == "0"
+
+    def test_the_source_build_exemptions_are_withheld(self):
+        """--no-binary exists only to override a user-level no-build / only-binary, so
+        declining to override it IS the opt-out. One gate covers both callers."""
+        with self._environment({}, opt_out = "1"):
+            assert ips._sdist_only_build_args("x", "y") == []
+            assert ips._sdist_only_build_args(*ips.SDIST_ONLY_PACKAGES) == []
+        with self._environment({}):
+            assert ips._sdist_only_build_args("x", "y") == [
+                "--no-binary",
+                "x",
+                "--no-binary",
+                "y",
+            ]
+
+    def test_a_pinned_command_keeps_the_operators_policy_and_config(self):
+        """The point of the opt-out on the branch #6898 owns.
+
+        The policy variables survive, uv's config discovery stays ON and pip.conf stays
+        readable, so a user uv.toml `[pip] require-hashes = true` still fails the pinned
+        install -- UV_NO_CONFIG=1 would make it succeed, which would discard the control
+        this variable promises to respect.
+        """
+        hostile = dict(self.HOSTILE, **self.POLICY_CARRYING)
+        with self._environment(hostile, opt_out = "1"):
+            ambient_config_file = os.environ.get("PIP_CONFIG_FILE")
+            env = ips._install_env_for_cmd(self.PINNED)
+        assert env is not None, "a pinned command still needs an explicit child env"
+        for name, value in self.POLICY_CARRYING.items():
+            assert env[name] == value, f"{name} carries policy; dropping it breaks the install"
+        for name, value in self.HOSTILE.items():
+            assert env[name] == value, f"{name} is the operator's control, not ours to drop"
+        assert "UV_NO_CONFIG" not in env, "uv config discovery carries the policy being honoured"
+        assert env.get("PIP_CONFIG_FILE") == ambient_config_file, (
+            "devnull would hide the pip.conf whose security settings the opt-out promises "
+            "to leave in force"
+        )
+
+    def test_a_pinned_command_still_strips_the_additive_index_variables(self):
+        """#6898 is not the operator's to reopen by accident: the pin is itself a
+        provenance control, and none of these were chosen for THIS command."""
+        with self._environment(dict(self.HOSTILE, **self.ADDITIVE), opt_out = "1"):
+            env = ips._install_env_for_cmd(self.PINNED)
+        for name in self.ADDITIVE:
+            assert name not in env, f"{name} can still outrank or widen the --index-url pin"
+
+    def test_the_default_path_is_exactly_what_it_was_before_the_opt_out(self):
+        """THE REGRESSION GUARD. With the variable unset, nothing about a pinned install
+        may have moved.
+
+        PIP_ONLY_BINARY stays in force because the pinned indexes serve wheels, so it costs
+        the pin nothing and dropping it would let a compromised mirror run a source build
+        the operator had forbidden. UV_NO_BUILD is untouched because it is not a uv
+        environment variable at all (measured on uv 0.10.7) and so is not ours to drop.
+        Adding either to the scrub list is silent: the install still succeeds, and the
+        control is simply gone. This asserts on the values, so such an edit fails here.
+        """
+        with self._environment(self.HOSTILE):
+            env = ips._install_env_for_cmd(self.PINNED)
+        assert env is not None
+        assert env["PIP_ONLY_BINARY"] == ":all:", (
+            "PIP_ONLY_BINARY must stay in force on a pinned command: popping it lets a "
+            "compromised mirror run a source build the operator forbade"
+        )
+        assert env["UV_NO_BUILD"] == "1", (
+            "UV_NO_BUILD is inert for uv and not ours to drop; popping it changes the "
+            "default path this opt-out was supposed to leave alone"
+        )
+        # ...and the rest of the default contract, unchanged.
+        for name in ips._PM_HASH_ENV_VARS + ips._PM_FORCE_SOURCE_ENV_VARS:
+            assert name not in env, f"{name} must still go on the default pinned path"
+        assert env["UV_NO_CONFIG"] == "1"
+        assert env["PIP_CONFIG_FILE"] == os.devnull
+
+    def test_the_pip_config_is_never_re_asserted_on_the_opt_out_arm(self):
+        """_pinned_pip_config_overrides exists to put back what PIP_CONFIG_FILE=devnull
+        removed. The opt-out never sets devnull, so pip reads the real file itself and
+        re-asserting would apply the same keys twice -- and only-binary ACCUMULATES, so
+        `:all:` would come back as `:all:,:all:`.
+
+        Re-asserted, not read. The translation added later reads the same listing on
+        purpose, because a policy uv cannot see has to be restated for it, and that call
+        exists only to populate the memo the reader shares. What must not happen is the
+        RESULT landing in the child's environment, so that is what this asserts -- the
+        earlier spelling of this test forbade the read itself and would have made the
+        translation impossible to write without appearing to break an invariant.
+        """
+        # PIP_CERT has to be cleared, not just asserted on: a runner that exports its own
+        # proxy CA makes _install_env_for_cmd correctly PREFER the environment value, and
+        # the control below would then fail on behaviour that is right.
+        supplied = {"PIP_ONLY_BINARY": ":all:", "PIP_CERT": "/etc/ca.pem"}
+
+        with mock.patch.object(ips, "_pinned_pip_config_overrides", lambda *a, **k: supplied):
+            with self._environment({**self.HOSTILE, "PIP_CERT": ""}, opt_out = "1"):
+                env = ips._install_env_for_cmd(self.PINNED) or {}
+                baseline = ips._install_env_for_cmd(self.UNPINNED) or {}
+            with self._environment({**self.HOSTILE, "PIP_CERT": ""}):
+                default = ips._install_env_for_cmd(self.PINNED) or {}
+
+        assert (
+            env.get("PIP_CERT") != "/etc/ca.pem"
+        ), "the opt-out arm re-asserted a pip.conf key it never switched off"
+        assert baseline.get("PIP_CERT") != "/etc/ca.pem"
+        # The same mock on the DEFAULT arm does land, which is what makes the two
+        # assertions above a real difference rather than a mock that never fires.
+        assert default.get("PIP_CERT") == "/etc/ca.pem"
+
+    def test_the_parent_environment_is_never_mutated(self):
+        """As the relaxation itself: these are child-env decisions. Leaking either way
+        would change the operator's own later pip commands in this session."""
+        probe = dict(self.HOSTILE, **self.ADDITIVE, **self.POLICY_CARRYING)
+        for opt_out in ("1", None):
+            with self._environment(probe, opt_out = opt_out):
+                before = dict(os.environ)
+                ips._relaxed_pip_policy_env(self.UNPINNED)
+                ips._sdist_only_build_args("x", "y")
+                ips._install_env_for_cmd(self.UNPINNED)
+                ips._install_env_for_cmd(self.PINNED)
+                assert dict(os.environ) == before, f"os.environ moved with opt_out={opt_out!r}"
+
+    @pytest.mark.parametrize(
+        "value, enabled",
+        [
+            ("1", True),
+            ("true", True),
+            ("yes", True),
+            ("on", True),
+            ("TRUE", True),
+            (" on ", True),
+            ("0", False),
+            ("no", False),
+            ("off", False),
+            ("false", False),
+            ("", False),
+            ("garbage", False),
+            (None, False),  # unset
+        ],
+    )
+    def test_the_boolish_set_is_uvs_and_an_unknown_value_is_off(self, value, enabled):
+        """uv's own boolish set, borrowed deliberately so install.sh, install.ps1,
+        setup.ps1 and this module give one answer for one variable.
+
+        An ALLOWLIST: an unrecognised value reads as OFF on purpose, so a typo lands on the
+        default path. Anything unrecognised meaning ON would fail closed for this one
+        control while every other UNSLOTH_ variable in the tree fails open, and that
+        inconsistency is worse than the typo.
+        """
+        with self._environment({}, opt_out = value):
+            assert ips._respect_pm_policy() is enabled
+            # Asserted through an observable too: a predicate nothing consults is inert.
+            assert (ips._sdist_only_build_args("x") == []) is enabled
+
+    def test_the_duplicate_metadata_repair_declines_before_touching_anything(
+        self, monkeypatch, capsys
+    ):
+        """The repair rewrites METADATA and moves pip's leftover backups aside before it
+        reinstalls, and that reinstall cannot satisfy require-hashes honestly: hashing the
+        artifact we just fetched and handing the digest back approves it with itself.
+
+        So it must decline with the detection done and NOTHING touched. A decline that has
+        already rewritten a METADATA or moved a directory is not a decline: the `finally`
+        would unwind a normal return, but a SIGKILL or a power loss cannot run a finally,
+        and duplicate metadata is untidy where a half-repaired venv is not.
+        """
+        probes = {"unsloth": iter((["2026.8.12", "2026.8.15"],))}
+        _shared_setup_2(monkeypatch, probes)
+
+        backed_up: list = []
+        taken: list = []
+        rewritten: list = []
+        monkeypatch.setattr(
+            ips, "_rewrite_minimal_metadata", lambda *a, **k: rewritten.append(a) or True
+        )
+        monkeypatch.setattr(
+            ips._QuarantinedMetadata, "back_up", lambda _self, p: backed_up.append(p) or True
+        )
+        monkeypatch.setattr(
+            ips._QuarantinedMetadata, "take", lambda _self, paths: taken.append(paths) or True
+        )
+
+        def refuse(*_a, **_k):
+            raise AssertionError("nothing may run once the repair has declined")
+
+        monkeypatch.setattr(ips, "_stage_replacement", refuse)
+        monkeypatch.setattr(ips, "_run_ok", refuse)
+        monkeypatch.setattr(ips, "pip_install_try", refuse)
+
+        with self._environment({}, opt_out = "1"):
+            assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
+        assert (backed_up, taken, rewritten) == ([], [], []), "the decline touched the tree"
+        err = capsys.readouterr().err
+        # Naming the package proves a duplicate WAS detected, so the False above is the
+        # decline and not the "nothing to repair" return that shares its value.
+        assert ips._POLICY_OPT_OUT_ENV in err and "unsloth" in err
+        assert "the install cannot continue" in err, (
+            "both callers do `if not _repair_duplicate_core_metadata(...): return 1`, so this "
+            "decline STOPS the install; a message implying it carried on would be a lie"
+        )
+
+    def test_the_repairs_false_return_is_the_documented_stop(self):
+        """The decline's return value is the caller's abort signal, not an aside.
+
+        Returning True instead would let write_manifest record a null version for a package
+        whose metadata is still ambiguous: the installer reports success and every later
+        check rejects the environment. Pinned here because the value is load-bearing and a
+        future "be less disruptive" edit would look harmless.
+        """
+        import ast
+
+        tree = ast.parse(STACK_SOURCE)
+        callers = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.UnaryOp)
+            and isinstance(node.test.op, ast.Not)
+            and isinstance(node.test.operand, ast.Call)
+            and getattr(node.test.operand.func, "id", "") == "_repair_duplicate_core_metadata"
+        ]
+        assert callers, "no `if not _repair_duplicate_core_metadata(...)` caller found"
+        for node in callers:
+            assert any(
+                isinstance(stmt, ast.Return)
+                and isinstance(stmt.value, ast.Constant)
+                and stmt.value.value == 1
+                for stmt in node.body
+            ), "a caller stopped treating a False return as a failed install"
+
+    @pytest.mark.parametrize(
+        ("environment", "expected"),
+        [
+            # uv is standing in for pip, so a pip-expressed hash policy must reach it.
+            ({"PIP_REQUIRE_HASHES": "1"}, {"UV_REQUIRE_HASHES": "1"}),
+            ({"PIP_REQUIRE_HASHES": "true"}, {"UV_REQUIRE_HASHES": "1"}),
+            # pip's own false spellings mean the control is off, so nothing is carried.
+            ({"PIP_REQUIRE_HASHES": "0"}, {}),
+            ({"PIP_REQUIRE_HASHES": "no"}, {}),
+            ({}, {}),
+            # An explicit uv value the operator set outranks a translation of their pip one.
+            ({"PIP_REQUIRE_HASHES": "1", "UV_REQUIRE_HASHES": "0"}, {}),
+        ],
+    )
+    def test_pip_expressed_policy_reaches_the_uv_run(self, environment, expected):
+        """The installer choosing uv must not decide whether the operator's policy applies.
+
+        A hardened host is far more likely to carry a pip hash requirement than a uv one, and
+        uv reads no PIP_ variable, so without this the primary uv install proceeds unhashed on
+        exactly the machine the opt-out was set for.
+        """
+        with self._environment(environment, opt_out = "1"):
+            assert ips._pip_policy_as_uv_env() == expected
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "--index-url", "https://x", "torch"]
+            )
+        for name, value in expected.items():
+            assert env is not None and env[name] == value
+
+    def test_an_unpinned_uv_command_is_translated_too(self):
+        """The MAIN dependency install is an unpinned uv command.
+
+        Translating only on the pinned branch left the largest install of the run
+        unconstrained, which is the opposite of the case the opt-out is set for.
+        """
+        with self._environment({"PIP_REQUIRE_HASHES": "1"}, opt_out = "1"):
+            env = ips._install_env_for_cmd(["uv", "pip", "install", "-r", "requirements.txt"])
+        assert env is not None, "an unpinned uv command inherited the environment unchanged"
+        assert env["UV_REQUIRE_HASHES"] == "1"
+
+    def test_an_unpinned_pip_command_gains_nothing(self):
+        """pip reads PIP_REQUIRE_HASHES itself; restating it would be noise."""
+        with self._environment({"PIP_REQUIRE_HASHES": "1"}, opt_out = "1"):
+            assert (
+                ips._install_env_for_cmd(
+                    [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"]
+                )
+                is None
+            )
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("listing", "expected"),
+        [
+            (b"global.require-hashes='true'\n", True),
+            (b"install.require-hashes='true'\n", True),
+            (b"global.require_hashes='1'\n", True),
+            # The command's own section is read last, so a later entry decides -- including
+            # one that switches the control off.
+            (b"global.require-hashes='true'\ninstall.require-hashes='false'\n", False),
+            (b"download.require-hashes='true'\n", False),  # a different command entirely
+            (b":env:.require-hashes='true'\n", False),  # restates the environment
+            (b"global.cert='/etc/ca.pem'\n", False),
+            (b"", False),
+        ],
+    )
+    def test_a_pip_config_hash_policy_is_read_and_carried(self, listing, expected, monkeypatch):
+        """A pip.conf require-hashes is the likeliest shape a hardened host takes.
+
+        Likelier than the environment variable, so leaving it unread would have missed the
+        common case while appearing to handle it.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        assert ips._pip_policy_requires_hashes() is expected
+        with self._environment({}, opt_out = "1"):
+            carried = ips._pip_policy_as_uv_env()
+        assert carried == ({"UV_REQUIRE_HASHES": "1"} if expected else {})
+
+    @pytest.mark.parametrize(
+        ("environment", "active"),
+        [
+            ({"UV_REQUIRE_HASHES": "1"}, True),
+            ({"UV_OFFLINE": "1"}, True),
+            ({"UV_EXCLUDE_NEWER": "2025-01-01"}, True),
+            ({"UV_REQUIRE_HASHES": "0"}, False),
+            ({"UV_OFFLINE": "false"}, False),
+            ({}, False),
+        ],
+    )
+    def test_force_pip_declines_under_uv_only_policy(
+        self, environment, active, monkeypatch, capsys, tmp_path
+    ):
+        """force_pip routes PAST uv on purpose, and pip reads none of uv's settings.
+
+        The AMD bitsandbytes prerelease is the live caller. Installing it through pip under an
+        active uv policy is the same silent substitution the fallback refusal exists to stop,
+        so the optional step declines rather than reaching the network or installing unhashed.
+        """
+        ran: list = []
+
+        def _record(cmd, **kwargs):
+            ran.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, b"")
+
+        # pip_install_try shells out through subprocess.run directly, so that is the seam.
+        monkeypatch.setattr(ips.subprocess, "run", _record)
+        monkeypatch.setattr(ips, "_pinned_cmd_and_env", lambda cmd: (list(cmd), None))
+        monkeypatch.setattr(ips, "_invalidate_torch_runtime_probe", lambda: None)
+        # uv discovers configuration relative to the cwd AND in user and system locations,
+        # so a machine with a uv.toml of its own would make every "inactive" case active and
+        # the negative half of this test vacuous -- which is how it passed here and failed
+        # on the macOS leg. The cwd is emptied and discovery is answered "none"; the
+        # presence check has its own test.
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_uv_config_file_present", lambda: False)
+        counted: list = []
+        monkeypatch.setattr(ips, "_count_install_action", lambda: counted.append(1))
+        with self._environment(environment, opt_out = "1"):
+            result = ips.pip_install_try(
+                "AMD bitsandbytes prerelease", "bitsandbytes", force_pip = True
+            )
+        if active:
+            assert ran == [], "the forced-pip step ran under an active uv-only policy"
+            assert result is False, "the caller must see an optional install that did not happen"
+            assert counted == [], "a step that never ran must not count as having moved metadata"
+            assert ips._POLICY_OPT_OUT_ENV in capsys.readouterr().out
+        else:
+            assert ran, "the step must still run when no uv-only policy is set"
+
+    def test_nothing_is_carried_in_the_other_direction(self):
+        """There is no uv-to-pip translation, because under the opt-out there is no fallback.
+
+        A partial carry reads as an absolute promise while covering less than it appears to:
+        a uv.toml `[pip] require-hashes = true` is invisible to any translation this module
+        could make, so the fallback is refused instead. Asserted so a later edit does not
+        reintroduce the weaker design.
+        """
+        assert not hasattr(ips, "_uv_policy_as_pip_env")
+        assert not hasattr(ips, "_UV_TO_PIP_POLICY")
+        with self._environment({"UV_REQUIRE_HASHES": "1"}, opt_out = "1"):
+            assert ips._relaxed_pip_policy_env([sys.executable, "-m", "pip", "install", "x"]) == {}
+
+    def test_the_pip_fallback_is_refused_under_the_opt_out(self):
+        """A uv failure must not be retried with a resolver that never heard the policy.
+
+        Asserted structurally: the branch lives in pip_install()'s uv arm, which needs a real
+        uv to execute. It must sit BEFORE the "falling back to pip" line and must exit.
+        """
+        import ast
+
+        tree = ast.parse(STACK_SOURCE)
+        fn = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "pip_install"
+        )
+        body = ast.get_source_segment(STACK_SOURCE, fn) or ""
+        guard = body.find("if _respect_pm_policy():")
+        fallback = body.find("falling back to pip")
+        assert guard != -1, "pip_install no longer refuses the fallback under the opt-out"
+        assert guard < fallback, "the refusal must precede the fallback"
+        assert (
+            "_report_failed_command" in body[guard:fallback]
+        ), "the refusal must exit rather than fall through"
+
+    def test_a_uv_command_is_not_given_pip_variables(self):
+        """uv reads UV_ itself; restating them as PIP_ for a uv command would be noise."""
+        with self._environment({"UV_REQUIRE_HASHES": "1"}, opt_out = "1"):
+            assert ips._relaxed_pip_policy_env(["uv", "pip", "install", "torch"]) == {}
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("variable", "listing", "expected"),
+        [
+            # pip ranks PIP_* above its files, so an explicit 0 DISABLES a configured policy.
+            ("0", b"global.require-hashes='true'\n", False),
+            ("false", b"global.require-hashes='true'\n", False),
+            ("off", b"global.require-hashes='true'\n", False),
+            # and an explicit 1 stands on its own, files or no files.
+            ("1", b"global.require-hashes='false'\n", True),
+            ("1", b"", True),
+            # only an absent or blank variable defers to the file.
+            ("", b"global.require-hashes='true'\n", True),
+            ("   ", b"global.require-hashes='true'\n", True),
+            ("", b"global.require-hashes='false'\n", False),
+        ],
+    )
+    def test_the_environment_outranks_pip_config_when_carrying_policy(
+        self, variable, listing, expected, monkeypatch
+    ):
+        """Carrying a STRICTER policy than pip would apply is its own bug.
+
+        An operator who keeps `require-hashes = true` in pip.conf and exports
+        PIP_REQUIRE_HASHES=0 for one run has disabled it for that run: pip reads the
+        environment first. Reading the file alone would hand uv a requirement the operator
+        had just switched off, and the opt-out exists to honour their configuration rather
+        than to outrank it.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment({"PIP_REQUIRE_HASHES": variable}, opt_out = "1"):
+            assert ips._pip_policy_requires_hashes() is expected
+            carried = ips._pip_policy_as_uv_env()
+        assert carried == ({"UV_REQUIRE_HASHES": "1"} if expected else {})
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("variable", "listing", "expected"),
+        [
+            (":all:", b"", [":all:"]),
+            ("", b"global.only-binary=':all:'\n", [":all:"]),
+            ("numpy,scipy", b"", ["numpy", "scipy"]),
+            # ACCUMULATES, unlike require-hashes. pip's own --help: "can be supplied multiple
+            # times, and each time adds to the existing value". Resolving it last-wins told
+            # uv to restrict numpy alone and silently allowed source builds for everything
+            # else, which is the opposite of what the operator configured.
+            ("numpy", b"global.only-binary=':all:'\n", [":all:", "numpy"]),
+            ("", b"global.only-binary='numpy'\ninstall.only-binary='scipy'\n", ["numpy", "scipy"]),
+            # ":none: to empty the set", also pip's own words.
+            ("", b"global.only-binary=':all:'\ninstall.only-binary=':none:,scipy'\n", ["scipy"]),
+            ("​:none:", b"global.only-binary=':all:'\n", [":all:"]),  # not the ASCII spelling
+            # the file is read in load order, then the environment is appended
+            ("numpy", b"global.only-binary='numpy'\n", ["numpy"]),  # no duplicate
+            ("", b"", []),
+        ],
+    )
+    def test_an_unpinned_uv_command_is_told_the_only_binary_policy(
+        self, variable, listing, expected, monkeypatch
+    ):
+        """uv has no environment spelling for --only-binary, so argv is the only channel.
+
+        Measured on uv 0.10.7: `uv pip install --help` documents an env var for
+        --require-hashes and none for --only-binary. Withdrawing the sdist exemption under
+        the opt-out without stating the operator's own restriction in its place enforced
+        nothing; it merely differed from the default.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        unpinned_uv = ["uv", "pip", "install", "-r", "extras.txt"]
+        with self._environment({"PIP_ONLY_BINARY": variable}, opt_out = "1"):
+            assert ips._pip_policy_only_binary() == expected
+            args = ips._pinned_binary_policy_args(unpinned_uv, None)
+            # A plain pip command gains nothing: pip reads these settings itself.
+            assert ips._pinned_binary_policy_args(self.UNPINNED, None) == []
+            # And the PINNED uv leg sees the file too, where it used to read only the
+            # scrubbed environment and so missed a pip.conf-only policy entirely.
+            assert ips._pinned_binary_policy_args(self.PINNED, {}) == [
+                arg for part in expected for arg in ("--only-binary", part)
+            ]
+        assert args == [arg for part in expected for arg in ("--only-binary", part)]
+        with self._environment({"PIP_ONLY_BINARY": variable}):
+            assert (
+                ips._pinned_binary_policy_args(unpinned_uv, None) == []
+            ), "the default path must not gain arguments it did not have before"
+
+    def test_a_uv_config_file_counts_as_policy_by_its_presence(self, monkeypatch, tmp_path):
+        """uv.toml is never parsed, so its presence has to be the answer.
+
+        Whatever restriction it holds -- a hash requirement, offline, a pinned source -- is
+        exactly what a forced-pip step will not see. Presence is cheap and conservative;
+        parsing uv's configuration is the unbounded surface this change keeps out.
+        """
+        monkeypatch.chdir(tmp_path)
+        with self._environment({}, opt_out = "1"):
+            assert ips._uv_config_file_present() is False
+            assert ips._uv_only_policy_active() is False
+
+            (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+            assert (
+                ips._uv_config_file_present() is False
+            ), "a pyproject without a [tool.uv] table says nothing about uv"
+
+            (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n[tool.uv]\n")
+            assert ips._uv_config_file_present() is True
+            assert ips._uv_only_policy_active() is True
+
+            (tmp_path / "pyproject.toml").unlink()
+            (tmp_path / "uv.toml").write_text("")
+            assert ips._uv_config_file_present() is True
+
+            # "configuration files are discovered in the current directory, parent
+            # directories, or user configuration directories" -- uv help pip install. A
+            # policy at the root of a checkout binds an installer run from a subdirectory,
+            # and checking the current directory alone missed that ordinary case.
+            nested = tmp_path / "a" / "b" / "c"
+            nested.mkdir(parents = True)
+            monkeypatch.chdir(nested)
+            assert ips._uv_config_file_present() is True, "the parent's uv.toml still applies"
+            (tmp_path / "uv.toml").unlink()
+            assert ips._uv_config_file_present() is False
+
+    @requires_sh
+    @pytest.mark.parametrize(
+        ("listing", "variable", "expected"),
+        [
+            # last-wins, matching pip: [global] then the command's own section.
+            ("global.require-hashes='true'\ninstall.require-hashes='false'", "", ""),
+            ("global.require-hashes='false'\ninstall.require-hashes='true'", "", "1"),
+            ("global.require-hashes='true'", "", "1"),
+            ("global.require-hashes='true'", "0", ""),  # the environment outranks the file
+            ("global.require-hashes='false'", "1", "1"),
+            ("", "", ""),
+        ],
+    )
+    def test_the_shell_folds_pip_config_rows_in_order(self, listing, variable, expected):
+        """install.sh disagreeing with the Python phase is the bug class, not a detail.
+
+        Folding with `grep -q` made ANY truthy row win, so `[global] true` followed by
+        `[install] false` exported a hash requirement the operator's effective policy had
+        switched off -- and the Python and PowerShell halves of this same feature did not.
+        The real function is executed under /bin/sh rather than restated here.
+        """
+        library = "\n".join(
+            _shell_function_source(name)
+            for name in ("_pm_config_rows", "_respect_pm_policy", "_carry_pip_policy_into_uv")
+        )
+        script = f"""
+        {library}
+        _PM_PIP_CONFIG_LISTING='{listing}'
+        PIP_REQUIRE_HASHES='{variable}'
+        unset UV_REQUIRE_HASHES
+        _carry_pip_policy_into_uv
+        printf '%s' "${{UV_REQUIRE_HASHES:-}}"
+        """
+        result = subprocess.run(
+            ["/bin/sh", "-c", script], capture_output = True, text = True, timeout = 60
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == expected
+
+    @requires_sh
+    @pytest.mark.parametrize(
+        ("listing", "variable", "expected"),
+        [
+            ("global.only-binary=':all:'", "numpy", "--only-binary :all: --only-binary numpy"),
+            (
+                "global.only-binary=':all:'\ninstall.only-binary=':none:,scipy'",
+                "",
+                "--only-binary scipy",
+            ),
+            ("", "numpy,scipy", "--only-binary numpy --only-binary scipy"),
+            # A value that could word-split into a command is dropped, not forwarded.
+            ("", "numpy,$(touch pwned),ok-pkg", "--only-binary numpy --only-binary ok-pkg"),
+            ("", "", ""),
+        ],
+    )
+    def test_the_shell_accumulates_only_binary_and_drops_unsafe_tokens(
+        self, listing, variable, expected, tmp_path
+    ):
+        """These tokens are word-split straight onto a uv command line.
+
+        So the charset is a safety requirement here rather than only agreement, and the
+        accumulation is pip's documented behaviour for this option, unlike require-hashes.
+        """
+        library = "\n".join(
+            _shell_function_source(name)
+            for name in ("_pm_config_rows", "_resolve_only_binary_policy")
+        )
+        script = f"""
+        {library}
+        _PM_PIP_CONFIG_LISTING='{listing}'
+        PIP_ONLY_BINARY='{variable}'
+        _resolve_only_binary_policy
+        printf '%s' "$_PM_ONLY_BINARY_ARGS"
+        """
+        result = subprocess.run(
+            ["/bin/sh", "-c", script],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+            cwd = tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split() == expected.split()
+        assert not (tmp_path / "pwned").exists(), "a substitution in the value was executed"
+
+    def test_the_shell_inserts_only_binary_after_the_subcommand(self):
+        """Several call sites end with `-- <package>`, so an appended flag becomes a package.
+
+        install.sh:6991 is the live example: `uv pip install --no-deps ... -- "$PACKAGE_NAME"`.
+        """
+        body = _shell_function_source("run_install_cmd")
+        injection = body.index("_PM_ONLY_BINARY_ARGS")
+        assert injection < body.index(
+            "--default-index"
+        ), "the index scrub prepends `env ...`, which moves uv out of $1"
+        injected = body[body.index('set -- uv pip "$_pm_verb"') :]
+        injected = injected[: injected.index('"$@"') + 4]
+        for fragment in (
+            "$_PM_ONLY_BINARY_ARGS",
+            "$_PM_INDEX_POLICY_ARGS",
+            # The cert is expanded separately and quoted, so a CA path with spaces stays
+            # ONE argument instead of being word-split into several.
+            "${_PM_CERT:+--cert}",
+            '${_PM_CERT:+"$_PM_CERT"}',
+        ):
+            assert fragment in injected, injected
+        assert injected.rstrip().endswith('"$@"'), injected
+
+    def test_every_install_ps1_uv_install_carries_the_policy(self):
+        """33 call sites and no chokepoint: Invoke-InstallCommand takes a ScriptBlock.
+
+        The splat is empty on the default path, so this costs nothing there, but one missed
+        site is a silently unenforced policy rather than a visible error.
+        """
+        text = (Path(__file__).resolve().parents[2] / "install.ps1").read_text(encoding = "utf-8")
+        sites = re.findall(r"\$script:UvExe pip install (\S+)", text)
+        assert len(sites) >= 30, f"the call sites moved; found {len(sites)}"
+        assert set(sites) == {
+            "@script:PmPolicyArgs"
+        }, "every uv install must splat the resolved only-binary policy"
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "expected"),
+        [
+            ({"PIP_NO_INDEX": "1"}, b"", ["--no-index"]),
+            ({}, b"global.no-index='true'\n", ["--no-index"]),
+            ({}, b"install.no-index='true'\n", ["--no-index"]),
+            ({"PIP_NO_INDEX": "0"}, b"global.no-index='true'\n", []),  # environment first
+            ({}, b"global.no-index='true'\ninstall.no-index='false'\n", []),  # last wins
+            ({}, b"", []),
+        ],
+    )
+    def test_a_no_index_policy_reaches_uv_as_an_argument(
+        self, environment, listing, expected, monkeypatch
+    ):
+        """uv gives --no-index no environment binding, so keeping PIP_NO_INDEX did nothing.
+
+        Measured on uv 0.10.7: `uv pip install --help` binds --find-links to UV_FIND_LINKS
+        and leaves --no-index argument-only. The opt-out kept PIP_NO_INDEX in the child's
+        environment and uv went to the registry regardless, which is the opposite of an
+        air-gapped operator's intent.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        # The CA travels with the index now, so a runner exporting its own proxy CA appends
+        # --cert to every result here. Cleared rather than allowed for, since this test is
+        # about no-index; the cert has its own.
+        environment = {**environment, "PIP_CERT": ""}
+        with self._environment(environment, opt_out = "1"):
+            assert ips._pm_index_policy_uv_args(self.PINNED) == expected
+            assert ips._pm_index_policy_uv_args(["uv", "pip", "install", "x"]) == expected
+            # pip reads its own settings, so a pip command must not be given this twice.
+            assert ips._pm_index_policy_uv_args(self.UNPINNED) == []
+        with self._environment(environment):
+            assert (
+                ips._pm_index_policy_uv_args(self.PINNED) == []
+            ), "the default path must not gain arguments it did not have before"
+
+    @pytest.mark.reads_real_pip_config
+    def test_find_links_is_carried_because_no_index_leaves_uv_nowhere_to_look(self, monkeypatch):
+        """--no-index without find-links is not a policy, it is an unusable installer.
+
+        UV_FIND_LINKS is the one index setting uv does read from the environment, and the
+        operator's wheelhouse is the source their no-index policy presupposes.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", b"global.find-links='/opt/wheels'\n")
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment({}, opt_out = "1"):
+            assert ips._pip_policy_as_uv_env().get("UV_FIND_LINKS") == "/opt/wheels"
+        # Never over a uv value the operator set themselves.
+        with self._environment({"UV_FIND_LINKS": "/their/wheels"}, opt_out = "1"):
+            assert "UV_FIND_LINKS" not in ips._pip_policy_as_uv_env()
+        with self._environment({"PIP_FIND_LINKS": "/env/wheels"}, opt_out = "1"):
+            assert ips._pip_policy_as_uv_env().get("UV_FIND_LINKS") == "/env/wheels"
+
+    def test_the_uv_discovery_check_is_the_modules_own(self):
+        """Duplicating uv's discovery is how the two answers drifted apart.
+
+        _uv_config_files() already covers the parent walk and the SYSTEM files
+        (/etc/uv/uv.toml, %PROGRAMDATA%) that a managed fleet is likeliest to use, which a
+        hand-rolled check in this feature had missed.
+        """
+        source = inspect.getsource(ips._uv_config_file_present)
+        assert "_uv_config_files()" in source, "the presence check must not re-derive discovery"
+        # The prose may name the system paths; the CODE must not go looking for them itself.
+        body = source[source.index('"""', source.index('"""') + 3) :]
+        assert "/etc/uv" not in body, "system paths belong to _uv_config_files(), not here"
+        assert "PROGRAMDATA" not in body
+
+    @pytest.mark.parametrize(
+        ("pip_value", "expected"),
+        [
+            ("/wheelhouse/a /wheelhouse/b", "/wheelhouse/a,/wheelhouse/b"),
+            ("/only/one", "/only/one"),
+            ("/a,/b", "/a,/b"),
+            ("  /a   /b  ", "/a,/b"),
+            ("/a\n/b\n", "/a,/b"),  # a pip.conf value spread over lines
+            ("", ""),
+        ],
+    )
+    def test_find_links_is_re_encoded_for_uv(self, pip_value, expected):
+        """pip splits find-links on whitespace; uv's environment spelling wants commas.
+
+        Measured on uv 0.10.7 with two real wheelhouses: the comma form resolves, and the
+        space form fails with `Failed to read --find-links directory: /a /b`, taking the
+        whole string as a single path. Carrying pip's value unchanged therefore produced a
+        setting that looked right and could not resolve anything.
+        """
+        assert ips._uv_find_links_value(pip_value) == expected
+
+    def test_an_unreadable_pip_policy_stops_the_install(self, monkeypatch, capsys, tmp_path):
+        """ "No answer" must not be indistinguishable from "no policy".
+
+        uv can create an environment with no pip in it, so a failing `pip config list` is an
+        ordinary condition here rather than an exotic one. Treating it as an unconfigured
+        host is the single outcome the opt-out must never produce: it installs past the very
+        settings the operator asked to keep, and reports success while doing so.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", None)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        monkeypatch.setattr(ips, "_POLICY_UNREADABLE_REPORTED", False)
+
+        # A host with a pip.conf we cannot read: stop.
+        monkeypatch.setattr(ips, "_pip_config_files_present", lambda: True)
+        with self._environment({}, opt_out = "1"):
+            with pytest.raises(SystemExit) as stopped:
+                ips._pip_policy_requires_hashes()
+        assert stopped.value.code == 1
+        assert ips._POLICY_OPT_OUT_ENV in capsys.readouterr().out
+
+        # A host with no pip configuration at all: nothing was missed, so carry on.
+        monkeypatch.setattr(ips, "_pip_config_files_present", lambda: False)
+        with self._environment({}, opt_out = "1"):
+            assert ips._pip_policy_requires_hashes() is False
+            assert ips._pip_policy_only_binary() == []
+            assert ips._pip_policy_no_index() is False
+
+        # And without the opt-out nothing changes, however unreadable pip is.
+        monkeypatch.setattr(ips, "_pip_config_files_present", lambda: True)
+        with self._environment({}):
+            assert ips._pip_policy_requires_hashes() is False
+
+    def test_the_pip_config_presence_check_knows_pips_own_locations(self, monkeypatch, tmp_path):
+        """PIP_CONFIG_FILE=os.devnull is pip's own way of saying "no files".
+
+        The pinned default path sets exactly that, so reading it as a configured host would
+        stop every pinned install on a machine that has no policy at all.
+        """
+        # The real function, not the fixture's stand-in, and pointed away from the host:
+        # a CI runner that ships /etc/pip.conf would otherwise decide this test's answer.
+        monkeypatch.setattr(ips, "_pip_config_files_present", _real_config_presence())
+        monkeypatch.setattr(ips, "_PIP_SYSTEM_CONFIG_DIRS", (str(tmp_path / "absent"),))
+        monkeypatch.setattr(ips, "_PIP_SYSTEM_CONFIG_FILES", (str(tmp_path / "absent.conf"),))
+        monkeypatch.delenv("VIRTUAL_ENV", raising = False)
+        # And off the macOS branch explicitly: this test is about the XDG locations, and on
+        # a Mac runner IS_MACOS is true, so it took the Apple branch and asserted nothing
+        # it meant to. The macOS locations have their own test below.
+        monkeypatch.setattr(ips, "IS_MACOS", False)
+        monkeypatch.setenv("XDG_CONFIG_DIRS", str(tmp_path / "absent"))
+        monkeypatch.setattr(ips.sys, "prefix", str(tmp_path / "absent"))
+        monkeypatch.setattr(ips, "IS_WINDOWS", False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(ips.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+        monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
+        assert ips._pip_config_files_present() is False
+
+        real = tmp_path / "pip.conf"
+        real.write_text("[global]\n")
+        monkeypatch.setenv("PIP_CONFIG_FILE", str(real))
+        assert ips._pip_config_files_present() is True
+
+        monkeypatch.delenv("PIP_CONFIG_FILE")
+        assert ips._pip_config_files_present() is False
+        nested = tmp_path / "xdg" / "pip"
+        nested.mkdir(parents = True)
+        (nested / "pip.conf").write_text("[global]\n")
+        assert ips._pip_config_files_present() is True
+        (nested / "pip.conf").unlink()
+        assert ips._pip_config_files_present() is False
+
+        # The site file, beside the interpreter doing the installing. A venv is exactly
+        # where this runs, so omitting it would have missed the likeliest file of all --
+        # and every omission from this set fails OPEN, which is the direction that matters.
+        site = tmp_path / "prefix"
+        site.mkdir()
+        monkeypatch.setattr(ips.sys, "prefix", str(site))
+        assert ips._pip_config_files_present() is False
+        (site / "pip.conf").write_text("[global]\n")
+        assert ips._pip_config_files_present() is True
+        (site / "pip.conf").unlink()
+
+        # And the global XDG root, which pip reads below the user file.
+        globals_dir = tmp_path / "xdgdirs" / "pip"
+        globals_dir.mkdir(parents = True)
+        monkeypatch.setenv("XDG_CONFIG_DIRS", str(tmp_path / "xdgdirs"))
+        assert ips._pip_config_files_present() is False
+        (globals_dir / "pip.conf").write_text("[global]\n")
+        assert ips._pip_config_files_present() is True
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "expected"),
+        [
+            ({"PIP_NO_BINARY": ":all:"}, b"", ["--no-binary", ":all:"]),
+            ({}, b"global.no-binary='mypkg'\n", ["--no-binary", "mypkg"]),
+            (
+                {"PIP_NO_BINARY": "other"},
+                b"global.no-binary='mypkg'\n",
+                ["--no-binary", "mypkg", "--no-binary", "other"],
+            ),
+            # The two controls are one FormatControl pair in pip, so `:all:` in either
+            # CLEARS the other. Emitting both independently gave uv a pair of flags it
+            # reports as leaving no usable artifact.
+            (
+                {"PIP_ONLY_BINARY": ":all:", "PIP_NO_BINARY": "mypkg"},
+                b"",
+                ["--only-binary", ":all:"],
+            ),
+            # And naming a package in one removes it from the other, so a later
+            # PIP_ONLY_BINARY wins over a pip.conf no-binary for the same package.
+            (
+                {"PIP_ONLY_BINARY": "numpy"},
+                b"global.no-binary='numpy'\n",
+                ["--only-binary", "numpy"],
+            ),
+            (
+                {"PIP_NO_BINARY": "numpy"},
+                b"global.only-binary='numpy'\n",
+                ["--no-binary", "numpy"],
+            ),
+            ({}, b"", []),
+        ],
+    )
+    def test_the_no_binary_policy_reaches_uv_as_arguments(
+        self, environment, listing, expected, monkeypatch
+    ):
+        """ "Build it from source" is a supply-chain control as much as "never build" is.
+
+        uv reads neither PIP_NO_BINARY nor pip.conf, and --no-binary has no environment
+        spelling on uv 0.10.7, so preserving the pip variable left the operator's rule
+        unenforced on the leg that actually runs. It accumulates exactly as only-binary
+        does, which is why both go through one resolver.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment(environment, opt_out = "1"):
+            assert ips._pm_build_policy_uv_args() == expected
+            assert ips._pinned_binary_policy_args(self.PINNED, {}) == expected
+            assert ips._pinned_binary_policy_args(["uv", "pip", "install", "x"], None) == expected
+            # pip reads both settings itself, so a pip command must not be told twice.
+            assert ips._pinned_binary_policy_args(self.UNPINNED, None) == []
+        with self._environment(environment):
+            assert ips._pinned_binary_policy_args(["uv", "pip", "install", "x"], None) == []
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "expected"),
+        [
+            (
+                {"PIP_INDEX_URL": "https://mirror.internal/simple"},
+                b"",
+                {"UV_INDEX_URL": "https://mirror.internal/simple"},
+            ),
+            (
+                {},
+                b"global.index-url='https://mirror.internal/simple'\n",
+                {"UV_INDEX_URL": "https://mirror.internal/simple"},
+            ),
+            (
+                {"PIP_EXTRA_INDEX_URL": "https://extra.internal/simple"},
+                b"",
+                {"UV_EXTRA_INDEX_URL": "https://extra.internal/simple"},
+            ),
+            # an explicit uv value the operator set outranks the translation
+            (
+                {
+                    "PIP_INDEX_URL": "https://mirror.internal/simple",
+                    "UV_INDEX_URL": "https://theirs/",
+                },
+                b"",
+                {},
+            ),
+            ({}, b"", {}),
+        ],
+    )
+    def test_a_private_index_reaches_unpinned_uv_but_never_a_pinned_one(
+        self, environment, listing, expected, monkeypatch
+    ):
+        """The restrictive half of the policy applies everywhere; the SOURCE half does not.
+
+        A required or private index is the commonest hardening there is, and uv reads none
+        of pip's spellings for it, so an unpinned dependency install went to PyPI while the
+        operator's mirror sat in a variable uv never looks at. But carrying it onto a PINNED
+        command is #6898 exactly: an inherited index outranking an explicit --index-url,
+        where the pin is itself a provenance control the operator did not set. So the two
+        halves are separated rather than the whole thing being carried or withheld.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment(environment, opt_out = "1"):
+            unpinned = ips._pip_policy_as_uv_env()
+            pinned = ips._pip_policy_as_uv_env(pinned = True)
+        for name, value in expected.items():
+            assert unpinned.get(name) == value
+        assert not any(
+            name.startswith("UV_INDEX") or name.startswith("UV_EXTRA") for name in pinned
+        ), "a pinned command must not inherit an index, however the operator expressed it"
+
+    @requires_sh
+    def test_the_shell_keeps_a_whole_find_links_row(self):
+        """Command substitution word-splits, and the loop then kept only the last token.
+
+        A pip.conf `find-links = /wheelhouse/a /wheelhouse/b` became `/wheelhouse/b` alone,
+        and with no-index in force everything that lived in the first wheelhouse became
+        unresolvable. Reading the row as a line rather than iterating over its words is the
+        difference, so the real function is executed rather than described.
+        """
+        library = "\n".join(
+            _shell_function_source(name) for name in ("_pm_config_rows", "_resolve_index_policy")
+        )
+        script = f"""
+        {library}
+        _PM_PIP_CONFIG_LISTING="global.find-links='/wheelhouse/a /wheelhouse/b'"
+        unset UV_FIND_LINKS PIP_FIND_LINKS PIP_NO_INDEX
+        _PM_INDEX_POLICY_ARGS=""
+        _resolve_index_policy
+        printf '%s' "$UV_FIND_LINKS"
+        """
+        result = subprocess.run(
+            ["/bin/sh", "-c", script], capture_output = True, text = True, timeout = 60
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/wheelhouse/a,/wheelhouse/b"
+
+    def test_install_sh_uses_no_gnu_only_sed_alternation(self):
+        r"""`\(a\|b\)` is a GNU extension, and BSD sed matches it literally.
+
+        install.sh runs on macOS, where every policy read that used one printed nothing, so
+        the whole translation was silently inert there and the shell parity tests failed on
+        the macOS staging leg while passing on Linux. A text check rather than a behaviour
+        one, because the behaviour is only wrong on a platform this suite cannot run.
+        """
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        offenders = [
+            f"install.sh:{number}: {line.strip()}"
+            for number, line in enumerate(text.splitlines(), 1)
+            # Not the comment above the helper, which has to spell the construct out.
+            if "sed" in line and r"\|" in line and not line.lstrip().startswith("#")
+        ]
+        assert not offenders, "\n".join(offenders)
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "expected"),
+        [
+            ({"PIP_CONSTRAINT": "/etc/constraints.txt"}, b"", "/etc/constraints.txt"),
+            ({}, b"global.constraint='/etc/constraints.txt'\n", "/etc/constraints.txt"),
+            ({"PIP_CONSTRAINT": "/a.txt", "UV_CONSTRAINT": "/theirs.txt"}, b"", None),
+            ({}, b"", None),
+        ],
+    )
+    def test_a_required_constraint_file_reaches_uv(
+        self, environment, listing, expected, monkeypatch
+    ):
+        """uv binds --constraints to UV_CONSTRAINT and reads no pip spelling for it.
+
+        A constraint file is how an operator prohibits a version, so leaving it invisible
+        let uv resolve exactly what they had ruled out. Restrictive rather than a source, so
+        unlike the index URLs it applies to pinned commands as well: it can only narrow what
+        may be selected, never redirect where it comes from.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment(environment, opt_out = "1"):
+            unpinned = ips._pip_policy_as_uv_env()
+            pinned = ips._pip_policy_as_uv_env(pinned = True)
+        assert unpinned.get("UV_CONSTRAINT") == expected
+        assert (
+            pinned.get("UV_CONSTRAINT") == expected
+        ), "a constraint narrows what may be selected, so a pin is no reason to drop it"
+        # No default-path assertion here: this function has no internal gate, its two
+        # callers do, and the 90-cell environment comparison is what holds that line.
+
+    @requires_sh
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("listing", "no_binary", "only_binary"),
+        [
+            ("", "", ""),
+            ("global.only-binary=':all:'", "", "numpy"),
+            ("global.no-binary='numpy'", "", "numpy"),
+            ("global.only-binary='numpy'", "numpy", ""),
+            ("global.only-binary=':all:'\ninstall.only-binary=':none:,scipy'", "", ""),
+            ("global.no-binary=':all:'", "", ":all:"),
+            ("global.only-binary='a,b'", "b", "c"),
+            ("", "", "numpy,bad name,ok-pkg"),
+            ("", "numpy,$(touch pwned)", ""),
+            ("install.no-binary='x'\nglobal.only-binary='x'", "", ""),
+            # The case that grouping by option got wrong: the command's own section is read
+            # LAST, so it wins, and reading every no-binary row before every only-binary row
+            # silently inverted it.
+            ("global.only-binary='numpy'\ninstall.no-binary='numpy'", "", ""),
+            ("global.no-binary='numpy'\ninstall.only-binary='numpy'", "", ""),
+            ("global.only-binary=':all:'", "mypkg", ""),
+            ("", ":none:", "a,b"),
+            # pip canonicalizes before comparing, so these name ONE package and the later
+            # control must win rather than both surviving.
+            ("global.no-binary='foo_bar'", "", "foo-bar"),
+            ("global.only-binary='Foo.Bar'", "foo-bar", ""),
+        ],
+    )
+    def test_the_shell_and_python_resolve_format_control_identically(
+        self, listing, no_binary, only_binary, monkeypatch, tmp_path
+    ):
+        """Two transcriptions of pip's handle_mutual_excludes have to agree, value by value.
+
+        This is the bug class the whole change exists to close, and the pair semantics are
+        the fiddliest thing in it: `:all:` clears the OTHER set, `:none:` clears its own,
+        and a named package moves between them. Comparing the real sh function's output
+        against the real Python one over the same inputs is the only way to know, and it
+        also covers the charset filter, which in the shell is a safety requirement rather
+        than a nicety.
+        """
+        library = "\n".join(
+            _shell_function_source(name)
+            for name in ("_pm_config_rows", "_pm_without", "_resolve_only_binary_policy")
+        )
+        script = f"""
+        {library}
+        _PM_PIP_CONFIG_LISTING='{listing}'
+        PIP_NO_BINARY='{no_binary}'; PIP_ONLY_BINARY='{only_binary}'
+        _resolve_only_binary_policy
+        printf '%s' "$_PM_ONLY_BINARY_ARGS"
+        """
+        shell = subprocess.run(
+            ["/bin/sh", "-c", script],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+            cwd = tmp_path,
+        )
+        assert shell.returncode == 0, shell.stderr
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", (listing + "\n").encode())
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment(
+            {"PIP_NO_BINARY": no_binary, "PIP_ONLY_BINARY": only_binary}, opt_out = "1"
+        ):
+            python = ips._pm_build_policy_uv_args()
+        assert shell.stdout.split() == python
+        assert not (tmp_path / "pwned").exists(), "a substitution in the value was executed"
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "stops"),
+        [
+            ({"PIP_NO_DEPS": "1"}, b"", True),
+            ({}, b"global.no-deps='true'\n", True),
+            ({"PIP_NO_DEPS": "0"}, b"global.no-deps='true'\n", False),
+            ({}, b"global.no-deps='false'\n", False),
+            ({}, b"", False),
+        ],
+    )
+    def test_a_no_deps_policy_stops_rather_than_being_carried_or_ignored(
+        self, environment, listing, stops, monkeypatch, capsys
+    ):
+        """The one setting where both obvious answers are wrong.
+
+        Carrying no-deps into uv installs the Studio requirements without their own
+        dependencies: an environment that imports and then fails at run time, with no error
+        at install time and nothing to point at. Ignoring it installs the transitive
+        packages the operator excluded, which is what the opt-out exists to prevent. So it
+        stops and names the setting, which is the only answer that is neither.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        monkeypatch.setattr(ips, "_POLICY_UNCARRYABLE_REPORTED", False)
+        with self._environment(environment, opt_out = "1"):
+            if stops:
+                with pytest.raises(SystemExit) as stopped:
+                    ips._pip_policy_format_control()
+                assert stopped.value.code == 1
+                assert "no-deps" in capsys.readouterr().out
+            else:
+                ips._pip_policy_format_control()
+        # and the default path is untouched however pip is configured
+        monkeypatch.setattr(ips, "_POLICY_UNCARRYABLE_REPORTED", False)
+        with self._environment(environment):
+            ips._pip_policy_format_control()
+
+    def test_the_presence_check_knows_the_macos_locations(self, monkeypatch, tmp_path):
+        """pip uses the Apple locations on macOS, not the XDG ones.
+
+        install.sh and this module both run there, and a location left out of this set fails
+        OPEN -- the policy is read as absent and uv proceeds without it.
+        """
+        monkeypatch.setattr(ips, "_pip_config_files_present", _real_config_presence())
+        monkeypatch.setattr(ips, "IS_WINDOWS", False)
+        monkeypatch.setattr(ips, "IS_MACOS", True)
+        monkeypatch.setattr(ips.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(ips.sys, "prefix", str(tmp_path / "absent"))
+        monkeypatch.delenv("PIP_CONFIG_FILE", raising = False)
+        monkeypatch.delenv("VIRTUAL_ENV", raising = False)
+
+        assert ips._pip_config_files_present() is False
+        user = tmp_path / "Library" / "Application Support" / "pip"
+        user.mkdir(parents = True)
+        (user / "pip.conf").write_text("[global]\n")
+        assert ips._pip_config_files_present() is True
+
+    def test_the_shell_knows_the_macos_locations_too(self):
+        """The shell twin, by text: this suite cannot run on the platform it is about."""
+        body = _shell_function_source("_pip_config_files_present")
+        assert "/Library/Application Support/pip/pip.conf" in body
+        assert "$HOME/Library/Application Support/pip/pip.conf" in body
+
+    def test_the_shell_resolves_its_policy_after_the_target_venv_is_known(self):
+        """install.sh runs its policy block long before VENV_DIR exists.
+
+        The installs it protects go into that venv through `--python "$_VENV_PY"`, so
+        resolving at startup queried whichever pip was on PATH and could never see the
+        target environment's own site pip.conf -- the file `pip config debug` calls the
+        site configuration, and the one that actually governs those installs. Resolution is
+        memoised and driven from the two places that consume it instead.
+        """
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        ready = text.index("_pm_policy_ready() {")
+        venv_dir = text.index('VENV_DIR="$STUDIO_HOME/unsloth_studio"')
+        assert ready < venv_dir, "the helper is defined before VENV_DIR, which is why it is lazy"
+
+        # Driven from both consumers: the install chokepoint and the forced-pip AMD step.
+        for name in ("run_install_cmd", "_install_bnb_rocm"):
+            body = _shell_function_source(name)
+            assert "_pm_policy_ready" in body, f"{name} consumes the policy without resolving it"
+
+        # A failed query against the target must NOT be replaced by another environment's.
+        # A uv-created venv is often unseeded, so `-m pip` failing there is ordinary, and
+        # falling through would mark a different environment's listing as the target's own
+        # and report the target's policy as successfully loaded and absent.
+        listing_body = _shell_function_source("_load_pip_config_listing")
+        venv_arm = listing_body.index("_VENV_PY")
+        path_arm = listing_body.index("for _pm_pip in pip3 pip")
+        between = listing_body[venv_arm:path_arm]
+        assert (
+            "return 0" in between
+        ), "the target arm must return unconditionally, not fall through to a system pip"
+
+        # And the resolution itself must be able to reach the target interpreter and file.
+        listing = _shell_function_source("_load_pip_config_listing")
+        assert "_VENV_PY" in listing, "the target venv's own pip answers for its site config"
+        presence = _shell_function_source("_pip_config_files_present")
+        assert (
+            "$VENV_DIR/pip.conf" in presence
+        ), "the target's site file is not $VIRTUAL_ENV: this script creates that venv"
+
+        # Memoised, or every command in the run pays for a subprocess.
+        ready_body = _shell_function_source("_pm_policy_ready")
+        assert "_PM_POLICY_RESOLVED" in ready_body
+
+    @pytest.mark.parametrize(
+        "variable",
+        [
+            "UV_REQUIRE_HASHES",
+            "UV_OFFLINE",
+            "UV_EXCLUDE_NEWER",
+            "UV_CONSTRAINT",
+            "UV_OVERRIDE",
+            "UV_EXCLUDE",
+        ],
+    )
+    def test_every_uv_only_setting_declines_a_forced_pip_step(
+        self, variable, monkeypatch, tmp_path
+    ):
+        """A constraint prohibits versions, an override replaces them, an exclude removes
+        them from resolution entirely. pip reads none of the three.
+
+        So a forced-pip step under any of them installs exactly what they rule out, which is
+        the same reason the hash policy is in this list rather than a different kind of
+        thing. The shell twin is asserted by text in the same pass, since these run there
+        too and the list has now been extended three times in one half only.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_uv_config_file_present", lambda: False)
+        with self._environment({}, opt_out = "1"):
+            assert ips._uv_only_policy_active() is False
+        with self._environment({variable: "1"}, opt_out = "1"):
+            assert ips._uv_only_policy_active() is True, f"{variable} left a pip step permitted"
+        body = _shell_function_source("_uv_only_policy_active")
+        assert variable in body, f"install.sh's twin does not know about {variable}"
+
+    @requires_sh
+    @pytest.mark.parametrize(
+        "cert",
+        ["/opt/My CA/ca.pem", "/etc/ssl/corp.pem", "/opt/ca (2024).pem", ""],
+    )
+    def test_the_shell_passes_a_spaced_certificate_path_as_one_argument(self, cert, tmp_path):
+        """A CA bundle is a path, and `/opt/My CA/ca.pem` is an ordinary one.
+
+        The charset filter that protects the package names would silently drop it, and the
+        result is the worst kind of failure this feature can produce: uv is sent to the
+        operator's private index, cannot validate its certificate, and the pip fallback that
+        knows the CA has already been declined on purpose. So the cert is carried in its own
+        variable and expanded as one argument rather than appended to a word-split string.
+        """
+        library = "\n".join(
+            _shell_function_source(name)
+            for name in ("_pm_config_rows", "_resolve_index_policy", "run_install_cmd")
+        )
+        script = f"""
+        {library}
+        _is_verbose() {{ return 1; }}
+        step() {{ :; }}
+        substep() {{ :; }}
+        tauri_stream_log() {{ :; }}
+        tauri_clear_install_error() {{ :; }}
+        _uv_download_markers() {{ cat; }}
+        _redact_install_output() {{ cat; }}
+        _pm_policy_ready() {{ :; }}
+        uv() {{ printf '[%s]' "$@"; }}
+        _PM_PIP_CONFIG_LISTING=''
+        _PM_ONLY_BINARY_ARGS=''; _PM_INDEX_POLICY_ARGS=''
+        PIP_CERT='{cert}'
+        unset UV_FIND_LINKS PIP_FIND_LINKS PIP_NO_INDEX
+        _resolve_index_policy
+        run_install_cmd "test" uv pip install pkg
+        """
+        result = subprocess.run(
+            ["/bin/sh", "-c", script],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+            cwd = tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        if cert:
+            assert f"[--cert][{cert}]" in result.stdout, result.stdout
+        else:
+            assert "--cert" not in result.stdout, result.stdout
+        # The stub prints "$@", which does not include the command name, so the run is
+        # identified by its own arguments rather than by `uv`.
+        assert result.stdout.startswith("[pip][install]"), result.stdout
+        assert result.stdout.endswith("[pkg]"), result.stdout
+
+    def test_the_shell_carries_both_index_variables(self):
+        """The extra index mapping was dropped when the block became a function.
+
+        Python and PowerShell kept it, so a host expressing its private source only through
+        PIP_EXTRA_INDEX_URL was served by three entry points and not by the fourth.
+        """
+        body = _shell_function_source("_pm_policy_ready")
+        for pip_name, uv_name in (
+            ("PIP_CONSTRAINT", "UV_CONSTRAINT"),
+            ("PIP_INDEX_URL", "UV_INDEX_URL"),
+            ("PIP_EXTRA_INDEX_URL", "UV_EXTRA_INDEX_URL"),
+        ):
+            assert (
+                f"_carry_pip_index_into_uv {pip_name} {uv_name}" in body
+            ), f"{pip_name} is carried by the other entry points but not by install.sh"
+
+    @requires_sh
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        "listing",
+        [
+            # Exactly what `pip config list` prints for an indented multi-line value:
+            # ONE row with literal backslash-n escapes, not newline bytes. Measured, not
+            # assumed -- a pip.conf with two indented find-links renders this way.
+            r"global.find-links='\n/wheelhouse/a\n/wheelhouse/b'",
+            "global.find-links='/wheelhouse/a /wheelhouse/b'",
+            "global.find-links='/wheelhouse/a,/wheelhouse/b'",
+        ],
+    )
+    def test_the_shell_decodes_a_multiline_find_links_value(self, listing, tmp_path):
+        """Deleting quotes is not decoding, and the difference is the whole value.
+
+        Left as-is, the entire string became a single uv location, so with no-index in
+        force neither configured wheelhouse could resolve anything. Python's side already
+        decoded these through ast.literal_eval, which is how the two halves disagreed.
+        """
+        library = "\n".join(
+            _shell_function_source(name) for name in ("_pm_config_rows", "_resolve_index_policy")
+        )
+        script = f"""
+        {library}
+        _PM_PIP_CONFIG_LISTING="{listing}"
+        unset UV_FIND_LINKS PIP_FIND_LINKS PIP_NO_INDEX PIP_CERT
+        _PM_INDEX_POLICY_ARGS=""
+        _resolve_index_policy
+        printf '%s' "$UV_FIND_LINKS"
+        """
+        result = subprocess.run(
+            ["/bin/sh", "-c", script],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+            cwd = tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/wheelhouse/a,/wheelhouse/b"
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "carried", "stops"),
+        [
+            ({"PIP_KEYRING_PROVIDER": "subprocess"}, b"", "subprocess", False),
+            ({}, b"global.keyring-provider='subprocess'\n", "subprocess", False),
+            ({"PIP_KEYRING_PROVIDER": "disabled"}, b"", None, False),
+            ({}, b"", None, False),
+            # pip has an `import` mode; uv's --keyring-provider takes disabled or
+            # subprocess only, so there is nothing to translate it to.
+            ({"PIP_KEYRING_PROVIDER": "import"}, b"", None, True),
+        ],
+    )
+    def test_the_keyring_provider_is_carried_or_stops_the_run(
+        self, environment, listing, carried, stops, monkeypatch, capsys
+    ):
+        """Carrying a private index without the means to authenticate to it is not a carry.
+
+        uv is sent to the operator's index and refused, and the pip fallback that could have
+        used the keyring has already been declined on purpose -- the same shape as the
+        certificate, and the same reason it travels with the index rather than apart.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        monkeypatch.setattr(ips, "_POLICY_UNCARRYABLE_REPORTED", False)
+        with self._environment(environment, opt_out = "1"):
+            if stops:
+                with pytest.raises(SystemExit) as stopped:
+                    ips._require_carryable_pip_policy()
+                assert stopped.value.code == 1
+                assert "keyring" in capsys.readouterr().out
+            else:
+                ips._require_carryable_pip_policy()
+                assert ips._pip_policy_as_uv_env().get("UV_KEYRING_PROVIDER") == carried
+        # No default-path assertion here: this function has no internal gate, its two
+        # callers do, and the 90-cell environment comparison is what holds that line.
+
+    def test_the_pip_bootstrap_goes_through_the_policy_wrapper(self):
+        """A uv install is a uv install, wherever it sits.
+
+        _install_bnb_rocm bootstraps pip with uv when ensurepip fails, and it did so through
+        run_maybe_quiet, which injects nothing. So a no-index operator whose wheelhouse has
+        no pip had uv reach a registry to fetch one, past the opt-out, from inside the step
+        that exists to respect it.
+        """
+        body = _shell_function_source("_install_bnb_rocm")
+        bootstrap = body[body.index("uv pip install") :]
+        bootstrap = bootstrap[: bootstrap.index("\n")]
+        assert (
+            "run_install_cmd" in body[: body.index("uv pip install")][-200:]
+        ), f"the uv pip bootstrap bypasses the policy wrapper: {bootstrap}"
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "expected"),
+        [
+            (
+                {"PIP_BUILD_CONSTRAINT": "/etc/build.txt"},
+                b"",
+                {"UV_BUILD_CONSTRAINT": "/etc/build.txt"},
+            ),
+            (
+                {},
+                b"global.build-constraint='/etc/build.txt'\n",
+                {"UV_BUILD_CONSTRAINT": "/etc/build.txt"},
+            ),
+            (
+                {"PIP_TRUSTED_HOST": "mirror.internal other.internal"},
+                b"",
+                {"UV_INSECURE_HOST": "mirror.internal,other.internal"},
+            ),
+            (
+                {},
+                b"global.trusted-host='mirror.internal'\n",
+                {"UV_INSECURE_HOST": "mirror.internal"},
+            ),
+            ({}, b"", {}),
+        ],
+    )
+    def test_reaching_the_index_is_carried_as_a_whole(
+        self, environment, listing, expected, monkeypatch
+    ):
+        """An index the installer cannot reach is not a carried index.
+
+        build-constraint governs the dependencies uv resolves when it BUILDS an sdist, which
+        are the ones an operator cannot see in a lockfile. trusted-host is their deliberate
+        exception for a plain-HTTP or self-signed host, which uv spells --allow-insecure-host
+        and relaxes for those hosts only. Both apply on the pinned arm as well: a kept
+        find-links host needs the exception too, and a build constraint only narrows.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        with self._environment(environment, opt_out = "1"):
+            unpinned = ips._pip_policy_as_uv_env()
+            pinned = ips._pip_policy_as_uv_env(pinned = True)
+        for name, value in expected.items():
+            assert unpinned.get(name) == value
+            assert pinned.get(name) == value, f"{name} narrows or authenticates, so a pin keeps it"
+        if not expected:
+            assert "UV_BUILD_CONSTRAINT" not in unpinned
+            assert "UV_INSECURE_HOST" not in unpinned
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "stops"),
+        [
+            ({"PIP_CLIENT_CERT": "/etc/client.pem"}, b"", True),
+            ({}, b"global.client-cert='/etc/client.pem'\n", True),
+            ({}, b"", False),
+        ],
+    )
+    def test_a_client_certificate_stops_the_run(
+        self, environment, listing, stops, monkeypatch, capsys
+    ):
+        """uv's --cert is a CA bundle, and uv has no client-certificate option at all.
+
+        So an index requiring mutual TLS cannot be reached by uv under any translation, and
+        the pip fallback that could present the certificate has already been declined. The
+        third member of the stop list, and the plainest: there is nothing to translate it
+        to, rather than a choice between two bad translations.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        monkeypatch.setattr(ips, "_POLICY_UNCARRYABLE_REPORTED", False)
+        with self._environment(environment, opt_out = "1"):
+            if stops:
+                with pytest.raises(SystemExit) as stopped:
+                    ips._require_carryable_pip_policy()
+                assert stopped.value.code == 1
+                assert "client certificate" in capsys.readouterr().out
+            else:
+                ips._require_carryable_pip_policy()
+        # and the default path is never stopped, however pip is configured
+        monkeypatch.setattr(ips, "_POLICY_UNCARRYABLE_REPORTED", False)
+        with self._environment(environment):
+            ips._require_carryable_pip_policy()
+
+    def test_the_shell_declines_the_forced_pip_amd_wheel_too(self):
+        """install.sh runs the same direct-URL install through pip, for the same reason.
+
+        _install_bnb_rocm bootstraps pip deliberately, because uv rejects the prerelease
+        wheel's metadata. Under the opt-out that is the same substitution pip_install_try
+        declines, and the guard has to sit ABOVE the bootstrap: ensurepip mutates the venv,
+        so a step that declines below it has already changed what it promised to leave.
+        """
+        body = _shell_function_source("_install_bnb_rocm")
+        guard = body.index("if _respect_pm_policy && _uv_only_policy_active")
+        assert guard < body.index(
+            "-m ensurepip"
+        ), "the decline must come before the venv is mutated by the pip bootstrap"
+        assert guard < body.index("-m pip install"), "and before the wheel is fetched"
+
+
 class TestProgressLineNotes:
     """_progress() leaves the cursor mid-line, so anything printed between two
     progress steps must close that line first. Before centralising this, a real
@@ -1898,7 +3547,12 @@ class TestDuplicateCoreMetadataRepair:
             "PIP_NO_BINARY",
             "PIP_ONLY_BINARY",
             "UV_KEYRING_PROVIDER",
+            "UV_BUILD_CONSTRAINT",
+            "UV_INSECURE_HOST",
             "PIP_KEYRING_PROVIDER",
+            "PIP_BUILD_CONSTRAINT",
+            "PIP_TRUSTED_HOST",
+            "PIP_CLIENT_CERT",
         ):
             monkeypatch.delenv(var, raising = False)
 

@@ -212,12 +212,500 @@ _uv_download_markers() {
     '
 }
 
+# Must answer exactly as _respect_pm_policy() in studio/install_python_stack.py, strip and
+# all: on disagreement the shell half relaxes the policy while the Python half withholds,
+# and the operator gets neither the opt-out nor a clean default. Both spellings of the trim
+# are wrong in their own way: `tr -d` also collapses INTERNAL whitespace, making "t rue" the
+# true spelling here alone, and sed works a line at a time and cannot trim across a newline,
+# so "\n1" read as off while Python's .strip() made it on. Hence map-then-trim, which cannot
+# create a false positive because no allowlist entry contains a space.
+_respect_pm_policy() {
+    # Unset is everyone who has not opted in; answer it without paying two subprocesses.
+    case "${UNSLOTH_RESPECT_PM_POLICY:-}" in
+        "") return 1 ;;
+    esac
+    case "$(printf '%s' "$UNSLOTH_RESPECT_PM_POLICY" | tr '\n\r\t\013\014' '     ' | tr '[:upper:]' '[:lower:]' | sed 's/^ *//; s/ *$//')" in
+        1|true|yes|on) return 0 ;;
+    esac
+    return 1
+}
+
+# uv reads no PIP_ variable, and this script runs many uv commands directly, so a
+# pip-expressed hash requirement has to be restated ONCE for the whole run rather than per
+# command: the pinned arm below is not the only place uv is invoked. UV_REQUIRE_HASHES is
+# uv's documented spelling of --require-hashes. Never over a uv value the operator set.
+# One `pip config list`, shared by both policies below, because a hardened host is likelier
+# to express them in pip.conf than in the environment and two probes would cost twice. Only
+# ever reached once the opt-out is on, so the default path pays nothing.
+_PM_PIP_CONFIG_LISTING=""
+_PM_PIP_CONFIG_READABLE=0
+_load_pip_config_listing() {
+    # The target venv's own interpreter first: its site pip.conf is the file that governs
+    # the installs this protects, and a pip on PATH answers for a different environment.
+    if [ -n "${_VENV_PY:-}" ] && [ -x "${_VENV_PY:-}" ]; then
+        if _PM_PIP_CONFIG_LISTING=$("$_VENV_PY" -m pip config list 2>/dev/null); then
+            _PM_PIP_CONFIG_READABLE=1
+        fi
+        # Return either way. A uv-created venv is often unseeded, so `-m pip` failing there
+        # is ordinary -- and falling through to a system pip would answer for a DIFFERENT
+        # environment and mark the answer readable, which is worse than no answer: the
+        # target's own site policy would be reported as successfully loaded and absent.
+        _PM_PIP_CONFIG_LISTING=${_PM_PIP_CONFIG_LISTING:-}
+        return 0
+    fi
+    for _pm_pip in pip3 pip; do
+        command -v "$_pm_pip" >/dev/null 2>&1 || continue
+        if _PM_PIP_CONFIG_LISTING=$("$_pm_pip" config list 2>/dev/null); then
+            _PM_PIP_CONFIG_READABLE=1
+        fi
+        break
+    done
+    unset _pm_pip
+}
+
+# POSIX sed has no \(a\|b\) alternation -- that is a GNU extension, and BSD sed (macOS,
+# which install.sh supports) matches it literally and prints nothing. Every policy read
+# below went through one, so the whole translation was silently inert on a Mac. Two -e
+# expressions instead, which both sed families take.
+_pm_config_rows() {
+    # `pip config list` renders a multiline value as ONE row containing literal backslash-n
+    # escapes, not newline bytes: `global.find-links='\n/wheelhouse/a\n/wheelhouse/b'`.
+    # Python's side decodes those through ast.literal_eval; deleting quotes alone left the
+    # whole string as a single uv location, so with no-index in force neither wheelhouse
+    # could resolve anything. Decoded to spaces, which every consumer here already splits on
+    # or trims, and which keeps one row per line.
+    printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
+        | sed -n -e "s/^global\.$1=//p" -e "s/^install\.$1=//p" \
+        | tr -d "'\"" \
+        | sed -e 's/\\n/ /g' -e 's/\\t/ /g' -e 's/^ *//' -e 's/ *$//'
+}
+
+# Does this host have a pip configuration file at all? Documented locations, existence only.
+# It separates "there is nothing to read" from "there is something we could not read", which
+# an empty listing on its own cannot do.
+_pip_config_files_present() {
+    if [ -n "${PIP_CONFIG_FILE:-}" ]; then
+        [ "$PIP_CONFIG_FILE" = /dev/null ] && return 1
+        [ -f "$PIP_CONFIG_FILE" ] && return 0
+        return 1
+    fi
+    # pip's WHOLE set. A location left out of it fails OPEN, which is the one direction
+    # this check must not fail in. The global XDG root and the site file beside the active
+    # environment were both missing; the site file matters most, because a virtual
+    # environment is what an installer runs in.
+    _pm_dirs="${XDG_CONFIG_DIRS:-/etc/xdg}"
+    _pm_ifs="$IFS"
+    IFS=:
+    for _pm_root in $_pm_dirs /etc/xdg /etc; do
+        [ -n "$_pm_root" ] || continue
+        if [ -f "$_pm_root/pip/pip.conf" ]; then
+            IFS="$_pm_ifs"; unset _pm_dirs _pm_ifs _pm_root
+            return 0
+        fi
+    done
+    IFS="$_pm_ifs"
+    unset _pm_dirs _pm_ifs _pm_root
+    # pip uses the Apple locations on macOS, not the XDG ones. Omitting them fails OPEN.
+    [ -f "/Library/Application Support/pip/pip.conf" ] && return 0
+    [ -f "$HOME/Library/Application Support/pip/pip.conf" ] && return 0
+    [ -f /etc/pip.conf ] && return 0
+    [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" ] && return 0
+    [ -f "$HOME/.pip/pip.conf" ] && return 0
+    [ -n "${VIRTUAL_ENV:-}" ] && [ -f "$VIRTUAL_ENV/pip.conf" ] && return 0
+    # The target environment's site file, which is not $VIRTUAL_ENV here: this script
+    # creates or updates that venv rather than running inside it.
+    [ -n "${VENV_DIR:-}" ] && [ -f "$VENV_DIR/pip.conf" ] && return 0
+    return 1
+}
+
+# Under the opt-out, an unanswerable policy question stops the run. uv can create an
+# environment with no pip in it, so `pip config list` failing is an ordinary condition here,
+# and treating it as "no policy" is the one outcome this feature must never produce: it is
+# indistinguishable from success while installing past whatever the file said. Only when a
+# file actually exists, so a uv-only host with no pip.conf is not punished for a question
+# that had no answer to begin with.
+# no-deps is the one setting where both obvious answers are wrong. Carrying it would have uv
+# install the Studio requirements without their own dependencies, producing an environment
+# that fails later with nothing to point at; ignoring it installs packages the operator
+# excluded. So neither: the run stops and names the setting.
+_require_carryable_pip_policy() {
+    _pm_nd="${PIP_NO_DEPS:-}"
+    [ -z "$_pm_nd" ] && _pm_nd=$(_pm_config_rows "no[-_]deps" | tail -n 1)
+    case "$(printf '%s' "$_pm_nd" | tr '[:upper:]' '[:lower:]')" in
+        ""|0|false|no|off|n|f) unset _pm_nd; return 0 ;;
+    esac
+    unset _pm_nd
+    step "error" "your pip no-deps policy cannot be honoured by this installer" "$C_ERR" >&2
+    substep "UNSLOTH_RESPECT_PM_POLICY is set and pip is configured with no-deps. Carrying that into uv would install the Studio requirements without their own dependencies, which fails later with nothing to point at; ignoring it would install packages you excluded. Neither is safe, so this stops here. Clear no-deps, or unset UNSLOTH_RESPECT_PM_POLICY for one run." "$C_ERR" >&2
+    exit 1
+}
+
+_require_readable_pip_policy() {
+    [ "$_PM_PIP_CONFIG_READABLE" = 1 ] && return 0
+    _pip_config_files_present || return 0
+    step "error" "cannot read your pip configuration, and cannot proceed past it" "$C_ERR" >&2
+    substep "UNSLOTH_RESPECT_PM_POLICY is set and this host has a pip configuration file, but pip config list did not answer, so the policy in it cannot be carried to uv. Continuing would install exactly past the settings you asked to keep. Install pip, or unset UNSLOTH_RESPECT_PM_POLICY for one run to proceed without it." "$C_ERR" >&2
+    exit 1
+}
+
+# uv reads no PIP_ variable, and this script runs many uv commands directly, so a
+# pip-expressed hash requirement has to be restated ONCE for the whole run rather than per
+# command. UV_REQUIRE_HASHES is uv's documented spelling of --require-hashes. Never over a
+# uv value the operator set.
+_carry_pip_policy_into_uv() {
+    [ -n "${UV_REQUIRE_HASHES:-}" ] && return 0
+    case "$(printf '%s' "${PIP_REQUIRE_HASHES:-}" | tr '[:upper:]' '[:lower:]')" in
+        1|t|true|y|yes|on) UV_REQUIRE_HASHES=1; export UV_REQUIRE_HASHES; return 0 ;;
+        "") ;;
+        # Only the documented false spellings disable it. pip exits on anything else --
+        # "not a valid value for require-hashes" -- and the Python twin reads every
+        # non-false value as active, so treating a typo as OFF both disagreed with the rest
+        # of this feature and failed in the one direction it must not.
+        0|f|false|n|no|off) return 0 ;;
+        *) UV_REQUIRE_HASHES=1; export UV_REQUIRE_HASHES; return 0 ;;
+    esac
+    # LAST row wins, not "any row is truthy": pip reads [global] then the command's own
+    # section, so `[global] true` followed by `[install] false` is off. Folding with a
+    # grep -q would have exported the requirement against the operator's effective policy,
+    # and would have disagreed with the Python and PowerShell halves of this same feature.
+    _pm_hashes=""
+    for _pm_row in $(_pm_config_rows "require[-_]hashes" | tr '[:upper:]' '[:lower:]'); do
+        _pm_hashes="$_pm_row"
+    done
+    case "$_pm_hashes" in
+        ""|0|false|no|off|n|f) ;;
+        *) UV_REQUIRE_HASHES=1; export UV_REQUIRE_HASHES ;;
+    esac
+    unset _pm_hashes _pm_row
+    return 0
+}
+
+# only-binary has no environment spelling on `uv pip install` (uv 0.10.7, unlike
+# --require-hashes), so it can only reach uv as argv. Resolved once here and injected by
+# run_install_cmd below. pip documents the option as ACCUMULATING across sources, each
+# occurrence adding to the set and `:none:` emptying it, so the file rows are replayed in
+# load order and the environment appended rather than one of them winning.
+_PM_ONLY_BINARY_ARGS=""
+_PM_INDEX_POLICY_ARGS=""
+_PM_CERT=""
+# Remove one word from a space-separated set. sh has no sets, and the pairing below needs
+# "discard from the other" to be exact rather than approximate.
+_pm_without() {
+    _pm_out=""
+    for _pm_w in $2; do
+        [ "$_pm_w" = "$1" ] && continue
+        _pm_out="$_pm_out $_pm_w"
+    done
+    printf '%s' "$_pm_out"
+}
+
+# no-binary and only-binary are ONE FormatControl pair in pip, not two lists: `:all:` in
+# either clears the other, `:none:` empties its own, and naming a package in one discards it
+# from the other. Resolving them separately let a pip.conf `no-binary = numpy` and a
+# PIP_ONLY_BINARY=numpy both survive, and uv given both flags for one package reports that
+# no artifact is usable -- a policy pip accepts became an unsatisfiable install. This is a
+# transcription of pip's own handle_mutual_excludes.
+_resolve_only_binary_policy() {
+    _pm_no=""
+    _pm_only=""
+    # ONE sed pass over the listing, so its own row order survives. Reading each key
+    # separately and concatenating grouped every no-binary row ahead of every only-binary
+    # row, so `[global] only-binary = numpy` followed by `[install] no-binary = numpy`
+    # resolved to the global row -- the opposite of pip, where the command's own section is
+    # read last and wins.
+    _pm_rows=$(
+        printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
+            | sed -n \
+                -e "s/^global\.no[-_]binary=/no-binary /p" \
+                -e "s/^install\.no[-_]binary=/no-binary /p" \
+                -e "s/^global\.only[-_]binary=/only-binary /p" \
+                -e "s/^install\.only[-_]binary=/only-binary /p" \
+            | tr -d "'\""
+        [ -n "${PIP_NO_BINARY:-}" ] && printf 'no-binary %s\n' "$PIP_NO_BINARY"
+        [ -n "${PIP_ONLY_BINARY:-}" ] && printf 'only-binary %s\n' "$PIP_ONLY_BINARY"
+        true
+    )
+    # IFS is a newline for the row walk, so a whitespace-separated row stays one row, and
+    # is restored inside the loop for the word walk over that row's own value.
+    _pm_ifs="$IFS"
+    IFS='
+'
+    for _pm_line in $_pm_rows; do
+        [ -n "$_pm_line" ] || continue
+        IFS="$_pm_ifs"
+        _pm_which=${_pm_line%% *}
+        _pm_value=${_pm_line#* }
+        # Commas only, which is pip's own value.split(","). Splitting on whitespace too
+        # turned `bad name` into two acceptable tokens instead of one rejected one.
+        _pm_saved_ifs="$IFS"; IFS=,
+        for _pm_one in $_pm_value; do
+            IFS="$_pm_saved_ifs"
+            # A multiline pip.conf value arrives with spaces around the tokens, and an
+            # untrimmed token fails the charset check below -- which for a format control
+            # is the UNSAFE direction, since it drops the operator's restriction.
+            _pm_one=$(printf '%s' "$_pm_one" | sed -e 's/^ *//' -e 's/ *$//')
+            [ -n "$_pm_one" ] || continue
+            case "$_pm_one" in
+                *[!A-Za-z0-9._:-]*) continue ;;
+            esac
+            if [ "$_pm_one" = ":all:" ]; then
+                if [ "$_pm_which" = "no-binary" ]; then
+                    _pm_only=""; _pm_no=" :all:"
+                else
+                    _pm_no=""; _pm_only=" :all:"
+                fi
+                continue
+            fi
+            if [ "$_pm_one" = ":none:" ]; then
+                if [ "$_pm_which" = "no-binary" ]; then _pm_no=""; else _pm_only=""; fi
+                continue
+            fi
+            # pip canonicalizes before comparing, so foo_bar and foo-bar are one package
+            # to it. Exact strings kept both, and uv given --no-binary foo_bar with
+            # --only-binary foo-bar reports an otherwise usable wheel as unsatisfiable.
+            _pm_one=$(printf '%s' "$_pm_one" | tr '[:upper:]' '[:lower:]' | sed 's/[-_.][-_.]*/-/g')
+            if [ "$_pm_which" = "no-binary" ]; then
+                _pm_only=$(_pm_without "$_pm_one" "$_pm_only")
+                case " $_pm_no " in *" $_pm_one "*) ;; *) _pm_no="$_pm_no $_pm_one" ;; esac
+            else
+                _pm_no=$(_pm_without "$_pm_one" "$_pm_no")
+                case " $_pm_only " in *" $_pm_one "*) ;; *) _pm_only="$_pm_only $_pm_one" ;; esac
+            fi
+            IFS=,
+        done
+        IFS="$_pm_saved_ifs"
+        IFS='
+'
+    done
+    IFS="$_pm_ifs"
+    _pm_set=""
+    for _pm_one in $_pm_only; do _pm_set="$_pm_set --only-binary $_pm_one"; done
+    for _pm_one in $_pm_no; do _pm_set="$_pm_set --no-binary $_pm_one"; done
+    _PM_ONLY_BINARY_ARGS="$_pm_set"
+    unset _pm_set _pm_one _pm_no _pm_only _pm_rows _pm_line _pm_which _pm_value _pm_ifs _pm_out _pm_w _pm_saved_ifs
+}
+
+# A private or required index is the commonest hardening of all, and uv reads none of pip's
+# spellings for it: uv 0.10.7 binds these to UV_INDEX_URL and UV_EXTRA_INDEX_URL. Never over
+# a uv value the operator set, and never for the pinned commands run_install_cmd scrubs,
+# where an inherited index outranking an explicit --default-index is #6898 exactly.
+# uv binds --keyring-provider to UV_KEYRING_PROVIDER and accepts `disabled` or `subprocess`
+# only. pip also has `import`, which uv has no equivalent for, so that one stops the run:
+# carrying the index without the means to authenticate to it sends uv somewhere it will be
+# refused, and the pip fallback that could have used the keyring is declined on purpose.
+# uv's --cert is a CA BUNDLE and uv has no client-certificate option at all, so an index
+# requiring mutual TLS cannot be reached by it, and the pip fallback that could present the
+# certificate has already been declined.
+_require_no_client_cert() {
+    _pm_cc="${PIP_CLIENT_CERT:-}"
+    [ -z "$_pm_cc" ] && _pm_cc=$(_pm_config_rows "client[-_]cert" | tail -n 1)
+    [ -z "$_pm_cc" ] && return 0
+    step "error" "pip's client certificate has no uv equivalent" "$C_ERR" >&2
+    substep "UNSLOTH_RESPECT_PM_POLICY is set and pip is configured with a client certificate for mutual TLS. uv has no option for one, so it cannot present it to your index, and this stops rather than attempting an install that cannot reach the source. Unset UNSLOTH_RESPECT_PM_POLICY for one run to let the pip fallback use it." "$C_ERR" >&2
+    exit 1
+}
+
+_carry_pip_keyring_into_uv() {
+    [ -n "${UV_KEYRING_PROVIDER:-}" ] && return 0
+    _pm_kr="${PIP_KEYRING_PROVIDER:-}"
+    [ -z "$_pm_kr" ] && _pm_kr=$(_pm_config_rows "keyring[-_]provider" | tail -n 1)
+    case "$(printf '%s' "$_pm_kr" | tr '[:upper:]' '[:lower:]')" in
+        ""|auto|disabled) ;;
+        subprocess) UV_KEYRING_PROVIDER=subprocess; export UV_KEYRING_PROVIDER ;;
+        *)
+            step "error" "pip keyring provider '$_pm_kr' has no uv equivalent" "$C_ERR" >&2
+            substep "UNSLOTH_RESPECT_PM_POLICY is set and pip is configured to authenticate with keyring-provider '$_pm_kr'. uv accepts only 'disabled' or 'subprocess', so it cannot authenticate to your index the way you asked, and installing past that is what this variable exists to prevent. Set keyring-provider to subprocess, or unset UNSLOTH_RESPECT_PM_POLICY for one run." "$C_ERR" >&2
+            exit 1
+            ;;
+    esac
+    unset _pm_kr
+    return 0
+}
+
+_carry_pip_index_into_uv() {
+    _pm_pair_env="$1"
+    _pm_pair_uv="$2"
+    _pm_pair_key="$3"
+    eval "_pm_have=\${$_pm_pair_uv:-}"
+    [ -n "$_pm_have" ] && return 0
+    eval "_pm_val=\${$_pm_pair_env:-}"
+    if [ -z "$_pm_val" ]; then
+        _pm_val=$(_pm_config_rows "$_pm_pair_key" | tail -n 1)
+    fi
+    if [ -n "$_pm_val" ]; then
+        eval "$_pm_pair_uv=\"\$_pm_val\"; export $_pm_pair_uv"
+    fi
+    unset _pm_pair_env _pm_pair_uv _pm_pair_key _pm_have _pm_val
+}
+
+# uv spells this --no-index and gives it NO environment binding (uv 0.10.7), unlike
+# --find-links which reads UV_FIND_LINKS. So keeping PIP_NO_INDEX in the environment, which
+# is what the opt-out does, left uv reaching the registry anyway. find-links is carried as
+# the environment variable uv does read, because --no-index without it leaves uv nowhere to
+# look: the operator's wheelhouse is the source their no-index policy presupposes.
+_resolve_index_policy() {
+    _pm_ni="${PIP_NO_INDEX:-}"
+    if [ -z "$_pm_ni" ]; then
+        for _pm_row in $(_pm_config_rows "no[-_]index" | tr '[:upper:]' '[:lower:]'); do
+            _pm_ni="$_pm_row"
+        done
+    fi
+    case "$(printf '%s' "$_pm_ni" | tr '[:upper:]' '[:lower:]')" in
+        ""|0|false|no|off|n|f) ;;
+        *) _PM_INDEX_POLICY_ARGS="--no-index" ;;
+    esac
+    # uv exposes --cert with no environment binding, so a corporate CA reached it not at
+    # all. Worse under the opt-out than it looks: the index URL IS carried, so uv is sent to
+    # the private index and then refuses its certificate, and the pip fallback that knows
+    # PIP_CERT has already been declined on purpose.
+    # Carried in its OWN variable, not appended to the word-split argument string: a CA
+    # bundle is a path, `/opt/My CA/ca.pem` is an ordinary one, and the charset filter that
+    # protects the package names would silently drop it. The injection site expands it as
+    # ${_PM_CERT:+"$_PM_CERT"}, which is one argument with its spaces intact, or nothing.
+    _PM_CERT="${PIP_CERT:-}"
+    [ -z "$_PM_CERT" ] && _PM_CERT=$(_pm_config_rows "cert" | tail -n 1)
+    case "$_PM_CERT" in
+        # A newline cannot survive as one argument and is the one value that could inject a
+        # second; everything else a filesystem allows is passed through untouched.
+        *"
+"*) _PM_CERT="" ;;
+    esac
+    if [ -z "${UV_FIND_LINKS:-}" ]; then
+        _pm_fl="${PIP_FIND_LINKS:-}"
+        if [ -z "$_pm_fl" ]; then
+            # Read line by line, NOT through `for` over a command substitution: a
+            # whitespace-separated row like `/wheelhouse/a /wheelhouse/b` word-splits into
+            # two iterations, and the loop then keeps only the last one. With no-index in
+            # force, packages that live in the earlier wheelhouse become unresolvable.
+            _pm_fl=$(_pm_config_rows "find[-_]links" | tail -n 1)
+        fi
+        if [ -n "$_pm_fl" ]; then
+            # Measured on uv 0.10.7: a space-separated UV_FIND_LINKS fails with
+            # "Failed to read --find-links directory: /a /b", taking the whole string as one
+            # path. pip splits on whitespace and allows a multi-line pip.conf value, so the
+            # list is re-encoded rather than carried across verbatim.
+            UV_FIND_LINKS=$(printf '%s' "$_pm_fl" | tr ',' ' ' | tr -s ' \t\n' ',' | sed 's/^,//; s/,$//')
+            export UV_FIND_LINKS
+        fi
+    fi
+    unset _pm_ni _pm_fl _pm_row
+}
+
+# Resolved on FIRST USE, not at startup. This file runs the whole policy block long before
+# VENV_DIR exists, and the installs it protects go into that venv via `--python "$_VENV_PY"`,
+# so resolving here would query whichever pip happens to be on PATH and would never see the
+# target environment's own site pip.conf. Memoised, so the probe still costs one subprocess.
+_PM_POLICY_RESOLVED=0
+_pm_policy_ready() {
+    [ "$_PM_POLICY_RESOLVED" = 1 ] && return 0
+    _PM_POLICY_RESOLVED=1
+    _respect_pm_policy || return 0
+    _load_pip_config_listing
+    _require_readable_pip_policy
+    _require_carryable_pip_policy
+    _carry_pip_policy_into_uv
+    _resolve_only_binary_policy
+    _resolve_index_policy
+    # uv binds --constraints to UV_CONSTRAINT and reads no pip spelling for it, so a
+    # constraint file the operator required was invisible and uv could resolve a version
+    # they had prohibited. Restrictive, so it is carried for pinned commands too.
+    _require_no_client_cert
+    _carry_pip_keyring_into_uv
+    _carry_pip_index_into_uv PIP_CONSTRAINT UV_CONSTRAINT "constraint"
+    # Build dependencies are resolved when uv builds an sdist, and are the ones the operator
+    # cannot see in a lockfile, so a build-constraint left behind means an sdist pulls its
+    # build backend from wherever it likes.
+    _carry_pip_index_into_uv PIP_BUILD_CONSTRAINT UV_BUILD_CONSTRAINT "build[-_]constraint"
+    # A deliberate exception for named hosts, which uv spells --allow-insecure-host. Carried
+    # with the CA rather than with the index URLs, because a kept find-links host needs it on
+    # a pinned command too; it relaxes only the hosts the operator listed.
+    _carry_pip_index_into_uv PIP_TRUSTED_HOST UV_INSECURE_HOST "trusted[-_]host"
+    _carry_pip_index_into_uv PIP_INDEX_URL UV_INDEX_URL "index[-_]url"
+    _carry_pip_index_into_uv PIP_EXTRA_INDEX_URL UV_EXTRA_INDEX_URL "extra[-_]index[-_]url"
+    return 0
+}
+
+
+# Policy that binds uv and that pip cannot be told about. The Python twin is
+# _uv_only_policy_active(); a uv configuration file counts by PRESENCE, unparsed, because
+# whatever restriction it holds is precisely what a pip command will not see.
+# uv's own boolish spellings, so a control the operator explicitly DISABLED does not read
+# as an active policy. The Python twin goes through _uv_env_flag(); testing for a non-empty
+# value made UV_OFFLINE=0 skip the ROCm bitsandbytes install and warn about a policy uv
+# itself considers off.
+_uv_flag_on() {
+    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+        1|t|true|y|yes|on) return 0 ;;
+    esac
+    return 1
+}
+
+# Policy that binds uv and that pip cannot be told about. The Python twin is
+# _uv_only_policy_active(); a uv configuration file counts by PRESENCE, unparsed, because
+# whatever restriction it holds is precisely what a pip command will not see.
+_uv_only_policy_active() {
+    _uv_flag_on "${UV_REQUIRE_HASHES:-}" && return 0
+    _uv_flag_on "${UV_OFFLINE:-}" && return 0
+    # A timestamp and a path, not booleans: any value is a setting.
+    [ -n "${UV_EXCLUDE_NEWER:-}" ] && return 0
+    # A constraint file prohibits versions and an override file replaces them, and pip reads
+    # no UV_ variable, so a forced-pip step under either can install what they rule out.
+    [ -n "${UV_CONSTRAINT:-}" ] && return 0
+    [ -n "${UV_OVERRIDE:-}" ] && return 0
+    # --excludes removes packages from resolution entirely.
+    [ -n "${UV_EXCLUDE:-}" ] && return 0
+    [ -n "${UV_CONFIG_FILE:-}" ] && return 0
+    # UV_NO_CONFIG means uv discovers nothing, so there is no hidden file to respect.
+    _uv_flag_on "${UV_NO_CONFIG:-}" && return 1
+    # uv discovers uv.toml in the current directory, any PARENT, then the user file, then
+    # the system file. Walking up matters more than the corner cases: a policy at the root
+    # of a checkout binds an installer run from a subdirectory.
+    _pm_dir=$(pwd)
+    while :; do
+        [ -f "$_pm_dir/uv.toml" ] && { unset _pm_dir; return 0; }
+        if [ -f "$_pm_dir/pyproject.toml" ] && grep -q '\[tool\.uv[].]' "$_pm_dir/pyproject.toml" 2>/dev/null; then
+            unset _pm_dir
+            return 0
+        fi
+        [ "$_pm_dir" = "/" ] && break
+        _pm_dir=$(dirname "$_pm_dir")
+    done
+    unset _pm_dir
+    [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml" ] && return 0
+    # The system file a managed fleet is likeliest to use.
+    [ -f /etc/uv/uv.toml ] && return 0
+    return 1
+}
+
 run_install_cmd() {
     _label="$1"
     shift
+    _pm_policy_ready
+    # Before the index scrub below, which may prepend `env ...` and move uv out of $1.
+    if [ -n "${_PM_ONLY_BINARY_ARGS:-}${_PM_INDEX_POLICY_ARGS:-}${_PM_CERT:-}" ] \
+        && [ "$1" = "uv" ] && [ "$2" = "pip" ] \
+        && { [ "$3" = "install" ] || [ "$3" = "sync" ]; }; then
+        _pm_verb="$3"
+        shift 3
+        # Immediately after the subcommand, never appended: several call sites end with
+        # `-- <package>`, where a trailing flag would be read as another package name.
+        set -- uv pip "$_pm_verb" $_PM_ONLY_BINARY_ARGS $_PM_INDEX_POLICY_ARGS \
+            ${_PM_CERT:+--cert} ${_PM_CERT:+"$_PM_CERT"} "$@"
+        unset _pm_verb
+    fi
     # For --default-index, clear inherited uv index vars so a uv.toml cannot outrank the CLI pin.
+    # Runs before install_python_stack.py, so the Python opt-out cannot cover it. Under the
+    # opt-out the config file and the wheelhouse stay (a uv.toml `no-index` makes find-links the
+    # only source uv is allowed); the ADDITIVE index vars still go, the pin being itself a
+    # provenance control (#6898).
     case " $* " in
-        *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS -u UV_CONFIG_FILE UV_NO_CONFIG=1 "$@" ;;
+        *" --default-index "*)
+            if _respect_pm_policy; then
+                set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND "$@"
+            else
+                set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS -u UV_CONFIG_FILE UV_NO_CONFIG=1 "$@"
+            fi
+            ;;
     esac
     if _is_verbose; then
         # Stream through the redactor; the rc file carries the exit code (no pipefail in sh).
@@ -359,10 +847,24 @@ _install_bnb_rocm() {
             _bnb_whl_url=""
             ;;
     esac
+    # Above the bootstrap, because ensurepip mutates the venv and a step that declines must
+    # leave it as found. This is the shell twin of pip_install_try(force_pip=True): pip is
+    # used here ON PURPOSE, so it reads no UV_ setting and no uv.toml, and under the opt-out
+    # installing a direct URL past a uv-only policy is the substitution that gate exists for.
+    _pm_policy_ready
+    if _respect_pm_policy && _uv_only_policy_active; then
+        substep "[SKIP] $_label needs pip, which your uv policy cannot reach" "$C_WARN"
+        substep "       unset UNSLOTH_RESPECT_PM_POLICY for one run to take it" "$C_WARN"
+        return 0
+    fi
     # uv rejects the pre-release wheel: filename version (1.33.7rc0) does not match metadata (0.50.x.dev0). pip accepts it, so bootstrap pip and use it.
     if ! "$_venv_py" -m pip --version >/dev/null 2>&1; then
         if ! run_maybe_quiet "$_venv_py" -m ensurepip --upgrade; then
-            run_maybe_quiet uv pip install --python "$_venv_py" pip || \
+            # Through run_install_cmd, not run_maybe_quiet: this is a uv install like any
+            # other, and bypassing the wrapper meant it received no --no-index, no
+            # --only-binary and no --cert, so a no-index operator whose wheelhouse has no
+            # pip had uv reach a registry to fetch it, past the opt-out.
+            run_install_cmd "bootstrap pip" uv pip install --python "$_venv_py" pip || \
                 substep "[WARN] could not bootstrap pip; bitsandbytes install will likely fail" "$C_WARN"
         fi
     fi
@@ -6910,6 +7412,8 @@ _bootstrap_packaged_mlx_override() {
     [ "$SKIP_TORCH" = false ] || return 0
     [ -f "${_OVERRIDES_FILE:-}" ] && return 0
     [ -n "${UV_OVERRIDE:-}" ] && return 0
+    # --excludes removes packages from resolution entirely.
+    [ -n "${UV_EXCLUDE:-}" ] && return 0
 
     substep "preparing Apple Silicon model support..."
     run_install_cmd_retry "prepare Apple Silicon dependencies" \

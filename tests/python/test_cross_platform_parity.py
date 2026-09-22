@@ -734,7 +734,13 @@ class TestPinnedIndexClearsUvEnvParity:
         fallback (pip honours PIP_EXTRA_INDEX_URL / PIP_FIND_LINKS in addition to
         --index-url); restoring the vars before the fallback reopens the hole."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        fi = text[text.find("function Fast-Install") :][:2500]
+        # To the next top-level `function`, not a fixed character count: the window was
+        # 2500 chars and any growth inside Fast-Install pushed the fallback past its end,
+        # so both finds returned -1 and `-1 < -1` failed with the invariant still intact.
+        start = text.find("function Fast-Install")
+        end = text.find("\nfunction ", start + 1)
+        fi = text[start : end if end != -1 else len(text)]
+        assert "python -m pip install" in fi, "Fast-Install slice lost the pip fallback"
         assert "'PIP_EXTRA_INDEX_URL'" in fi and "'PIP_FIND_LINKS'" in fi
         # the pip fallback must sit INSIDE the try whose finally restores the vars
         assert fi.find("python -m pip install") < fi.find(

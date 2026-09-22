@@ -4295,20 +4295,369 @@ exit 1
         return $Text -replace '(https?://[^\s`#]+)#[^\s`]+', '$1#<redacted>'
     }
 
+    # Must answer as _respect_pm_policy() does in install.sh and install_python_stack.py.
+    # A hand-maintained duplicate of setup.ps1's copy, like the UNSLOTH_ENABLE_AMD_SMI pair;
+    # sits OUTSIDE the shared block above, so the sync script's contract does not cover it.
+    function Test-RespectPmPolicy {
+        # Trim the ASCII set only, matching _respect_pm_policy(): .Trim() also removes Unicode
+        # whitespace, which POSIX sh cannot portably, and a pasted non-breaking space then meant on
+        # here and off in install.sh. Unrecognised is off everywhere instead.
+        $value = [string][Environment]::GetEnvironmentVariable('UNSLOTH_RESPECT_PM_POLICY')
+        $ws = [char[]]@(' ', "`t", "`n", "`r", [char]11, [char]12)
+        return (@('1', 'true', 'yes', 'on') -contains $value.Trim($ws).ToLowerInvariant())
+    }
+
+    # uv reads no PIP_ variable and this script drives uv directly, so a pip-expressed hash
+    # requirement is restated once for the run. UV_REQUIRE_HASHES is uv's documented spelling
+    # of --require-hashes; an explicit uv value the operator set is left alone.
+    # The pip half of the same question, resolved the way pip itself resolves it: PIP_* outranks
+    # pip.conf, so an explicit variable is the answer and the files are never read. A hardened
+    # host is likelier to express this in pip.conf than in the environment, and the Python phase
+    # already reads it, so leaving it unread here let the shell phase run uv unhashed first.
+    # One `pip config list`, and only ever on a host that has already opted in.
+    # One `pip config list` for both policies below. Only ever run once the opt-out is on,
+    # so the default path pays nothing for it.
+    $script:PmPipConfigListing = $null
+    function Get-PmPipConfigListing {
+        if ($null -ne $script:PmPipConfigListing) { return $script:PmPipConfigListing }
+        $script:PmPipConfigListing = @()
+        $script:PmPipConfigReadable = $false
+        # The TARGET interpreter first: its site pip.ini is the file governing the installs this
+        # protects, and a pip on PATH answers for a different environment. Return either way --
+        # a uv-created venv is often unseeded, so `-m pip` failing there is ordinary, and
+        # falling through would mark another environment's listing as the target's own.
+        if ($script:PmVenvPython -and (Test-Path -LiteralPath $script:PmVenvPython -PathType Leaf)) {
+            try {
+                $script:PmPipConfigListing = @(& $script:PmVenvPython -m pip config list 2>$null)
+                if ($LASTEXITCODE -ne 0) { $script:PmPipConfigListing = @() }
+                else { $script:PmPipConfigReadable = $true }
+            } catch { $script:PmPipConfigListing = @() }
+            return $script:PmPipConfigListing
+        }
+        foreach ($exe in @('pip3', 'pip')) {
+            $found = Get-Command $exe -ErrorAction SilentlyContinue
+            if (-not $found) { continue }
+            try {
+                $script:PmPipConfigListing = @(& $found.Source config list 2>$null)
+                if ($LASTEXITCODE -eq 0) { $script:PmPipConfigReadable = $true }
+            } catch { }
+            break
+        }
+        return $script:PmPipConfigListing
+    }
+
+    # Does this host have a pip configuration file at all? Documented locations, existence only.
+    # It separates "there is nothing to read" from "there is something we could not read", which
+    # an empty listing on its own cannot do.
+    function Test-PipConfigFilesPresent {
+        # pip's WHOLE discovery set. A location left out fails OPEN, which is the one direction
+        # this check must not fail in: the site file beside the interpreter is where a virtual
+        # environment keeps its policy, and an installer is exactly what runs in one.
+        $explicit = "$env:PIP_CONFIG_FILE".Trim()
+        if ($explicit) {
+            if ($explicit -eq 'nul' -or $explicit -eq 'NUL') { return $false }
+            return (Test-Path -LiteralPath $explicit -PathType Leaf)
+        }
+        $candidates = @()
+        foreach ($base in @("$env:PROGRAMDATA", "$env:APPDATA")) {
+            if ($base) { $candidates += (Join-Path $base 'pip\pip.ini') }
+        }
+        $candidates += (Join-Path $HOME 'pip\pip.ini')
+        if ($env:VIRTUAL_ENV) { $candidates += (Join-Path $env:VIRTUAL_ENV 'pip.ini') }
+        # Not $VIRTUAL_ENV: this script creates or updates that venv rather than running
+        # in it, so the variable is unset exactly when the target's policy matters most.
+        if ($script:PmVenvDir) { $candidates += (Join-Path $script:PmVenvDir 'pip.ini') }
+        foreach ($candidate in $candidates) {
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $true }
+        }
+        return $false
+    }
+
+    # Under the opt-out, an unanswerable policy question stops the run. uv can create an
+    # environment with no pip in it, so a failing `pip config list` is an ordinary condition
+    # here, and treating it as "no policy" is the one outcome this feature must never produce:
+    # it is indistinguishable from success while installing past whatever the file said. Only
+    # when a file actually exists, so a uv-only host with no pip.ini is not punished for a
+    # question that had no answer to begin with.
+    # no-deps is the one setting where both obvious answers are wrong. Carrying it would have
+    # uv install the Studio requirements without their own dependencies, producing an
+    # environment that fails later with nothing to point at; ignoring it installs packages the
+    # operator excluded. So neither: the run stops and names the setting.
+    function Assert-CarryablePipPolicy {
+        # uv's --cert is a CA BUNDLE and uv has no client-certificate option at all, so an
+        # index requiring mutual TLS cannot be reached by it, and the pip fallback that
+        # could present the certificate has already been declined.
+        $clientCert = "$env:PIP_CLIENT_CERT".Trim()
+        if (-not $clientCert) {
+            foreach ($line in (Get-PmPipConfigListing)) {
+                if ("$line" -match "^(global|install)\.client[-_]cert\s*=\s*'?([^']*)'?\s*$") {
+                    $clientCert = $Matches[2].Trim()
+                }
+            }
+        }
+        if ($clientCert) {
+            throw ("UNSLOTH_RESPECT_PM_POLICY is set and pip is configured with a client " +
+                "certificate for mutual TLS. uv has no option for one, so it cannot present " +
+                "it to your index, and this stops rather than attempting an install that " +
+                "cannot reach the source. Unset UNSLOTH_RESPECT_PM_POLICY for one run to let " +
+                "the pip fallback use it.")
+        }
+        $keyring = Get-PipPolicyKeyring
+        if ($keyring -and @('auto', 'disabled', 'subprocess') -notcontains $keyring) {
+            throw ("UNSLOTH_RESPECT_PM_POLICY is set and pip is configured to authenticate " +
+                "with keyring-provider '$keyring'. uv accepts only 'disabled' or " +
+                "'subprocess', so it cannot authenticate to your index the way you asked, " +
+                "and installing past that is what this variable exists to prevent. Set " +
+                "keyring-provider to subprocess, or unset UNSLOTH_RESPECT_PM_POLICY for one run.")
+        }
+        $off = @('', '0', 'false', 'no', 'off', 'n', 'f')
+        $value = "$env:PIP_NO_DEPS".Trim()
+        if (-not $value) {
+            foreach ($line in (Get-PmPipConfigListing)) {
+                if ("$line" -match "^(global|install)\.no[-_]deps\s*=\s*'?([^']*)'?\s*$") {
+                    $value = $Matches[2].Trim()
+                }
+            }
+        }
+        if ($off -contains $value.ToLowerInvariant()) { return }
+        throw ("UNSLOTH_RESPECT_PM_POLICY is set and pip is configured with no-deps. " +
+            "Carrying that into uv would install the Studio requirements without their own " +
+            "dependencies, which fails later with nothing to point at; ignoring it would " +
+            "install packages you excluded. Neither is safe, so this stops here. Clear " +
+            "no-deps, or unset UNSLOTH_RESPECT_PM_POLICY for one run.")
+    }
+
+    function Assert-ReadablePipPolicy {
+        $null = Get-PmPipConfigListing
+        if ($script:PmPipConfigReadable) { return }
+        if (-not (Test-PipConfigFilesPresent)) { return }
+        throw ("UNSLOTH_RESPECT_PM_POLICY is set and this host has a pip configuration file, " +
+            "but pip config list did not answer, so the policy in it cannot be carried to uv. " +
+            "Continuing would install exactly past the settings you asked to keep. Install pip, " +
+            "or unset UNSLOTH_RESPECT_PM_POLICY for one run to proceed without it.")
+    }
+
+    # pip splits find-links on whitespace and allows a multi-line pip.conf value; uv's
+    # environment spelling is comma separated. Measured on uv 0.10.7: a space-separated
+    # UV_FIND_LINKS fails with "Failed to read --find-links directory: /a /b", taking the whole
+    # string as one path, so carrying pip's value unchanged produced a setting that looked right
+    # and could not resolve anything.
+    function ConvertTo-UvFindLinks {
+        param([string]$PipValue)
+        # `pip config list` renders a multiline value as ONE string containing literal
+        # backslash-n escapes, not newline bytes, so those are decoded before the split or the
+        # whole value becomes a single invalid uv location.
+        $decoded = $PipValue -replace '\\n', ' ' -replace '\\t', ' '
+        return (($decoded -split '[\s,]+' | Where-Object { $_ }) -join ',')
+    }
+
+    # uv binds --keyring-provider to UV_KEYRING_PROVIDER and accepts `disabled` or `subprocess`
+    # only. pip also has `import`, which uv has no equivalent for; that one stops the run in
+    # Assert-CarryablePipPolicy, since an index carried without the means to authenticate to it
+    # sends uv somewhere it will be refused.
+    function Get-PipPolicyKeyring {
+        $value = "$env:PIP_KEYRING_PROVIDER".Trim()
+        if (-not $value) {
+            foreach ($line in (Get-PmPipConfigListing)) {
+                if ("$line" -match "^(global|install)\.keyring[-_]provider\s*=\s*'?([^']*)'?\s*$") {
+                    $value = $Matches[2].Trim()
+                }
+            }
+        }
+        return $value.ToLowerInvariant()
+    }
+
+    function Test-PipPolicyRequiresHashes {
+        $off = @('', '0', 'false', 'no', 'off', 'n', 'f')
+        $raw = "$env:PIP_REQUIRE_HASHES".Trim()
+        # Only the documented false spellings disable it. pip exits on anything else, and
+    # the Python twin reads every non-false value as active, so treating a typo as OFF both
+    # disagreed with the rest of this feature and failed in the one direction it must not.
+    if ($raw) { return ($off -notcontains $raw.ToLowerInvariant()) }
+        $on = $false
+        foreach ($line in (Get-PmPipConfigListing)) {
+            # Printed in load order, so a later entry -- including one that DISABLES it -- wins.
+            if ("$line" -match "^(global|install)\.require[-_]hashes\s*=\s*'?([^']*)'?\s*$") {
+                $on = ($off -notcontains $Matches[2].Trim().ToLowerInvariant())
+            }
+        }
+        return $on
+    }
+
+    # only-binary has no environment spelling on `uv pip install` (uv 0.10.7, unlike
+    # --require-hashes), so it can only reach uv as argv. pip documents the option as
+    # ACCUMULATING across sources, each occurrence adding to the set and `:none:` emptying
+    # it, so the file rows are replayed in load order and the environment appended, rather
+    # than one of them winning as the hash policy does.
+    # no-binary and only-binary are ONE FormatControl pair in pip, not two lists: `:all:` in
+    # either clears the other, `:none:` empties its own, and naming a package in one discards
+    # it from the other. Resolving them separately let a pip.conf `no-binary = numpy` and a
+    # PIP_ONLY_BINARY=numpy both survive, and uv given both flags for one package reports that
+    # no artifact is usable, so a policy pip accepts became an unsatisfiable install. This is a
+    # transcription of pip's own handle_mutual_excludes.
+    function Get-PipPolicyFormatControl {
+        $rows = @()
+        foreach ($line in (Get-PmPipConfigListing)) {
+            foreach ($pair in @(@('no-binary', 'no[-_]binary'), @('only-binary', 'only[-_]binary'))) {
+                if ("$line" -match "^(global|install)\.$($pair[1])\s*=\s*'?([^']*)'?\s*$") {
+                    $rows += , @($pair[0], $Matches[2])
+                }
+            }
+        }
+        foreach ($pair in @(@('no-binary', 'PIP_NO_BINARY'), @('only-binary', 'PIP_ONLY_BINARY'))) {
+            $value = "$([Environment]::GetEnvironmentVariable($pair[1]))".Trim()
+            if ($value) { $rows += , @($pair[0], $value) }
+        }
+        $sets = @{ 'no-binary' = @(); 'only-binary' = @() }
+        foreach ($row in $rows) {
+            $which = $row[0]
+            $otherKey = if ($which -eq 'no-binary') { 'only-binary' } else { 'no-binary' }
+            # Commas only, which is pip's own value.split(","). Splitting on whitespace too
+        # turned `bad name` into two acceptable tokens instead of one rejected one.
+        foreach ($part in ("$($row[1])" -split ',')) {
+                $part = $part.Trim()
+                if (-not $part) { continue }
+                # These go straight onto a command line, so anything outside a package name or
+                # pip's own :all:/:none: is dropped rather than passed on.
+                if ($part -notmatch '^[A-Za-z0-9._:-]+$') { continue }
+                if ($part -eq ':all:') {
+                    $sets[$otherKey] = @()
+                    $sets[$which] = @(':all:')
+                    continue
+                }
+                if ($part -eq ':none:') { $sets[$which] = @(); continue }
+                # pip canonicalizes before comparing, so foo_bar and foo-bar are one package
+            # to it. Exact strings kept both, and uv given --no-binary foo_bar with
+            # --only-binary foo-bar reports an otherwise usable wheel as unsatisfiable.
+            $part = ($part -replace '[-_.]+', '-').ToLowerInvariant()
+            $sets[$otherKey] = @($sets[$otherKey] | Where-Object { $_ -ne $part })
+                if ($sets[$which] -notcontains $part) { $sets[$which] += $part }
+            }
+        }
+        return $sets
+    }
+
+    function Get-PipPolicyOnlyBinary {
+        $sets = Get-PipPolicyFormatControl
+        return @($sets['only-binary'] | ForEach-Object { '--only-binary'; $_ })
+    }
+
+    function Get-PipPolicyNoBinary {
+        $sets = Get-PipPolicyFormatControl
+        return @($sets['no-binary'] | ForEach-Object { '--no-binary'; $_ })
+    }
+
+    function Get-PipPolicyIndexArgs {
+        $off = @('', '0', 'false', 'no', 'off', 'n', 'f')
+        $noIndex = "$env:PIP_NO_INDEX".Trim()
+        $links = "$env:PIP_FIND_LINKS".Trim()
+        foreach ($line in (Get-PmPipConfigListing)) {
+            # Only when the environment is silent: pip ranks PIP_* above its files.
+            if (-not $noIndex -and "$line" -match "^(global|install)\.no[-_]index\s*=\s*'?([^']*)'?\s*$") {
+                $fileNoIndex = $Matches[2].Trim()
+            }
+            if (-not $links -and "$line" -match "^(global|install)\.find[-_]links\s*=\s*'?([^']*)'?\s*$") {
+                $links = $Matches[2].Trim()
+            }
+        }
+        if (-not $noIndex) { $noIndex = "$fileNoIndex" }
+        # A private or required index is the commonest hardening of all, and uv reads none of
+        # pip's spellings for it (uv 0.10.7 binds these to UV_INDEX_URL and UV_EXTRA_INDEX_URL).
+        # Set once for the run: Invoke-InstallCommand and Fast-Install already scrub both for a
+        # pinned command, on the opt-out arm too, so a pin still outranks an inherited index and
+        # #6898 stays closed. Never over a uv value the operator set.
+        foreach ($pair in @(
+            @('PIP_CONSTRAINT', 'UV_CONSTRAINT', 'constraint'),
+            @('PIP_BUILD_CONSTRAINT', 'UV_BUILD_CONSTRAINT', 'build[-_]constraint'),
+            @('PIP_TRUSTED_HOST', 'UV_INSECURE_HOST', 'trusted[-_]host'),
+            @('PIP_INDEX_URL', 'UV_INDEX_URL', 'index[-_]url'),
+            @('PIP_EXTRA_INDEX_URL', 'UV_EXTRA_INDEX_URL', 'extra[-_]index[-_]url')
+        )) {
+            if ([Environment]::GetEnvironmentVariable($pair[1])) { continue }
+            $value = "$([Environment]::GetEnvironmentVariable($pair[0]))".Trim()
+            if (-not $value) {
+                foreach ($line in (Get-PmPipConfigListing)) {
+                    if ("$line" -match "^(global|install)\.$($pair[2])\s*=\s*'?([^']*)'?\s*$") {
+                        $value = $Matches[2].Trim()
+                    }
+                }
+            }
+            if ($value) { [Environment]::SetEnvironmentVariable($pair[1], $value) }
+        }
+        if ($links -and -not "$env:UV_FIND_LINKS".Trim()) {
+            $env:UV_FIND_LINKS = ConvertTo-UvFindLinks $links
+        }
+        $args = @()
+        if ($off -notcontains $noIndex.ToLowerInvariant()) { $args += '--no-index' }
+        # uv exposes --cert with no environment binding, so a corporate CA reached it not at
+        # all. Worse under the opt-out than it looks: the index URL IS carried, so uv is sent to
+        # the private index and then refuses its certificate, and the pip fallback that knows
+        # PIP_CERT has already been declined on purpose.
+        $cert = "$env:PIP_CERT".Trim()
+        if (-not $cert) {
+            foreach ($line in (Get-PmPipConfigListing)) {
+                if ("$line" -match "^(global|install)\.cert\s*=\s*'?([^']*)'?\s*$") {
+                    $cert = $Matches[2].Trim()
+                }
+            }
+        }
+        if ($cert) { $args += @('--cert', $cert) }
+        if ((Get-PipPolicyKeyring) -eq 'subprocess' -and
+            -not "$env:UV_KEYRING_PROVIDER".Trim()) {
+            $env:UV_KEYRING_PROVIDER = 'subprocess'
+        }
+        return $args
+    }
+
+    # Resolved on FIRST USE, not here: the target venv's interpreter is chosen later in this
+    # file, and the installs this protects run against it, so resolving now would query
+    # whichever pip is on PATH and never see the target's own site configuration. Memoised, and
+    # empty by default, so every splat at the uv call sites is a no-op unless opted in.
+    $script:PmPolicyResolved = $false
+    $script:PmPolicyArgs = @()
+    function Resolve-PmPolicy {
+        if ($script:PmPolicyResolved) { return }
+        $script:PmPolicyResolved = $true
+        if (-not (Test-RespectPmPolicy)) { return }
+        # uv reads no PIP_ variable and these scripts drive uv directly, so a pip-expressed
+        # hash requirement is restated once for the run. Inside the resolver, not at file
+        # scope: it asks Get-PmPipConfigListing, which memoises, so an eager call pinned a
+        # listing from whichever pip was on PATH before the target was named.
+        if (-not "$env:UV_REQUIRE_HASHES".Trim() -and (Test-PipPolicyRequiresHashes)) {
+            $env:UV_REQUIRE_HASHES = '1'
+        }
+        Assert-ReadablePipPolicy
+        Assert-CarryablePipPolicy
+        $script:PmPolicyArgs = @(Get-PipPolicyOnlyBinary) + @(Get-PipPolicyNoBinary) +
+            @(Get-PipPolicyIndexArgs)
+    }
+
     function Invoke-InstallCommand {
         param(
             [Parameter(Mandatory = $true)][ScriptBlock]$Command,
             [string]$Label = "install command"
         )
+        # Here rather than at file scope: $VenvPython is chosen further down, and the
+        # target's own site pip.ini is what governs the installs this protects.
+        Resolve-PmPolicy
         # A pinned index must beat an inherited uv mirror (#6898); UV_NO_CONFIG=1 blocks uv.toml.
+        # Runs before install_python_stack.py, so the Python opt-out cannot cover it: under the
+        # opt-out the uv.toml binds this install too, and only the ADDITIVE vars go.
+        $respectPolicy = Test-RespectPmPolicy
         $savedUvIndex = $null
         if ($Command.ToString() -match '--default-index') {
             $savedUvIndex = @{}
-            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL', 'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'UV_CONFIG_FILE', 'UV_NO_CONFIG') {
+            $scrub = @('UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL', 'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'UV_CONFIG_FILE', 'UV_NO_CONFIG')
+            if ($respectPolicy) {
+                $scrub = @($scrub | Where-Object {
+                    @('UV_CONFIG_FILE', 'UV_NO_CONFIG', 'UV_FIND_LINKS') -notcontains $_
+                })
+            }
+            foreach ($n in $scrub) {
                 $savedUvIndex[$n] = [Environment]::GetEnvironmentVariable($n)
                 Remove-Item "Env:$n" -ErrorAction SilentlyContinue
             }
-            $env:UV_NO_CONFIG = '1'
+            if (-not $respectPolicy) { $env:UV_NO_CONFIG = '1' }
         }
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
@@ -4350,7 +4699,9 @@ exit 1
         } finally {
             $ErrorActionPreference = $prevEap
             if ($savedUvIndex) {
-                Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue
+                # Only clear what this function SET: under the opt-out UV_NO_CONFIG was
+                # neither saved nor overwritten, so removing it destroys the operator's own.
+                if (-not $respectPolicy) { Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue }
                 foreach ($n in $savedUvIndex.Keys) { if ($null -ne $savedUvIndex[$n]) { Set-Item "Env:$n" $savedUvIndex[$n] } }
             }
         }
@@ -5818,9 +6169,7 @@ exit 0
         }
     }
 
-    # QueryFullProcessImageNameW answers for processes whose MainModule is not
     # readable here: PROCESS_QUERY_LIMITED_INFORMATION is granted where the
-    # PROCESS_VM_READ that MainModule needs is refused, and it needs no WMI.
     # Without it a host can find NO running processes and overwrite a venv Unsloth
     # has open, so the ladder still ends at Get-Process and Win32_Process. Every
     # rung reports a real executable image; a command line or working directory
@@ -5919,8 +6268,6 @@ exit 0
         $process = $null
         try { $process = Get-Process -Id $ProcessId -ErrorAction Stop } catch { $process = $null }
         if ($process) {
-            # .Path is MainModule.FileName (an ETS ScriptProperty over it on 5.1), so
-            # there is no second rung here: empty means MainModule was unreadable.
             try {
                 if (-not [string]::IsNullOrWhiteSpace($process.Path)) { return $process.Path }
             } catch {}
@@ -7049,6 +7396,10 @@ exit 0
     Write-StudioRootOwnerMarker -Root $StudioHome
 
     $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+    # Published for Resolve-PmPolicy, which runs after this point and asks this interpreter
+    # for its own pip configuration rather than whichever pip is on PATH.
+    $script:PmVenvPython = $VenvPython
+    $script:PmVenvDir = $VenvDir
     $_Migrated = $false
     $script:StudioVenvRollbackDir = $null
     $script:StudioVenvRollbackTarget = $VenvDir
@@ -9864,26 +10215,26 @@ exit 0
             # --no-deps means unsloth's own metadata is never read, so this spec IS the zoo
             # floor for this path. Keep it equal to the unsloth_zoo floor in pyproject.toml
             # (tests/test_installer_zoo_floor_parity.py enforces that).
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
                 # is --no-deps). All transitive deps are torch-free.
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
                     $NoTorchReqSafe = Get-UvSafeRequirementsPath -Path $NoTorchReq
                     $NoTorchReqArg = $NoTorchReqSafe.Path
-                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReqArg }
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --no-deps -r $NoTorchReqArg }
                     if ($NoTorchReqSafe.Temporary) {
                         Remove-Item -LiteralPath $NoTorchReqArg -Force -ErrorAction SilentlyContinue
                     }
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -9891,13 +10242,13 @@ exit 0
         }
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
@@ -9935,7 +10286,7 @@ exit 0
             $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
             if ($script:PrevTorchPin) {
                 $_keptTorch = $script:PrevTorchPin.TorchSpec; $_keptVision = $script:PrevTorchPin.VisionSpec; $_keptAudio = $script:PrevTorchPin.AudioSpec
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (kept release)" { & $script:UvExe pip install --python $VenvPython --force-reinstall $_keptTorch $_keptVision $_keptAudio --default-index $ROCmIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (kept release)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --force-reinstall $_keptTorch $_keptVision $_keptAudio --default-index $ROCmIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     substep "[WARN] $_keptTorch is not installable from $(Remove-IndexUrlCredentials $ROCmIndexUrl) -- installing the newest supported release instead" "Yellow"
                     $script:PrevTorchPin = $null
@@ -9943,7 +10294,7 @@ exit 0
                 }
             }
             if (-not $script:PrevTorchPin) {
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
             }
             if ($torchInstallExit -ne 0) {
                 # Explicit CPU index: under a ROCm pin $TorchIndexUrl IS the mirror that failed.
@@ -9954,7 +10305,7 @@ exit 0
                 # torch>= range, so without it uv would keep the ROCm build and only swap
                 # the companions -- a mismatched venv the flavor-repair block won't fix.
                 # No kept-release attempt: the ROCm attempts resolve or clear the pin first.
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { & $script:UvExe pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.12.0" "torchvision>=0.19,<0.27.0" "torchaudio>=2.4,<2.12.0" --default-index $CpuFallbackIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --force-reinstall "torch>=2.4,<2.12.0" "torchvision>=0.19,<0.27.0" "torchaudio>=2.4,<2.12.0" --default-index $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     Write-StudioLine "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -9989,7 +10340,7 @@ exit 0
                 $_keptTorch = $script:PrevTorchPin.TorchSpec; $_keptVision = $script:PrevTorchPin.VisionSpec; $_keptAudio = $script:PrevTorchPin.AudioSpec
                 $_keptXpuSpecs = @($_keptTorch, $_keptVision)
                 if ($_xpuSpecs.Count -ge 3) { $_keptXpuSpecs += $_keptAudio }
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (kept release)" { & $script:UvExe pip install --python $VenvPython --force-reinstall @_keptXpuSpecs --default-index $TorchIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (kept release)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --force-reinstall @_keptXpuSpecs --default-index $TorchIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     substep "[WARN] $_keptTorch is not installable from $(Remove-IndexUrlCredentials $TorchIndexUrl) -- installing the newest supported release instead" "Yellow"
                     $script:PrevTorchPin = $null
@@ -9997,13 +10348,13 @@ exit 0
                 }
             }
             if (-not $script:PrevTorchPin) {
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (Intel XPU)" { & $script:UvExe pip install --python $VenvPython --force-reinstall @_xpuSpecs --default-index $TorchIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (Intel XPU)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --force-reinstall @_xpuSpecs --default-index $TorchIndexUrl }
             }
             if ($torchInstallExit -ne 0) {
                 # Transient XPU-index failure: fall back to CPU base.
                 $CpuFallbackIndexUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { "$($env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/'))/cpu" } else { "https://download.pytorch.org/whl/cpu" }
                 substep "XPU PyTorch install failed (exit $torchInstallExit); using a CPU base." "Yellow"
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { & $script:UvExe pip install --python $VenvPython --force-reinstall @_xpuCpuSpecs --default-index $CpuFallbackIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --force-reinstall @_xpuCpuSpecs --default-index $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     Write-StudioLine "[ERROR] Failed to install PyTorch (XPU and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -10078,7 +10429,7 @@ exit 0
                 $_keptTorch = $script:PrevTorchPin.TorchSpec; $_keptVision = $script:PrevTorchPin.VisionSpec; $_keptAudio = $script:PrevTorchPin.AudioSpec
                 $_keptSpecs = @($_keptTorch, $_keptVision)
                 if ($_torchSpecs.Count -ge 3) { $_keptSpecs += $_keptAudio }
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (kept release)" { & $script:UvExe pip install --python $VenvPython @_keptSpecs --default-index $TorchIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (kept release)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython @_keptSpecs --default-index $TorchIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     substep "[WARN] $_keptTorch is not installable from $(Remove-IndexUrlCredentials $TorchIndexUrl) -- installing the newest supported release instead" "Yellow"
                     $script:PrevTorchPin = $null
@@ -10116,7 +10467,7 @@ exit 0
                     }
                 }
                 try {
-                    $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { & $script:UvExe pip install --python $VenvPython @_torchSpecs --default-index $TorchIndexUrl @_torchExtraArgs }
+                    $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython @_torchSpecs --default-index $TorchIndexUrl @_torchExtraArgs }
                 } finally {
                     if ($_woaOverrideSwapped) { $env:UV_OVERRIDE = $_woaOverrideSaved }
                     foreach ($_woaTmp in $_woaOverrideTemps) { Remove-Item -LiteralPath $_woaTmp -Force -ErrorAction SilentlyContinue }
@@ -10135,17 +10486,17 @@ exit 0
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
             # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
                     $NoTorchReqSafe = Get-UvSafeRequirementsPath -Path $NoTorchReq
                     $NoTorchReqArg = $NoTorchReqSafe.Path
-                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReqArg }
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --no-deps -r $NoTorchReqArg }
                     if ($NoTorchReqSafe.Temporary) {
                         Remove-Item -LiteralPath $NoTorchReqArg -Force -ErrorAction SilentlyContinue
                     }
@@ -10155,21 +10506,21 @@ exit 0
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile -- "$_unslothPkg" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile -- "$_unslothPkg" }
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" }
             }
         }
         if ($baseInstallExit -ne 0) {
@@ -10179,13 +10530,13 @@ exit 0
 
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
@@ -10196,26 +10547,26 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.6" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython "unsloth-zoo>=2026.9.6" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython --torch-backend=auto -- "$_unslothPkg" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --torch-backend=auto -- "$_unslothPkg" }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -10237,7 +10588,7 @@ exit 0
     # $TorchIndexUrl, so a failed XPU install reads as "cpu" here. Best-effort: a failure warns.
     if (-not $SkipTorch -and (Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
         substep "installing bitsandbytes with Intel XPU kernels..."
-        $bnbXpuExit = Invoke-InstallCommandRetry -Label "install bitsandbytes (Intel XPU)" { & $script:UvExe pip install --python $VenvPython --no-deps "bitsandbytes>=0.50.0" }
+        $bnbXpuExit = Invoke-InstallCommandRetry -Label "install bitsandbytes (Intel XPU)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --no-deps "bitsandbytes>=0.50.0" }
         if ($bnbXpuExit -ne 0) {
             substep "[WARN] could not install an XPU-capable bitsandbytes (exit $bnbXpuExit); 4-bit QLoRA may be unavailable." "Yellow"
         }
@@ -10289,13 +10640,13 @@ sys.exit(2 if conflict else (0 if installed else 1))
                         $_rocmKept = $true
                     }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
-                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
+                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
                     if ($torchFixExit -ne 0 -and $_rocmKept) {
                         substep "[WARN] $rocmSpec is not installable from $(Remove-IndexUrlCredentials $ROCmIndexUrl) -- installing the newest supported release instead" "Yellow"
                         $rocmSpec = $_origRocmSpec; $visionSpec = $_origVisionSpec; $audioSpec = $_origAudioSpec
                         $script:PrevTorchPin = $null
                         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
-                        $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
+                        $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
                     }
                     if ($torchFixExit -ne 0) {
                         Write-StudioLine "[ERROR] Failed to reinstall PyTorch with the correct ROCm build (exit code $torchFixExit)" -ForegroundColor Red
@@ -10324,14 +10675,14 @@ sys.exit(2 if conflict else (0 if installed else 1))
                             $_fixSpecs = $_origFixSpecs
                         }
                     }
-                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { & $script:UvExe pip install --python $VenvPython @_fixSpecs --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython @_fixSpecs --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
                     if ($torchFixExit -ne 0 -and $_cudaKept) {
                         substep "[WARN] $_fixTorchSpec is not installable from $(Remove-IndexUrlCredentials $TorchIndexUrl) -- installing the newest supported release instead" "Yellow"
                         $_fixTorchSpec = $_origFixTorchSpec; $_fixVisionSpec = $_origFixVisionSpec; $_fixAudioSpec = $_origFixAudioSpec
                         $_fixSpecs = $_origFixSpecs
                         $script:PrevTorchPin = $null
                         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
-                        $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { & $script:UvExe pip install --python $VenvPython @_fixSpecs --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                        $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython @_fixSpecs --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
                     }
                     if ($torchFixExit -ne 0) {
                         Write-StudioLine "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
@@ -10480,7 +10831,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         }
         substep "CI: overlaying source checkout (editable, no deps): $CiOverlayRoot"
         # Retry: the editable build fetches its backend from PyPI, same network risk.
-        $CiOverlayExit = Invoke-InstallCommandRetry -Label "overlay CI source checkout" -Command { & $script:UvExe pip install --python $VenvPython --no-deps -e $CiOverlayRoot }
+        $CiOverlayExit = Invoke-InstallCommandRetry -Label "overlay CI source checkout" -Command { & $script:UvExe pip install @script:PmPolicyArgs --python $VenvPython --no-deps -e $CiOverlayRoot }
         if ($CiOverlayExit -ne 0) {
             return (Exit-InstallFailure "Failed to overlay the CI source checkout (exit code $CiOverlayExit)" $CiOverlayExit)
         }

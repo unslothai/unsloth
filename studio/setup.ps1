@@ -7032,38 +7032,418 @@ function Remove-UvOnlyResolverFlags {
     return ,$kept
 }
 
+# Must answer as _respect_pm_policy() does in install.sh and install_python_stack.py.
+# A hand-maintained duplicate of install.ps1's copy, like the UNSLOTH_ENABLE_AMD_SMI pair.
+function Test-RespectPmPolicy {
+    # Trim the ASCII set only, matching _respect_pm_policy(): .Trim() also removes Unicode
+    # whitespace, which POSIX sh cannot portably, and a pasted non-breaking space then meant on
+    # here and off in install.sh. Unrecognised is off everywhere instead.
+    $value = [string][Environment]::GetEnvironmentVariable('UNSLOTH_RESPECT_PM_POLICY')
+    $ws = [char[]]@(' ', "`t", "`n", "`r", [char]11, [char]12)
+    return (@('1', 'true', 'yes', 'on') -contains $value.Trim($ws).ToLowerInvariant())
+}
+
+# One `pip config list` for both policies below. Only ever run once the opt-out is on, so
+# the default path pays nothing for it.
+$script:PmPipConfigListing = $null
+function Get-PmPipConfigListing {
+    if ($null -ne $script:PmPipConfigListing) { return $script:PmPipConfigListing }
+    $script:PmPipConfigListing = @()
+    $script:PmPipConfigReadable = $false
+    # The TARGET interpreter first: its site pip.ini is the file governing the installs this
+    # protects, and a pip on PATH answers for a different environment. Return either way --
+    # a uv-created venv is often unseeded, so `-m pip` failing there is ordinary, and
+    # falling through would mark another environment's listing as the target's own.
+    if ($script:PmVenvPython -and (Test-Path -LiteralPath $script:PmVenvPython -PathType Leaf)) {
+        try {
+            $script:PmPipConfigListing = @(& $script:PmVenvPython -m pip config list 2>$null)
+            if ($LASTEXITCODE -ne 0) { $script:PmPipConfigListing = @() }
+            else { $script:PmPipConfigReadable = $true }
+        } catch { $script:PmPipConfigListing = @() }
+        return $script:PmPipConfigListing
+    }
+    foreach ($exe in @('pip3', 'pip')) {
+        $found = Get-Command $exe -ErrorAction SilentlyContinue
+        if (-not $found) { continue }
+        try {
+            $script:PmPipConfigListing = @(& $found.Source config list 2>$null)
+            if ($LASTEXITCODE -eq 0) { $script:PmPipConfigReadable = $true }
+        } catch { }
+        break
+    }
+    return $script:PmPipConfigListing
+}
+
+# Does this host have a pip configuration file at all? Documented locations, existence only.
+# It separates "there is nothing to read" from "there is something we could not read", which
+# an empty listing on its own cannot do.
+function Test-PipConfigFilesPresent {
+    # pip's WHOLE discovery set. A location left out fails OPEN, which is the one direction
+    # this check must not fail in: the site file beside the interpreter is where a virtual
+    # environment keeps its policy, and an installer is exactly what runs in one.
+    $explicit = "$env:PIP_CONFIG_FILE".Trim()
+    if ($explicit) {
+        if ($explicit -eq 'nul' -or $explicit -eq 'NUL') { return $false }
+        return (Test-Path -LiteralPath $explicit -PathType Leaf)
+    }
+    $candidates = @()
+    foreach ($base in @("$env:PROGRAMDATA", "$env:APPDATA")) {
+        if ($base) { $candidates += (Join-Path $base 'pip\pip.ini') }
+    }
+    $candidates += (Join-Path $HOME 'pip\pip.ini')
+    if ($env:VIRTUAL_ENV) { $candidates += (Join-Path $env:VIRTUAL_ENV 'pip.ini') }
+    # Not $VIRTUAL_ENV: this script creates or updates that venv rather than running
+    # in it, so the variable is unset exactly when the target's policy matters most.
+    if ($script:PmVenvDir) { $candidates += (Join-Path $script:PmVenvDir 'pip.ini') }
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $true }
+    }
+    return $false
+}
+
+# Under the opt-out, an unanswerable policy question stops the run. uv can create an
+# environment with no pip in it, so a failing `pip config list` is an ordinary condition
+# here, and treating it as "no policy" is the one outcome this feature must never produce:
+# it is indistinguishable from success while installing past whatever the file said. Only
+# when a file actually exists, so a uv-only host with no pip.ini is not punished for a
+# question that had no answer to begin with.
+# no-deps is the one setting where both obvious answers are wrong. Carrying it would have
+# uv install the Studio requirements without their own dependencies, producing an
+# environment that fails later with nothing to point at; ignoring it installs packages the
+# operator excluded. So neither: the run stops and names the setting.
+function Assert-CarryablePipPolicy {
+    # uv's --cert is a CA BUNDLE and uv has no client-certificate option at all, so an
+    # index requiring mutual TLS cannot be reached by it, and the pip fallback that
+    # could present the certificate has already been declined.
+    $clientCert = "$env:PIP_CLIENT_CERT".Trim()
+    if (-not $clientCert) {
+        foreach ($line in (Get-PmPipConfigListing)) {
+            if ("$line" -match "^(global|install)\.client[-_]cert\s*=\s*'?([^']*)'?\s*$") {
+                $clientCert = $Matches[2].Trim()
+            }
+        }
+    }
+    if ($clientCert) {
+        throw ("UNSLOTH_RESPECT_PM_POLICY is set and pip is configured with a client " +
+            "certificate for mutual TLS. uv has no option for one, so it cannot present " +
+            "it to your index, and this stops rather than attempting an install that " +
+            "cannot reach the source. Unset UNSLOTH_RESPECT_PM_POLICY for one run to let " +
+            "the pip fallback use it.")
+    }
+    $keyring = Get-PipPolicyKeyring
+    if ($keyring -and @('auto', 'disabled', 'subprocess') -notcontains $keyring) {
+        throw ("UNSLOTH_RESPECT_PM_POLICY is set and pip is configured to authenticate " +
+            "with keyring-provider '$keyring'. uv accepts only 'disabled' or " +
+            "'subprocess', so it cannot authenticate to your index the way you asked, " +
+            "and installing past that is what this variable exists to prevent. Set " +
+            "keyring-provider to subprocess, or unset UNSLOTH_RESPECT_PM_POLICY for one run.")
+    }
+    $off = @('', '0', 'false', 'no', 'off', 'n', 'f')
+    $value = "$env:PIP_NO_DEPS".Trim()
+    if (-not $value) {
+        foreach ($line in (Get-PmPipConfigListing)) {
+            if ("$line" -match "^(global|install)\.no[-_]deps\s*=\s*'?([^']*)'?\s*$") {
+                $value = $Matches[2].Trim()
+            }
+        }
+    }
+    if ($off -contains $value.ToLowerInvariant()) { return }
+    throw ("UNSLOTH_RESPECT_PM_POLICY is set and pip is configured with no-deps. " +
+        "Carrying that into uv would install the Studio requirements without their own " +
+        "dependencies, which fails later with nothing to point at; ignoring it would " +
+        "install packages you excluded. Neither is safe, so this stops here. Clear " +
+        "no-deps, or unset UNSLOTH_RESPECT_PM_POLICY for one run.")
+}
+
+function Assert-ReadablePipPolicy {
+    $null = Get-PmPipConfigListing
+    if ($script:PmPipConfigReadable) { return }
+    if (-not (Test-PipConfigFilesPresent)) { return }
+    throw ("UNSLOTH_RESPECT_PM_POLICY is set and this host has a pip configuration file, " +
+        "but pip config list did not answer, so the policy in it cannot be carried to uv. " +
+        "Continuing would install exactly past the settings you asked to keep. Install pip, " +
+        "or unset UNSLOTH_RESPECT_PM_POLICY for one run to proceed without it.")
+}
+
+# pip splits find-links on whitespace and allows a multi-line pip.conf value; uv's
+# environment spelling is comma separated. Measured on uv 0.10.7: a space-separated
+# UV_FIND_LINKS fails with "Failed to read --find-links directory: /a /b", taking the whole
+# string as one path, so carrying pip's value unchanged produced a setting that looked right
+# and could not resolve anything.
+function ConvertTo-UvFindLinks {
+    param([string]$PipValue)
+    # `pip config list` renders a multiline value as ONE string containing literal
+    # backslash-n escapes, not newline bytes, so those are decoded before the split or the
+    # whole value becomes a single invalid uv location.
+    $decoded = $PipValue -replace '\\n', ' ' -replace '\\t', ' '
+    return (($decoded -split '[\s,]+' | Where-Object { $_ }) -join ',')
+}
+
+# uv binds --keyring-provider to UV_KEYRING_PROVIDER and accepts `disabled` or `subprocess`
+# only. pip also has `import`, which uv has no equivalent for; that one stops the run in
+# Assert-CarryablePipPolicy, since an index carried without the means to authenticate to it
+# sends uv somewhere it will be refused.
+function Get-PipPolicyKeyring {
+    $value = "$env:PIP_KEYRING_PROVIDER".Trim()
+    if (-not $value) {
+        foreach ($line in (Get-PmPipConfigListing)) {
+            if ("$line" -match "^(global|install)\.keyring[-_]provider\s*=\s*'?([^']*)'?\s*$") {
+                $value = $Matches[2].Trim()
+            }
+        }
+    }
+    return $value.ToLowerInvariant()
+}
+
+# The pip half of the hash question, resolved the way pip itself resolves it: PIP_* outranks
+# pip.conf, so an explicit variable is the answer and the files are never read. A hardened
+# host is likelier to express this in pip.conf than in the environment, and the Python phase
+# already reads it, so leaving it unread here let the shell phase run uv unhashed first.
+function Test-PipPolicyRequiresHashes {
+    $off = @('', '0', 'false', 'no', 'off', 'n', 'f')
+    $raw = "$env:PIP_REQUIRE_HASHES".Trim()
+    # Only the documented false spellings disable it. pip exits on anything else, and
+    # the Python twin reads every non-false value as active, so treating a typo as OFF both
+    # disagreed with the rest of this feature and failed in the one direction it must not.
+    if ($raw) { return ($off -notcontains $raw.ToLowerInvariant()) }
+    $on = $false
+    foreach ($line in (Get-PmPipConfigListing)) {
+        # Printed in load order, so a later entry -- including one that DISABLES it -- wins.
+        if ("$line" -match "^(global|install)\.require[-_]hashes\s*=\s*'?([^']*)'?\s*$") {
+            $on = ($off -notcontains $Matches[2].Trim().ToLowerInvariant())
+        }
+    }
+    return $on
+}
+
+# only-binary has no environment spelling on `uv pip install` (uv 0.10.7, unlike
+# --require-hashes), so it can only reach uv as argv. pip documents the option as
+# ACCUMULATING across sources, each occurrence adding to the set and `:none:` emptying it,
+# so the file rows are replayed in load order and the environment appended, rather than one
+# of them winning as the hash policy does.
+# no-binary and only-binary are ONE FormatControl pair in pip, not two lists: `:all:` in
+# either clears the other, `:none:` empties its own, and naming a package in one discards
+# it from the other. Resolving them separately let a pip.conf `no-binary = numpy` and a
+# PIP_ONLY_BINARY=numpy both survive, and uv given both flags for one package reports that
+# no artifact is usable, so a policy pip accepts became an unsatisfiable install. This is a
+# transcription of pip's own handle_mutual_excludes.
+function Get-PipPolicyFormatControl {
+    $rows = @()
+    foreach ($line in (Get-PmPipConfigListing)) {
+        foreach ($pair in @(@('no-binary', 'no[-_]binary'), @('only-binary', 'only[-_]binary'))) {
+            if ("$line" -match "^(global|install)\.$($pair[1])\s*=\s*'?([^']*)'?\s*$") {
+                $rows += , @($pair[0], $Matches[2])
+            }
+        }
+    }
+    foreach ($pair in @(@('no-binary', 'PIP_NO_BINARY'), @('only-binary', 'PIP_ONLY_BINARY'))) {
+        $value = "$([Environment]::GetEnvironmentVariable($pair[1]))".Trim()
+        if ($value) { $rows += , @($pair[0], $value) }
+    }
+    $sets = @{ 'no-binary' = @(); 'only-binary' = @() }
+    foreach ($row in $rows) {
+        $which = $row[0]
+        $otherKey = if ($which -eq 'no-binary') { 'only-binary' } else { 'no-binary' }
+        # Commas only, which is pip's own value.split(","). Splitting on whitespace too
+        # turned `bad name` into two acceptable tokens instead of one rejected one.
+        foreach ($part in ("$($row[1])" -split ',')) {
+            $part = $part.Trim()
+            if (-not $part) { continue }
+            # These go straight onto a command line, so anything outside a package name or
+            # pip's own :all:/:none: is dropped rather than passed on.
+            if ($part -notmatch '^[A-Za-z0-9._:-]+$') { continue }
+            if ($part -eq ':all:') {
+                $sets[$otherKey] = @()
+                $sets[$which] = @(':all:')
+                continue
+            }
+            if ($part -eq ':none:') { $sets[$which] = @(); continue }
+            # pip canonicalizes before comparing, so foo_bar and foo-bar are one package
+            # to it. Exact strings kept both, and uv given --no-binary foo_bar with
+            # --only-binary foo-bar reports an otherwise usable wheel as unsatisfiable.
+            $part = ($part -replace '[-_.]+', '-').ToLowerInvariant()
+            $sets[$otherKey] = @($sets[$otherKey] | Where-Object { $_ -ne $part })
+            if ($sets[$which] -notcontains $part) { $sets[$which] += $part }
+        }
+    }
+    return $sets
+}
+
+function Get-PipPolicyOnlyBinary {
+    $sets = Get-PipPolicyFormatControl
+    return @($sets['only-binary'] | ForEach-Object { '--only-binary'; $_ })
+}
+
+function Get-PipPolicyNoBinary {
+    $sets = Get-PipPolicyFormatControl
+    return @($sets['no-binary'] | ForEach-Object { '--no-binary'; $_ })
+}
+
+function Get-PipPolicyIndexArgs {
+    $off = @('', '0', 'false', 'no', 'off', 'n', 'f')
+    $noIndex = "$env:PIP_NO_INDEX".Trim()
+    $links = "$env:PIP_FIND_LINKS".Trim()
+    foreach ($line in (Get-PmPipConfigListing)) {
+        # Only when the environment is silent: pip ranks PIP_* above its files.
+        if (-not $noIndex -and "$line" -match "^(global|install)\.no[-_]index\s*=\s*'?([^']*)'?\s*$") {
+            $fileNoIndex = $Matches[2].Trim()
+        }
+        if (-not $links -and "$line" -match "^(global|install)\.find[-_]links\s*=\s*'?([^']*)'?\s*$") {
+            $links = $Matches[2].Trim()
+        }
+    }
+    if (-not $noIndex) { $noIndex = "$fileNoIndex" }
+    # A private or required index is the commonest hardening of all, and uv reads none of
+    # pip's spellings for it (uv 0.10.7 binds these to UV_INDEX_URL and UV_EXTRA_INDEX_URL).
+    # Set once for the run: Invoke-InstallCommand and Fast-Install already scrub both for a
+    # pinned command, on the opt-out arm too, so a pin still outranks an inherited index and
+    # #6898 stays closed. Never over a uv value the operator set.
+    foreach ($pair in @(
+        @('PIP_CONSTRAINT', 'UV_CONSTRAINT', 'constraint'),
+        @('PIP_BUILD_CONSTRAINT', 'UV_BUILD_CONSTRAINT', 'build[-_]constraint'),
+        @('PIP_TRUSTED_HOST', 'UV_INSECURE_HOST', 'trusted[-_]host'),
+        @('PIP_INDEX_URL', 'UV_INDEX_URL', 'index[-_]url'),
+        @('PIP_EXTRA_INDEX_URL', 'UV_EXTRA_INDEX_URL', 'extra[-_]index[-_]url')
+    )) {
+        if ([Environment]::GetEnvironmentVariable($pair[1])) { continue }
+        $value = "$([Environment]::GetEnvironmentVariable($pair[0]))".Trim()
+        if (-not $value) {
+            foreach ($line in (Get-PmPipConfigListing)) {
+                if ("$line" -match "^(global|install)\.$($pair[2])\s*=\s*'?([^']*)'?\s*$") {
+                    $value = $Matches[2].Trim()
+                }
+            }
+        }
+        if ($value) { [Environment]::SetEnvironmentVariable($pair[1], $value) }
+    }
+    if ($links -and -not "$env:UV_FIND_LINKS".Trim()) {
+        $env:UV_FIND_LINKS = ConvertTo-UvFindLinks $links
+    }
+    $args = @()
+    if ($off -notcontains $noIndex.ToLowerInvariant()) { $args += '--no-index' }
+    # uv exposes --cert with no environment binding, so a corporate CA reached it not at
+    # all. Worse under the opt-out than it looks: the index URL IS carried, so uv is sent to
+    # the private index and then refuses its certificate, and the pip fallback that knows
+    # PIP_CERT has already been declined on purpose.
+    $cert = "$env:PIP_CERT".Trim()
+    if (-not $cert) {
+        foreach ($line in (Get-PmPipConfigListing)) {
+            if ("$line" -match "^(global|install)\.cert\s*=\s*'?([^']*)'?\s*$") {
+                $cert = $Matches[2].Trim()
+            }
+        }
+    }
+    if ($cert) { $args += @('--cert', $cert) }
+    if ((Get-PipPolicyKeyring) -eq 'subprocess' -and
+        -not "$env:UV_KEYRING_PROVIDER".Trim()) {
+        $env:UV_KEYRING_PROVIDER = 'subprocess'
+    }
+    return $args
+}
+
+# Resolved on FIRST USE, not here: the target venv's interpreter is chosen later in this
+# file, and the installs this protects run against it, so resolving now would query
+# whichever pip is on PATH and never see the target's own site configuration. Memoised, and
+# empty by default, so every splat at the uv call sites is a no-op unless opted in.
+$script:PmPolicyResolved = $false
+$script:PmPolicyArgs = @()
+function Resolve-PmPolicy {
+    if ($script:PmPolicyResolved) { return }
+    $script:PmPolicyResolved = $true
+    if (-not (Test-RespectPmPolicy)) { return }
+    # uv reads no PIP_ variable and these scripts drive uv directly, so a pip-expressed
+    # hash requirement is restated once for the run. Inside the resolver, not at file
+    # scope: it asks Get-PmPipConfigListing, which memoises, so an eager call pinned a
+    # listing from whichever pip was on PATH before the target was named.
+    if (-not "$env:UV_REQUIRE_HASHES".Trim() -and (Test-PipPolicyRequiresHashes)) {
+        $env:UV_REQUIRE_HASHES = '1'
+    }
+    Assert-ReadablePipPolicy
+    Assert-CarryablePipPolicy
+    $script:PmPolicyArgs = @(Get-PipPolicyOnlyBinary) + @(Get-PipPolicyNoBinary) +
+        @(Get-PipPolicyIndexArgs)
+}
+
 # Helper: install a package, preferring uv with pip fallback
 function Fast-Install {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
+    # Here rather than at file scope: by the time anything installs, the target venv is on
+    # PATH, so its own pip answers for its site configuration. The interpreter is named
+    # BEFORE resolving, or the probe falls back to a system pip and marks that environment's
+    # listing as the target's own -- which is the case the fail-closed check exists for.
+    if (-not $script:PmVenvPython) {
+        $_pmPy = Get-Command python -ErrorAction SilentlyContinue
+        if ($_pmPy) { $script:PmVenvPython = $_pmPy.Source }
+    }
+    Resolve-PmPolicy
     # An explicit --index-url must win: inherited index vars pull CPU torch over GPU (#6898).
     $saved = @{}
     $pinned = @($Args_) -contains '--index-url'
+    # Runs BEFORE install_python_stack.py, so the Python opt-out cannot cover it: without this
+    # the operator's pip.conf and uv.toml are bypassed for the pinned torch install. Same split
+    # as _install_env_for_cmd(): ADDITIVE index vars go, policy-bearing config files stay.
+    $respectPolicy = Test-RespectPmPolicy
+    $carriedRequireHashes = $false
     if ($pinned) {
-        foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL',
-                       'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS',
-                       'PIP_NO_INDEX', 'PIP_INDEX_URL',
-                       'UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE') {
+        $scrub = @('UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL',
+                   'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS',
+                   'PIP_NO_INDEX', 'PIP_INDEX_URL',
+                   'UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE')
+        if ($respectPolicy) {
+            # PIP_NO_INDEX is kept whichever way it POINTS: pip reads the environment ahead
+            # of pip.conf, so PIP_NO_INDEX=0 is how an operator lifts a config `no-index` for
+            # one run. The find-links are the only source left once no-index is in force.
+            $keep = @('UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE', 'PIP_NO_INDEX',
+                      'PIP_FIND_LINKS', 'UV_FIND_LINKS')
+            $scrub = @($scrub | Where-Object { $keep -notcontains $_ })
+        }
+        foreach ($n in $scrub) {
             $saved[$n] = [Environment]::GetEnvironmentVariable($n)
             Remove-Item "Env:$n" -ErrorAction SilentlyContinue
         }
-        $env:UV_NO_CONFIG = '1'
-        # PIP_CONFIG_FILE = 'nul' stops a `pip config` extra-index-url reaching the pip fallback.
-        $env:PIP_CONFIG_FILE = 'nul'
+        if (-not $respectPolicy) {
+            $env:UV_NO_CONFIG = '1'
+            # PIP_CONFIG_FILE = 'nul' stops a `pip config` extra-index-url reaching the pip fallback.
+            $env:PIP_CONFIG_FILE = 'nul'
+        }
     }
     try {
         if ($UseUv) {
+            # The run-level carry above covers the usual case; this repeats it because
+            # Fast-Install is also dot-sourced and called on its own by the test suites.
+            if ($respectPolicy -and (Test-PipPolicyRequiresHashes) -and -not "$env:UV_REQUIRE_HASHES".Trim()) {
+                $carriedRequireHashes = $true
+                $env:UV_REQUIRE_HASHES = '1'
+            }
             $VenvPy = (Get-Command python).Source
-            $result = & uv pip install --python $VenvPy @Args_ 2>&1
+            $result = & uv pip install --python $VenvPy @script:PmPolicyArgs @Args_ 2>&1
             if ($LASTEXITCODE -eq 0) { return }
+            # Same hand-off as pip_install(): pip reads neither uv.toml nor any UV_ variable,
+            # so under the opt-out a uv refusal must not become a pip success. No translation
+            # is attempted, because whatever made uv refuse may live in a uv.toml this never
+            # parses, and a partial carry reads absolute while covering less.
+            if ($respectPolicy) {
+                # Write-StudioLine, not Write-Host: 5.1's console host writes Write-Host
+                # itself rather than through the UTF-8 writer bound to [Console]::Out, so
+                # under CREATE_NO_WINDOW the desktop app renders uv's report as U+FFFD --
+                # which is the one line the operator needs in order to act on the refusal.
+                foreach ($line in @($result)) { Write-StudioLine "$line" }
+                substep "[ERROR] UNSLOTH_RESPECT_PM_POLICY keeps your uv settings in force, and pip reads none of them: falling back would retry with a resolver that has not been told what uv refused. Fix what uv reported, or unset UNSLOTH_RESPECT_PM_POLICY for one run to allow the pip fallback." "Red"
+                $global:LASTEXITCODE = 1
+                return
+            }
         }
         $pipArgs = Remove-UvOnlyResolverFlags -Arguments $Args_
         & python -m pip install @pipArgs 2>&1
     }
     finally {
-        if ($pinned) {
+        # Only clear what this function SET: under the opt-out these two were neither saved
+        # nor overwritten, so removing them destroys the operator's own values.
+        if ($pinned -and -not $respectPolicy) {
             Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue
             Remove-Item "Env:PIP_CONFIG_FILE" -ErrorAction SilentlyContinue
         }
+        if ($carriedRequireHashes) { Remove-Item "Env:UV_REQUIRE_HASHES" -ErrorAction SilentlyContinue }
         foreach ($n in $saved.Keys) { if ($null -ne $saved[$n]) { Set-Item "Env:$n" $saved[$n] } }
     }
 }
@@ -7085,17 +7465,30 @@ function Fast-Uninstall {
 # UV_* pip cannot read: an inherited PIP_INDEX_URL or user pip.conf would outrank --index-url.
 function Fast-Download {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
+    if (-not $script:PmVenvPython) {
+        $_pmPy = Get-Command python -ErrorAction SilentlyContinue
+        if ($_pmPy) { $script:PmVenvPython = $_pmPy.Source }
+    }
+    Resolve-PmPolicy
     $saved = @{}
-    foreach ($n in 'PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS', 'PIP_NO_INDEX', 'PIP_INDEX_URL', 'PIP_CONFIG_FILE') {
+    # Gated like Fast-Install: a pip.conf kept in force must bind the fetch half of a staged
+    # swap too, or the wheel arrives unverified.
+    $respectPolicy = Test-RespectPmPolicy
+    $scrub = @('PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS', 'PIP_NO_INDEX', 'PIP_INDEX_URL', 'PIP_CONFIG_FILE')
+    if ($respectPolicy) {
+        $keep = @('PIP_CONFIG_FILE', 'PIP_NO_INDEX', 'PIP_FIND_LINKS')
+        $scrub = @($scrub | Where-Object { $keep -notcontains $_ })
+    }
+    foreach ($n in $scrub) {
         $saved[$n] = [Environment]::GetEnvironmentVariable($n)
         Remove-Item "Env:$n" -ErrorAction SilentlyContinue
     }
-    $env:PIP_CONFIG_FILE = 'nul'
+    if (-not $respectPolicy) { $env:PIP_CONFIG_FILE = 'nul' }
     try {
         & python -m pip download @Args_ 2>&1
     }
     finally {
-        Remove-Item "Env:PIP_CONFIG_FILE" -ErrorAction SilentlyContinue
+        if (-not $respectPolicy) { Remove-Item "Env:PIP_CONFIG_FILE" -ErrorAction SilentlyContinue }
         foreach ($n in $saved.Keys) { if ($null -ne $saved[$n]) { Set-Item "Env:$n" $saved[$n] } }
     }
 }
@@ -8174,7 +8567,13 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
     $_tritonXpuSpec = if ($_tritonProbe.Ok -and $_tritonProbe.Output -match '(?m)^TRITONXPU=(\S+)\s*$') { $Matches[1] } else { "" }
     # The spec must itself be an XPU triton (pytorch-triton-xpu / triton-xpu); anything else means
     # torch is not the +xpu wheel this branch assumes.
-    if ($_tritonWinVer -and $_tritonXpuSpec -match '(?i)xpu') {
+    if ($_tritonWinVer -and $_tritonXpuSpec -match '(?i)xpu' -and (Test-RespectPmPolicy)) {
+        # Same decline as _ensure_xpu_triton(): the reinstall below installs a local wheel
+        # PATH carrying no hash, and it runs after triton-windows is already gone. Refusing
+        # before the removal keeps the venv whole, at the cost of torch.compile on the XPU.
+        substep "[WARN] UNSLOTH_RESPECT_PM_POLICY is set and the XPU triton swap would have to remove triton-windows $_tritonWinVer before installing a wheel your policy may refuse, which no rerun could repair; leaving it in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU. Unset UNSLOTH_RESPECT_PM_POLICY for one run to take the swap." "Yellow"
+    }
+    elseif ($_tritonWinVer -and $_tritonXpuSpec -match '(?i)xpu') {
         substep "replacing triton-windows $_tritonWinVer with $_tritonXpuSpec (Intel XPU)..." "Cyan"
         # install_manifest.manifest_path() is venv_root()/MANIFEST_NAME and venv_root() is
         # sys.prefix, which is $VenvDir here -- the same join Get-PersistedNoTorch does. Assembled
