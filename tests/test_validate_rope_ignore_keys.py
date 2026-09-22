@@ -21,7 +21,10 @@ import inspect
 import pytest
 
 transformers = pytest.importorskip("transformers")
-from unsloth.import_fixes import fix_transformers_validate_rope_ignore_keys, fix_transformers_is_torch_fx_available
+from unsloth.import_fixes import (
+    fix_transformers_validate_rope_ignore_keys,
+    fix_transformers_is_torch_fx_available,
+)
 
 
 def _mixin():
@@ -49,7 +52,7 @@ def test_validate_rope_accepts_ignore_keys_after_the_fix():
     )
     # what the 5.0-era remote code does
     config.validate_rope(ignore_keys = {"rope_type"})
-    config.validate_rope({"rope_type"})   # the 5.0 positional form
+    config.validate_rope({"rope_type"})  # the 5.0 positional form
     config.validate_rope()
 
 
@@ -67,8 +70,10 @@ def test_the_fix_is_idempotent_and_keeps_the_original_reachable():
 def test_the_mlx_branch_installs_the_fix_too():
     import pathlib
 
-    source = (pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "__init__.py").read_text()
-    mlx_branch = source[source.find("if _IS_MLX:"):]
+    source = (pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "__init__.py").read_text(
+        encoding = "utf-8"
+    )
+    mlx_branch = source[source.find("if _IS_MLX:") :]
     assert "fix_transformers_validate_rope_ignore_keys" in mlx_branch
 
 
@@ -88,9 +93,10 @@ def test_is_torch_fx_available_is_importable_from_transformers_utils_after_the_f
 
 def test_the_mlx_branch_installs_the_fx_shim_too():
     import pathlib
-
-    source = (pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "__init__.py").read_text()
-    assert "fix_transformers_is_torch_fx_available" in source[source.find("if _IS_MLX:"):]
+    source = (pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "__init__.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "fix_transformers_is_torch_fx_available" in source[source.find("if _IS_MLX:") :]
 
 
 def test_a_config_with_its_own_validator_accepts_ignore_keys_too():
@@ -99,10 +105,16 @@ def test_a_config_with_its_own_validator_accepts_ignore_keys_too():
     fix_transformers_validate_rope_ignore_keys()
     from transformers import Phi3Config
 
-    config = Phi3Config(hidden_size = 32, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 32, vocab_size = 16)
+    config = Phi3Config(
+        hidden_size = 32,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 32,
+        vocab_size = 16,
+    )
     config.validate_rope(ignore_keys = {"rope_type"})
 
-    class LaterConfig(Phi3Config):   # defined after the fix, like a remote configuration
+    class LaterConfig(Phi3Config):  # defined after the fix, like a remote configuration
         model_type = "later_phi3_for_test"
 
         def validate_rope(self):
