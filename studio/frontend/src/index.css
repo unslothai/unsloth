@@ -370,14 +370,14 @@
 }
 
 .dark {
-	/* Dark surfaces shared by ALL palettes: #181818 page, elevated #242424
+	/* Dark surfaces shared by ALL palettes: #181818 page, elevated #272727
 	   sidebar/cards, #3a3a3a hover, #dfdfdf ink. Palette dark blocks override
 	   only accent tokens so dark mode stays consistent across themes. */
 	--background: #181818;
 	--foreground: #dfdfdf;
-	--card-base: #242424;
+	--card-base: #272727;
 	--card-foreground: #dfdfdf;
-	--popover-base: #242424;
+	--popover-base: #272727;
 	--popover-foreground: #dfdfdf;
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
@@ -407,7 +407,7 @@
 	--chart-5: oklch(0.799 0.1196 84.6633);
 	/* A step over --background; the tone difference is the separator.
 	   Matches --card, so every elevated surface reads as one plane. */
-	--sidebar-base: #242424;
+	--sidebar-base: #272727;
 	--sidebar-foreground: #dfdfdf;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
@@ -443,7 +443,7 @@
 	--nav-fg: #dfdfdf;
 	--nav-fg-muted: #b0b0b0;
 	--nav-surface-hover-base: #3a3a3a;
-	/* Lifted with the surfaces: the sidebar is #242424, not #1f1f1f. */
+	/* Lifted with the surfaces: the sidebar is #272727, not #1f1f1f. */
 	--nav-icon-idle: #767676;
 	--nav-beta-border: #3a3a3a;
 	--panel-surface-hover-base: #3a3a3a;
@@ -455,7 +455,7 @@
 	--panel-surface: var(--background);
 	--panel-surface-fg: var(--foreground);
 	/* Translucent white so the same fill reads correctly on the #181818
-	   page AND on #242424 cards/dialogs. */
+	   page AND on #272727 cards/dialogs. */
 	--panel-input-surface-base: rgba(255, 255, 255, 0.07);
 	--panel-input-surface-hover-base: rgba(255, 255, 255, 0.11);
 	/* Muted panel text and sliders: one step under the ink, uncolored. */

@@ -32,7 +32,7 @@ const PREVIEWS: Record<Palette, Record<ResolvedTheme, PreviewColors>> = {
     },
     dark: {
       bg: "#181818",
-      sidebar: "#242424",
+      sidebar: "#272727",
       accent: "#17b88b",
       text: "#dfdfdf",
       border: "#3a3a3a",
@@ -48,7 +48,7 @@ const PREVIEWS: Record<Palette, Record<ResolvedTheme, PreviewColors>> = {
     },
     dark: {
       bg: "#181818",
-      sidebar: "#242424",
+      sidebar: "#272727",
       accent: "#4dabff",
       text: "#dfdfdf",
       border: "#3a3a3a",
@@ -64,7 +64,7 @@ const PREVIEWS: Record<Palette, Record<ResolvedTheme, PreviewColors>> = {
     },
     dark: {
       bg: "#181818",
-      sidebar: "#242424",
+      sidebar: "#272727",
       accent: "#ededed",
       text: "#dfdfdf",
       border: "#3a3a3a",
