@@ -29,10 +29,7 @@ export interface DiffusionStatus {
   dtype: string | null;
   // Resolved load kind: "gguf" | "single_file" | "pipeline". Gates GGUF-only controls. Null when not loaded.
   model_kind?: string | null;
-  // Square canvas in px this load should DEFAULT to, from the weights-to-VRAM ratio the memory
-  // planner computed (1024, or 512 once the weights hold most of the card). A SEED for the size
-  // fields, never a cap: an explicit width/height is always sent and always honoured. Null on a
-  // backend older than the field, on unified memory, and when the plan could not size the model.
+  // A seed for the size fields, never a cap. Null/absent means no opinion (see resolutionFor).
   recommended_canvas?: number | null;
   gguf_filename?: string | null;
   // Selected GGUF quant. Newer backends report this separately from the compute dtype.

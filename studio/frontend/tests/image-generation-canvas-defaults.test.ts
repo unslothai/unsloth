@@ -23,9 +23,6 @@ test("the backend's recommended canvas is what seeds the size fields", () => {
 });
 
 test("no opinion from the backend keeps 1024", () => {
-  // null on unified memory and whenever the plan could not size the model; undefined on a backend
-  // older than the field. All three have to keep the previous default rather than shrink on a
-  // guess, so none of them may return 512.
   for (const value of [null, undefined, 0, Number.NaN, -512]) {
     assert.deepEqual(
       resolutionFor({ recommendedCanvas: value }),

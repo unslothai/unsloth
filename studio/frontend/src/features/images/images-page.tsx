@@ -1432,8 +1432,7 @@ export function ImagesPage({
     const recommended =
       pendingModelDefaults ??
       defaultsFor(status?.base_repo ?? status?.repo_id ?? "");
-    // Reset restores the resident build's canvas, the same one the seed above applied. A constant
-    // here would quietly undo it and put a 24 GB card back over its budget.
+    // Reset restores the resident build's canvas; a constant would undo the seed on a tight card.
     const size = resolutionFor({ recommendedCanvas: status?.recommended_canvas });
     return {
       negativePrompt: "",
@@ -2394,13 +2393,6 @@ export function ImagesPage({
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
-    // The canvas is part of the resident model's defaults, not a constant: the backend sizes it
-    // from how much of the card this load's weights hold.
-    //
-    // A SEED, never a clamp. This runs once per resident repo id (the `seededResident` guard
-    // above) and a stored recipe has already returned before it, so a size the user typed is never
-    // overwritten by a later status poll, and the backend applies nothing: whatever width and
-    // height the request carries is what renders.
     seedCanvas(resolutionFor({ recommendedCanvas: status?.recommended_canvas }));
   }, [
     imagePresets.storedRecipe,

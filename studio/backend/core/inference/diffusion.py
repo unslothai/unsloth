@@ -907,8 +907,7 @@ class _LoadState:
     # Defaulted so older positional constructions keep working.
     offload_policy: str = OFFLOAD_NONE
     vae_tiling: bool = False
-    # Square canvas this load should DEFAULT to, from the weights-to-VRAM ratio, or None when the
-    # plan could not size it. Advisory: the UI seeds from it, every explicit request is honoured.
+    # Advisory: the UI seeds its size fields from it, and every explicit request is honoured.
     recommended_canvas: Optional[int] = None
     memory_mode: str = "auto"
     # Resolved load kind ("gguf"|"single_file"|"pipeline"); lets the UI gate GGUF-only controls.

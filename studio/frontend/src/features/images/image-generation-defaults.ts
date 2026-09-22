@@ -49,24 +49,13 @@ export function defaultsFor(repoId: string): {
 // The canvas every family is tuned for, and what an unrecognised model gets.
 export const DEFAULT_RESOLUTION = { width: 1024, height: 1024 } as const;
 
-// The canvas the backend recommends for the resident model, or the default when it did not say.
-//
-// The rule lives in the backend, in the memory planner, because that is the only place that knows
-// both terms: how many MiB of weights this load is holding and how large the card is. It drops to
-// 512 once the weights hold 70% or more of the card, on the reasoning that quantising shrinks the
-// weights and leaves the activations alone, so past that point the canvas is the only lever left.
-// 1024 costs roughly 7 GB more than 512 on a Qwen-Image-2.1-class model, which is the whole
-// remaining margin on a 24 GB card.
-//
-// This is a FLOOR ON WHAT WE SUGGEST, never a cap on what the user may ask for. Every explicit
-// width and height is passed through untouched.
+// The rule lives in the backend memory planner, the only place that knows both the weights and the
+// card size. A suggestion, never a cap on what the user may ask for.
 export function resolutionFor(build: {
   recommendedCanvas?: number | null;
 }): { width: number; height: number } {
   const px = build.recommendedCanvas;
-  // Absent on an older backend, on unified memory, and whenever the plan could not size the
-  // model. All three mean "no opinion", which has to keep the previous default rather than shrink
-  // on a guess.
+  // Older backend, unified memory, or an unsizable plan: no opinion must not shrink on a guess.
   if (!px || !Number.isFinite(px) || px <= 0) {
     return DEFAULT_RESOLUTION;
   }
