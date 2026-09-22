@@ -3261,12 +3261,12 @@ def _gguf_reuses_loaded_checkpoint(model, state_dict = None):
 
 
 def _gguf_writes_16bit_checkpoint(model, state_dict = None):
-    """Whether a GGUF export writes a full 16-bit checkpoint before converting. A PEFT model is merged into one. A non-PEFT model reuses an existing checkpoint when `_name_or_path` names a directory, and otherwise falls back to `save_pretrained`, which writes the same two bytes per parameter; sizing that fallback at zero is what lets an export pass the preflight and then fill the disk. A module-level helper rather than a local, because the caller snapshots `locals()` into the kwargs of `unsloth_generic_save`."""
+    """Whether a GGUF export writes a full 16-bit checkpoint before converting. A PEFT model is merged into one. A non-PEFT model reuses an existing checkpoint when `_name_or_path` names a directory, unless it was loaded for full finetuning or given a `state_dict`, and otherwise falls back to `save_pretrained`, which writes the same two bytes per parameter; sizing that fallback at zero is what lets an export pass the preflight and then fill the disk. A module-level helper rather than a local, because the caller snapshots `locals()` into the kwargs of `unsloth_generic_save`."""
     return not _gguf_reuses_loaded_checkpoint(model, state_dict)
 
 
 def _fallback_checkpoint_extra_bytes(model, state_dict = None):
-    """Bytes the non-PEFT fallback checkpoint costs ON TOP of the 16-bit estimate. `estimate_gguf_export_bytes` budgets two bytes per logical parameter, which is what a LoRA merge writes, but the fallback calls `self.save_pretrained` with no cast, so a model loaded with `dtype = torch.float32` writes four. Measured from the parameters' real storage so a mixed-dtype model is not priced off its largest tensor, and clamped at zero: this can only ask for more room, never less."""
+    """Bytes the non-PEFT fallback checkpoint costs ON TOP of the 16-bit estimate. `estimate_gguf_export_bytes` budgets two bytes per logical parameter, which is what a LoRA merge writes, but the fallback calls `self.save_pretrained` with no cast, so a model loaded with `dtype = torch.float32` writes four. Measured from the supplied `state_dict`, else the parameters' real storage, so a mixed-dtype model is not priced off its largest tensor, and clamped at zero: this can only ask for more room, never less."""
     if isinstance(model, (PeftModel, PeftModelForCausalLM)):
         return 0
     if not _gguf_writes_16bit_checkpoint(model, state_dict):
@@ -3337,7 +3337,7 @@ def _gguf_conversion_directory(model_directory):
 
 
 def _gguf_model_input_directory(model, save_directory, state_dict = None):
-    """The folder the converter reads, which is not always `save_directory`. A non-PEFT model whose `_name_or_path` names a directory is converted from that checkpoint, which `unsloth_save_pretrained_gguf` assigns to `save_directory` before calling `save_to_gguf`; the same condition `_gguf_writes_16bit_checkpoint` uses. It matters only in the unwritable-CWD fallback, where the intermediate GGUF lands beside the reused checkpoint rather than the requested output, and the two can be on different filesystems."""
+    """The folder the converter reads, which is not always `save_directory`. A non-PEFT model that reuses its loaded checkpoint is converted from it, which `unsloth_save_pretrained_gguf` assigns to `save_directory` before calling `save_to_gguf`; the same condition `_gguf_writes_16bit_checkpoint` uses. It matters only in the unwritable-CWD fallback, where the intermediate GGUF lands beside the reused checkpoint rather than the requested output, and the two can be on different filesystems."""
     if _gguf_reuses_loaded_checkpoint(model, state_dict):
         return str(model.config._name_or_path)
     return save_directory
@@ -3971,7 +3971,7 @@ def unsloth_save_pretrained_gguf(
                 f"{_offloaded_parameter_hint(self)}"
             ) from e
     else:
-        # Non-PEFT model: the checkpoint already exists, so point save_to_gguf at the original path instead of re-saving into a temp subdir.
+        # Non-PEFT model: reuse the loaded checkpoint when it still holds the weights, instead of re-saving into a temp subdir.
         original_path = getattr(self.config, "_name_or_path", None)
         if _gguf_reuses_loaded_checkpoint(self, state_dict):
             print(
