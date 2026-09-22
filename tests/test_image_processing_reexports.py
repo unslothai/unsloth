@@ -480,8 +480,25 @@ REMOTE_MODULE = "transformers_modules.unsloth_probe.image_processing_probe"
 
 
 def _backend_module():
-    """transformers 5's torchvision backend, or a skip on transformers 4.x."""
-    return pytest.importorskip("transformers.image_processing_backends")
+    """transformers 5's torchvision backend, or a skip where it cannot run.
+
+    Two separate reasons to skip, and the second is not obvious. The module
+    imports cleanly on transformers 5 even when torchvision is unusable, but it
+    binds `tvF` (torchvision.transforms.v2.functional) only behind
+    `is_torchvision_available()`, so its methods then raise
+    `NameError: name 'tvF' is not defined` from inside transformers.
+
+    Live on GitHub's `macos-15-intel`, where `pip install torch torchvision`
+    resolves but the wheels are unusable: three tests here failed on that
+    NameError, which says nothing about the shim. Asked of transformers' own
+    probe rather than of `import torchvision`, which succeeds there.
+    """
+    module = pytest.importorskip("transformers.image_processing_backends")
+    from transformers.utils import is_torchvision_available
+
+    if not is_torchvision_available() or not hasattr(module, "tvF"):
+        pytest.skip("torchvision is not usable here, so the backend cannot run")
+    return module
 
 
 @pytest.fixture

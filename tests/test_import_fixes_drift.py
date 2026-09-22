@@ -1737,7 +1737,16 @@ def test_the_torchvision_backend_still_breaks_the_4x_numpy_contract():
 
     if Version(transformers.__version__) < Version("5.0.0"):
         pytest.skip("the torchvision backend does not exist before transformers 5")
-    pytest.importorskip("torchvision")
+    # Asked of transformers' own probe, not of `import torchvision`. On a runner
+    # whose torchvision wheel is unusable the import still succeeds while
+    # transformers never binds `tvF`, and the backend then raises
+    # `NameError: name 'tvF' is not defined` -- a fact about the runner, not
+    # about the upstream pathology this detector is watching.
+    backends = pytest.importorskip("transformers.image_processing_backends")
+    from transformers.utils import is_torchvision_available
+
+    if not is_torchvision_available() or not hasattr(backends, "tvF"):
+        pytest.skip("torchvision is not usable here, so the backend cannot run")
     siglip2 = pytest.importorskip(
         "transformers.models.siglip2.image_processing_siglip2"
     )
