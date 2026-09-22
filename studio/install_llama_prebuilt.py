@@ -1033,7 +1033,10 @@ def web_release_tags(repo: str, *, limit: int = 30) -> list[str]:
 
 
 def web_release_payload(repo: str, tag: str) -> dict[str, Any]:
-    return _core.web_release_payload(_OPS, repo, tag)
+    # Upstream publishes every bNNNN build as a prerelease, so the tag already answers
+    # the label question if its page cannot be reached.
+    default = True if repo == UPSTREAM_REPO and is_release_tag_like(tag) else None
+    return _core.web_release_payload(_OPS, repo, tag, prerelease_default = default)
 
 
 def upstream_web_release_tags(repo: str, *, limit: int = 30) -> list[str]:
@@ -1065,9 +1068,13 @@ def latest_upstream_release_tag() -> str:
             )
         else:
             reason = RuntimeError(f"latest release tag was missing from {UPSTREAM_RELEASES_API}")
-    except (urllib.error.URLError, RuntimeError) as exc:
+    except RELEASE_LISTING_TRANSPORT_ERRORS as exc:
         # A tokenless 403 surfaces as the RuntimeError fetch_json raises for a rate limit.
         reason = exc
+    if not _web_fallback_eligible(UPSTREAM_REPO):
+        if rest_tag:
+            return rest_tag
+        raise reason
     try:
         tags = upstream_web_release_tags(UPSTREAM_REPO, limit = 10)
     except Exception as exc:  # noqa: BLE001 - the REST cause is the one worth reporting
@@ -1115,9 +1122,14 @@ def release_is_selectable(repo: str, release: dict[str, Any]) -> bool:
     """
     if release.get("draft"):
         return False
-    if not release.get("prerelease"):
-        return True
-    return repo == UPSTREAM_REPO and is_release_tag_like(release.get("tag_name"))
+    if repo == UPSTREAM_REPO:
+        # Upstream ships binaries only under bNNNN, and marks every one of them
+        # prerelease. Both halves matter: accepting the prerelease is what stops the
+        # path stranding hundreds of builds back, and refusing the versioned pointer
+        # releases is what stops one of them being named newest by the freshness check
+        # while the planner walks past it for want of an asset.
+        return is_release_tag_like(release.get("tag_name"))
+    return not release.get("prerelease")
 
 
 def _web_fallback_eligible(repo: str) -> bool:
@@ -1182,7 +1194,7 @@ def iter_release_payloads_by_time(
     if published_release_tag:
         try:
             yield github_release(repo, published_release_tag)
-        except (urllib.error.URLError, RuntimeError) as exc:
+        except RELEASE_LISTING_TRANSPORT_ERRORS as exc:
             if not _web_fallback_eligible(repo):
                 raise
             yield _web_release_or_raise(repo, published_release_tag, exc)
@@ -1202,7 +1214,7 @@ def iter_release_payloads_by_time(
                 return
             else:
                 raise
-        except (urllib.error.URLError, RuntimeError) as exc:
+        except RELEASE_LISTING_TRANSPORT_ERRORS as exc:
             # A named release is one page, so a pin is what this path serves best; the
             # macOS-floor pin (b9415) reaches here.
             if not _web_fallback_eligible(repo):
@@ -1214,7 +1226,7 @@ def iter_release_payloads_by_time(
 
     try:
         listing = github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
-    except (urllib.error.URLError, RuntimeError) as exc:
+    except RELEASE_LISTING_TRANSPORT_ERRORS as exc:
         if not _web_fallback_eligible(repo):
             raise
         yield from _web_release_payloads(repo, exc)

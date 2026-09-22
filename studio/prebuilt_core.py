@@ -1097,7 +1097,27 @@ def web_release_prerelease(ops: ModuleOps, repo: str, tag: str) -> bool:
     return _PRERELEASE_LABEL_RE.search(_fetch_web_metadata(ops, url)) is not None
 
 
-def web_release_payload(ops: ModuleOps, repo: str, tag: str) -> dict[str, Any]:
+def _web_release_prerelease_or_default(
+    ops: ModuleOps, repo: str, tag: str, default: bool | None
+) -> bool:
+    """The release's prerelease flag, or *default* when the page cannot be read.
+
+    The assets and their digests have already loaded by this point, so discarding them
+    because one more request failed would drop a usable release for a fact the caller
+    may already know from the tag.
+    """
+    try:
+        return web_release_prerelease(ops, repo, tag)
+    except Exception as exc:  # noqa: BLE001 - a known answer beats losing the release
+        if default is None:
+            raise
+        ops.log(f"could not read the release label for {repo}@{tag} ({exc}); assuming {default}")
+        return default
+
+
+def web_release_payload(
+    ops: ModuleOps, repo: str, tag: str, *, prerelease_default: bool | None = None
+) -> dict[str, Any]:
     """An ordinary release payload for <repo>@<tag>, built without api.github.com.
 
     Shaped like the REST payload on purpose: release_asset_map and release_asset_digests
@@ -1144,7 +1164,7 @@ def web_release_payload(ops: ModuleOps, repo: str, tag: str) -> dict[str, Any]:
     return {
         "tag_name": tag,
         "draft": False,
-        "prerelease": web_release_prerelease(ops, repo, tag),
+        "prerelease": _web_release_prerelease_or_default(ops, repo, tag, prerelease_default),
         "assets": assets,
     }
 

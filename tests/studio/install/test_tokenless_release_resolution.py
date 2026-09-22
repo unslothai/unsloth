@@ -724,3 +724,124 @@ class TestLatestTagNamesABuild:
         monkeypatch.setattr(MOD, "fetch_json", lambda url: {"tag_name": "v0.4.1"})
         _install_web(monkeypatch, {"releases.atom": _atom(UPSTREAM, ["v0.4.1", "v0.4.0"])})
         assert MOD.latest_upstream_release_tag() == "v0.4.1"
+
+
+class TestUpstreamPointerReleasesAreNeverSelectable:
+    """Upstream ships binaries only under bNNNN; a versioned pointer release has none.
+
+    Accepting one lets the freshness check name it newest while the planner walks past
+    it for want of an asset, which reinstalls the same build on every update run.
+    """
+
+    def test_a_newer_pointer_release_is_not_newest(self, monkeypatch):
+        releases = [
+            {"tag_name": "v0.4.2", "prerelease": False, "draft": False,
+             "published_at": "2026-09-30T00:00:00Z"},
+            {"tag_name": "b11071", "prerelease": True, "draft": False,
+             "published_at": "2026-09-21T00:00:00Z"},
+        ]
+        monkeypatch.setattr(MOD, "github_releases", lambda repo, **kw: releases)
+        assert MOD._api_newest_release_tag(UPSTREAM) == "b11071"
+
+    def test_the_planner_never_considers_a_pointer_release(self, monkeypatch):
+        releases = [
+            {"tag_name": "v0.4.2", "prerelease": False, "draft": False,
+             "published_at": "2026-09-30T00:00:00Z", "assets": []},
+            {"tag_name": "b11071", "prerelease": True, "draft": False,
+             "published_at": "2026-09-21T00:00:00Z", "assets": []},
+        ]
+        monkeypatch.setattr(MOD, "github_releases", lambda repo, **kw: releases)
+        monkeypatch.setattr(MOD, "web_release_payload", _boom)
+        monkeypatch.setattr(MOD, "web_release_tags", _boom)
+        got = [r["tag_name"] for r in MOD.iter_release_payloads_by_time(UPSTREAM, "", "latest")]
+        assert got == ["b11071"]
+
+    def test_another_repo_keeps_the_plain_prerelease_rule(self):
+        fork = MOD.DEFAULT_PUBLISHED_REPO
+        assert MOD.release_is_selectable(fork, {"tag_name": "v1.2.3", "prerelease": False})
+        assert not MOD.release_is_selectable(fork, {"tag_name": "v1.2.3", "prerelease": True})
+
+
+class TestTransportFailuresReachTheWebPath:
+    """A stalled or reset read is a transport failure like a 403, not a reason to stop."""
+
+    @pytest.mark.parametrize(
+        "exc",
+        [TimeoutError("read timed out"), ConnectionResetError("reset by peer")],
+    )
+    def test_the_listing_recovers(self, monkeypatch, exc):
+        def raise_it(*args, **kwargs):
+            raise exc
+
+        monkeypatch.setattr(MOD, "github_releases", raise_it)
+        _install_web(
+            monkeypatch,
+            {
+                "releases.atom": _atom(UPSTREAM, ["b11071"]),
+                "expanded_assets/b11071": _expanded_assets(
+                    UPSTREAM, "b11071", {"llama-b11071-bin-macos-arm64.tar.gz": DIGEST_A}
+                ),
+            },
+        )
+        got = list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "latest"))
+        assert [r["tag_name"] for r in got] == ["b11071"]
+
+    def test_a_pinned_tag_recovers_from_a_timeout(self, monkeypatch):
+        def raise_it(*args, **kwargs):
+            raise TimeoutError("read timed out")
+
+        monkeypatch.setattr(MOD, "github_release", raise_it)
+        _install_web(
+            monkeypatch,
+            {
+                "expanded_assets/b9415": _expanded_assets(
+                    UPSTREAM, "b9415", {"llama-b9415-bin-macos-arm64.tar.gz": DIGEST_A}
+                )
+            },
+        )
+        got = list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "b9415"))
+        assert [r["tag_name"] for r in got] == ["b9415"]
+
+
+class TestTheOptOutIsHonouredEverywhere:
+    def test_latest_tag_does_not_consult_the_feed_when_opted_out(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
+        monkeypatch.setattr(MOD, "fetch_json", lambda url: {"tag_name": "v0.4.1"})
+        monkeypatch.setattr(MOD, "upstream_web_release_tags", _boom)
+        # The REST answer stands rather than nothing at all.
+        assert MOD.latest_upstream_release_tag() == "v0.4.1"
+
+    def test_latest_tag_raises_when_opted_out_and_rest_is_down(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
+        monkeypatch.setattr(MOD, "fetch_json", _rest_403)
+        monkeypatch.setattr(MOD, "upstream_web_release_tags", _boom)
+        with pytest.raises(RuntimeError, match = "403"):
+            MOD.latest_upstream_release_tag()
+
+
+class TestABadgeFailureKeepsTheRelease:
+    def test_assets_survive_an_unreadable_release_page(self, monkeypatch):
+        pages = {
+            "expanded_assets/b11071": _expanded_assets(
+                UPSTREAM, "b11071", {"llama-b11071-bin-macos-arm64.tar.gz": DIGEST_A}
+            )
+        }
+        # No releases/tag/b11071 page: the badge request 404s.
+        web = _Web(pages)
+        monkeypatch.setattr(CORE, "download_bytes", lambda ops, url, **kw: web(url, **kw))
+        release = MOD.web_release_payload(UPSTREAM, "b11071")
+        assert release["prerelease"] is True
+        assert MOD.release_asset_digests(release) == {
+            "llama-b11071-bin-macos-arm64.tar.gz": DIGEST_A
+        }
+
+    def test_a_non_build_tag_still_fails_closed(self, monkeypatch):
+        pages = {
+            "expanded_assets/v0.4.1": _expanded_assets(
+                UPSTREAM, "v0.4.1", {"nightly-tag.txt": DIGEST_B}
+            )
+        }
+        web = _Web(pages)
+        monkeypatch.setattr(CORE, "download_bytes", lambda ops, url, **kw: web(url, **kw))
+        with pytest.raises(urllib.error.HTTPError):
+            MOD.web_release_payload(UPSTREAM, "v0.4.1")
