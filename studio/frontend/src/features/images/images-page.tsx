@@ -1415,10 +1415,7 @@ export function ImagesPage({
       defaultsFor(status?.base_repo ?? status?.repo_id ?? "");
     // Reset restores the resident build's canvas, the same one the seed above applied. A constant
     // here would quietly undo it and put a 24 GB card back over its budget.
-    const size = resolutionFor(status?.base_repo ?? status?.repo_id ?? "", {
-      modelKind: status?.model_kind,
-      transformerQuant: status?.transformer_quant,
-    });
+    const size = resolutionFor({ recommendedCanvas: status?.recommended_canvas });
     return {
       negativePrompt: "",
       width: size.width,
@@ -1432,8 +1429,7 @@ export function ImagesPage({
     pendingModelDefaults,
     status?.base_repo,
     status?.repo_id,
-    status?.model_kind,
-    status?.transformer_quant,
+    status?.recommended_canvas,
   ]);
   const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
     setNegativePrompt(params.negativePrompt);
@@ -2369,13 +2365,14 @@ export function ImagesPage({
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
-    // The canvas is part of the resident model's defaults, not a constant: a quantised build shrinks
-    // the weights and leaves the activations alone, so on Qwen-Image-2.1 the canvas is what decides
-    // whether the load fits. Read from the ENGAGED build, so a declined quant request keeps 1024.
-    const size = resolutionFor(status?.base_repo ?? repoId, {
-      modelKind: status?.model_kind,
-      transformerQuant: status?.transformer_quant,
-    });
+    // The canvas is part of the resident model's defaults, not a constant: the backend sizes it
+    // from how much of the card this load's weights hold.
+    //
+    // A SEED, never a clamp. This runs once per resident repo id (the `seededResident` guard
+    // above) and a stored recipe has already returned before it, so a size the user typed is never
+    // overwritten by a later status poll, and the backend applies nothing: whatever width and
+    // height the request carries is what renders.
+    const size = resolutionFor({ recommendedCanvas: status?.recommended_canvas });
     setWidth(size.width);
     setHeight(size.height);
     const matched = matchAspect(size.width, size.height);
@@ -2387,7 +2384,7 @@ export function ImagesPage({
     status?.repo_id,
     status?.base_repo,
     status?.model_kind,
-    status?.transformer_quant,
+    status?.recommended_canvas,
   ]);
 
   // Reseed the Advanced selects from the LOADED build, so a declined request snaps to what

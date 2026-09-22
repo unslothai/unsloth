@@ -10,6 +10,7 @@ matrix and the applier's pipeline calls are exercised in isolation.
 
 from __future__ import annotations
 
+import math
 import sys
 import types
 
@@ -2097,3 +2098,45 @@ def test_the_same_load_reaches_group_offload_once_the_split_is_known():
     )
     assert plan.offload_policy == OFFLOAD_GROUP
     assert plan.vae_tiling is False
+
+
+def test_the_canvas_drops_once_the_weights_hold_most_of_the_card():
+    # The rule, at the boundary. 17 GB on a 24 GB card is 0.708 and trips it; the SAME model on a
+    # 40 GB card is 0.425 and does not, which is the intent: this is about the card being tight,
+    # not about the model being big.
+    card_24 = 24 * 1024
+    assert diffusion_memory.recommended_canvas_px(17 * 1024, card_24) == 512
+    assert diffusion_memory.recommended_canvas_px(18 * 1024, card_24) == 512
+    assert diffusion_memory.recommended_canvas_px(17 * 1024, 40 * 1024) == 1024
+    # Exactly at the ratio counts as tight; a hair under does not. `ceil`, not `int`: truncating
+    # 24576 * 0.70 gives 17203, which is 0.69999 and lands on the other side of the comparison.
+    at_ratio = math.ceil(card_24 * diffusion_memory.CANVAS_REDUCTION_RATIO)
+    assert diffusion_memory.recommended_canvas_px(at_ratio, card_24) == 512
+    assert diffusion_memory.recommended_canvas_px(at_ratio - 1, card_24) == 1024
+
+
+def test_an_unsizable_load_gets_no_canvas_opinion():
+    # None, never a number: a caller that cannot size the model has to keep the default it already
+    # had rather than shrink on a guess. Unified memory is excluded too, because a fraction of a
+    # pool shared with the host does not mean the same thing.
+    assert diffusion_memory.recommended_canvas_px(None, 24 * 1024) is None
+    assert diffusion_memory.recommended_canvas_px(17 * 1024, None) is None
+    assert diffusion_memory.recommended_canvas_px(17 * 1024, 0) is None
+    assert diffusion_memory.recommended_canvas_px(0, 24 * 1024) is None
+    assert (
+        diffusion_memory.recommended_canvas_px(17 * 1024, 24 * 1024, is_unified = True) is None
+    )
+
+
+def test_the_plan_carries_the_canvas_for_the_loader_to_report():
+    # Reached through the planner, not just the helper: this is the value the load state and the
+    # status payload read, so an estimates key that drifts has to fail here.
+    plan = diffusion_memory.plan_diffusion_memory(
+        target = _offloadable(),
+        device_memory = diffusion_memory.DeviceMemory(
+            "cuda", "cuda", "discrete_vram", 23000, 24 * 1024
+        ),
+        model_dense_mib = 17 * 1024,
+        runtime_headroom_mib = 4096,
+    )
+    assert plan.estimates["recommended_canvas_px"] == 512

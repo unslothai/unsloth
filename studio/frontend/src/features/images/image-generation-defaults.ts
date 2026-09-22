@@ -49,52 +49,26 @@ export function defaultsFor(repoId: string): {
 // The canvas every family is tuned for, and what an unrecognised model gets.
 export const DEFAULT_RESOLUTION = { width: 1024, height: 1024 } as const;
 
-// Families whose QUANTISED pipeline build defaults to a smaller canvas, with the schemes that
-// trigger it.
+// The canvas the backend recommends for the resident model, or the default when it did not say.
 //
-// Quantising the denoiser shrinks the weights and leaves the activations alone, so on a family
-// whose activations dominate, the canvas is what decides whether the load fits. Qwen-Image-2.1 at
-// 1024 measures about 26 GB against about 19 GB at 512, which is the difference between running
-// and not on a 24 GB card, and someone who picked a quantised build is telling us the card is the
-// constraint. Dense bf16 keeps 1024: it was never going to fit a small card either way, so
-// shrinking its canvas would cost quality and buy nothing.
+// The rule lives in the backend, in the memory planner, because that is the only place that knows
+// both terms: how many MiB of weights this load is holding and how large the card is. It drops to
+// 512 once the weights hold 70% or more of the card, on the reasoning that quantising shrinks the
+// weights and leaves the activations alone, so past that point the canvas is the only lever left.
+// 1024 costs roughly 7 GB more than 512 on a Qwen-Image-2.1-class model, which is the whole
+// remaining margin on a 24 GB card.
 //
-// The GGUF route is deliberately absent. It streams the denoiser off disk, so its footprint does
-// not turn on this, and it keeps 1024.
-const QUANTISED_CANVAS: Array<{
-  match: string;
-  schemes: readonly string[];
-  width: number;
-  height: number;
-}> = [
-  {
-    match: "qwen-image-2.1",
-    schemes: ["fp8", "fp8_dynamic", "int8", "nvfp4"],
-    width: 512,
-    height: 512,
-  },
-];
-
-export function resolutionFor(
-  repoId: string,
-  build: { modelKind?: string | null; transformerQuant?: string | null },
-): { width: number; height: number } {
-  // A GGUF resident reports no family substring in repo_id, so callers pass base_repo; the kind is
-  // what actually excludes that route, not the id.
-  if ((build.modelKind ?? "").toLowerCase() === "gguf") {
+// This is a FLOOR ON WHAT WE SUGGEST, never a cap on what the user may ask for. Every explicit
+// width and height is passed through untouched.
+export function resolutionFor(build: {
+  recommendedCanvas?: number | null;
+}): { width: number; height: number } {
+  const px = build.recommendedCanvas;
+  // Absent on an older backend, on unified memory, and whenever the plan could not size the
+  // model. All three mean "no opinion", which has to keep the previous default rather than shrink
+  // on a guess.
+  if (!px || !Number.isFinite(px) || px <= 0) {
     return DEFAULT_RESOLUTION;
   }
-  const scheme = (build.transformerQuant ?? "")
-    .toLowerCase()
-    .replace(/-/g, "_");
-  if (!scheme) {
-    return DEFAULT_RESOLUTION;
-  }
-  const id = repoId.toLowerCase();
-  const matched = QUANTISED_CANVAS.find(
-    (entry) => id.includes(entry.match) && entry.schemes.includes(scheme),
-  );
-  return matched
-    ? { width: matched.width, height: matched.height }
-    : DEFAULT_RESOLUTION;
+  return { width: px, height: px };
 }

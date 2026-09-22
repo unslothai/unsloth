@@ -724,6 +724,44 @@ def _sum_required(*values: Optional[int]) -> Optional[int]:
     return total
 
 
+# The canvas an image load defaults to, and the smaller one it falls back to when the weights
+# leave too little of the card for the activations.
+DEFAULT_CANVAS_PX = 1024
+REDUCED_CANVAS_PX = 512
+
+# Weights-to-VRAM ratio at or above which the default canvas drops. Quantising shrinks the weights
+# and leaves the activations alone, so past a point the canvas is the only lever left: 1024 costs
+# roughly 7 GB more than 512 on a Qwen-Image-2.1-class model, which is the whole remaining margin
+# once the weights hold 70% of the card. 0.70 so a 17 GB model on a 24 GB card trips it (0.708) and
+# the same model on a 40 GB card does not (0.425), which is the intent: this is about the card
+# being tight, not about the model being big.
+CANVAS_REDUCTION_RATIO = 0.70
+
+
+def recommended_canvas_px(
+    model_dense_mib: Optional[int],
+    device_total_mib: Optional[int],
+    *,
+    is_unified: bool = False,
+) -> Optional[int]:
+    """The square canvas an image load should DEFAULT to on this card, or None when unknowable.
+
+    Deliberately a ratio of the whole card rather than of the safe budget, and of the WEIGHTS
+    rather than of a predicted peak. The question is "how much of this card does the model hold
+    before a single activation is allocated", and a user reading the number off nvidia-smi should
+    get the same answer we did.
+
+    None when either term is missing: a caller that cannot size the model must keep whatever
+    default it already had, not be told to shrink on a guess. Unified memory is left alone too,
+    since the pool is shared with the host and a fraction of it means something different."""
+    if is_unified:
+        return None
+    if not model_dense_mib or not device_total_mib or device_total_mib <= 0:
+        return None
+    ratio = float(model_dense_mib) / float(device_total_mib)
+    return REDUCED_CANVAS_PX if ratio >= CANVAS_REDUCTION_RATIO else DEFAULT_CANVAS_PX
+
+
 def plan_diffusion_memory(
     *,
     target: Any,
@@ -790,6 +828,9 @@ def plan_diffusion_memory(
         "resident_required_mib": required,
         "group_floor_mib": group_floor,
         "group_floor_streamed_te_mib": group_floor_streamed_te,
+        "recommended_canvas_px": recommended_canvas_px(
+            model_dense_mib, device_memory.total_mib, is_unified = device_memory.is_unified
+        ),
     }
 
     def _group_fits() -> bool:

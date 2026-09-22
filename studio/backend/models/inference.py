@@ -4382,6 +4382,13 @@ class DiffusionStatusResponse(BaseModel):
         None, description = "Resolved offload policy: none | group | model | streaming | sequential"
     )
     vae_tiling: bool = Field(False, description = "Whether VAE tiling/slicing is enabled")
+    recommended_canvas: Optional[int] = Field(
+        None,
+        description = "Square canvas in pixels this load should DEFAULT to, derived from the "
+        "weights-to-VRAM ratio (1024, or 512 once the weights hold most of the card). Advisory: "
+        "the UI seeds the size fields from it and any explicit width/height is still honoured. "
+        "Null when the plan could not size the model, or on unified memory.",
+    )
     memory_mode: Optional[str] = Field(None, description = "Requested memory mode")
     speed_mode: Optional[str] = Field(None, description = "Requested speed mode")
     speed_optims: list[str] = Field(
