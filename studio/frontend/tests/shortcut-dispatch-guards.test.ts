@@ -29,6 +29,8 @@ const { isAcceptableBinding, parseBinding } = await import(
 
 const SRC__ROOT = readSrc("app/routes/__root.tsx");
 const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
+// The chat row menu's shared parts, drawn by the sidebar and by the Projects page.
+const CHAT_ROW_MENU = readSrc("features/chat/components/chat-row-menu.ts");
 const THREAD = readSrc("components/assistant-ui/thread.tsx");
 const CHAT_PAGE = readSrc("features/chat/chat-page.tsx");
 const USE_SHORTCUT = readSrc("features/settings/hooks/use-shortcut.ts");
@@ -150,9 +152,9 @@ test("both copy chords report a failed write", async () => {
 // Current membership says nothing about where a chat's older files went: it can
 // join a project, record that session, and move back out.
 test("the sandbox probe does not skip a chat that is out of a project", async () => {
-  const at = APP_SIDEBAR.indexOf("async function sandboxSessionIdsHolding");
+  const at = CHAT_ROW_MENU.indexOf("async function sandboxSessionIdsHolding");
   assert.notEqual(at, -1);
-  const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  }", at));
+  const body = CHAT_ROW_MENU.slice(at, CHAT_ROW_MENU.indexOf("\n}", at));
   assert.doesNotMatch(body, /if \(!item\.projectId\) return recorded;/);
   assert.match(
     body,
@@ -376,9 +378,9 @@ test("the sidebar's mutating chords refuse to fire under a dialog", async () => 
 // thread folder and in the project one. Probing only the thread folder
 // answered for one and hid the other.
 test("the sandbox probe leaves the shared project folder alone", async () => {
-  const at = APP_SIDEBAR.indexOf("async function sandboxSessionIdsHolding(");
+  const at = CHAT_ROW_MENU.indexOf("async function sandboxSessionIdsHolding(");
   assert.notEqual(at, -1);
-  const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  }", at));
+  const body = CHAT_ROW_MENU.slice(at, CHAT_ROW_MENU.indexOf("\n}", at));
   // The shared project workspace is not probed: every chat in the project
   // writes there, so its files are no evidence about this one, and counting
   // them reported a second folder for any chat that joined a used project.

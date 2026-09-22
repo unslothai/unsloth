@@ -52,6 +52,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { ScrollPane } from "./scroll-pane";
 
 const AttachmentThumb: FC = () => {
   const src = useAttachmentImageSrc();
@@ -155,9 +156,12 @@ const PastedTextPreviewDialog: FC<
       <DialogTrigger asChild={true}>{children}</DialogTrigger>
       <DialogContent className="aui-pasted-text-dialog flex max-h-[88dvh] w-[min(68rem,94vw)] max-w-none flex-col gap-3 overflow-hidden">
         <DialogTitle className="truncate pr-8 text-sm">{name}</DialogTitle>
-        <pre className="aui-pasted-text-dialog-body max-h-[72dvh] overflow-auto whitespace-pre-wrap break-words rounded-lg border bg-muted/40 p-3 text-left font-mono text-xs leading-relaxed">
+        <ScrollPane
+          className="aui-pasted-text-dialog-body rounded-lg border bg-muted/40 p-3"
+          scrollerClassName="max-h-[72dvh] overflow-auto whitespace-pre-wrap break-words text-left font-mono text-xs leading-relaxed"
+        >
           {preview?.text ?? "Loading…"}
-        </pre>
+        </ScrollPane>
         {preview && preview.remaining > 0 ? (
           <p className="text-muted-foreground text-xs">
             {`First ${PASTED_TEXT_PREVIEW_MAX_CHARS.toLocaleString()} characters shown. ${preview.remaining.toLocaleString()} more were sent with the message.`}
@@ -230,7 +234,7 @@ const PastedTextAttachmentUI: FC<{
       }
       onClick={isComposer ? showInTextField : undefined}
     >
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-foreground/10">
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]">
         <HugeiconsIcon
           icon={TextAlignLeft01Icon}
           strokeWidth={2}
@@ -328,7 +332,7 @@ const AttachmentUI: FC = () => {
               className={cn(
                 "aui-attachment-tile size-14 cursor-pointer overflow-hidden rounded-[14px] border bg-muted transition-opacity hover:opacity-75",
                 isComposer &&
-                  "aui-attachment-tile-composer border-foreground/20",
+                  "aui-attachment-tile-composer border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]",
               )}
               id="attachment-tile"
               aria-label={accessibleName}
