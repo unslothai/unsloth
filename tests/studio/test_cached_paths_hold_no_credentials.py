@@ -326,7 +326,8 @@ def test_no_job_persists_a_default_credential_home():
                         )
     assert not offenders, (
         "these jobs cache or upload a tool's default credential home:\n  "
-        + "\n  ".join(sorted(set(offenders))) + "\n\n"
+        + "\n  ".join(sorted(set(offenders)))
+        + "\n\n"
         "Anything that logs in writes a token there, and the directory is then saved to a "
         "cache every pull request can restore. Point the tool at a directory the workflow "
         "owns and cache that instead, as the smoke workflows here do with "
