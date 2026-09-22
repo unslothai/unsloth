@@ -3,23 +3,11 @@
 
 """The GRPO loss must resolve `importance_sampling_level` on every TRL in the declared window.
 
-`grpo_trainer_compute_loss` hands both loss paths -- `grpo_compute_loss_slow` (no-grad) and
-`grpo_accumulated_loss` (gradient) -- an `importance_sampling_level`. GSPO introduced that knob
-in TRL 0.20.0, as a `GRPOConfig` field the trainer copies onto itself in `__init__`:
-
-    0.18.2, 0.19.1   neither the config field nor the trainer attribute: token level by construction
-    0.20.0 - 1.13.0  `GRPOConfig.importance_sampling_level`, copied to `self.importance_sampling_level`
-
-Reading `self.importance_sampling_level` unconditionally therefore died at the bottom of the
-declared `trl>=0.18.2,!=0.19.0` window:
-
-    unsloth_compiled_cache/UnslothGRPOTrainer.py: in compute_loss
-        importance_sampling_level = self.importance_sampling_level,
-    E   AttributeError: 'UnslothGRPOTrainer' object has no attribute 'importance_sampling_level'
-
-The table above is read off the real sources; `test_the_window_still_binds_what_this_loss_expects`
-re-derives it from upstream, so a TRL that moves the knob again fails here rather than in a user's
-training loop.
+GSPO added the knob in TRL 0.20.0 as a `GRPOConfig` field the trainer copies onto itself; at
+0.18.2/0.19.1 neither exists and the level is token by construction. Reading
+`self.importance_sampling_level` unconditionally therefore raised AttributeError at the bottom of
+`trl>=0.18.2,!=0.19.0`. `test_the_window_still_binds_what_this_loss_expects` re-derives that from
+upstream, so a TRL that moves the knob again fails here rather than in a user's training loop.
 """
 
 from __future__ import annotations

@@ -2,22 +2,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team.
 """No test here may name a dtype kwarg on `from_pretrained`.
 
-Both spellings are traps across the declared transformers window, in opposite directions:
-
-  * `dtype = ...` is rejected at the 4.52.4 floor. `from_pretrained` forwards the unknown
-    kwarg into the model constructor and it dies with
-    `TypeError: LlamaForCausalLM.__init__() got an unexpected keyword argument 'dtype'`.
-    Two loaders here did exactly that, and it went unnoticed because the floor lane could
-    not get as far as running them: peft 0.18.0 could not import against the old
-    `transformers>=4.51.3` floor, so 45 of these tests had never executed at the floor at
-    all.
-  * `torch_dtype = ...` spans the whole window but is deprecated from 4.57.6 onward
-    (`modeling_utils.py` drops from 117 references at 4.52.4 to 20 deprecated ones at
-    4.57.6), so it is a future red rather than a current one.
-
-Load with neither and cast the result, which needs no version probe and no branch. These
-models are tiny and CPU-only, so the intermediate costs nothing. A call-site check rather
-than a version check, so it fails on every platform and every transformers.
+Both spellings are traps across the declared window in opposite directions: `dtype =` is
+forwarded into the model constructor and raises TypeError at the 4.52.4 floor, `torch_dtype =`
+spans the window but is deprecated from 4.57.6. Load with neither and cast the result. Checking
+the call site rather than the version makes it fail on every platform and every transformers.
 """
 
 from __future__ import annotations
