@@ -74,7 +74,20 @@ def _torchao_helpers() -> Optional[tuple]:
     ``prototype`` is a rename we should follow silently, and a version parse is not evidence the
     symbols exist. Never raises -- an install without them has no safetensors support, which is a
     fallback, not an error.
+
+    The stub comes FIRST because importing by feature is not enough against it. On Windows ROCm
+    ``install_torchao_windows_rocm_stub`` installs a meta-path finder that answers every
+    ``torchao.*`` import with fabricated callables, so the import below succeeds and hands back two
+    names that return None. Planning would then read safetensors as supported, drop the dense
+    shards, and the load would unflatten nothing. The pickle probe already asks ``is_stubbed`` for
+    the same reason (``diffusion_prequant._register_prequant_safe_globals``).
     """
+    try:
+        from core._torchao_stub import is_stubbed
+        if is_stubbed("torchao"):
+            return None
+    except Exception:  # noqa: BLE001 - no stub module to ask means nothing is stubbed
+        pass
     try:
         from torchao.prototype.safetensors.safetensors_support import (
             flatten_tensor_state_dict,

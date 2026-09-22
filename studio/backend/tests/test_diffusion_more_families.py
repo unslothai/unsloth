@@ -399,17 +399,24 @@ def test_qwen_image_2512_routes_to_its_own_hosted_prequant():
 
 
 def test_qwen_image_2512_prequant_filenames_match_its_repo():
-    # The filename derives from the repo name, so the variant repo must serve <Model>-<SCHEME>.pt.
-    from core.inference.diffusion_prequant import resolve_prequant_source
+    # The names derive from the repo name, so the variant repo must be asked for <Model>-<SCHEME>
+    # in both containers. The .pt is what that repo actually serves today and is asserted to stay
+    # in the chain: preferring safetensors is only allowed to ADD a name in front of it, never to
+    # replace it, or every checkpoint already published would stop resolving.
+    from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
     fam = detect_family("Qwen/Qwen-Image-2512")
-    for scheme, filename in (
-        ("int8", "Qwen-Image-2512-INT8.pt"),
-        ("fp8", "Qwen-Image-2512-FP8.pt"),
+    for scheme, safetensors_name, pickle_name in (
+        ("int8", "Qwen-Image-2512-INT8.safetensors", "Qwen-Image-2512-INT8.pt"),
+        ("fp8", "Qwen-Image-2512-FP8.safetensors", "Qwen-Image-2512-FP8.pt"),
     ):
         source = resolve_prequant_source(fam, scheme, base_repo = "Qwen/Qwen-Image-2512")
         assert source is not None
         assert source.location == "unsloth/Qwen-Image-2512-FP8"
-        assert source.filename == filename
+        names = list(candidate_filenames_of(source))
+        assert names[0] == safetensors_name, names
+        assert pickle_name in names[1:], names
+        # And the legacy repo-agnostic spelling stays last, for a repo predating the model-named one.
+        assert names[-1] == f"transformer_{scheme}.pt", names
 
 
 def test_hidream_quant_schemes_not_denied_and_no_extra_excludes():
