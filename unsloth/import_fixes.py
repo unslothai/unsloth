@@ -717,6 +717,9 @@ _IMAGE_REEXPORT_BOUND = "_unsloth_legacy_image_bound"
 # whether this environment is affected at all.
 _IMAGE_REEXPORT_PROBE = "filter_out_non_signature_kwargs"
 
+# Set on the wrapper AND on the module. The wrapper's copy is the one the guard reads.
+_GET_CLASS_PATCH_FLAG = "_unsloth_patched_get_class_in_module"
+
 
 def _image_processing_reexports_are_missing(module):
     """Is this module missing the helpers remote code expects on it?
@@ -982,11 +985,15 @@ def fix_transformers5_image_processing_reexports():
             except Exception as e:
                 logger.info(f"Unsloth: Skipping image re-export fix for {module_name} ({e})")
 
-    if getattr(dynamic_module_utils, "_unsloth_patched_get_class_in_module", False):
-        return
-
+    # Asked of the live FUNCTION, not of the module flag: `importlib.reload` re-runs the
+    # module body in the existing namespace, so `get_class_in_module` goes back to upstream
+    # while any attribute we added survives. Gating on the flag would then refuse to re-wrap
+    # a module that is once again unpatched, which is the opposite of what an idempotence
+    # guard is for. Same reasoning as `_sdpa_mask_is_patched` below.
     original = getattr(dynamic_module_utils, "get_class_in_module", None)
     if original is None:
+        return
+    if getattr(original, _GET_CLASS_PATCH_FLAG, False):
         return
 
     @functools.wraps(original)
@@ -1001,9 +1008,11 @@ def fix_transformers5_image_processing_reexports():
 
     # Keep the original reachable, so the patch can be tested and undone.
     get_class_in_module.__wrapped__ = original
+    # On the function, so the guard above survives a reload of the module.
+    setattr(get_class_in_module, _GET_CLASS_PATCH_FLAG, True)
     try:
         dynamic_module_utils.get_class_in_module = get_class_in_module
-        dynamic_module_utils._unsloth_patched_get_class_in_module = True
+        setattr(dynamic_module_utils, _GET_CLASS_PATCH_FLAG, True)
     except Exception as e:
         logger.info(f"Unsloth: Failed patching get_class_in_module ({e})")
 

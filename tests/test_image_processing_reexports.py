@@ -351,3 +351,33 @@ def test_every_import_path_installs_the_fix():
     for site in ("_gpu_init.py", "__init__.py"):
         source = (root / site).read_text(encoding = "utf-8")
         assert "fix_transformers5_image_processing_reexports" in source, site
+
+
+def test_the_wrapper_is_reinstalled_after_a_module_reload():
+    """`importlib.reload` restores upstream get_class_in_module but keeps our flag.
+
+    Reload re-runs the module body in the EXISTING namespace, so the function
+    goes back to upstream while a module attribute we added survives. A guard
+    reading that attribute would then refuse to re-wrap a module that is once
+    again unpatched; the guard reads the live function instead.
+    """
+    from packaging.version import Version
+
+    if Version(transformers.__version__) < Version("5.0.0"):
+        pytest.skip("no re-exports were dropped before transformers 5")
+    from unsloth.import_fixes import fix_transformers5_image_processing_reexports
+    from transformers import dynamic_module_utils
+
+    wrapped = dynamic_module_utils.get_class_in_module
+    assert hasattr(wrapped, "__wrapped__")
+    try:
+        importlib.reload(dynamic_module_utils)
+        assert not hasattr(dynamic_module_utils.get_class_in_module, "__wrapped__")
+        # The module flag is exactly what survived, which is why it cannot be the guard.
+        assert getattr(dynamic_module_utils, "_unsloth_patched_get_class_in_module", False)
+
+        fix_transformers5_image_processing_reexports()
+        assert hasattr(dynamic_module_utils.get_class_in_module, "__wrapped__")
+    finally:
+        dynamic_module_utils.get_class_in_module = wrapped
+        dynamic_module_utils._unsloth_patched_get_class_in_module = True
