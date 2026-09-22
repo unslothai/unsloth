@@ -182,3 +182,93 @@ def test_a_lora_run_started_before_this_can_still_resume():
 
     new = _optimizer(torch, model, 0.1)
     new.load_state_dict(old.state_dict())  # ValueError if the group count moved
+
+
+def _legacy_optimizer(
+    torch,
+    model,
+    lr = 2e-4,
+    embedding_lr = 5e-5,
+):
+    """The two groups every checkpoint written before the decay split carries."""
+    trainable = [(name, p) for name, p in model.named_parameters() if p.requires_grad]
+    return torch.optim.AdamW(
+        [
+            {
+                "params": [p for name, p in trainable if name != EMBEDDING],
+                "weight_decay": 0.0,
+                "lr": lr,
+            },
+            {
+                "params": [p for name, p in trainable if name == EMBEDDING],
+                "weight_decay": 0.0,
+                "lr": embedding_lr,
+            },
+        ],
+        lr = lr,
+    )
+
+
+def test_a_full_finetune_checkpoint_from_before_the_split_still_resumes():
+    # Trainable norms give the new layout three groups where the checkpoint has two.
+    torch = pytest.importorskip("torch")
+    nn = torch.nn
+
+    model = _model(torch, nn)
+    old = _legacy_optimizer(torch, model)
+    for index, (_, param) in enumerate(model.named_parameters()):
+        param.grad = torch.full_like(param, float(index + 1))
+    old.step()
+    saved = old.state_dict()
+    flat = [p for group in old.param_groups for p in group["params"]]
+    named = {id(p): n for n, p in model.named_parameters()}
+    want = {named[id(p)]: float(saved["state"][i]["exp_avg"].sum()) for i, p in enumerate(flat)}
+
+    new = _optimizer(torch, model, 0.1)
+    assert len(new.param_groups) != len(saved["param_groups"]), "no migration exercised"
+    new.load_state_dict(saved)
+
+    # Not just "it loaded": every parameter must get ITS OWN moments back.
+    state = new.state_dict()["state"]
+    flat = [p for group in new.param_groups for p in group["params"]]
+    for index, param in enumerate(flat):
+        assert float(state[index]["exp_avg"].sum()) == pytest.approx(want[named[id(param)]])
+    # and the decay the run was configured with, not the 0.0 the checkpoint carries.
+    assert any(group["weight_decay"] == 0.1 for group in new.param_groups), new.param_groups
+
+
+def test_a_checkpoint_that_is_not_the_old_shape_is_refused_not_guessed():
+    # Fails closed: pairing a parameter with another parameter's moments would corrupt
+    # the run silently, which is worse than the error this keeps.
+    torch = pytest.importorskip("torch")
+    nn = torch.nn
+
+    model = _model(torch, nn)
+    new = _optimizer(torch, model, 0.1)
+    bogus = {
+        "state": {},
+        "param_groups": [{"params": [0], "lr": 2e-4, "weight_decay": 0.0}],
+    }
+    with pytest.raises(ValueError):
+        new.load_state_dict(bogus)
+
+
+def test_the_scheduler_survives_the_same_resume():
+    # Fixing only the optimizer moves the failure one line later, into base_lrs.
+    torch = pytest.importorskip("torch")
+    nn = torch.nn
+    from torch.optim.lr_scheduler import LambdaLR
+    from unsloth.trainer import _install_legacy_scheduler_resume
+
+    model = _model(torch, nn)
+    old_scheduler = LambdaLR(_legacy_optimizer(torch, model), lambda step: 1.0)
+    old_scheduler.step()
+    saved = old_scheduler.state_dict()
+
+    new_optimizer = _optimizer(torch, model, 0.1)
+    new_scheduler = _install_legacy_scheduler_resume(
+        LambdaLR(new_optimizer, lambda step: 1.0), new_optimizer
+    )
+    new_scheduler.load_state_dict(saved)
+    new_scheduler.step()  # ValueError from zip(strict=True) if base_lrs was not expanded
+    assert len(new_scheduler.base_lrs) == len(new_optimizer.param_groups)

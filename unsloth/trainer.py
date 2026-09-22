@@ -502,6 +502,7 @@ def _create_unsloth_optimizer(
     # empty): AdafactorSchedule.get_lr reads group["params"][0] unguarded, and load_state_dict
     # rejects a checkpoint whose group count differs, which would break resume.
     optimizer_grouped_parameters = []
+    group_roles = []
     for group, group_lr in (("non_embeddings", lr), ("embeddings", embedding_lr)):
         for decays in (True, False):
             params = [
@@ -518,8 +519,124 @@ def _create_unsloth_optimizer(
                     "lr": group_lr,
                 }
             )
+            group_roles.append(group)
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+    _install_legacy_resume(
+        optimizer,
+        legacy_params = list(param_groups["non_embeddings"].values())
+        + list(param_groups["embeddings"].values()),
+        legacy_sizes = (len(param_groups["non_embeddings"]), len(param_groups["embeddings"])),
+        group_roles = group_roles,
+    )
     return optimizer
+
+
+_LEGACY_ROLE_ORDER = ("non_embeddings", "embeddings")
+
+
+def _migrate_legacy_optimizer_state(
+    state_dict, optimizer, legacy_params, legacy_sizes, group_roles
+):
+    """A pre-split checkpoint rewritten into this optimizer's layout, or None to refuse.
+
+    Splitting the decay out gives a model with trainable biases or norms more groups than
+    the two it was checkpointed with, and torch requires the counts and the per-group sizes
+    to match, so `resume_from_checkpoint` raised instead of continuing.
+
+    The remap is exact rather than inferred: torch keys saved state by a parameter's
+    position in the flat concatenation of its groups, and the old layout (non-embeddings
+    then embeddings, each in `named_parameters` order) is reproducible from the model, so
+    old position -> parameter -> new position is one to one. Anything that is not exactly
+    that old shape returns None and lets torch raise, because pairing a parameter with
+    another parameter's moments would corrupt the run in silence where today it stops.
+    """
+    saved_groups = state_dict.get("param_groups") or []
+    if len(saved_groups) != len(_LEGACY_ROLE_ORDER):
+        return None
+    if tuple(len(g["params"]) for g in saved_groups) != tuple(legacy_sizes):
+        return None
+    saved_ids = [i for g in saved_groups for i in g["params"]]
+    if len(saved_ids) != len(legacy_params) or len(set(saved_ids)) != len(saved_ids):
+        return None
+
+    param_of_saved_id = dict(zip(saved_ids, legacy_params))
+    new_index_of_param = {
+        id(param): index
+        for index, param in enumerate(p for g in optimizer.param_groups for p in g["params"])
+    }
+    if len(new_index_of_param) != len(legacy_params):
+        return None
+    try:
+        remapped_state = {
+            new_index_of_param[id(param_of_saved_id[saved_id])]: value
+            for saved_id, value in state_dict["state"].items()
+        }
+    except KeyError:
+        return None
+
+    # torch's load_state_dict takes hyperparameters from the SAVED group, so these carry
+    # this run's corrected weight_decay and the checkpoint's lr, which is where the
+    # schedule had reached.
+    saved_lr = {role: saved_groups[i]["lr"] for i, role in enumerate(_LEGACY_ROLE_ORDER)}
+    cursor, migrated_groups = 0, []
+    for group, role in zip(optimizer.param_groups, group_roles):
+        size = len(group["params"])
+        migrated = {key: value for key, value in group.items() if key != "params"}
+        migrated["lr"] = saved_lr[role]
+        migrated["params"] = list(range(cursor, cursor + size))
+        migrated_groups.append(migrated)
+        cursor += size
+    return {"state": remapped_state, "param_groups": migrated_groups}
+
+
+def _install_legacy_scheduler_resume(scheduler, optimizer):
+    """The same remap for the scheduler, which keys `base_lrs` by group too.
+
+    Fixing only the optimizer moves the failure one line later: `LRScheduler.load_state_dict`
+    overwrites `base_lrs` wholesale, so a two-entry list lands next to one lambda per current
+    group and the next step raises from `zip(..., strict=True)`.
+    """
+    roles = getattr(optimizer, "_unsloth_group_roles", None)
+    if roles is None:
+        return scheduler
+    original = scheduler.load_state_dict
+
+    @wraps(original)
+    def load_state_dict(state_dict):
+        state_dict = dict(state_dict)
+        for key in ("base_lrs", "_last_lr"):
+            saved = state_dict.get(key)
+            if isinstance(saved, list) and len(saved) == len(_LEGACY_ROLE_ORDER) != len(roles):
+                by_role = dict(zip(_LEGACY_ROLE_ORDER, saved))
+                state_dict[key] = [by_role[role] for role in roles]
+        return original(state_dict)
+
+    scheduler.load_state_dict = load_state_dict
+    return scheduler
+
+
+def _install_legacy_resume(optimizer, legacy_params, legacy_sizes, group_roles):
+    """Let `load_state_dict` accept a checkpoint written before the decay split."""
+    optimizer._unsloth_group_roles = list(group_roles)
+    original = optimizer.load_state_dict
+
+    @wraps(original)
+    def load_state_dict(state_dict):
+        saved = state_dict.get("param_groups") or []
+        if len(saved) != len(optimizer.param_groups):
+            migrated = _migrate_legacy_optimizer_state(
+                state_dict, optimizer, legacy_params, legacy_sizes, group_roles
+            )
+            if migrated is not None:
+                print(
+                    f"Unsloth: remapping {len(saved)} optimizer parameter group(s) from a "
+                    f"checkpoint saved before weight decay was split out onto "
+                    f"{len(optimizer.param_groups)}."
+                )
+                state_dict = migrated
+        return original(state_dict)
+
+    optimizer.load_state_dict = load_state_dict
 
 
 _SUPER_CREATE_OPTIMIZER_TAKES_MODEL = None
@@ -569,6 +686,14 @@ class UnslothTrainer(SFTTrainer):
                 decay_parameter_names = self.get_decay_parameter_names(target_model),
             )
         return self.optimizer
+
+    def create_scheduler(
+        self,
+        num_training_steps: int,
+        optimizer = None,
+    ):
+        scheduler = super().create_scheduler(num_training_steps, optimizer)
+        return _install_legacy_scheduler_resume(scheduler, optimizer or self.optimizer)
 
     def _create_q_galore_optimizer(
         self,
