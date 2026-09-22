@@ -155,7 +155,9 @@ def test_native_model_with_trust_remote_code_keeps_fast_lora(tmp_path, monkeypat
                 "Connection error",
             )
         ):
-            pytest.skip(f"the checkpoint cannot be built on this host ({type(exception).__name__}: {text[:160]})")
+            pytest.skip(
+                f"the checkpoint cannot be built on this host ({type(exception).__name__}: {text[:160]})"
+            )
         raise
     model = FastModel.get_peft_model(model, r = 8, lora_alpha = 16, lora_dropout = 0, bias = "none")
     from peft.tuners.lora.bnb import Linear4bit
