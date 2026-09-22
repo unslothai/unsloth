@@ -2467,3 +2467,45 @@ def test_the_scan_is_redone_when_the_binary_on_that_path_changes(tmp_path):
     assert bk.binary_carries_marker(str(path), "qwen_image_2_1") is False
     path.write_bytes(b"a new build with qwen_image_2_1 in it")
     assert bk.binary_carries_marker(str(path), "qwen_image_2_1") is True
+
+
+def test_a_cached_engine_is_re_checked_against_the_family_now_loading(tmp_path):
+    # _engine is resolved lazily and never cleared, so it outlives the load that created it. An
+    # sd-cli cached by an older family's one-shot load would otherwise be handed straight back for
+    # a family it cannot run, and the load would report ready and die on the first generation,
+    # which is the failure the gate exists to prevent.
+    old = tmp_path / "sd-cli-old"
+    old.write_bytes(b"a build from before the family landed")
+    backend = SdCppDiffusionBackend.__new__(SdCppDiffusionBackend)
+    backend._engine = types.SimpleNamespace(binary = str(old), is_available = lambda: True)
+    backend._engine_injected = False
+
+    # A family the cached build does carry is still served from the cache, unchanged.
+    backend._loading_family = detect_family("z-image")
+    assert backend._resolve_engine() is backend._engine
+
+    backend._loading_family = detect_family("qwen-image-2.1")
+    with pytest.raises(RuntimeError, match = "predates qwen-image-2.1 support"):
+        backend._resolve_engine()
+
+
+def test_a_rejected_concurrent_load_cannot_move_the_family_the_worker_validates_against():
+    # begin_load assigns the family BEFORE taking _lock to refuse a second load, so on shared state
+    # a request refused a line later would still have replaced the family the running worker checks
+    # its binaries against, and could refuse a good build or accept an incapable one.
+    backend = SdCppDiffusionBackend.__new__(SdCppDiffusionBackend)
+    worker_family = detect_family("qwen-image-2.1")
+    backend._loading_family = worker_family
+    seen = {}
+    started = threading.Event()
+
+    def _other_request():
+        backend._loading_family = detect_family("z-image")
+        started.set()
+
+    other = threading.Thread(target = _other_request)
+    other.start()
+    started.wait(timeout = 5)
+    other.join(timeout = 5)
+    seen["worker"] = backend._loading_family
+    assert seen["worker"] is worker_family, "another thread's family reached this worker"

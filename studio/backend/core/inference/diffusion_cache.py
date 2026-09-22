@@ -55,6 +55,64 @@ def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
+# Block classes diffusers ships without first-block-cache metadata, and the metadata they want.
+# The pair is (index of hidden_states in the block's return, index of encoder_hidden_states or None).
+#
+# Qwen-Image-2.1 is single stream: its block takes ``hidden_states, modulation, rotary_emb, ...``
+# and returns the hidden states alone, so 0 / None. Without the entry ``enable_cache`` raises
+# "Model class QwenImage21TransformerBlock not registered." and every load of the family renders
+# uncached, which is the whole step-cache saving gone on a 20+ step model, silently.
+_UNREGISTERED_BLOCK_METADATA: dict = {
+    (
+        "diffusers.models.transformers.transformer_qwenimage21",
+        "QwenImage21TransformerBlock",
+    ): (0, None),
+}
+
+
+def register_unregistered_transformer_blocks(logger: Any = None) -> tuple:
+    """Add our own first-block-cache metadata for block classes diffusers has not registered.
+
+    Idempotent, best-effort, and never overwrites: a class diffusers registers later wins, since
+    upstream's own metadata is authoritative and ours exists only to fill the gap until it lands.
+    An import failure means that diffusers does not have the class at all, which is not an error
+    here; the family simply is not installed.
+    """
+    added: list = []
+    try:
+        from diffusers.hooks._helpers import TransformerBlockMetadata, TransformerBlockRegistry
+    except Exception:  # noqa: BLE001 - an older diffusers has no registry to fill
+        return ()
+    for (module_name, class_name), (hidden_index, encoder_index) in (
+        _UNREGISTERED_BLOCK_METADATA.items()
+    ):
+        try:
+            import importlib
+            block_cls = getattr(importlib.import_module(module_name), class_name, None)
+        except Exception:  # noqa: BLE001 - this diffusers does not ship the family
+            continue
+        if block_cls is None:
+            continue
+        try:
+            TransformerBlockRegistry.get(block_cls)
+            continue  # already known, ours would be a downgrade
+        except Exception:  # noqa: BLE001 - "not registered" is the case we are here for
+            pass
+        try:
+            TransformerBlockRegistry.register(
+                model_class = block_cls,
+                metadata = TransformerBlockMetadata(
+                    return_hidden_states_index = hidden_index,
+                    return_encoder_hidden_states_index = encoder_index,
+                ),
+            )
+            added.append(class_name)
+        except Exception as exc:  # noqa: BLE001 - registration is an optimisation, never a gate
+            if logger is not None:
+                logger.debug("could not register %s for step caching: %s", class_name, exc)
+    return tuple(added)
+
+
 def _invalidate_child_registry_cache(transformer: Any) -> None:
     """Drop the HookRegistry's cached child-registry list after (un)installing hooks.
 
@@ -247,6 +305,8 @@ def apply_step_cache(
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return None
+    # Before enable_cache, which is what raises on a block class the registry has never seen.
+    register_unregistered_transformer_blocks(logger)
     thr = (
         threshold
         if threshold is not None
