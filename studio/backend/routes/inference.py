@@ -21056,13 +21056,12 @@ def _wav_seconds(raw: bytes) -> Optional[float]:
                 # here can check a codec's own header, so say so and let the
                 # bounded decoder have it.
                 return None
-            # Among the PCM fields nAvgBytesPerSec is the redundant one, so it
-            # is the one that can be moved alone. Multiplied by ten thousand it
-            # made half an hour read as a quarter of a second, and a quarter of
-            # a second is forwarded untouched. Recompute it, and take the
-            # declaration only where it agrees.
-            computed = sample_rate * (block_align or channels * (bits // 8))
-            byte_rate = computed if computed > 0 and declared_rate != computed else declared_rate
+            # Measure a frame as llama.cpp's decoder (miniaudio) does: by sample width for
+            # byte-aligned PCM, else by nBlockAlign. Trusting either rate field as written let an
+            # inflated one make half an hour read as a quarter of a second, forwarded untouched.
+            frame_bytes = channels * bits // 8 if bits % 8 == 0 else block_align
+            computed = sample_rate * frame_bytes
+            byte_rate = computed or declared_rate
         elif chunk == b"data":
             if byte_rate <= 0:
                 return None
