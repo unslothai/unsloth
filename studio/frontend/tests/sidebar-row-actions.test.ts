@@ -7,9 +7,56 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import vm from "node:vm";
+import ts from "typescript";
+import * as liveThreadHead from "../src/features/chat/utils/live-thread-head.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const APP_SIDEBAR = await readSrcAsync("components/app-sidebar.tsx");
+
+test("row forks retain the visible branch across settings settlement", async () => {
+  const source = await readSrcAsync("features/chat/components/chat-row-menu.ts");
+  const javascript = ts.transpileModule(
+    source.slice(source.indexOf("export async function forkChatRow("), source.indexOf("/** The sandbox sessions")),
+    { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  for (const open of [true, false]) {
+    let visible = open;
+    const unregister = liveThreadHead.registerLiveThreadView({
+      threadListItem: () => ({ getState: () => ({ remoteId: visible ? "source" : "other" }) }),
+      thread: () => ({ getState: () => ({ messages: [{ id: "root" }, { id: "older-reply" }] }) }),
+    });
+    const calls: string[] = [];
+    const context = {
+      exports: {} as { forkChatRow: (item: { id: string }) => Promise<unknown> },
+      crypto,
+      ...liveThreadHead,
+      require: (specifier: string) => {
+        if (specifier === "../api/chat-api") return {
+          forkChatThread: async (id: string, args: { messageId?: string }) => {
+            calls.push("fork");
+            assert.equal(id, "source");
+            assert.equal(args.messageId, open ? "older-reply" : undefined);
+          },
+        };
+        if (specifier === "../stores/chat-runtime-store") return {
+          settleThreadScopedSettingsForCopy: async () => {
+            calls.push("settings");
+            visible = false;
+          },
+        };
+        throw new Error(`Unexpected module: ${specifier}`);
+      },
+    };
+    try {
+      vm.runInNewContext(javascript, context);
+      await context.exports.forkChatRow({ id: "source" });
+      assert.deepEqual(calls, ["settings", "fork"]);
+    } finally {
+      unregister();
+    }
+  }
+});
 
 // The pin used to appear on a Recents row only once it was pinned, so the only way to pin one was
 // through the menu, while the project rows beside it had the one-click affordance all along.
@@ -212,11 +259,11 @@ test("a chat row forks from its own menu", async () => {
     ROW_MENU,
     /await settleThreadScopedSettingsForCopy\(item\.id\);\n\s*try \{/,
   );
-  // No messageId: the route resolves the tip, so the copy is opened on what it chose.
+  // the visible branch is optional; closed chats use the server-selected tip.
   assert.ok(!ROW_MENU.includes("messages[messages.length - 1]"));
   assert.match(
     ROW_MENU,
-    /return await forkChatThread\(item\.id, \{\n\s*newThreadId: crypto\.randomUUID\(\),/,
+    /return await forkChatThread\(item\.id, \{\n\s*messageId,\n\s*newThreadId: crypto\.randomUUID\(\),/,
   );
   assert.match(
     APP_SIDEBAR,
@@ -245,20 +292,17 @@ test("a row being generated into cannot be forked", async () => {
   assert.match(STORE, /export const useForkInFlight = create</);
 });
 
-// A client cannot pick the tip safely. Check before the read and another tab can append a
-// prompt in between; check after and a generation that finishes in between is missed, leaving
-// the same dangling prompt. The route reads the tip itself, after its own check, with no round
-// trip in the middle.
-test("the route picks the fork tip, not the client", async () => {
+// closed chats resolve their tip under the server generation guard.
+test("closed-chat forks leave tip selection to the server", async () => {
   const ROW_MENU = await readSrcAsync(
     "features/chat/components/chat-row-menu.ts",
   );
   const ROUTE = await readSrcAsync(
     "../../backend/routes/chat_history.py",
   );
-  // The client names no message and never reads one for the fork.
+  // selecting the tip does not require a client-side storage snapshot.
   assert.ok(!ROW_MENU.includes("getActiveGenerations"));
-  assert.ok(!/forkChatThread\([^)]*messageId/.test(ROW_MENU));
+  assert.ok(!ROW_MENU.includes("listStoredChatMessages(item.id)"));
   // the transaction resolves the tip after checking durable runs.
   const fork = ROUTE.slice(ROUTE.indexOf("def fork_thread("));
   assert.match(fork, /branch_message_id = payload\.messageId/);

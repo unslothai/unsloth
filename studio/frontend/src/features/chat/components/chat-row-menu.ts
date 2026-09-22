@@ -12,6 +12,7 @@ import {
   CONVERSATION_MARKDOWN_LABEL,
 } from "../utils/conversation-markdown";
 import { allRecordedSandboxSessionIds } from "../utils/recorded-sandbox-session";
+import { liveThreadBranch } from "../utils/live-thread-head";
 import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
 import { listStoredChatMessages } from "../utils/chat-history-storage";
 
@@ -77,16 +78,16 @@ export function canForkChatRow(item: SidebarItem): boolean {
  * so an edit still in the debounce would be left out and the copy would open on the older modes.
  */
 export async function forkChatRow(item: SidebarItem) {
+  const messageId = liveThreadBranch(item.id)?.at(-1);
   const { forkChatThread } = await import("../api/chat-api");
   const { settleThreadScopedSettingsForCopy } = await import(
     "../stores/chat-runtime-store"
   );
   await settleThreadScopedSettingsForCopy(item.id);
   try {
-    // No messageId: the route picks the tip itself, after its own check that nothing is
-    // generating. Reading it here instead put a round trip between the read and the check,
-    // and either order left a window where the tip chosen was one still being written.
+    // closed chats use the transaction-selected tip; open chats keep the branch visible at invocation.
     return await forkChatThread(item.id, {
+      messageId,
       newThreadId: crypto.randomUUID(),
       createdAt: Date.now(),
     });

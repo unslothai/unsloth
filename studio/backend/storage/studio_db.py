@@ -3949,38 +3949,43 @@ def fork_chat_thread(
             raise ChatForkActiveGenerationError(
                 "This chat is still generating. Fork it once it finishes."
             )
-        if branch_message_id is None:
-            # match the client's role ordering when a user and reply share a timestamp.
-            branch_row = conn.execute(
-                """SELECT * FROM chat_messages WHERE thread_id = ?
-                   ORDER BY created_at DESC,
-                     CASE role WHEN 'system' THEN 0 WHEN 'user' THEN 1
-                               WHEN 'assistant' THEN 2 ELSE 99 END DESC,
-                     id DESC LIMIT 1""",
-                (source_thread_id,),
-            ).fetchone()
-        else:
-            branch_row = conn.execute(
-                "SELECT * FROM chat_messages WHERE thread_id = ? AND id = ?",
-                (source_thread_id, branch_message_id),
-            ).fetchone()
+        rows = conn.execute(
+            """SELECT * FROM chat_messages WHERE thread_id = ?
+               ORDER BY created_at,
+                 CASE role WHEN 'system' THEN 0 WHEN 'user' THEN 1
+                           WHEN 'assistant' THEN 2 ELSE 99 END,
+                 id""",
+            (source_thread_id,),
+        ).fetchall()
+        by_id = {row["id"]: row for row in rows}
+        branch_row = (
+            (rows[-1] if rows else None)
+            if branch_message_id is None
+            else by_id.get(branch_message_id)
+        )
         if branch_row is None:
             conn.rollback()
             return None
         branch_message_id = branch_row["id"]
+        # match the runtime's sequential legacy prefix while preserving recorded branches and later roots.
+        parents: dict[str, Optional[str]] = {}
+        previous_id = None
+        saw_recorded_parent = False
+        for row in rows:
+            parent = row["parent_id"]
+            parents[row["id"]] = (
+                previous_id if parent is None and not saw_recorded_parent else parent
+            )
+            if parent is not None:
+                saw_recorded_parent = True
+            previous_id = row["id"]
         ancestry: list[sqlite3.Row] = []
         cursor_row = branch_row
         seen: set[str] = set()
         while cursor_row is not None and cursor_row["id"] not in seen:
             ancestry.append(cursor_row)
             seen.add(cursor_row["id"])
-            parent = cursor_row["parent_id"]
-            if not parent:
-                break
-            cursor_row = conn.execute(
-                "SELECT * FROM chat_messages WHERE thread_id = ? AND id = ?",
-                (source_thread_id, parent),
-            ).fetchone()
+            cursor_row = by_id.get(parents[cursor_row["id"]])
         ancestry.reverse()  # root .. branch msg
         id_map: dict[str, str] = {row["id"]: id_factory() for row in ancestry}
         src_dict = dict(src)
@@ -4015,7 +4020,7 @@ def fork_chat_thread(
                 (
                     id_map[row["id"]],
                     new_thread_id,
-                    id_map.get(row["parent_id"]) if row["parent_id"] else None,
+                    id_map.get(parents[row["id"]]),
                     row["role"],
                     content_json,
                     row["attachments_json"],
