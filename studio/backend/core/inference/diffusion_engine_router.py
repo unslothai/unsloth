@@ -361,8 +361,10 @@ def native_binary_installed(
         install_accelerator,
         selected_card,
     )
-    if server_binary and _server_binary_runnable(server_binary) and (
-        fam is None or sd_cpp_binary_runs_family(server_binary, fam)
+    if (
+        server_binary
+        and _server_binary_runnable(server_binary)
+        and (fam is None or sd_cpp_binary_runs_family(server_binary, fam))
     ):
         return True
     binary = usable_or_recorded_failure(
