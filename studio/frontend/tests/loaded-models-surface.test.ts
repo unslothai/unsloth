@@ -65,14 +65,14 @@ test("the modifier hardcodes neither theme", () => {
 // inset is gone the two agree. If the banner is restyled, this fails.
 test("the shared vars still match the update banner's shadow", () => {
   assert.match(BANNER, /shadow-\[0_2px_8px_-2px_rgba\(0,0,0,0\.16\)\]/);
-  assert.match(BANNER, /dark:shadow-\[0_8px_28px_-6px_rgba\(0,0,0,0\.28\)\]/);
+  assert.match(BANNER, /dark:shadow-\[0_8px_28px_-6px_rgba\(24,24,24,0\.28\)\]/);
   const light = rule(".menu-soft-surface,");
   assert.match(light, /--menu-soft-shadow: rgba\(0, 0, 0, 0\.16\)/);
   assert.match(light, /--menu-soft-offset-y: 2px/);
   assert.match(light, /--menu-soft-blur: 8px/);
   assert.match(light, /--menu-soft-spread: -2px/);
   const dark = rule(".dark .menu-soft-surface,");
-  assert.match(dark, /--menu-soft-shadow: rgba\(0, 0, 0, 0\.28\)/);
+  assert.match(dark, /--menu-soft-shadow: rgba\(24, 24, 24, 0\.28\)/);
   assert.match(dark, /--menu-soft-offset-y: 8px/);
   assert.match(dark, /--menu-soft-blur: 28px/);
   assert.match(dark, /--menu-soft-spread: -6px/);

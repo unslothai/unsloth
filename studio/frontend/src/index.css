@@ -350,48 +350,51 @@
 }
 
 .dark {
-	/* Dark surfaces shared by ALL palettes: #181818 page, elevated #1f1f1f
-	   sidebar, #212121 cards. Palette dark blocks override only accent
-	   tokens so dark mode stays consistent across themes. */
+	/* Dark surfaces shared by ALL palettes: #181818 page, elevated #242424
+	   sidebar/cards, #3a3a3a hover, #dfdfdf ink. Palette dark blocks override
+	   only accent tokens so dark mode stays consistent across themes. */
 	--background: #181818;
-	--foreground: #ffffff;
-	--card: #212121;
-	--card-foreground: #ffffff;
-	--popover: #212121;
-	--popover-foreground: #ffffff;
+	--foreground: #dfdfdf;
+	--card: #242424;
+	--card-foreground: #dfdfdf;
+	--popover: #242424;
+	--popover-foreground: #dfdfdf;
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
-	--secondary: #242424;
-	--secondary-foreground: #ffffff;
-	--muted: #242424;
-	--muted-foreground: #a3a3a3;
-	/* One step lighter than --popover so menu item hover reads clearly. */
-	--accent: #2e2e2e;
-	--accent-foreground: #ffffff;
+	--secondary: #303030;
+	--secondary-foreground: #dfdfdf;
+	--muted: #303030;
+	/* Secondary text: settings descriptions, empty states, captions.
+	   Under the ink, still ~7:1 on the dialog surface. */
+	--muted-foreground: #b0b0b0;
+	/* Shared hover tone: one step over --popover. */
+	--accent: #3a3a3a;
+	--accent-foreground: #dfdfdf;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
 	/* --border / --input one step lighter than --muted so outlines and form
 	   borders stay visible on muted surfaces (right config panel, export
-	   tiles, quant chips) and keep subtle contrast on card. */
-	--border: #303030;
-	--input: #303030;
-	--ring: #ececec;
+	   tiles, quant chips) and keep subtle contrast on card. Matches the
+	   hover tone, so outlines and hovered fills share a step. */
+	--border: #3a3a3a;
+	--input: #3a3a3a;
+	--ring: #dfdfdf;
 	--chart-1: oklch(0.7511 0.1407 166.2284);
 	--chart-2: oklch(0.75 0.14 136.5572);
 	--chart-3: oklch(0.7554 0.1285 197.339);
 	--chart-4: oklch(0.7503 0.1199 346.7805);
 	--chart-5: oklch(0.799 0.1196 84.6633);
-	/* Elevated a step lighter than --background; the tone difference is
-	   the separator. */
-	--sidebar: #1f1f1f;
-	--sidebar-foreground: #ffffff;
+	/* A step over --background; the tone difference is the separator.
+	   Matches --card, so every elevated surface reads as one plane. */
+	--sidebar: #242424;
+	--sidebar-foreground: #dfdfdf;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
-	--sidebar-accent: #2a2a2a;
-	--sidebar-accent-foreground: #ffffff;
-	--sidebar-border: #2a2a2a;
-	--sidebar-ring: #ececec;
+	--sidebar-accent: #3a3a3a;
+	--sidebar-accent-foreground: #dfdfdf;
+	--sidebar-border: #3a3a3a;
+	--sidebar-ring: #dfdfdf;
 	--destructive-foreground: oklch(1 0 0);
 	/* Match light's radius so every rounded-* element is the same in both themes. */
 	--radius: 1.1rem;
@@ -415,12 +418,13 @@
 	--shadow-xl: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 8px 10px 0px hsl(0 0% 0% / 0);
 	--shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 
-	--nav-fg: #c9c9c9;
-	--nav-fg-muted: #969696;
-	--nav-surface-hover: #2a2a2a;
-	--nav-icon-idle: #5c5c5c;
-	--nav-beta-border: #333333;
-	--panel-surface-hover: #333333;
+	--nav-fg: #dfdfdf;
+	--nav-fg-muted: #b0b0b0;
+	--nav-surface-hover: #3a3a3a;
+	/* Lifted with the surfaces: the sidebar is #242424, not #1f1f1f. */
+	--nav-icon-idle: #767676;
+	--nav-beta-border: #3a3a3a;
+	--panel-surface-hover: #3a3a3a;
 	/* Right-side chat-parameters panel: matches the chat content
 	   surface in both themes — distinction from the left sidebar
 	   is handled by the left border alone. Tracks `--background` so
@@ -429,21 +433,18 @@
 	--panel-surface: var(--background);
 	--panel-surface-fg: var(--foreground);
 	/* Translucent white so the same fill reads correctly on the #181818
-	   page AND on #212121 cards/dialogs. */
+	   page AND on #242424 cards/dialogs. */
 	--panel-input-surface: rgba(255, 255, 255, 0.07);
 	--panel-input-surface-hover: rgba(255, 255, 255, 0.11);
-	/* Soft neutral gray for muted text and sliders. Pure-ish #ababab
-	   reads as quiet on the dark panel without going colored. */
-	--panel-surface-fg-muted: #ababab;
-	/* Dark-mode slider tone matches muted text — user wants the dark
-	   theme slider unchanged from the previous behavior. */
-	--panel-slider-fg: #ababab;
-	/* Chat-message action icons. A touch lighter than the previous
-	   #b8b8b8 so the icons read clearly without going near pure white;
-	   hover restores full --foreground for affordance. */
-	--chat-icon-fg: #d8d8d8;
+	/* Muted panel text and sliders: one step under the ink, uncolored. */
+	--panel-surface-fg-muted: #b0b0b0;
+	/* Dark-mode slider tone matches muted text. */
+	--panel-slider-fg: #b0b0b0;
+	/* Chat action icons: under the ink so they read as controls, not text.
+	   Hover restores full --foreground. */
+	--chat-icon-fg: #c4c4c4;
 	--chat-icon-fg-hover: var(--foreground);
-	--chat-icon-bg-hover: #2a2a2a;
+	--chat-icon-bg-hover: #3a3a3a;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1612,7 +1613,7 @@ html[data-chat-font] .aui-root {
 		/* --nav-surface-hover is tuned for the page bg; on the lighter menu
 		   surface it is invisible, so use the menu hover token instead. */
 		background-color: var(--accent);
-		color: #fff;
+		color: var(--foreground);
 	}
 	.app-user-menu [data-slot="dropdown-menu-item"]:focus *,
 	.app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus *,
@@ -1622,7 +1623,7 @@ html[data-chat-font] .aui-root {
 	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus *,
 	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus *,
 	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] * {
-		color: #fff !important;
+		color: var(--foreground) !important;
 	}
 
 	.menu-flat-destructive {
@@ -1660,10 +1661,10 @@ html[data-chat-font] .aui-root {
 		box-shadow: none;
 	}
 
-	/* Lift the dialog off the page bg; halfway to --card keeps the inner
-	   bg-muted / bg-background fills readable. */
+	/* Lift the dialog off the page bg. On --card, so it matches the sidebar,
+	   the chatbox and every menu. */
 	.dark .settings-surface {
-		background-color: color-mix(in srgb, var(--background) 50%, var(--card));
+		background-color: var(--card);
 	}
 
 	/* App-wide: every clickable control shows the hand cursor. Disabled ones
@@ -1740,7 +1741,9 @@ html[data-chat-font] .aui-root {
 	.dark .menu-soft-surface,
 	.dark .menu-soft-surface-up {
 		--menu-soft-edge: rgba(255, 255, 255, 0.07);
-		--menu-soft-shadow: rgba(0, 0, 0, 0.28);
+		/* Page colour, not pure black, so the falloff settles into the page.
+		   Kept in step with the update banners. */
+		--menu-soft-shadow: rgba(24, 24, 24, 0.28);
 		--menu-soft-offset-y: 8px;
 		--menu-soft-blur: 28px;
 		--menu-soft-spread: -6px;
@@ -1771,6 +1774,16 @@ html[data-chat-font] .aui-root {
 		box-shadow: none;
 	}
 
+	/* Picker secondary text sits on the panel AND on the lighter control
+	   pills, where the app-wide #b0b0b0 drops to 5.2:1. Its labels are small
+	   or uppercase, so lift the token once here: 9.4:1 on the panel, 6.9:1 on
+	   a pill, --foreground still a step above. */
+	.dark .unsloth-model-selector-menu,
+	.dark .hub-menu-instant {
+		--muted-foreground: #c9c9c9;
+		--panel-surface-fg-muted: #c9c9c9;
+	}
+
 	/* List menus: one radius in both themes, slightly tighter than --radius-lg
 	   and matching the sidebar buttons. !important beats per-menu rounded-*. */
 	[data-slot="dropdown-menu-content"],
@@ -1796,18 +1809,20 @@ html[data-chat-font] .aui-root {
 	}
 	/* Dark: keep the chat-box dropdown shadow so menus don't merge into a
 	   same-color surface (e.g. a menu overlapping the composer). */
+	/* Translucent, not a solid fill: bare `var(--background)` painted an
+	   opaque halo around every menu. Same colour, soft-menu alpha. */
 	.dark [data-slot="dropdown-menu-content"],
 	.dark [data-slot="dropdown-menu-sub-content"],
 	.dark [data-slot="select-content"],
 	.dark [data-slot="combobox-content"],
 	.dark [data-slot="popover-content"] {
-		box-shadow: 0 4px 14px var(--background) !important;
+		box-shadow: 0 8px 28px -6px rgba(24, 24, 24, 0.5) !important;
 	}
 
 	/* Model selector: shadow in the page-bg color so it lifts off the
 	   composer it overlaps (chatbox geometry). Account menu stays flat. */
 	.dark .unsloth-model-selector-menu {
-		box-shadow: 0 2px 8px -2px var(--background) !important;
+		box-shadow: 0 2px 8px -2px rgba(24, 24, 24, 0.5) !important;
 	}
 	.dark .app-user-menu.menu-soft-surface-up {
 		box-shadow: none !important;
@@ -1824,7 +1839,7 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 	.dark .app-user-menu.menu-soft-surface-up {
-		box-shadow: 0 8px 28px -6px rgba(0, 0, 0, 0.28);
+		box-shadow: 0 8px 28px -6px rgba(24, 24, 24, 0.28);
 	}
 
 	.chat-composer-surface {
@@ -1844,7 +1859,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.composer-pill-btn {
-		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
@@ -1912,7 +1927,8 @@ html[data-chat-font] .aui-root {
 		color: color-mix(in oklab, var(--foreground) 60%, transparent);
 	}
 	.dark .composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
-		color: color-mix(in oklab, var(--foreground) 72%, transparent);
+		/* Full ink, like the rest of the composer's controls. */
+		color: var(--foreground);
 	}
 	/* Bypass permissions badge: bright yellow text, no resting fill; the
 	   rounded hover pill picks up the yellow accent like other toggles. */
@@ -2388,7 +2404,7 @@ html[data-chat-font] .aui-root {
 	/* Right-side Thinking pill (toggle or dropdown). pl-2 matches the left
 	   pills so the hover X is not pushed in too far. */
 	.unsloth-thinking-pill {
-		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
 		/* Reserve a text line so the icon-only (inactive) pill matches the
 		   text pills' height instead of collapsing to the icon. */
 		min-height: calc(1lh + 0.75rem);

@@ -579,7 +579,7 @@ export function SettingsDialog() {
                         // only unselected items get a keyboard focus ring.
                         active
                           ? "text-accent-foreground"
-                          : "text-[#383835] dark:text-[#c7c7c4] hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring",
+                          : "text-[#383835] dark:text-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring",
                       )}
                     >
                       {active && (
@@ -625,7 +625,7 @@ export function SettingsDialog() {
               <button
                 type="button"
                 onClick={closeDialog}
-                className="absolute top-3 end-3 z-10 flex size-[30px] items-center justify-center rounded-[10px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="absolute top-3 end-3 z-10 flex size-[30px] items-center justify-center rounded-[10px] text-[#383835] dark:text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 aria-label={t("settings.dialog.closeAriaLabel")}
               >
                 <HugeiconsIcon icon={Cancel01Icon} className="size-4" />

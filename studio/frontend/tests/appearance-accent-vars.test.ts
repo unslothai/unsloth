@@ -244,13 +244,13 @@ test("a narrow valid band between custom and elevated surfaces is not skipped", 
     ...DEFAULT_CUSTOMIZATION,
     colors: {
       light: { ...DEFAULT_CUSTOMIZATION.colors.light, accent: null },
-      dark: { accent: "#44d088", background: "#4bba47", foreground: null },
+      dark: { accent: "#44d088", background: "#4ec24a", foreground: null },
     },
   };
   applyCustomizationToDocument(splitSurfaces, "dark");
   const corrected = vars.get("--primary") ?? "";
-  assert.ok(ratio(corrected, "#4bba47") >= 2.5);
-  assert.ok(ratio(corrected, "#212121") >= 2.5);
+  assert.ok(ratio(corrected, "#4ec24a") >= 2.5);
+  assert.ok(ratio(corrected, "#242424") >= 2.5);
 });
 
 test("resize-handle glows follow the primary token", () => {

@@ -195,7 +195,7 @@ export function ModelRowMenu({
             aria-label={ariaLabel}
             className={cn(
               // Fixed box, matching ModelLoadSettingsAction beside it.
-              "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10",
+              "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10",
               buttonClassName,
             )}
           >

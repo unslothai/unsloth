@@ -251,7 +251,7 @@ export function LlamaUpdateBanner({
       data-testid="llama-update-banner"
     >
       {/* Paint the full floor even when the changelog content is short. */}
-      <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+      <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(24,24,24,0.28)]">
         {applying ? null : (
           <button
             type="button"

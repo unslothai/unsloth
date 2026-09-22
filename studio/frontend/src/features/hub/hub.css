@@ -89,17 +89,20 @@
     outline: none;
   }
 
+  /* 12% of the ink over the #242424 panel = #3a3a3a, the control tone.
+     Hover and focus step above it; focus must never match the panel or the
+     field looks empty while typing. */
   .dark .field-soft {
-    background-color: color-mix(in srgb, var(--foreground) 5%, transparent) !important;
+    background-color: color-mix(in srgb, var(--foreground) 12%, transparent) !important;
   }
 
   .dark .field-soft:hover,
   .dark .field-soft[data-state="open"] {
-    background-color: color-mix(in srgb, var(--foreground) 9%, transparent) !important;
+    background-color: color-mix(in srgb, var(--foreground) 16%, transparent) !important;
   }
 
   .dark .field-soft:focus-visible {
-    background-color: #1c1c1c !important;
+    background-color: color-mix(in srgb, var(--foreground) 16%, transparent) !important;
   }
 
   /* The Hub search field is `type="search"` (so the browser won't offer saved
@@ -329,7 +332,7 @@
   }
 
   html.dark .hub-page .hub-model-card:hover {
-    background-color: #202020;
+    background-color: var(--accent);
     border-color: transparent;
   }
 
@@ -652,15 +655,18 @@
     color: var(--foreground);
   }
 
+  /* 14%, not the light theme's 6%: the dark menu sits on #3a3a3a, so hover
+     has to climb further to separate from it. */
   html.dark .hub-menu-instant [data-slot="select-item"]:focus,
   html.dark .hub-menu-instant [data-slot="select-item"][data-highlighted],
   html.dark .hub-menu-instant [role="option"][data-highlighted] {
-    background-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+    background-color: color-mix(in srgb, var(--foreground) 14%, transparent);
     color: var(--foreground);
   }
 
+  /* Matches the pill that opens it, so trigger and menu read as one object. */
   html.dark .hub-menu-instant {
-    background-color: #2e2f31 !important;
+    background-color: #3a3a3a !important;
   }
 
   .hub-menu-instant *,
@@ -1388,7 +1394,7 @@
   }
 
   html.dark .hub-page .hub-hero {
-    --hub-hero-fill: #1c1c1c;
+    --hub-hero-fill: var(--card);
     --hub-card-border-accent: var(--foreground);
     --hub-card-edge-mix: 2.8%;
     --hub-card-inner-accent: var(--foreground);
@@ -1405,7 +1411,7 @@
 
   html.dark .hub-page .hub-hero-panel {
     border-color: transparent;
-    background-color: #202020;
+    background-color: var(--card);
   }
 
   .hub-page .hub-hero-orb {

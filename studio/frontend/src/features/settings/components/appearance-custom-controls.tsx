@@ -77,15 +77,15 @@ const PALETTE_DEFAULT_COLORS: Record<
 > = {
   standard: {
     light: { accent: "#17b88b", background: "#fefefd", foreground: "#262626" },
-    dark: { accent: "#17b88b", background: "#181818", foreground: "#ffffff" },
+    dark: { accent: "#17b88b", background: "#181818", foreground: "#dfdfdf" },
   },
   classic: {
     light: { accent: "#339cff", background: "#ffffff", foreground: "#1a1c1f" },
-    dark: { accent: "#4dabff", background: "#181818", foreground: "#ffffff" },
+    dark: { accent: "#4dabff", background: "#181818", foreground: "#dfdfdf" },
   },
   minimal: {
     light: { accent: "#171717", background: "#ffffff", foreground: "#171717" },
-    dark: { accent: "#ededed", background: "#181818", foreground: "#ffffff" },
+    dark: { accent: "#ededed", background: "#181818", foreground: "#dfdfdf" },
   },
 };
 
