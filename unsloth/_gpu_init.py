@@ -241,7 +241,12 @@ from unsloth_zoo.device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
-from .device_type import arch_lacks_bf16, arch_lacks_buffer_ops, apply_gfx101x_triton_workaround, hip_visible_archs
+from .device_type import (
+    arch_lacks_bf16,
+    arch_lacks_buffer_ops,
+    apply_gfx101x_triton_workaround,
+    hip_visible_archs,
+)
 
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,

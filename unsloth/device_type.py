@@ -249,7 +249,11 @@ def apply_gfx101x_triton_workaround(environ = None, triton_home = None):
         return False
     environ["AMDGCN_USE_BUFFER_OPS"] = "0"
     if "TRITON_CACHE_DIR" not in environ:
-        home = triton_home or environ.get("TRITON_HOME") or os.path.join(os.path.expanduser("~"), ".triton")
+        home = (
+            triton_home
+            or environ.get("TRITON_HOME")
+            or os.path.join(os.path.expanduser("~"), ".triton")
+        )
         environ["TRITON_CACHE_DIR"] = os.path.join(home, "cache-no-buffer-ops")
     return True
 
