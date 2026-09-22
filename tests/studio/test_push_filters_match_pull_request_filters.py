@@ -91,7 +91,9 @@ def test_the_scan_finds_the_workflows_it_claims_to():
         "studio-windows-ui-smoke.yml",
         "mlx-ci.yml",
     ):
-        assert expected in names, f"{expected} scopes its pull_request trigger but the scan missed it"
+        assert (
+            expected in names
+        ), f"{expected} scopes its pull_request trigger but the scan missed it"
 
 
 def test_every_exemption_still_exists_and_still_needs_one():
