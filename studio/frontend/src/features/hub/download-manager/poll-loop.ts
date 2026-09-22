@@ -327,20 +327,32 @@ function syncServerGeneration(
   status: PollStatus,
 ): boolean {
   const statusGeneration = status.generation;
-  const previousGeneration = job.serverGeneration;
-  const generationChanged =
-    typeof statusGeneration === "number" &&
-    Number.isSafeInteger(statusGeneration) &&
-    typeof previousGeneration === "number" &&
-    Number.isSafeInteger(previousGeneration) &&
-    statusGeneration !== previousGeneration;
-  if (
-    typeof statusGeneration === "number" &&
-    Number.isSafeInteger(statusGeneration)
-  ) {
-    patchJob(key, { serverGeneration: statusGeneration });
+  const statusAttempt = status.attempt;
+  const generationChanged = runCounterChanged(
+    job.serverGeneration,
+    statusGeneration,
+  );
+  const attemptChanged = runCounterChanged(job.serverAttempt, statusAttempt);
+  const patch: Partial<ManagedDownload> = {};
+  if (Number.isSafeInteger(statusGeneration)) {
+    patch.serverGeneration = statusGeneration;
   }
-  return generationChanged;
+  if (Number.isSafeInteger(statusAttempt)) {
+    patch.serverAttempt = statusAttempt;
+  }
+  if (Object.keys(patch).length > 0) patchJob(key, patch);
+  return generationChanged || attemptChanged;
+}
+
+function runCounterChanged(
+  previous: number | undefined,
+  current: number | undefined,
+): boolean {
+  return (
+    Number.isSafeInteger(current) &&
+    Number.isSafeInteger(previous) &&
+    current !== previous
+  );
 }
 
 async function finalizeTerminalStatus(
@@ -709,6 +721,7 @@ export async function startJob(
       ? opts.generation
       : existing?.serverGeneration
     : undefined;
+  const seedAttempt = carryOverSeed ? existing?.serverAttempt : undefined;
   const adopted = opts.adopt
     ? adoptedTransports(
         { transport: opts.transport, cancelTransport: opts.cancelTransport },
@@ -753,6 +766,9 @@ export async function startJob(
       : {}),
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }
+      : {}),
+    ...(Number.isSafeInteger(seedAttempt)
+      ? { serverAttempt: seedAttempt }
       : {}),
     ...(req.files && req.files.length > 0
       ? { scopedFiles: [...req.files] }

@@ -33,6 +33,7 @@ export interface ManagedDownload {
   startedAt: number;
   completedAt?: number;
   serverGeneration?: number;
+  serverAttempt?: number;
   /** Files a scoped job is fetching. Every file set of one repo rides the same scope slot, so this separates "my transfer is running" from "a different quant of this repo is running": adopting the latter reports ready for files nobody fetched. Unknown stays adoptable only for an UNSCOPED job. */
   scopedFiles?: string[];
   /** True for the entry that IS the model the user picked, false for companion repos. Only the stager can tell them apart, since a checkpoint may be a single `.safetensors` and companions carry `.safetensors` too. */
