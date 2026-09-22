@@ -20,6 +20,7 @@ web_search calls):
 
 from __future__ import annotations
 
+import importlib.util
 import random
 import sys
 from types import SimpleNamespace
@@ -1116,3 +1117,29 @@ class TestTheProbeIsNotPaidForTwice:
         for entry in tools._PROBE_COUNT_CACHE.values():
             assert len(entry) <= 3
             assert sum(map(len, entry)) <= 12_000
+
+
+def test_a_sentinel_from_another_module_uses_the_process_probe(monkeypatch):
+    """A second copy of this module has a different sentinel.
+
+    The old identity check treated that sentinel as a token count and raised ``TypeError``. The
+    new type check treats it as an unset value and uses the process probe (#11384).
+    """
+    spec = importlib.util.spec_from_file_location("core.inference._tools_twin", tools.__file__)
+    assert spec is not None and spec.loader is not None
+    twin = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(twin)
+    assert twin._UNSET_CONTEXT_TOKENS is not tools._UNSET_CONTEXT_TOKENS
+
+    token = tools._REQUEST_CONTEXT_TOKENS.set(twin._UNSET_CONTEXT_TOKENS)
+    try:
+        assert tools._page_char_budget() == tools._MAX_PAGE_CHARS
+        assert tools._tool_result_char_budget() == tools._MAX_OUTPUT_CHARS
+        assert tools._window_context_tokens() is None
+
+        _window(monkeypatch, 4864)
+        assert tools._page_char_budget() == 6809
+        assert tools._tool_result_char_budget() == 6809
+        assert tools._window_context_tokens() == 4864
+    finally:
+        tools._REQUEST_CONTEXT_TOKENS.reset(token)
