@@ -11,8 +11,6 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { usePlatformStore } from "@/config/env";
-import { useIsAccountOwner } from "@/features/auth";
 import {
   DOWNLOAD_KIND,
   downloadManager,
@@ -22,13 +20,11 @@ import {
   useDownloadManagerStore,
 } from "@/features/hub";
 import { type TranslationKey, translate, useT } from "@/i18n";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Copy01Icon, TaskDone01Icon } from "@hugeicons/core-free-icons";
+import { TaskDone01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useEffect, useState } from "react";
 import {
   type SystemOneDevice,
   type SystemOneDownloadPlan,
@@ -39,7 +35,6 @@ import {
   updateSystemOneSettings,
 } from "../api/systemone";
 import { SettingsRow } from "./settings-row";
-import { HighlightedCode } from "./usage-examples";
 
 /** One download slot for every Laya checkpoint, so switching models while one downloads reports busy rather than racing. */
 const DOWNLOAD_SCOPE = "systemone";
@@ -54,47 +49,6 @@ const ENV_DISABLE = "UNSLOTH_SYSTEMONE_DISABLE";
 const ENV_MODEL = "UNSLOTH_SYSTEMONE_MODEL";
 const ENV_DEVICE = "UNSLOTH_SYSTEMONE_DEVICE";
 
-type Example = "curl" | "python";
-
-function curlExample(base: string): string {
-  return `curl ${base}/v1/systemone \\
-  -H "Authorization: Bearer sk-unsloth-YOUR_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "jev-latest",
-    "state": "I was charged twice this month.",
-    "questions": {
-      "billing": {"type": "noul", "instructions": "Is this a billing issue?"},
-      "team": {
-        "type": "choice",
-        "instructions": "Which team should handle it?",
-        "criteria": {"billing": "charges", "technical": "bugs"}
-      }
-    }
-  }'`;
-}
-
-function pythonExample(base: string): string {
-  return `# pip install typesafe-sdk
-from typesafe_sdk import Choice, Noul, TypeSafeClient
-
-client = TypeSafeClient(
-    base_url="${base}",
-    api_key="sk-unsloth-YOUR_KEY",
-)
-result = client.system_one(
-    "I was charged twice this month.",
-    {
-        "billing": Noul(instructions="Is this a billing issue?"),
-        "team": Choice(
-            instructions="Which team should handle it?",
-            criteria={"billing": "charges", "technical": "bugs"},
-        ),
-    },
-)
-print(result.nouls["billing"].noul, result.choices["team"].choice)`;
-}
-
 function deviceLabel(device: string | null): string {
   return device && device !== "cpu" ? "GPU" : "CPU";
 }
@@ -105,8 +59,6 @@ function errorMessage(error: unknown): string | null {
 
 export function DecisionApiSection(): ReactElement | null {
   const t = useT();
-  const isOwner = useIsAccountOwner();
-  const serverUrl = usePlatformStore((s) => s.serverUrl);
   const [settings, setSettings] = useState<SystemOneSettings | null>(null);
   const [planState, setPlanState] = useState<{
     model: string;
@@ -114,8 +66,6 @@ export function DecisionApiSection(): ReactElement | null {
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [example, setExample] = useState<Example>("python");
-  const [copied, setCopied] = useState(false);
 
   const enabled = settings?.enabled ?? false;
   const model = settings?.model ?? null;
@@ -159,7 +109,7 @@ export function DecisionApiSection(): ReactElement | null {
   const downloadDone = jobState === "complete";
 
   useEffect(() => {
-    if (!isOwner || !enabled || !model) return;
+    if (!enabled || !model) return;
     let live = true;
     resolveSystemOneDownload().then(
       (next) => live && setPlanState({ model, plan: next }),
@@ -168,7 +118,7 @@ export function DecisionApiSection(): ReactElement | null {
     return () => {
       live = false;
     };
-  }, [isOwner, enabled, model, downloadDone]);
+  }, [enabled, model, downloadDone]);
 
   const modelLabel = (name: string) =>
     MODEL_LABELS[name] ? t(MODEL_LABELS[name]) : name;
@@ -235,21 +185,7 @@ export function DecisionApiSection(): ReactElement | null {
     }
   };
 
-  const base = serverUrl ?? window.location.origin;
-  const snippet = useMemo(
-    () => (example === "curl" ? curlExample(base) : pythonExample(base)),
-    [example, base],
-  );
-
-  const copySnippet = async () => {
-    if (await copyToClipboard(snippet)) {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
-    }
-  };
-
-  // Managed accounts cannot change installation settings, so they see the feature only once it can serve them.
-  if (!settings || (!isOwner && !enabled)) return null;
+  if (!settings) return null;
 
   const current = settings.models.find((m) => m.name === settings.model);
   const knownModel = current !== undefined;
@@ -302,11 +238,8 @@ export function DecisionApiSection(): ReactElement | null {
           />
         </div>
         <div className="flex min-w-0 flex-col gap-0.5">
-          <h2 className="flex items-center gap-2 text-base font-semibold font-heading text-foreground">
+          <h2 className="text-base font-semibold font-heading text-foreground">
             {t("settings.apiKeys.decisionApi.title")}
-            <span className="rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
-              {t("settings.apiKeys.decisionApi.experimental")}
-            </span>
           </h2>
           <p className="text-xs text-muted-foreground leading-relaxed">
             {t("settings.apiKeys.decisionApi.description")}
@@ -320,215 +253,161 @@ export function DecisionApiSection(): ReactElement | null {
         </p>
       ) : null}
 
-      {isOwner ? (
-        <div className="border-t border-border/60 px-4 py-1">
-          <SettingsRow
-            label={t("settings.apiKeys.decisionApi.enable")}
-            description={
-              settings.enabledLocked
-                ? t("settings.apiKeys.decisionApi.lockedByEnv", {
-                    name: ENV_DISABLE,
-                  })
-                : t("settings.apiKeys.decisionApi.enableDescription")
-            }
-            alignTop={true}
-          >
-            <Switch
-              checked={enabled}
-              disabled={busy || settings.enabledLocked}
-              onCheckedChange={(on) => void apply({ enabled: on }, on)}
-              aria-label={t("settings.apiKeys.decisionApi.enable")}
-            />
-          </SettingsRow>
+      <div className="border-t border-border/60 px-4 py-1">
+        <SettingsRow
+          label={t("settings.apiKeys.decisionApi.enable")}
+          description={
+            settings.enabledLocked
+              ? t("settings.apiKeys.decisionApi.lockedByEnv", {
+                  name: ENV_DISABLE,
+                })
+              : t("settings.apiKeys.decisionApi.enableDescription")
+          }
+          alignTop={true}
+        >
+          <Switch
+            checked={enabled}
+            disabled={busy || settings.enabledLocked}
+            onCheckedChange={(on) => void apply({ enabled: on }, on)}
+            aria-label={t("settings.apiKeys.decisionApi.enable")}
+          />
+        </SettingsRow>
 
-          <SettingsRow
-            label={t("settings.apiKeys.decisionApi.model")}
-            description={
-              settings.modelLocked
-                ? t("settings.apiKeys.decisionApi.lockedByEnv", {
-                    name: ENV_MODEL,
-                  })
-                : t("settings.apiKeys.decisionApi.modelDescription")
-            }
-            alignTop={true}
-            className="max-[420px]:flex-col max-[420px]:items-stretch max-[420px]:gap-3"
-          >
-            <div className="flex flex-col items-end gap-1 max-[420px]:w-full">
-              {knownModel ? (
-                <Select
-                  value={settings.model}
-                  disabled={busy || settings.modelLocked}
-                  onValueChange={(name) => void apply({ model: name }, true)}
+        <SettingsRow
+          label={t("settings.apiKeys.decisionApi.model")}
+          description={
+            settings.modelLocked
+              ? t("settings.apiKeys.decisionApi.lockedByEnv", {
+                  name: ENV_MODEL,
+                })
+              : undefined
+          }
+          alignTop={true}
+          className="max-[420px]:flex-col max-[420px]:items-stretch max-[420px]:gap-3"
+        >
+          <div className="flex flex-col items-end gap-1 max-[420px]:w-full">
+            {knownModel ? (
+              <Select
+                value={settings.model}
+                disabled={busy || settings.modelLocked}
+                onValueChange={(name) => void apply({ model: name }, true)}
+              >
+                <SelectTrigger
+                  className="w-60 max-[420px]:w-full"
+                  aria-label={t("settings.apiKeys.decisionApi.model")}
                 >
-                  <SelectTrigger
-                    className="w-60 max-[420px]:w-full"
-                    aria-label={t("settings.apiKeys.decisionApi.model")}
-                  >
-                    <SelectValue>{modelLabel(settings.model)}</SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {settings.models.map((option) => (
-                      <SelectItem key={option.name} value={option.name}>
-                        <span className="flex items-center gap-2">
-                          {modelLabel(option.name)}
-                          <span className="text-ui-10 tabular-nums text-muted-foreground">
-                            {formatBytes(option.downloadBytes)}
-                          </span>
-                          {option.name === RECOMMENDED_MODEL ? (
-                            <span className="rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:text-emerald-400">
-                              {t("settings.apiKeys.decisionApi.recommended")}
-                            </span>
-                          ) : null}
+                  <SelectValue>{modelLabel(settings.model)}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {settings.models.map((option) => (
+                    <SelectItem key={option.name} value={option.name}>
+                      <span className="flex items-center gap-2">
+                        {modelLabel(option.name)}
+                        <span className="text-ui-10 tabular-nums text-muted-foreground">
+                          {formatBytes(option.downloadBytes)}
                         </span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <span className="font-mono text-xs text-foreground">
-                  {settings.model}
-                </span>
-              )}
-              {enabled ? (
-                <div className="flex min-h-7 w-full items-center justify-end gap-3">
-                  <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-                    {tone ? (
-                      <span
-                        className={cn(
-                          "size-1.5 shrink-0 rounded-full",
-                          tone === "pending"
-                            ? "animate-pulse bg-current"
-                            : tone === "ready"
-                              ? "bg-emerald-500"
-                              : "bg-destructive",
-                        )}
-                      />
-                    ) : null}
+                        {option.name === RECOMMENDED_MODEL ? (
+                          <span className="rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:text-emerald-400">
+                            {t("settings.apiKeys.decisionApi.recommended")}
+                          </span>
+                        ) : null}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <span className="font-mono text-xs text-foreground">
+                {settings.model}
+              </span>
+            )}
+            {enabled ? (
+              <div className="flex min-h-7 w-full items-center justify-end gap-3">
+                <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                  {tone ? (
                     <span
                       className={cn(
-                        "max-w-[260px] truncate",
-                        tone === "error" && "text-destructive",
+                        "size-1.5 shrink-0 rounded-full",
+                        tone === "pending"
+                          ? "animate-pulse bg-current"
+                          : tone === "ready"
+                            ? "bg-emerald-500"
+                            : "bg-destructive",
                       )}
-                      title={status}
-                    >
-                      {status}
-                    </span>
-                  </span>
-                  {action === "download" ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 shrink-0 px-2.5 text-xs"
-                      disabled={busy || downloading}
-                      onClick={() => plan && void startDownload(plan)}
-                    >
-                      {downloading ? <Spinner className="mr-1.5" /> : null}
-                      {t("settings.apiKeys.decisionApi.download")}
-                    </Button>
-                  ) : action === "unload" ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 shrink-0 px-2.5 text-xs"
-                      disabled={busy}
-                      onClick={() => void unload()}
-                    >
-                      {t("settings.apiKeys.decisionApi.unload")}
-                    </Button>
+                    />
                   ) : null}
-                </div>
-              ) : null}
-            </div>
-          </SettingsRow>
+                  <span
+                    className={cn(
+                      "max-w-[260px] truncate",
+                      tone === "error" && "text-destructive",
+                    )}
+                    title={status}
+                  >
+                    {status}
+                  </span>
+                </span>
+                {action === "download" ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 px-2.5 text-xs"
+                    disabled={busy || downloading}
+                    onClick={() => plan && void startDownload(plan)}
+                  >
+                    {downloading ? <Spinner className="mr-1.5" /> : null}
+                    {t("settings.apiKeys.decisionApi.download")}
+                  </Button>
+                ) : action === "unload" ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 px-2.5 text-xs"
+                    disabled={busy}
+                    onClick={() => void unload()}
+                  >
+                    {t("settings.apiKeys.decisionApi.unload")}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </SettingsRow>
 
-          <SettingsRow
-            label={t("settings.apiKeys.decisionApi.device")}
-            description={
-              settings.deviceLocked
-                ? t("settings.apiKeys.decisionApi.lockedByEnv", {
-                    name: ENV_DEVICE,
-                  })
-                : t("settings.apiKeys.decisionApi.deviceDescription")
+        <SettingsRow
+          label={t("settings.apiKeys.decisionApi.device")}
+          description={
+            settings.deviceLocked
+              ? t("settings.apiKeys.decisionApi.lockedByEnv", {
+                  name: ENV_DEVICE,
+                })
+              : t("settings.apiKeys.decisionApi.deviceDescription")
+          }
+          alignTop={true}
+        >
+          <Select
+            value={settings.device}
+            disabled={busy || settings.deviceLocked}
+            onValueChange={(device) =>
+              void apply({ device: device as SystemOneDevice }, false)
             }
-            alignTop={true}
           >
-            <Select
-              value={settings.device}
-              disabled={busy || settings.deviceLocked}
-              onValueChange={(device) =>
-                void apply({ device: device as SystemOneDevice }, false)
-              }
+            <SelectTrigger
+              className="w-36"
+              aria-label={t("settings.apiKeys.decisionApi.device")}
             >
-              <SelectTrigger
-                className="w-36"
-                aria-label={t("settings.apiKeys.decisionApi.device")}
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="cpu">
-                  {t("settings.apiKeys.decisionApi.deviceCpu")}
-                </SelectItem>
-                <SelectItem value="gpu" disabled={!settings.gpuAvailable}>
-                  {t("settings.apiKeys.decisionApi.deviceGpu")}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </SettingsRow>
-        </div>
-      ) : null}
-
-      {enabled ? (
-        <div className="flex min-w-0 flex-col gap-2 border-t border-border/60 p-4">
-          <div className="flex items-center justify-between gap-3">
-            <h3 className="text-xs font-semibold text-foreground">
-              {t("settings.apiKeys.decisionApi.tryIt")}
-            </h3>
-            <div className="flex items-center gap-1 rounded-full border border-border p-0.5">
-              {(["python", "curl"] as const).map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setExample(option)}
-                  className={cn(
-                    "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                    example === option
-                      ? "hub-tab-toggle-pill text-foreground"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {option === "python" ? "Python" : "curl"}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="relative min-w-0 rounded-lg border border-border bg-muted/20">
-            <button
-              type="button"
-              onClick={() => void copySnippet()}
-              className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              aria-label={t("settings.apiKeys.copySnippet")}
-            >
-              <HugeiconsIcon
-                icon={copied ? Tick02Icon : Copy01Icon}
-                className={cn("size-3.5", copied && "text-emerald-600")}
-              />
-              {copied
-                ? t("settings.apiKeys.copied")
-                : t("settings.apiKeys.copy")}
-            </button>
-            <HighlightedCode
-              key={snippet}
-              code={snippet}
-              language={example === "curl" ? "bash" : "python"}
-              redactFromReload={false}
-            />
-          </div>
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            {t("settings.apiKeys.decisionApi.caveat")}
-          </p>
-        </div>
-      ) : null}
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="cpu">
+                {t("settings.apiKeys.decisionApi.deviceCpu")}
+              </SelectItem>
+              <SelectItem value="gpu" disabled={!settings.gpuAvailable}>
+                {t("settings.apiKeys.decisionApi.deviceGpu")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+      </div>
     </section>
   );
 }

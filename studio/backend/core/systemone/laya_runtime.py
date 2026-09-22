@@ -23,6 +23,10 @@ RUN_WAIT_S = 30.0
 MAX_PENDING = 8
 FAILURE_BACKOFF_S = 60.0
 _REQUIRED_DIRS = ("encoder", "tokenizer")
+MISSING_PACKAGE = (
+    "Studio's Python environment is missing the laya package. "
+    "Install it with: pip install --no-deps laya==0.3.5"
+)
 
 _state_lock = threading.Lock()
 _run_lock = threading.Lock()
@@ -115,6 +119,11 @@ def _checkpoint_dir(checkpoint: Checkpoint, *, local_only: bool = False) -> Path
     return root
 
 
+def package_available() -> bool:
+    import importlib.util
+    return importlib.util.find_spec("laya") is not None
+
+
 def is_cached(checkpoint: Checkpoint) -> bool:
     try:
         root = _checkpoint_dir(checkpoint, local_only = True)
@@ -195,7 +204,7 @@ def _load(checkpoint: Checkpoint) -> None:
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
         message = (
-            "System One needs the laya package; run `unsloth studio update`"
+            MISSING_PACKAGE
             if isinstance(exc, ImportError)
             else f"Could not load {checkpoint.name}: {type(exc).__name__}: {exc}"
         )

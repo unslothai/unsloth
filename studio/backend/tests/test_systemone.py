@@ -109,6 +109,7 @@ def runtime(monkeypatch):
 
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", load)
     monkeypatch.setattr(laya_runtime, "_state_truncated", lambda *args: False)
+    monkeypatch.setattr(laya_runtime, "package_available", lambda: True)
     yield loads
     if laya_runtime._loader is not None:
         laya_runtime._loader.join(5)
@@ -251,7 +252,14 @@ def test_missing_package_points_at_studio_update(client, monkeypatch):
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", missing)
     response = _post(client)
     assert response.status_code == 503
-    assert "unsloth studio update" in response.json()["detail"]["message"]
+    assert "pip install --no-deps laya==0.3.5" in response.json()["detail"]["message"]
+
+
+def test_settings_warn_about_the_missing_package_before_any_request(client, monkeypatch):
+    monkeypatch.setattr(laya_runtime, "package_available", lambda: False)
+    assert client.get("/api/settings/systemone").json()["error"] == laya_runtime.MISSING_PACKAGE
+    monkeypatch.setattr(systemone_settings, "_owner_setting", {}.get)
+    assert client.get("/api/settings/systemone").json()["error"] is None
 
 
 def test_slow_load_answers_retry_after_instead_of_hanging(client, monkeypatch):

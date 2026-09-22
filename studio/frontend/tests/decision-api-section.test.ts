@@ -33,12 +33,12 @@ test("the API tab renders the section and search finds it", () => {
   );
 });
 
-test("managed accounts see it only once it can serve them", () => {
+test("only the owner sees it, like the other installation-wide sections", () => {
   assert.match(
-    SECTION,
-    /if \(!settings \|\| \(!isOwner && !enabled\)\) return null;/,
+    API_TAB,
+    /<ModelAutoSwitchSection \/>\s*<DecisionApiSection \/>\s*<\/>\s*\) : null\}/,
   );
-  assert.match(SECTION, /\{isOwner \? \(/);
+  assert.doesNotMatch(SECTION, /useIsAccountOwner/);
 });
 
 test("turning it on or picking a model downloads, the device does not", () => {
@@ -79,10 +79,13 @@ test("GPU is offered only where the backend found one", () => {
   );
 });
 
-test("the example targets this server's systemone route with a key placeholder", () => {
-  assert.match(SECTION, /\$\{base\}\/v1\/systemone/);
-  assert.match(SECTION, /base_url="\$\{base\}"/);
-  assert.match(SECTION, /sk-unsloth-YOUR_KEY/);
+test("the copy stays plain", () => {
+  const copy = en.settings.apiKeys.decisionApi;
+  assert.equal("experimental" in copy, false);
+  assert.equal("tryIt" in copy, false);
+  for (const value of Object.values(copy)) {
+    assert.doesNotMatch(value, /[;\u2014]/);
+  }
 });
 
 test("the client talks to the settings routes and maps the schema", () => {

@@ -1332,9 +1332,14 @@ def update_helper_precache(
 
 def _systemone_response() -> SystemOneSettingsResponse:
     from core.systemone import catalog, laya_runtime
+
     runtime = laya_runtime.status()
+    enabled = systemone_settings.get_enabled()
+    error = runtime["error"]
+    if error is None and enabled and not laya_runtime.package_available():
+        error = laya_runtime.MISSING_PACKAGE
     return SystemOneSettingsResponse(
-        enabled = systemone_settings.get_enabled(),
+        enabled = enabled,
         enabled_locked = systemone_settings.enabled_locked(),
         model = catalog.default_checkpoint().name,
         model_locked = systemone_settings.model_locked(),
@@ -1350,7 +1355,7 @@ def _systemone_response() -> SystemOneSettingsResponse:
         loaded_model = runtime["loaded_model"],
         loaded_device = runtime["device"],
         loading_model = runtime["loading_model"],
-        error = runtime["error"],
+        error = error,
     )
 
 

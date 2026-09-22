@@ -195,6 +195,8 @@ export function ApiKeysTab() {
           <LanAccessSection />
 
           <ModelAutoSwitchSection />
+
+          <DecisionApiSection />
         </>
       ) : null}
 
@@ -204,8 +206,6 @@ export function ApiKeysTab() {
         keylessTools={keyless.tools}
         keylessExposure={keyless.exposure}
       />
-
-      <DecisionApiSection />
 
       <Dialog
         open={revokeTarget !== null}
