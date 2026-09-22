@@ -287,6 +287,52 @@ def _pipeline_opens_cache_context(pipe: Any) -> bool:
     return "cache_context(" in src
 
 
+def _reuses_prefix_kv(pipe: Any, transformer: Any) -> bool:
+    """Whether the denoise loop feeds the blocks a SHORTER sequence after the first step.
+
+    A transformer that caches the prompt/condition prefix K and V runs its first step over the
+    whole joint sequence and every later step over the target tokens alone, so the per-block
+    sequence length changes between step 0 and step 1. FBCache compares the first block's residual
+    against the previous step's and reuses the remaining blocks' cached residual, and both are
+    plain elementwise ops on a stored tensor, so the length change makes them raise:
+
+        RuntimeError: The size of tensor a (4096) must match the size of tensor b (4297)
+                      at non-singleton dimension 1
+
+    (Qwen-Image-2.1 at 1024px: 4096 image tokens against 4096 + 201 prompt tokens.) The cache is
+    not merely unsupported here, it takes the generation down at the second step, so refuse it.
+
+    Read structurally rather than by family name, because the shape is shared: the transformer's
+    forward accepts a ``kv_cache_mode`` and the pipeline passes one. Qwen-Image-2.1, FLUX.2 klein
+    KV and Wan-Animate-2 all match today, and a family that adopts prefix reuse later is covered
+    without touching this file.
+
+    Conservative on purpose. A checkpoint that carries the parameter but never populates the cache
+    (the pipeline gates on its own config) keeps a constant length and would have been safe, and it
+    loses the cache anyway. That costs speed on a model we have not seen; guessing the other way
+    costs a failed render on one we have."""
+    import inspect
+
+    forward = getattr(transformer, "forward", None)
+    if forward is None:
+        return False
+    try:
+        if "kv_cache_mode" not in inspect.signature(forward).parameters:
+            return False
+    except (TypeError, ValueError):  # not introspectable: assume no prefix reuse
+        return False
+    call = getattr(pipe, "__call__", None)
+    if call is None:
+        return False
+    try:
+        src = inspect.getsource(call)
+    except (OSError, TypeError):
+        # The transformer takes the parameter and the loop cannot be read, so whether it is driven
+        # is unknown. Unknown is the crashing side here, so treat it as driven.
+        return True
+    return "kv_cache_mode" in src
+
+
 def apply_step_cache(
     pipe: Any,
     *,
@@ -323,6 +369,19 @@ def apply_step_cache(
     if not _pipeline_opens_cache_context(pipe):
         _warn(
             logger, mode, RuntimeError("pipeline __call__ opens no cache_context; running uncached")
+        )
+        return None
+    # Prefix KV reuse shortens the block sequence after the first step, which the cache's stored
+    # residuals cannot be subtracted from. Checked before enable_cache: engaging here does not fail
+    # at load, it fails at step 2 of the user's generation.
+    if _reuses_prefix_kv(pipe, transformer):
+        _warn(
+            logger,
+            mode,
+            RuntimeError(
+                "transformer reuses a prefix KV cache, so the block sequence length changes "
+                "after the first step; running uncached"
+            ),
         )
         return None
     # enable_cache RAISES when is_cache_enabled, so without this a redundant call lands in the
