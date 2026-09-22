@@ -1593,7 +1593,8 @@ def fix_transformers_remote_rope_scaling_none():
 
     transformers 5 aliases ``rope_scaling`` to ``rope_parameters``, which is never None, so hub code
     guarded by ``if config.rope_scaling is not None`` indexes missing keys (``KeyError: 'factor'``).
-    Native configs and real scaling dicts are untouched."""
+    Only configs whose ``__init__`` takes ``rope_scaling`` and not ``rope_parameters``; native and
+    5.x-authored configs and real scaling dicts are untouched."""
     try:
         from transformers.configuration_utils import PretrainedConfig
     except Exception:
@@ -1605,12 +1606,25 @@ def fix_transformers_remote_rope_scaling_none():
         return
     original_get = prop.fget
 
+    legacy = {}
+
+    def _written_for_4x(cls):
+        # A 4.x-era config takes rope_scaling in __init__; a 5.x one takes rope_parameters.
+        if cls not in legacy:
+            try:
+                parameters = inspect.signature(cls.__init__).parameters
+                legacy[cls] = "rope_scaling" in parameters and "rope_parameters" not in parameters
+            except (TypeError, ValueError):
+                legacy[cls] = False
+        return legacy[cls]
+
     @functools.wraps(original_get)
     def rope_scaling(self):
         value = original_get(self)
         if (
             isinstance(value, dict)
             and "transformers_modules" in (type(self).__module__ or "")
+            and _written_for_4x(type(self))
             and value.get("rope_type", value.get("type", "default")) == "default"
             and set(value) <= _PLAIN_ROPE_KEYS
         ):

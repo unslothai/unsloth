@@ -64,10 +64,36 @@ def test_existing_default_is_left_alone(monkeypatch):
     assert ROPE_INIT_FUNCTIONS["default"] is sentinel
 
 
-def _config_class(module_name, rope_parameters):
+def _config_class(
+    module_name,
+    rope_parameters,
+    legacy = True,
+):
     from transformers import PretrainedConfig
 
-    cls = type("RemoteConfig", (PretrainedConfig,), {"model_type": "remote_plain_rope_test"})
+    if legacy:  # written for 4.x: takes rope_scaling
+
+        def __init__(
+            self,
+            rope_scaling = None,
+            **kwargs,
+        ):
+            PretrainedConfig.__init__(self, **kwargs)
+
+    else:  # written for 5.x: takes rope_parameters
+
+        def __init__(
+            self,
+            rope_parameters = None,
+            **kwargs,
+        ):
+            PretrainedConfig.__init__(self, **kwargs)
+
+    cls = type(
+        "RemoteConfig",
+        (PretrainedConfig,),
+        {"model_type": "remote_plain_rope_test", "__init__": __init__},
+    )
     cls.__module__ = module_name
     config = cls()
     config.rope_parameters = rope_parameters
@@ -89,3 +115,7 @@ def test_remote_config_with_plain_rope_reads_rope_scaling_none():
 
     native = _config_class("transformers.models.llama.configuration_llama", dict(plain))
     assert native.rope_scaling == plain
+
+    # A remote config written for 5.x keeps the alias.
+    v5 = _config_class("transformers_modules.x.configuration_x", dict(plain), legacy = False)
+    assert v5.rope_scaling == plain
