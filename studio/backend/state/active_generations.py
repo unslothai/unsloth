@@ -115,7 +115,9 @@ class ActiveGeneration:
         return False
 
 
-def _matching(account_id: Optional[str], exclude: Collection[threading.Event]) -> list[dict[str, Any]]:
+def _matching(
+    account_id: Optional[str], exclude: Collection[threading.Event]
+) -> list[dict[str, Any]]:
     return [
         e
         for e in _ACTIVE.values()
@@ -172,9 +174,7 @@ def foreign_count(account_id: str) -> int:
         return sum(1 for e in _ACTIVE.values() if e["account_id"] != account_id)
 
 
-def cancel_all(
-    account_id: Optional[str] = None, exclude: Collection[threading.Event] = ()
-) -> int:
+def cancel_all(account_id: Optional[str] = None, exclude: Collection[threading.Event] = ()) -> int:
     """Signal in-flight generations to stop, returning the count. Request-driven callers must pass
     ``account_id``; None means everyone and is for shutdown only."""
     with _LOCK:

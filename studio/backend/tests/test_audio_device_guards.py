@@ -273,7 +273,9 @@ def test_a_zero_gpu_standard_load_drops_the_stale_chat_claim():
     fires once the previous worker is gone rather than before it."""
     src = _inference_source()
     assert src.count("await asyncio.to_thread(release, CHAT)") == 2
-    assert src.count("(lambda: release(CHAT)) if replacing and not chat_load_needs_gpu else None") == 1
+    assert (
+        src.count("(lambda: release(CHAT)) if replacing and not chat_load_needs_gpu else None") == 1
+    )
 
 
 def test_the_release_is_gated_on_the_same_flag_as_the_409():

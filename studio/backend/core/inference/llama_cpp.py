@@ -512,7 +512,12 @@ class GpuMemoryShortError(RuntimeError):
 
     __slots__ = ("capped", "short_mib")
 
-    def __init__(self, message: str, capped: bool = False, short_mib: int = 0):
+    def __init__(
+        self,
+        message: str,
+        capped: bool = False,
+        short_mib: int = 0,
+    ):
         super().__init__(message)
         self.capped = capped
         self.short_mib = short_mib
@@ -25918,7 +25923,9 @@ class LlamaCppBackend:
                     )
                     _on = list(gpu_indices or [idx for idx, _ in gpus])
                     if _on:
-                        _planned = (gguf_size + mmproj_size + kv_cache_bytes) // (1024 * 1024 * len(_on))
+                        _planned = (gguf_size + mmproj_size + kv_cache_bytes) // (
+                            1024 * 1024 * len(_on)
+                        )
                         self._pending_plan_mib = {idx: _planned for idx in _on}
                     if (
                         not gpus

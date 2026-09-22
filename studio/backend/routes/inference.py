@@ -7786,6 +7786,7 @@ def _resolve_model_identifier_for_request(
 _llama_cpp_backend = LlamaCppBackend()
 register_serving_backend(_llama_cpp_backend)
 
+
 # A model loaded alongside the primary one, behind its own backends. routed_slot points a request at one.
 @dataclass(eq = False)
 class _ExtraSlot:
@@ -7873,11 +7874,17 @@ def _restorable(request: LoadRequest) -> Optional[LoadRequest]:
 
 
 def _stash_key(request: LoadRequest) -> str:
-    return f"{request.model_path}:{request.gguf_variant}" if request.gguf_variant else request.model_path
+    return (
+        f"{request.model_path}:{request.gguf_variant}"
+        if request.gguf_variant
+        else request.model_path
+    )
 
 
 def _stash_evicted(
-    request: Optional[LoadRequest], kv: Optional[dict] = None, account: Optional[str] = None
+    request: Optional[LoadRequest],
+    kv: Optional[dict] = None,
+    account: Optional[str] = None,
 ) -> None:
     from core.inference.llama_keepwarm import _delete_resume_files
 
@@ -16043,7 +16050,9 @@ async def load_model_gated(
                             request = request.model_copy(update = {"force_alongside": True})
                             continue
                         logger.info(
-                            "Unloading %d model(s) loaded alongside to fit %s", len(victims), request.model_path
+                            "Unloading %d model(s) loaded alongside to fit %s",
+                            len(victims),
+                            request.model_path,
                         )
                         for victim in victims:
                             if victim.request is not None:
@@ -16053,7 +16062,6 @@ async def load_model_gated(
         kv = _forget_evicted(request.model_path, keep_kv = True)
         if kv is not None:
             from core.inference.llama_keepwarm import restore_kv_resume
-
             await asyncio.to_thread(restore_kv_resume, get_llama_cpp_backend(), kv)
         if extra is None:
             _note_primary_load(request)
@@ -16658,7 +16666,9 @@ async def _load_model_impl(
         account_access.require_idle_other_accounts()
         if serving and on_reload_confirmed is not None:
             on_reload_confirmed(cancel = False)
-        cancel_pending = serving and on_reload_confirmed is not None and bool(request.force_cancel_active)
+        cancel_pending = (
+            serving and on_reload_confirmed is not None and bool(request.force_cancel_active)
+        )
 
         if not config.is_gguf and _mlx_distributed_launch_detected():
             raise HTTPException(
