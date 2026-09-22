@@ -48,10 +48,15 @@ def _multimodal_auto_classes():
 
     An omni checkpoint can be registered under an auto class that has nothing
     to do with images: transformers maps Qwen3-Omni only under
-    `AutoModelForTextToWaveform`. Those models still take a processor, so they
-    belong in the same membership test as the image-text classes. Resolved at
-    call time and tolerant of absent names, because which of these exist
-    differs across the supported transformers range.
+    `AutoModelForTextToWaveform`. Those models still take a processor rather
+    than a tokenizer. Resolved at call time and tolerant of absent names,
+    because which of these exist differs across the supported transformers
+    range.
+
+    Processor SELECTION only, never `is_vlm`: `is_vlm` also arms the
+    image-processor repair path, and a Whisper processor legitimately has no
+    `image_processor`, so widening `is_vlm` made loading Whisper try to build
+    an image processor for an audio model.
     """
     import transformers
 
@@ -59,10 +64,12 @@ def _multimodal_auto_classes():
     # is looked up rather than referenced: naming it directly would raise
     # NameError on 4.x, where the other branch ran.
     classes = [AutoModelForVision2Seq]
+    # AutoModelForSpeechSeq2Seq is deliberately absent: Whisper lives there, it
+    # already reaches AutoProcessor through is_whisper, and adding it would move
+    # a cell this PR has no need to move.
     for name in (
         "AutoModelForImageTextToText",
         "AutoModelForTextToWaveform",
-        "AutoModelForSpeechSeq2Seq",
     ):
         extra = getattr(transformers, name, None)
         if extra is not None and extra not in classes:
@@ -1309,11 +1316,13 @@ class FastBaseModel:
             AutoModelForImageTextToText,
         ]:
             auto_model = AutoModelForCausalLM
-        is_vlm = auto_model in _multimodal_auto_classes()
+        is_vlm = auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText]
         # A repo-code VLM may register only AutoModel / AutoModelForCausalLM (DeepSeek-OCR, Nemotron-VL), so auto_model is not a VLM class though the config is a vision model. Keep is_vlm for processor selection, but treat it as a VLM on the vLLM path so a vision_config model is never silently loaded as text-only.
         is_vlm_config = is_vlm or (not text_only and hasattr(auto_config, "vision_config"))
         is_whisper = whisper_language is not None and whisper_task is not None
-        auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
+        # Audio and omni auto classes take a processor too, but they are NOT image models: is_vlm additionally arms the image-processor repair path below, which would try to build one for Whisper.
+        needs_processor = is_vlm or auto_model in _multimodal_auto_classes()
+        auto_processor = AutoProcessor if (needs_processor or is_whisper) else AutoTokenizer
 
         model_type_arch = model_types[0]
         if model_type_arch == "siglip":

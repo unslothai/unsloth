@@ -232,7 +232,6 @@ def _has_sequence_classification_architecture(config):
 _OMNI_AUTO_CLASS_NAMES = (
     "AutoModelForImageTextToText",
     "AutoModelForTextToWaveform",
-    "AutoModelForSpeechSeq2Seq",
     "AutoModelForCausalLM",
     "AutoModel",
 )
