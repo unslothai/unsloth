@@ -1349,14 +1349,14 @@ def test_a_retried_model_replacement_publishes_no_failure():
     src = _src("routes/inference.py")
     at = src.index("except DiffusionModelReplacedError as exc:")
     window = src[at : at + 1200]
-    assert "_clear_unscoped_generate_failure(backend)" in window, (
-        "an unscoped poll reads a terminal failure while the request is being retried"
-    )
-    assert "clear_generate_failure(request.attempt_id)" in window, (
-        "the keyed record still holds a failure the retry has not had yet"
-    )
+    assert (
+        "_clear_unscoped_generate_failure(backend)" in window
+    ), "an unscoped poll reads a terminal failure while the request is being retried"
+    assert (
+        "clear_generate_failure(request.attempt_id)" in window
+    ), "the keyed record still holds a failure the retry has not had yet"
     # Only on the retried lap: the second replacement IS the answer, and it keeps its reason.
     raise_at = window.index("raise HTTPException(status_code = 409")
-    assert raise_at < window.index("_clear_unscoped_generate_failure("), (
-        "the last attempt's replacement failure is cleared instead of reported"
-    )
+    assert raise_at < window.index(
+        "_clear_unscoped_generate_failure("
+    ), "the last attempt's replacement failure is cleared instead of reported"
