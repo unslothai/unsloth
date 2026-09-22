@@ -221,6 +221,44 @@ def _config_diff(config):
     return {}
 
 
+def _is_mistral_format_checkpoint(model_name, token = None, revision = None, local_files_only = False):
+    """A repo that ships `params.json` and no `config.json` is a checkpoint in Mistral's own
+    format (`library_name: vllm`, loaded through mistral-common), not a transformers one.
+    Mistral-Large-3 is published that way and its card says transformers support did not
+    make it in. AutoConfig cannot read it, so the generic "both configs failed" message
+    sends the user chasing a transformers version that does not exist. Answers False on
+    any doubt, including offline, so the generic path is never hidden."""
+    try:
+        if os.path.isdir(model_name):
+            return (
+                os.path.isfile(os.path.join(model_name, "params.json"))
+                and not os.path.isfile(os.path.join(model_name, "config.json"))
+            )
+        if local_files_only:
+            return False
+        from huggingface_hub import file_exists
+        return (
+            file_exists(model_name, "params.json", revision = revision, token = token)
+            and not file_exists(model_name, "config.json", revision = revision, token = token)
+        )
+    except Exception:
+        return False
+
+
+def _mistral_format_error(model_name):
+    return (
+        f"Unsloth: `{model_name}` is a checkpoint in Mistral's own format: it ships `params.json` "
+        "and no `config.json`, and transformers has no modeling code for it (the model card says "
+        "so and points at vLLM).\n"
+        "Unsloth trains through transformers, so this checkpoint cannot be loaded for training "
+        "until transformers gains an implementation or a transformers-format conversion of the "
+        "weights is published. For inference use vLLM with mistral-common, as the model card "
+        "describes.\n"
+        "If you meant a transformers-format repo, check the repo id: the converted uploads carry "
+        "a `config.json`."
+    )
+
+
 def _has_sequence_classification_architecture(config):
     architectures = _config_get(config, "architectures", None) or []
     return any(str(arch).endswith("ForSequenceClassification") for arch in architectures)
@@ -756,6 +794,8 @@ class FastLanguageModel(FastLlamaModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
                     f"to obtain the latest transformers build, then restart this session."
                 )
+            if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
+                raise RuntimeError(_mistral_format_error(model_name)) from autoconfig_exc
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
                 f"AutoConfig error: {autoconfig_error}\n\n"
@@ -1553,6 +1593,8 @@ class FastModel(FastBaseModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
                     f"to obtain the latest transformers build, then restart this session."
                 )
+            if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
+                raise RuntimeError(_mistral_format_error(model_name)) from autoconfig_exc
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
                 f"AutoConfig error: {autoconfig_error}\n\n"
