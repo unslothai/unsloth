@@ -480,6 +480,22 @@ class _WithOriginalSources:
         return getattr(self.op, name)
 
 
+_with_sources_classes = {}
+
+
+def _with_original_sources(op, original_sources, weight_sources):
+    """Wrap ``op`` in a subclass of its own class. transformers' ``WeightConverter`` allows a
+    many-to-many mapping only when ``operations`` holds an instance of its internal Ernie ops,
+    so the adapter must still be one. ``_WithOriginalSources`` comes first in the MRO, so
+    ``convert`` is the adapter's; the op's own state stays on ``self.op``."""
+    cls = _with_sources_classes.get(type(op))
+    if cls is None:
+        cls = _with_sources_classes[type(op)] = type(
+            "WithOriginalSources" + type(op).__name__, (_WithOriginalSources, type(op)), {}
+        )
+    return cls(op, original_sources, weight_sources)
+
+
 _installed = False
 
 
@@ -498,7 +514,7 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
 
     # Make the ops real ConversionOps so transformers' isinstance checks are happy.
     op_cls = type("DecompressPackedWeights", (_DecompressPackedWeights, ConversionOps), {})
-    with_sources_cls = type("WithOriginalSources", (_WithOriginalSources, ConversionOps), {})
+    with_sources_cls = _with_original_sources
 
     class UnslothBnb4BitHfQuantizer(Bnb4BitHfQuantizer):
         _unsloth_ct_config = None

@@ -569,3 +569,19 @@ def test_classification_load_under_fast_inference_still_requantizes():
     assert llama._vllm_will_load_weights(False, None) is False
     source = inspect.getsource(llama.FastLlamaModel.from_pretrained)
     assert "requantize_packed = not _vllm_will_load_weights(fast_inference, num_labels)" in source
+
+
+def test_wrapped_many_to_many_op_still_passes_the_converter_type_check():
+    """transformers' WeightConverter allows a many-to-many mapping only when `operations`
+    holds an instance of its internal Ernie ops. The adapter that feeds such an op its
+    original source contract must remain an instance of the op's class, or building the
+    replacement converter raises before any weight loads."""
+    from transformers.core_model_loading import ErnieFuseAndSplitTextVisionExperts, WeightConverter
+    from unsloth.models.compressed_tensors_bnb import _WithOriginalSources, _with_original_sources
+
+    op = ErnieFuseAndSplitTextVisionExperts(stack_dim = 0, concat_dim = 1)
+    sources = ["mlp.experts.*.gate_proj.weight", "mlp.experts.*.up_proj.weight"]
+    targets = ["mlp.text_experts.gate_up_proj", "mlp.vision_experts.gate_up_proj"]
+    wrapped = _with_original_sources(op, sources, sources)
+    assert isinstance(wrapped, _WithOriginalSources) and isinstance(wrapped, ErnieFuseAndSplitTextVisionExperts)
+    WeightConverter(source_patterns = [s + "_packed$" for s in sources] + [s + "$" for s in sources], target_patterns = targets, operations = [wrapped])
