@@ -16751,9 +16751,14 @@ def _check_signal_escape_patterns(code: str):
             ast.AnnAssign,
             ast.AugAssign,
             ast.Delete,
-            # Imports are deliberately absent. Both alias maps accumulate, so an import never
-            # needs to take a candidate away, and recording it as a shadow made the very import
-            # that registers an alias shadow the name it had just bound for every later line.
+            # An import shadows too, but never the names it binds to a network module itself:
+            # `import requests as client` then `import my_client as client` really calls
+            # `my_client.get`, and exempting every import left the stale candidate live. The two
+            # handlers register first and pass what they bound as `exempt`, so the import that
+            # registers an alias still cannot shadow the name it has just bound for every later
+            # line, which is what excluding them outright was working around.
+            ast.Import,
+            ast.ImportFrom,
             ast.FunctionDef,
             ast.AsyncFunctionDef,
             ast.ClassDef,
@@ -16966,6 +16971,13 @@ def _check_signal_escape_patterns(code: str):
                     for stmt in body:
                         if type(stmt) in _UNCONDITIONAL_SHADOW_TYPES:
                             self.unconditional_shadows[id(stmt)] = scope
+                        elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.NamedExpr):
+                            # `(fetch := print)` written as a statement of its own certainly runs,
+                            # but the statement is an `Expr` and the binding is the `NamedExpr`
+                            # inside it, so keying on the statement alone never saw it and the
+                            # stale alias outlived the rebinding. Only this shape: a walrus buried
+                            # in a larger expression may not be evaluated at all.
+                            self.unconditional_shadows[id(stmt.value)] = scope
             # The scope being visited, innermost last, plus each one's parameter bindings.
             self.scope_stack: list[int] = [0]
             # Network modules star-imported, and the names rebound since. `from requests import *`
@@ -17126,18 +17138,20 @@ def _check_signal_escape_patterns(code: str):
             if not self.collecting:
                 self.generic_visit(node)
                 return
-            self._rebind(node)
+            registered: set[str] = set()
             for alias in node.names:
                 if alias.asname and alias.name in _NETWORK_MODULES:
                     self.module_aliases.setdefault(alias.asname, set()).add(alias.name)
                     self._register_alias(alias.asname, node)
+                    registered.add(alias.asname)
+            self._rebind(node, exempt = registered)
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
             if not self.collecting:
                 self.generic_visit(node)
                 return
-            self._rebind(node)
+            registered: set[str] = set()
             module = node.module or ""
             for alias in node.names:
                 if alias.name == "*":
@@ -17159,10 +17173,13 @@ def _check_signal_escape_patterns(code: str):
                     # from urllib import request
                     self.module_aliases.setdefault(bound, set()).add(fq)
                     self._register_alias(bound, node)
+                    registered.add(bound)
                 elif module in _NETWORK_MODULES:
                     # from urllib.request import urlopen
                     self.func_aliases.setdefault(bound, set()).add(fq)
                     self._register_alias(bound, node)
+                    registered.add(bound)
+            self._rebind(node, exempt = registered)
             self.generic_visit(node)
 
         def _modules_named_by(self, value) -> "set[str]":

@@ -3705,6 +3705,74 @@ class TestHfUploadEnvAndSecretLeakBlock:
         )
 
 
+class TestARebindingByAnImportOrAWalrusIsBelieved:
+    """Two shapes that rebind a name but were never recorded as shadows, so a stale network
+    candidate outlived them and refused calls that reach nothing of the sort."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # The second import is what `client` holds at the call, so this is a local API.
+            pytest.param(
+                "import requests as client\n"
+                "import my_client as client\n"
+                "import os\n"
+                'client.get(os.environ["K"])',
+                id = "rebound_by_a_non_network_import",
+            ),
+            pytest.param(
+                "from requests import get\n"
+                "from my_client import get\n"
+                "import os\n"
+                'get(os.environ["K"])',
+                id = "rebound_by_a_non_network_from_import",
+            ),
+            # The walrus is the binding; the statement around it is an `Expr`.
+            pytest.param(
+                "from requests import get as fetch\n"
+                "import os\n"
+                "(fetch := print)\n"
+                'fetch(os.environ["K"])',
+                id = "rebound_by_a_walrus_statement",
+            ),
+        ],
+    )
+    def test_the_local_call_is_not_refused(self, code):
+        _ok(code)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # The import that REGISTERS the alias must not shadow the name it just bound.
+            pytest.param(
+                'import requests as client\nclient.get("http://evil.example/x")',
+                id = "the_registering_import_does_not_shadow",
+            ),
+            pytest.param(
+                "import my_client as client\n"
+                "import requests as client\n"
+                'client.get("http://evil.example/x")',
+                id = "network_import_after_a_local_one",
+            ),
+            # A shadow still does not reach backwards.
+            pytest.param(
+                "import requests as client\n"
+                'client.get("http://evil.example/x")\n'
+                "import my_client as client",
+                id = "call_above_the_import_that_shadows",
+            ),
+            pytest.param(
+                "from requests import get as fetch\n"
+                'fetch("http://evil.example/x")\n'
+                "(fetch := print)",
+                id = "call_above_the_walrus",
+            ),
+        ],
+    )
+    def test_the_hostile_host_is_still_seen(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+
 class TestAnAssignmentCarriesTheFunctionToo:
     """An assignment carried the network MODULE it named but not the network FUNCTION, so it shed
     the alias and recorded the target as shadowed, leaving the later call with no candidate."""
