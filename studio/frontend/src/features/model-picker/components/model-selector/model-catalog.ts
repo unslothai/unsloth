@@ -1138,10 +1138,20 @@ export function recommendedQuantForDevice<T extends GgufVariantSizes>(
   const bySizeDesc = [...sized].sort(
     (left, right) => right.size_bytes - left.size_bytes,
   );
+  // Nothing runs, so the pick is whatever is closest to running: the smallest
+  // FOOTPRINT, not the smallest checkpoint. Companions are chosen per
+  // checkpoint (FLUX.2-klein sizes its text encoder that way), so a lighter
+  // quant can drag a heavier dependency along and end up furthest from fitting.
+  // Ties keep the larger checkpoint, since bySizeDesc is ranked by quality.
+  const smallestFootprint = bySizeDesc.reduce((best, variant) =>
+    ggufVariantFitSizeBytes(variant) < ggufVariantFitSizeBytes(best)
+      ? variant
+      : best,
+  );
   return (
     bySizeDesc.find((variant) => ggufFitIsComfortable(fitOfVariant(variant))) ??
     bySizeDesc.find((variant) => fitOfVariant(variant) !== "oom") ??
-    bySizeDesc[bySizeDesc.length - 1]
+    smallestFootprint
   );
 }
 

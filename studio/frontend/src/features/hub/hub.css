@@ -619,8 +619,13 @@
     background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), var(--card));
   }
 
+  /* Derived from the hover tone rather than washed over the page, so the
+     selected row cannot sink below the row you are merely pointing at. As a
+     wash it was 11% against a hover that had moved up to the --accent token,
+     which put a clicked row three levels DARKER than a hovered one, and the
+     gap widened as the contrast slider came down. */
   html.dark .hub-page .hub-result-row[data-selected="true"] {
-    background-color: color-mix(in srgb, var(--foreground) calc(11% * var(--contrast-wash-gain, 1)), var(--background));
+    background-color: color-mix(in srgb, var(--foreground) 6%, var(--accent));
     box-shadow: none;
   }
 
@@ -799,8 +804,11 @@
     background-color: var(--accent);
   }
 
+  /* Above the hover tone it is derived from, for the reason the result rows
+     carry: a 7% wash on the page lands below --accent, so selecting a row you
+     were hovering dimmed it. */
   html.dark .hub-page .catalog-row[data-selected="true"] {
-    background-color: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: color-mix(in srgb, var(--foreground) 6%, var(--accent));
   }
 }
 

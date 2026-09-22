@@ -124,3 +124,28 @@ test("a machine too small for anything still gets the smallest", () => {
 test("nothing to choose from is not a choice", () => {
   assert.equal(recommendedQuantForDevice([], () => "fits"), null);
 });
+
+// Companions are picked per checkpoint, so download size does not have to rise
+// with weights. When nothing runs, ranking the fallback by weights can hand
+// back the variant furthest from fitting.
+test("when nothing runs, the fallback is the smallest footprint", () => {
+  const perVariantCompanions = [
+    // Heavier weights, light dependency.
+    { quant: "UD-Q6_K_XL", size_bytes: 12 * GB, download_size_bytes: 14 * GB },
+    // Lighter weights, but it drags a much larger text encoder along.
+    { quant: "UD-Q4_K_XL", size_bytes: 10 * GB, download_size_bytes: 40 * GB },
+  ];
+  const pick = recommendedQuantForDevice(perVariantCompanions, () => "oom");
+  assert.equal(pick?.quant, "UD-Q6_K_XL");
+});
+
+test("the footprint fallback keeps the better quant when footprints tie", () => {
+  const tied = [
+    { quant: "UD-Q6_K_XL", size_bytes: 12 * GB, download_size_bytes: 20 * GB },
+    { quant: "UD-Q4_K_XL", size_bytes: 10 * GB, download_size_bytes: 20 * GB },
+  ];
+  assert.equal(
+    recommendedQuantForDevice(tied, () => "oom")?.quant,
+    "UD-Q6_K_XL",
+  );
+});
