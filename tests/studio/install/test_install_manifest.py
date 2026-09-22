@@ -468,6 +468,29 @@ def test_edited_requirements_invalidate_the_manifest(install_root, req_root):
     assert state["reason"] == "studio_install_requirements_changed"
 
 
+@pytest.mark.parametrize("previous_pin", [None, "a" * 40])
+def test_diffusers_main_pin_change_requires_dependency_pass(install_root, req_root, previous_pin):
+    # The backend package version can stay the same when a desktop update adds
+    # support for a model that needs a newer Diffusers commit.
+    (req_root / "studio.txt").write_text("pytest\n", encoding = "utf-8")
+    pin = req_root / "diffusers-main.txt"
+    template = "diffusers @ git+https://github.com/huggingface/diffusers.git@{}\n"
+    if previous_pin is not None:
+        pin.write_text(template.format(previous_pin), encoding = "utf-8")
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    assert im.verify_install(root = install_root, req_root = req_root)["ok"] is True
+
+    pin.write_text(template.format("b" * 40), encoding = "utf-8")
+    state = im.verify_install(root = install_root, req_root = req_root)
+    assert state["ok"] is False
+    assert state["reason"] == "studio_install_requirements_changed"
+
+    # A completed pass restores the fast path, including an intentional release
+    # fallback when the source build was opted out of or could not be installed.
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    assert im.verify_install(root = install_root, req_root = req_root)["ok"] is True
+
+
 def test_unwritable_root_degrades_to_incomplete(tmp_path, req_root):
     missing_root = tmp_path / "does" / "not" / "exist"
     assert im.write_manifest(root = missing_root, req_root = req_root) is None

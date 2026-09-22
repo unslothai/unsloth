@@ -64,6 +64,9 @@ TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
     "base.txt",
     "extras.txt",
     "extras-no-deps.txt",
+    # New model support can change this pin without changing the backend version.
+    # The setup fast path must run the dependency pass when that happens.
+    "diffusers-main.txt",
     "no-torch-runtime.txt",
     "single-env/data-designer-deps.txt",
     "single-env/data-designer.txt",
