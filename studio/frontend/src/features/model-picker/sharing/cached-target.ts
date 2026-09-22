@@ -16,11 +16,33 @@ import {
   useDeviceInventoryStore,
   withAbort,
 } from "@/features/hub";
+import {
+  isOllamaModelId,
+  isStandaloneGgufPath,
+} from "../model-config/model-identity";
 import type { resolveRunConfigTarget } from "./target";
 
 type RunConfigTarget = NonNullable<ReturnType<typeof resolveRunConfigTarget>>;
 
 export class RunConfigResolutionError extends Error {}
+
+function listCachedVariants(
+  id: string,
+  localPath: string | undefined,
+  options: { hfToken?: string; signal: AbortSignal },
+): Promise<GgufVariantsResponse> {
+  return runBoundedVariantsRequest(options.signal, async (signal) => {
+    const query = ggufVariantsQuery(id, { localPath }, true);
+    const response = await authFetch(`/api/hub/gguf-variants?${query}`, {
+      headers: hubTokenHeader(options.hfToken),
+      signal,
+    });
+    if (!response.ok) {
+      throw new Error("Could not check cached GGUF variants.");
+    }
+    return response.json();
+  });
+}
 
 export async function resolveCachedRunConfigTarget(
   target: RunConfigTarget,
@@ -31,8 +53,44 @@ export async function resolveCachedRunConfigTarget(
   },
 ): Promise<RunConfigTarget> {
   options.signal.throwIfAborted();
-  if (target.meta.source !== "hub" || target.meta.isDownloaded) {
+  if (target.meta.isDownloaded) {
     return target;
+  }
+  if (target.meta.source !== "hub") {
+    if (isStandaloneGgufPath(target.id) || isOllamaModelId(target.id)) {
+      return target;
+    }
+    const listing = await listCachedVariants(target.id, target.id, options);
+    options.signal.throwIfAborted();
+    if (listing.variants.length === 0) {
+      return {
+        ...target,
+        meta: { ...target.meta, isGguf: false, ggufVariant: undefined },
+      };
+    }
+    const requested = target.meta.ggufVariant ?? listing.default_variant;
+    const variant = listing.variants.find(
+      (entry) =>
+        entry.downloaded === true &&
+        !entry.partial &&
+        (ggufVariantsMatch(requested, entry.quant) ||
+          requested === entry.filename),
+    );
+    if (!variant) {
+      throw new RunConfigResolutionError(
+        "The selected folder does not contain a complete copy of the requested GGUF variant.",
+      );
+    }
+    return {
+      ...target,
+      meta: {
+        ...target.meta,
+        isGguf: true,
+        isDownloaded: true,
+        ggufVariant: variant.quant,
+        ggufFilename: variant.filename,
+      },
+    };
   }
   const readInventory = <
     K extends "cachedGguf" | "cachedModels" | "localModels",
@@ -98,20 +156,10 @@ export async function resolveCachedRunConfigTarget(
     }
     let listing: GgufVariantsResponse;
     try {
-      listing = await runBoundedVariantsRequest(
-        options.signal,
-        async (signal) => {
-          // Check resident variants without falling back to a Hub request.
-          const query = ggufVariantsQuery(candidate.loadId, candidate, true);
-          const response = await authFetch(`/api/hub/gguf-variants?${query}`, {
-            headers: hubTokenHeader(options.hfToken),
-            signal,
-          });
-          if (!response.ok) {
-            throw new Error("Could not check cached GGUF variants.");
-          }
-          return response.json();
-        },
+      listing = await listCachedVariants(
+        candidate.loadId,
+        candidate.localPath,
+        options,
       );
     } catch {
       options.signal.throwIfAborted();

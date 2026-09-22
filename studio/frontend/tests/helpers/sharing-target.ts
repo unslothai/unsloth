@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isExternalModelId } from "../../src/features/chat/external-providers.ts";
+import { isValidRepoId } from "../../src/features/deep-links/parse-deep-link.ts";
 import * as identity from "../../src/features/model-picker/model-config/model-identity.ts";
-import * as links from "./sharing-links.ts";
 import type * as Target from "../../src/features/model-picker/sharing/target.ts";
 import * as localPath from "../../src/lib/local-path.ts";
 import { loadWithStubs } from "./module-stubs.ts";
@@ -18,6 +18,6 @@ export const {
     "@/features/chat": { isExternalModelId },
     "@/lib/local-path": localPath,
     "../model-config/model-identity": identity,
-    "./links": links,
+    "@/features/deep-links": { isValidRepoId },
   },
 );

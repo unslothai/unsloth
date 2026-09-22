@@ -18,6 +18,9 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 registerBundlerResolver();
 installLocalStorageFake();
+const modelIdentity = await import(
+  "../src/features/model-picker/model-config/model-identity.ts"
+);
 const variantsRequest = await import(
   "../src/features/chat/api/gguf-variants-request.ts"
 );
@@ -178,6 +181,7 @@ function harness({
         },
       },
       "@/features/chat": variantsRequest,
+      "../model-config/model-identity": modelIdentity,
     },
   );
   return {
@@ -198,14 +202,13 @@ function harness({
   };
 }
 
-test("recipient-selected local files, native folders and Ollama references need no inventory or network lookup", async () => {
+test("recipient-selected local files and Ollama references need no inventory or network lookup", async () => {
   for (const [id, isGguf] of [
     ["/Users/test/Models/model.gguf", true],
     ["C:\\Models\\model.gguf", true],
     ["\\\\server\\models\\model.gguf", true],
     ["/mnt/c/Models/model.gguf", true],
     ["ollama-manifest:registry.ollama.ai/library/llama3/latest", true],
-    ["/home/models/native", false],
   ] as const) {
     const app = harness({ inventoryError: true });
     const target = resolveRunConfigTarget(
@@ -223,6 +226,95 @@ test("recipient-selected local files, native folders and Ollama references need 
     assert.deepEqual(app.scans, []);
     assert.deepEqual(app.requests, []);
     assert.deepEqual(app.hubRequests, []);
+  }
+});
+
+for (const id of [
+  "/models/quantized-qwen",
+  "/Users/test/Models/quantized-qwen",
+  "C:\\Models\\quantized-qwen",
+  "\\\\server\\models\\quantized-qwen",
+  "/mnt/c/Models/quantized-qwen",
+]) {
+  test(`settings-only imports discover local GGUF folders without Hub access: ${id}`, async () => {
+    const app = harness({ inventoryError: true, hubError: true });
+    const input = resolveRunConfigTarget(
+      {
+        config: {
+          nParallel: 3,
+          reasoningBudget: 512,
+          llamaExtraArgs: ["--no-warmup"],
+        },
+      },
+      selection,
+      id,
+    );
+    assert.ok(input);
+    const resolved = await app.resolve(input);
+    assert.equal(resolved.id, id);
+    assert.equal(resolved.meta.isGguf, true);
+    assert.equal(resolved.meta.ggufVariant, quant.quant);
+    assert.equal(resolved.meta.ggufFilename, quant.filename);
+    assert.equal(resolved.meta.isDownloaded, true);
+    assert.equal(modelConfigTarget(resolved.id, resolved.meta).isGguf, true);
+    assert.equal(wantsDownloadManagerStaging({ id, ...resolved.meta }), false);
+    assert.equal(app.requests.length, 1);
+    assert.equal(app.requests[0].searchParams.get("repo_id"), id);
+    assert.equal(app.requests[0].searchParams.get("local_path"), id);
+    assert.equal(app.requests[0].searchParams.get("offline"), "true");
+    assert.deepEqual(app.scans, []);
+    assert.deepEqual(app.hubRequests, []);
+  });
+}
+
+test("local native folders keep native loading even with a GGUF name or shared format hint", async () => {
+  for (const isGguf of [undefined, true, false]) {
+    const app = harness({ variants: [] });
+    const input = resolveRunConfigTarget(
+      { config: {}, isGguf },
+      selection,
+      "/models/native-GGUF",
+    );
+    assert.ok(input);
+    const resolved = await app.resolve(input);
+    assert.equal(resolved.meta.isGguf, false);
+    assert.equal(resolved.meta.ggufVariant, undefined);
+    assert.deepEqual(app.hubRequests, []);
+  }
+});
+
+test("local discovery rejects failed requests instead of guessing the model format", async () => {
+  const app = harness({ status: 503 });
+  const input = resolveRunConfigTarget(
+    { config: {} },
+    selection,
+    "/models/qwen",
+  );
+  assert.ok(input);
+  await assert.rejects(
+    app.resolve(input),
+    /Could not check cached GGUF variants/,
+  );
+  assert.deepEqual(app.hubRequests, []);
+});
+
+test("local GGUF discovery preserves explicit filenames and refuses missing or partial variants", async () => {
+  for (const ggufVariant of [quant.filename, "Q8_0"]) {
+    for (const partial of [false, true]) {
+      const app = harness({ variants: [{ ...quant, partial }] });
+      const input = resolveRunConfigTarget(
+        { config: {}, ggufVariant },
+        selection,
+        "/models/qwen",
+      );
+      assert.ok(input);
+      if (ggufVariant === quant.filename && !partial) {
+        assert.equal((await app.resolve(input)).meta.ggufVariant, quant.quant);
+      } else {
+        await assert.rejects(app.resolve(input), app.RunConfigResolutionError);
+      }
+      assert.deepEqual(app.hubRequests, []);
+    }
   }
 });
 

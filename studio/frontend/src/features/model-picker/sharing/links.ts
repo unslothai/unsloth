@@ -9,8 +9,14 @@ import {
   type SharedConfigKey,
   isSharedConfigKey,
 } from "./fields";
+import {
+  MAX_RUN_CONFIG_URL_LENGTH,
+  isRunConfigLink,
+  nativeRunAddress,
+} from "./link-address";
+import { SHARED_CONFIG_VALIDATORS } from "./validators";
 
-export const MAX_RUN_CONFIG_URL_LENGTH = 16_384;
+export { MAX_RUN_CONFIG_URL_LENGTH } from "./link-address";
 export const DESKTOP_RUN_CONFIG_URL_WARNING_LENGTH = 2_083;
 export type SharedRunConfig = {
   model?: string;
@@ -26,21 +32,6 @@ export type RunConfigLinkResult =
 const variantSegment = /^[A-Za-z0-9_][A-Za-z0-9._ -]*$/;
 const windowsDevice = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9]) *(?:\.|$)/i;
 const malformedEscape = /%(?![0-9a-f]{2})/i;
-const nativeAddress = /^unsloth:\/\/run\/?(?:\?|$)/i;
-const webAddress = /^https?:\/\//i;
-
-function oversizedRunLink(raw: string): RunConfigLinkResult {
-  const fragment = raw.indexOf("#");
-  const web =
-    webAddress.test(raw) &&
-    fragment >= 0 &&
-    (raw.slice(fragment, fragment + 5) === "#run?" ||
-      raw.slice(fragment) === "#run");
-  return nativeAddress.test(raw) || web
-    ? { kind: "invalid", error: "This run configuration link is too long." }
-    : { kind: "unrelated" };
-}
-
 export { isShareableModelId };
 
 function validVariant(value: string): boolean {
@@ -65,7 +56,7 @@ function decodeField(key: string, value: string): unknown {
   if (
     isSharedConfigKey(key) &&
     !SHARED_CONFIG_FIELDS[key].text &&
-    SHARED_CONFIG_FIELDS[key].valid(value)
+    SHARED_CONFIG_VALIDATORS[key](value)
   ) {
     return value;
   }
@@ -86,7 +77,7 @@ function linkQuery(raw: string, url: URL, native: boolean): string {
   if (
     url.username ||
     url.password ||
-    (native && (url.port || url.hash || !nativeAddress.test(raw)))
+    (native && (url.port || url.hash || !nativeRunAddress.test(raw)))
   ) {
     throw new Error("This run configuration link has an invalid address.");
   }
@@ -163,7 +154,7 @@ function readConfigField(
 }
 
 function validateConfigField(key: SharedConfigKey, value: unknown): void {
-  if (!SHARED_CONFIG_FIELDS[key].valid(value)) {
+  if (!SHARED_CONFIG_VALIDATORS[key](value)) {
     throw new Error(
       SHARED_CONFIG_FIELDS[key].error ??
         `The setting “${SHARED_CONFIG_FIELDS[key].label}” is invalid.`,
@@ -217,22 +208,17 @@ function invalidUrlCharacters(raw: string): boolean {
 }
 
 export function parseRunConfigLink(raw: string): RunConfigLinkResult {
+  if (!isRunConfigLink(raw)) {
+    return { kind: "unrelated" };
+  }
   if (raw.length > MAX_RUN_CONFIG_URL_LENGTH) {
-    return oversizedRunLink(raw);
+    return {
+      kind: "invalid",
+      error: "This run configuration link is too long.",
+    };
   }
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return { kind: "unrelated" };
-  }
-  const native = url.protocol === "unsloth:" && url.hostname === "run";
-  const web =
-    (url.protocol === "http:" || url.protocol === "https:") &&
-    (url.hash === "#run" || url.hash.startsWith("#run?"));
-  if (!(native || web)) {
-    return { kind: "unrelated" };
-  }
+  const url = new URL(raw);
+  const native = url.protocol === "unsloth:";
   try {
     return {
       kind: "valid",

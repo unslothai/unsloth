@@ -6,6 +6,7 @@ import {
   type ChatModelSummary,
   isExternalModelId,
 } from "@/features/chat";
+import { isValidRepoId as isShareableModelId } from "@/features/deep-links";
 import { looksLikeLocalPath } from "@/lib/local-path";
 import type { ModelPickTarget } from "../components/model-selector/types";
 import type { ModelConfigHandoffRequest } from "../model-config/model-config-handoff";
@@ -15,7 +16,7 @@ import {
   isStandaloneGgufPath,
   residentModelIdMatches,
 } from "../model-config/model-identity";
-import { type SharedRunConfig, isShareableModelId } from "./links";
+import type { SharedRunConfig } from "./links";
 
 const ggufName = /(?:-gguf|\.gguf)$/i;
 const invalidCharacters = /[\p{Cc}\p{Cs}]/u;

@@ -24,6 +24,9 @@ import {
 registerBundlerResolver();
 installLocalStorageFake();
 const fields = await import("../src/features/model-picker/sharing/fields.ts");
+const validators = await import(
+  "../src/features/model-picker/sharing/validators.ts"
+);
 const sharedArgs = await import(
   "../src/features/model-picker/sharing/extra-args.ts"
 );
@@ -173,6 +176,7 @@ test("sharing empty arguments and templates preserves recipient overrides unless
       "../model-config/per-model-config": { DEFAULT_PER_MODEL_CONFIG },
       "./extra-args": sharedArgs,
       "./fields": fields,
+      "./validators": validators,
       "./links": links,
     },
   );

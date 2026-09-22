@@ -20,19 +20,21 @@ import {
 } from "../model-config/model-config-handoff";
 import { runConfigInbox } from "./inbox";
 import {
-  type RunConfigLinkResult,
-  createRunConfigLink,
-  parseRunConfigLink,
-} from "./links";
+  MAX_RUN_CONFIG_URL_LENGTH,
+  isRunConfigLink,
+  runConfigHash,
+} from "./link-address";
 
 const acceptNativeIntent = createDeepLinkIntentGate(2_000);
 const nativeScheme = /^unsloth:/i;
-const runConfigHash = /^#run(?:\?|$)/;
 // Only the startup URL is eligible; hash changes during this session are ignored.
 let startupUrl = typeof window === "undefined" ? "" : window.location.href;
 const recoveryKey = "unsloth.run-config-login.v1";
 let awaitingLogin = false;
 let recoveryExpiresAt = 0;
+let recoveryUrl = "";
+let recoveryReplaceHistory = false;
+let intakeRevision = 0;
 
 function clearRecovery() {
   try {
@@ -44,7 +46,7 @@ function clearRecovery() {
 
 function saveRecovery() {
   const pending = runConfigInbox.getSnapshot();
-  if (!pending || pending.draftKey) {
+  if (!recoveryUrl || pending?.draftKey) {
     return;
   }
   recoveryExpiresAt ||= Date.now() + 10 * 60_000;
@@ -52,8 +54,8 @@ function saveRecovery() {
     sessionStorage.setItem(
       recoveryKey,
       JSON.stringify({
-        url: createRunConfigLink(pending.value),
-        replaceHistory: pending.replaceHistory,
+        url: recoveryUrl,
+        replaceHistory: recoveryReplaceHistory,
         session: localStorage.getItem(AUTH_SESSION_MARK_KEY),
         expiresAt: recoveryExpiresAt,
       }),
@@ -86,6 +88,7 @@ export function subscribeRunConfigSession(onChange: () => void): () => void {
     if (!pending || pending.draftKey) {
       awaitingLogin = false;
       recoveryExpiresAt = 0;
+      recoveryUrl = "";
       clearRecovery();
     }
   });
@@ -99,6 +102,8 @@ export function subscribeRunConfigSession(onChange: () => void): () => void {
 }
 
 function clearPendingImport() {
+  intakeRevision += 1;
+  recoveryUrl = "";
   awaitingLogin = false;
   recoveryExpiresAt = 0;
   clearRecovery();
@@ -124,59 +129,74 @@ export function cancelRunConfigImportForEdit(draftKey: string): void {
   }
 }
 
-function receiveParsedLink(
-  parsed: RunConfigLinkResult,
+async function receiveRunConfigUrl(
+  url: string,
   replaceHistory = false,
   expiresAt = 0,
-): boolean {
-  if (parsed.kind === "unrelated") {
-    return false;
-  }
+): Promise<void> {
   startupUrl = "";
   clearPendingImport();
-  if (parsed.kind === "invalid") {
-    toast.error("Could not open shared run settings", {
-      description: parsed.error,
-    });
-    return true;
-  }
-  runConfigInbox.submit({
-    id: createModelConfigHandoffRequestId(),
-    value: parsed.value,
-    replaceHistory,
-  });
+  const revision = intakeRevision;
   awaitingLogin = !hasAuthToken();
+  recoveryUrl = url.length <= MAX_RUN_CONFIG_URL_LENGTH ? url : "";
+  recoveryReplaceHistory = replaceHistory;
+  recoveryExpiresAt = expiresAt;
   if (awaitingLogin) {
-    recoveryExpiresAt = expiresAt;
     saveRecovery();
   }
-  return true;
+  try {
+    const { parseRunConfigLink } = await import("./links");
+    if (revision !== intakeRevision) {
+      return;
+    }
+    const parsed = parseRunConfigLink(url);
+    if (parsed.kind !== "valid") {
+      clearPendingImport();
+      if (parsed.kind === "invalid") {
+        toast.error("Could not open shared run settings", {
+          description: parsed.error,
+        });
+      }
+      return;
+    }
+    runConfigInbox.submit({
+      id: createModelConfigHandoffRequestId(),
+      value: parsed.value,
+      replaceHistory,
+    });
+  } catch {
+    if (revision !== intakeRevision) {
+      return;
+    }
+    clearPendingImport();
+    acceptNativeIntent.clear();
+    toast.error("Could not open shared run settings", {
+      description: "Reopen the link to try again.",
+    });
+  }
 }
 
-export function receiveStartupRunConfigUrl(): void {
+export async function receiveStartupRunConfigUrl(): Promise<void> {
   const initial = startupUrl;
   startupUrl = "";
   if (!initial) {
     return;
   }
-  if (!isTauri) {
-    const parsed = parseRunConfigLink(initial);
-    if (parsed.kind !== "unrelated") {
-      const url = new URL(window.location.href);
-      if (
-        runConfigHash.test(url.hash) &&
-        new URLSearchParams(url.hash.slice(4)).toString() ===
-          new URLSearchParams(new URL(initial).hash.slice(4)).toString()
-      ) {
-        if (url.searchParams.get("run") === "1") {
-          url.searchParams.delete("run");
-        }
-        url.hash = "";
-        window.history.replaceState(window.history.state, "", url.href);
+  if (!isTauri && isRunConfigLink(initial)) {
+    const url = new URL(window.location.href);
+    if (
+      runConfigHash.test(url.hash) &&
+      new URLSearchParams(url.hash.slice(4)).toString() ===
+        new URLSearchParams(new URL(initial).hash.slice(4)).toString()
+    ) {
+      if (url.searchParams.get("run") === "1") {
+        url.searchParams.delete("run");
       }
-      receiveParsedLink(parsed, true);
-      return;
+      url.hash = "";
+      window.history.replaceState(window.history.state, "", url.href);
     }
+    await receiveRunConfigUrl(initial, true);
+    return;
   }
   let recovery: {
     url?: unknown;
@@ -192,12 +212,13 @@ export function receiveStartupRunConfigUrl(): void {
   clearRecovery();
   if (
     typeof recovery?.url === "string" &&
+    isRunConfigLink(recovery.url) &&
     typeof recovery.expiresAt === "number" &&
     recovery.expiresAt > Date.now() &&
     recovery.session === localStorage.getItem(AUTH_SESSION_MARK_KEY)
   ) {
-    receiveParsedLink(
-      parseRunConfigLink(recovery.url),
+    await receiveRunConfigUrl(
+      recovery.url,
       recovery.replaceHistory === true,
       recovery.expiresAt,
     );
@@ -210,20 +231,21 @@ export function receiveSharedRunConfigUrls(urls: string[]): boolean {
     if (!nativeScheme.test(url)) {
       continue;
     }
-    const parsed = parseRunConfigLink(url);
-    if (parsed.kind === "unrelated" && parseUnslothDeepLink(url)) {
+    const candidate = isRunConfigLink(url);
+    if (!candidate && parseUnslothDeepLink(url)) {
       startupUrl = "";
       clearPendingImport();
       acceptNativeIntent.clear();
       return false;
     }
-    if (parsed.kind === "unrelated") {
+    if (!candidate) {
       continue;
     }
     if (acceptNativeIntent(url) === null) {
       return true;
     }
-    return receiveParsedLink(parsed);
+    void receiveRunConfigUrl(url);
+    return true;
   }
   return false;
 }

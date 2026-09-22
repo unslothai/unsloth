@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createDeepLinkIntentGate } from "../src/features/deep-links/deep-link-intent.ts";
 import { parseUnslothDeepLink } from "../src/features/deep-links/parse-deep-link.ts";
+import * as linkAddress from "../src/features/model-picker/sharing/link-address.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -16,9 +17,7 @@ installLocalStorageFake();
 const { createRunConfigInbox } = await import(
   "../src/features/model-picker/sharing/inbox.ts"
 );
-const { parseRunConfigLink, createRunConfigLink } = await import(
-  "./helpers/sharing-links.ts"
-);
+const { parseRunConfigLink } = await import("./helpers/sharing-links.ts");
 
 const hub = "unsloth://open_from_hf?model=owner/model";
 const run = "unsloth://run?v=1&model=owner/model&nParallel=3";
@@ -67,7 +66,8 @@ function harness(sharedLinks = true) {
         createModelConfigHandoffRequestId: () => `request-${++nextId}`,
       },
       "./inbox": { runConfigInbox: inbox },
-      "./links": { parseRunConfigLink, createRunConfigLink },
+      "./link-address": linkAddress,
+      "./links": { parseRunConfigLink },
       "@/features/auth": { hasAuthToken: () => true },
     },
   );
@@ -157,6 +157,7 @@ for (const url of [run, invalid]) {
     app.releaseStartup([hub]);
     await settle();
     app.emit([url]);
+    await settle();
     app.emit([hub]);
     await settle();
     assert.equal(app.navigations.length, 2);
@@ -176,12 +177,14 @@ test("the newest recognized intent wins in mixed native batches", async () => {
   app.releaseStartup(null);
   await settle();
   app.emit([hub, run]);
+  await settle();
   assert.equal(app.navigations.length, 0);
   assert.equal(app.inbox.getSnapshot()?.value.config.nParallel, 3);
   app.emit([run, hub]);
   assert.equal(app.navigations.length, 1);
   assert.equal(app.inbox.getSnapshot(), null);
   app.emit([hub, invalid]);
+  await settle();
   assert.equal(app.navigations.length, 1);
   assert.equal(app.errors.length, 1);
   app.cleanup();
@@ -193,6 +196,7 @@ test("desktop intake ignores web fragments without replacing pending native inte
   app.releaseStartup(null);
   await settle();
   app.emit([run]);
+  await settle();
   const pending = app.inbox.getSnapshot();
   assert.ok(pending);
   for (const url of [
@@ -214,6 +218,7 @@ test("live shared links supersede delayed desktop startup URLs and disposal igno
   const app = harness();
   await settle();
   app.emit([run]);
+  await settle();
   const pending = app.inbox.getSnapshot();
   app.releaseStartup([hub]);
   await settle();

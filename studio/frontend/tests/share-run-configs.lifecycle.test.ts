@@ -29,7 +29,12 @@ const { RunConfigResolutionError } = loadWithStubs<typeof CachedTarget>(
     "../src/features/model-picker/sharing/cached-target.ts",
     import.meta.url,
   ),
-  { "@/features/auth": {}, "@/features/chat": {}, "@/features/hub": {} },
+  {
+    "@/features/auth": {},
+    "@/features/chat": {},
+    "@/features/hub": {},
+    "../model-config/model-identity": {},
+  },
 );
 
 type Target = NonNullable<ReturnType<typeof resolveRunConfigTarget>>;

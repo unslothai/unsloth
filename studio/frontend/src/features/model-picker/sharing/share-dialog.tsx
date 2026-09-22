@@ -40,6 +40,7 @@ import {
   createRunConfigLink,
   isShareableModelId,
 } from "./links";
+import { SHARED_CONFIG_VALIDATORS } from "./validators";
 
 function linkPreview(value: SharedRunConfig, destination: string) {
   try {
@@ -91,7 +92,7 @@ export function ShareRunConfigDialog({
           const error =
             key === "llamaExtraArgs" && config[key] !== null
               ? sharedExtraArgsError(config[key])
-              : SHARED_CONFIG_FIELDS[key].valid(config[key])
+              : SHARED_CONFIG_VALIDATORS[key](config[key])
                 ? null
                 : (SHARED_CONFIG_FIELDS[key].error ??
                   "This value cannot be shared.");
