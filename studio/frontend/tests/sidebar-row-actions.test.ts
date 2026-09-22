@@ -210,7 +210,7 @@ test("a chat row forks from its own menu", async () => {
   // The fork carries the settings on screen, not the ones the row was last written with.
   assert.match(
     ROW_MENU,
-    /await settleThreadScopedSettingsForCopy\(item\.id\);\n\s*return forkChatThread\(item\.id, \{/,
+    /await settleThreadScopedSettingsForCopy\(item\.id\);\n\s*try \{\n\s*return await forkChatThread\(item\.id, \{/,
   );
   // Same last-message tip the thread's own Fork uses, and the copy is opened.
   assert.match(ROW_MENU, /const last = messages\[messages\.length - 1\];/);
@@ -254,13 +254,19 @@ test("a fork asks the backend whether the chat is still generating", async () =>
     ROW_MENU,
     /const active = await getActiveGenerations\(\);\n\s*generating = \(active\.thread_ids \?\? \[\]\)\.includes\(item\.id\);/,
   );
-  // Asked before the copy is set up, and an unreachable backend falls back to the local map
-  // rather than blocking every fork.
+  // Asked after the read that chose the tip, so a prompt appended between the two is caught,
+  // and an unreachable backend falls back rather than blocking every fork.
+  assert.ok(
+    ROW_MENU.indexOf("const last = messages[messages.length - 1];") <
+      ROW_MENU.indexOf("getActiveGenerations()"),
+  );
   assert.ok(
     ROW_MENU.indexOf("getActiveGenerations()") <
       ROW_MENU.indexOf("settleThreadScopedSettingsForCopy(item.id)"),
   );
   assert.match(ROW_MENU, /\} catch \{\n\s*\/\/ Backend unreachable or an older build/);
+  // The route refuses too, which is what closes the gap between the check and the POST.
+  assert.match(ROW_MENU, /if \(message\.includes\("still generating"\)\) throw forkRefused\(\);/);
   // A refusal, not a failure: the toast says so without the alarm.
   assert.match(ROW_MENU, /\{ unslothForkRefused: true \}/);
   assert.match(APP_SIDEBAR, /\?\.unslothForkRefused\) \{\n\s*toast\.info\(/);

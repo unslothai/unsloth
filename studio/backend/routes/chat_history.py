@@ -1633,9 +1633,21 @@ def fork_thread(
     """
     import uuid
 
+    from hub.services.models import account_access
+    from state import active_generations
+
     source = get_chat_thread(thread_id)
     if source is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+    # A generation in flight leaves the tip unsettled: the last message is a prompt with no
+    # answer yet, or a reply still being written, and a fork taken now would end there. A
+    # client check cannot close this on its own, since another tab can start a generation
+    # between its snapshot and this request.
+    if thread_id in active_generations.active_thread_ids(account_access.account_scope()):
+        raise HTTPException(
+            status_code = 409,
+            detail = "This chat is still generating. Fork it once it finishes.",
+        )
     if get_chat_message(thread_id, payload.messageId) is None:
         raise HTTPException(
             status_code = 404,

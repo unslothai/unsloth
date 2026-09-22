@@ -83,33 +83,43 @@ export async function forkChatRow(item: SidebarItem) {
   const { settleThreadScopedSettingsForCopy } = await import(
     "../stores/chat-runtime-store"
   );
+  const messages = await listStoredChatMessages(item.id);
+  const last = messages[messages.length - 1];
+  if (!last) throw new Error("This chat has no messages to fork.");
   // The menu item is disabled off `runningByThreadId`, but that map is this tab's memory: empty
-  // after a reload and blind to a second tab. A chat generating in either case still has no
-  // settled tip, so ask the backend, which knows. Checked here rather than in the disabled state
-  // because only the click can afford the round trip.
+  // after a reload and blind to a second tab. Asked after the read, not before it, so it covers
+  // the read that chose the tip: a generation another tab starts between the two would
+  // otherwise append a prompt this fork would end on. The route refuses too, which is what
+  // closes the gap between here and the POST.
   let generating = false;
   try {
     const active = await getActiveGenerations();
     generating = (active.thread_ids ?? []).includes(item.id);
   } catch {
-    // Backend unreachable or an older build: the local map is all there is.
+    // Backend unreachable or an older build: the route is the guard that matters.
   }
-  if (generating) {
-    // Tagged, so the caller can say this rather than report a failure that did not happen.
-    throw Object.assign(
-      new Error("This chat is still generating. Fork it once it finishes."),
-      { unslothForkRefused: true },
-    );
-  }
-  const messages = await listStoredChatMessages(item.id);
-  const last = messages[messages.length - 1];
-  if (!last) throw new Error("This chat has no messages to fork.");
+  if (generating) throw forkRefused();
   await settleThreadScopedSettingsForCopy(item.id);
-  return forkChatThread(item.id, {
-    messageId: last.id,
-    newThreadId: crypto.randomUUID(),
-    createdAt: Date.now(),
-  });
+  try {
+    return await forkChatThread(item.id, {
+      messageId: last.id,
+      newThreadId: crypto.randomUUID(),
+      createdAt: Date.now(),
+    });
+  } catch (error) {
+    // The route's own 409, when a generation started after the check above.
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("still generating")) throw forkRefused();
+    throw error;
+  }
+}
+
+/** Tagged, so the caller says this rather than reporting a failure that did not happen. */
+function forkRefused(): Error {
+  return Object.assign(
+    new Error("This chat is still generating. Fork it once it finishes."),
+    { unslothForkRefused: true },
+  );
 }
 
 /** The sandbox sessions this chat's stored tool results name, if any. */

@@ -730,6 +730,55 @@ def test_fork_thread_404_when_branch_message_missing(monkeypatch):
     assert exc.value.status_code == 404
 
 
+def test_fork_thread_409_while_the_chat_is_generating(monkeypatch):
+    """A fork taken mid-generation ends at a prompt with no answer, or a half-written reply.
+
+    The client checks too, but another tab can start a generation between its snapshot and
+    this request, so the refusal has to live inside the request that forks.
+    """
+    import threading
+
+    from state import active_generations
+
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
+    with active_generations.ActiveGeneration(threading.Event(), thread_id = "src"):
+        with pytest.raises(HTTPException) as exc:
+            chat_history.fork_thread(
+                thread_id = "src",
+                payload = chat_history.ChatForkRequest(
+                    messageId = "m1",
+                    newThreadId = "new",
+                    createdAt = 1,
+                ),
+                current_subject = "test-user",
+            )
+    assert exc.value.status_code == 409
+    assert "still generating" in str(exc.value.detail)
+
+
+def test_fork_thread_allows_a_fork_of_another_generating_chat(monkeypatch):
+    """Only the chat being forked is refused; a different one generating is no reason to."""
+    import threading
+
+    from state import active_generations
+
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
+    monkeypatch.setattr(chat_history, "get_chat_message", lambda _t, _m: None)
+    with active_generations.ActiveGeneration(threading.Event(), thread_id = "other"):
+        with pytest.raises(HTTPException) as exc:
+            chat_history.fork_thread(
+                thread_id = "src",
+                payload = chat_history.ChatForkRequest(
+                    messageId = "missing",
+                    newThreadId = "new",
+                    createdAt = 1,
+                ),
+                current_subject = "test-user",
+            )
+    # Past the generation gate, refused later for the missing branch message.
+    assert exc.value.status_code == 404
+
+
 def test_fork_thread_happy_path(monkeypatch):
     source = {
         "id": "src",
