@@ -5,6 +5,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import type { HfModelResult } from "../hooks/use-hub-model-search";
 import { type ChannelId, findChannel } from "../lib/channels";
+import { fingerprintToken } from "../lib/token-fingerprint";
 import { createThrottledStorage, noopStorage } from "./persist-storage";
 
 export interface ChannelFeedEntry {
@@ -22,6 +23,19 @@ export interface HubFeedState {
     tokenFingerprint: string,
   ) => void;
   clearForToken: (tokenFingerprint: string) => void;
+}
+
+/**
+ * What a persisted feed entry belongs to: the endpoint AND the token. Freshness
+ * is an equality check on this, so folding the endpoint in stops a huggingface.co
+ * feed being rendered after Studio restarts against a mirror. Entries from an
+ * older build hold a bare fingerprint and are refetched once.
+ */
+export function feedIdentity(
+  endpoint: string,
+  token: string | null | undefined,
+): string {
+  return `${endpoint}::${fingerprintToken(token)}`;
 }
 
 export const FEED_CACHE_CAP = 24;

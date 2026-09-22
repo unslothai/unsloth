@@ -6,6 +6,8 @@ configurations and their API keys, the RSA public key used to encrypt those keys
 listing.
 """
 
+import json
+import time
 import uuid
 from typing import Optional
 
@@ -38,10 +40,18 @@ from core.inference.pricing import pricing_snapshot
 from core.inference.external_provider import ExternalProviderClient
 
 from core.inference import openai_codex_auth, openai_codex_client
+from core.inference.provider_model_capabilities import (
+    MODEL_CAPABILITY_PROVIDERS,
+    MODELS_DEV_URL,
+    provider_model_capabilities,
+    trim_models_dev_catalog,
+)
 from models.providers import (
+    ModelCatalogResponse,
     ProviderCreate,
     ProviderCredentialMigration,
     ProviderModelsRequest,
+    ProviderModelCapabilityInfo,
     ProviderModelInfo,
     ProviderResponse,
     ProviderRegistryEntry,
@@ -50,11 +60,14 @@ from models.providers import (
     ProviderUpdate,
 )
 from storage import credential_secrets, providers_db
+from hub.services.models import account_access
+from utils.paths.storage_roots import cache_root
 from utils.utils import safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter()
+
+router = APIRouter(dependencies = [Depends(get_current_subject)])
 
 
 def _provider_response(row: dict) -> ProviderResponse:
@@ -500,6 +513,8 @@ async def delete_provider_config(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Idempotently delete a saved provider and its installation credential."""
+    if account_access.managed_account() and providers_db.get_provider(provider_id) is None:
+        raise HTTPException(status_code = 404, detail = "Provider config not found")
     require_ui_session(via_api_key)
     await openai_codex_auth.cancel_provider_flows(provider_id)
     credential_secrets.get_or_create_credential_encryption_key()
@@ -623,7 +638,7 @@ async def _test_custom_provider_connectivity(client, model_id: str) -> ProviderT
             messages = [{"role": "user", "content": "ping"}],
             model = model_id,
             temperature = 0.0,
-            top_p = 1.0,
+            top_p = None,
             max_tokens = 1,
         )
         return ProviderTestResult(
@@ -725,6 +740,127 @@ async def test_provider(
         )
     finally:
         await client.close()
+
+
+_MODEL_CAPABILITY_CACHE_TTL_SECONDS = 3600.0
+_model_capability_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+_MODEL_CATALOG_TTL_SECONDS = 24 * 3600.0
+_model_catalog_cache: dict | None = None
+
+
+def _model_catalog_cache_path():
+    return cache_root() / "model_catalog.json"
+
+
+def _read_model_catalog_file() -> dict | None:
+    try:
+        data = json.loads(_model_catalog_cache_path().read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (
+        isinstance(data, dict)
+        and isinstance(data.get("providers"), dict)
+        and isinstance(data.get("fetched_at"), (int, float))
+    ):
+        return data
+    return None
+
+
+def _write_model_catalog_file(data: dict) -> None:
+    try:
+        path = _model_catalog_cache_path()
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(json.dumps(data), encoding = "utf-8")
+    except OSError as exc:
+        logger.warning("providers.model_catalog_cache_write_failed", error = str(exc))
+
+
+async def _fetch_models_dev_catalog() -> dict:
+    from core.inference.external_provider import _client
+
+    response = await _client().get(MODELS_DEV_URL, timeout = 20.0)
+    response.raise_for_status()
+    return {"fetched_at": time.time(), "providers": trim_models_dev_catalog(response.json())}
+
+
+@router.get("/model-catalog", response_model = ModelCatalogResponse)
+async def get_model_catalog(_current_subject: str = Depends(get_current_subject)):
+    global _model_catalog_cache
+    cached = _model_catalog_cache or _read_model_catalog_file()
+    if cached is not None and time.time() - cached["fetched_at"] < _MODEL_CATALOG_TTL_SECONDS:
+        _model_catalog_cache = cached
+        return cached
+    try:
+        fresh = await _fetch_models_dev_catalog()
+    except Exception as exc:
+        logger.warning("providers.model_catalog_refresh_failed", error = str(exc))
+        if cached is not None:
+            _model_catalog_cache = cached
+            return cached
+        raise HTTPException(
+            status_code = 503, detail = "The model catalog is unavailable offline."
+        ) from None
+    _model_catalog_cache = fresh
+    _write_model_catalog_file(fresh)
+    return fresh
+
+
+@router.post("/model-capabilities", response_model = list[ProviderModelCapabilityInfo])
+async def list_provider_model_capabilities(
+    payload: ProviderModelsRequest,
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    payload = _bind_saved_provider_target(payload)
+    info = get_provider_info(payload.provider_type)
+    if info is None:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Unknown provider type: {payload.provider_type}",
+        )
+    if payload.provider_type not in MODEL_CAPABILITY_PROVIDERS:
+        return []
+
+    api_key = resolve_provider_api_key_or_400(
+        payload.provider_id,
+        payload.encrypted_api_key,
+        allow_saved_key = not via_api_key,
+    )
+    base_url = payload.base_url or info["base_url"]
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+    cache_key = f"{payload.provider_type}\n{base_url}"
+    cached = _model_capability_cache.get(cache_key)
+    if cached is not None and time.monotonic() - cached[0] < _MODEL_CAPABILITY_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    client = ExternalProviderClient(
+        provider_type = payload.provider_type,
+        base_url = base_url,
+        api_key = api_key,
+        timeout = 15.0,
+    )
+    try:
+        models = await client.list_models()
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            502,
+            f"Failed to list model capabilities from {payload.provider_type}.",
+            event = "providers.list_model_capabilities_failed",
+            log = logger,
+        )
+    finally:
+        await client.close()
+    capabilities = provider_model_capabilities(payload.provider_type, models)
+    if capabilities:
+        _model_capability_cache[cache_key] = (time.monotonic(), capabilities)
+    return capabilities
 
 
 @router.post("/models", response_model = list[ProviderModelInfo])

@@ -222,7 +222,9 @@ class TestOllamaAndFallback:
         # A live server that never returns 200 on /health must name the probe and
         # proxy/context causes, not blame a bad GGUF (#5740).
         msg = _classify(
-            "llama-server health check timed out after 600.0s", "/models/x.gguf", "local/x"
+            "llama-server health check timed out: no startup progress for 600s",
+            "/models/x.gguf",
+            "local/x",
         )
         assert "/health" in msg
         assert "NO_PROXY" in msg
@@ -978,7 +980,7 @@ class TestMacOSLoaderEdgeCases:
         out = (
             "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
             "  Reason: tried: '/x/libllama.dylib' (no such file)\n"
-            "llama-server health check timed out after 600.0s"
+            "llama-server health check timed out: no startup progress for 600s"
         )
         msg = _classify(out, "/models/x.gguf", "local/x", 1)
         assert "health check timed out" not in msg

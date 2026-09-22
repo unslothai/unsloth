@@ -8,7 +8,7 @@ import ts from "typescript";
 
 import { readSrc } from "./helpers/kit.ts";
 
-type Load = { status: string; url?: string };
+type Load = { status: string; url?: string; blob?: unknown };
 
 function imageHook() {
   const source = readSrc("components/assistant-ui/use-sandbox-image.ts");
@@ -93,7 +93,8 @@ function imageHook() {
 const flush = async () => {
   for (let i = 0; i < 8; i++) await Promise.resolve();
 };
-const response = { ok: true, blob: async () => ({ type: "image/png" }) };
+const imageBlob = { type: "image/png" };
+const response = { ok: true, blob: async () => imageBlob };
 
 for (const previous of ["loaded", "failed"] as const) {
   test(`A to B to A does not reuse a cancelled ${previous} result`, async () => {
@@ -104,7 +105,9 @@ for (const previous of ["loaded", "failed"] as const) {
     await flush();
     const old = hook.render("A");
     assert.equal(old.status, previous);
-    assert.equal(hook.render("B").status, "idle");
+    const pendingB = hook.render("B");
+    assert.equal(pendingB.status, "idle");
+    assert.equal(pendingB.blob, undefined);
     hook.commit();
     assert.equal(hook.requests[0].signal.aborted, true);
     assert.equal(hook.live.size, 0);
@@ -125,6 +128,7 @@ for (const previous of ["loaded", "failed"] as const) {
     await flush();
     const current = hook.render("A");
     assert.equal(current.status, "loaded");
+    assert.equal(current.blob, imageBlob, "downloads reuse the fetched bytes");
     assert.ok(current.url && hook.live.has(current.url));
     assert.notEqual(current.url, old.url);
     hook.unmount();

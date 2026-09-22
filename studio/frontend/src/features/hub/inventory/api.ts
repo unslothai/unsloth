@@ -182,7 +182,9 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
-  shard_count?: number;
+  /** The only missing artifact when the main GGUF is already cached. */
+  pending_drafter_filename?: string | null;
+  pending_drafter_size_bytes?: number;
   /** Bytes a resume still has to fetch. Set only on a partial variant. */
   download_remaining_bytes?: number | null;
   downloaded?: boolean;
@@ -201,6 +203,8 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
+  /** True only when Hub metadata resolved every required companion. */
+  dependencies_resolved?: boolean;
 }
 
 async function parseJsonOrThrow<T>(

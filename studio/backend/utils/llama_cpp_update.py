@@ -39,6 +39,7 @@ from utils.prebuilt.llama_backend import (
     marker_backend_request,
     normalize_backend,
 )
+from utils.update_status import update_checks_disabled
 
 logger = structlog.get_logger(__name__)
 
@@ -580,6 +581,7 @@ def _llama_only_status(
     if _active_install_is_local_link(binary):
         return _local_link_status()
     marker = read_install_marker(binary)
+    checks_disabled = update_checks_disabled()
 
     with _job_lock:
         job_running = _job["state"] == _JOB_RUNNING
@@ -588,6 +590,7 @@ def _llama_only_status(
     if (
         marker is None
         and binary is not None
+        and not checks_disabled
         and (not job_running or allow_source_probe_while_running)
     ):
         src = _source_build_status(binary, force_refresh = force_refresh)
@@ -596,7 +599,7 @@ def _llama_only_status(
 
     repo = (marker or {}).get("published_repo") or DEFAULT_PUBLISHED_REPO
 
-    if force_refresh and repo:
+    if force_refresh and repo and not checks_disabled:
         try:
             latest_published_release(repo, force_refresh = True)
         except Exception as exc:  # pragma: no cover - network defensive
@@ -624,7 +627,7 @@ def _llama_only_status(
     # An automatic install whose detection now resolves elsewhere; nothing else surfaces it. Skipped while a job runs, and when an update is offered: that update re-detects.
     to_backend = (
         None
-        if job_running or update_available
+        if job_running or update_available or checks_disabled
         else _pending_backend_migration(binary, marker, force_refresh = force_refresh)
     )
 
@@ -723,9 +726,9 @@ def _backend_options(resolved: Optional[dict], assets: Optional[dict] = None) ->
 def _selection_applied(
     backend_request: str, installed_backend: Optional[str], options: list[dict]
 ) -> bool:
-    """Whether the recorded choice still describes the installed backend. A concrete choice is applied by definition: the installer records it only on an install that honoured it. ``auto`` is the one that drifts (a GPU or driver appearing after an automatic CPU install makes detection resolve elsewhere) and re-applying it is offered exactly then."""
+    """Whether the recorded choice still describes the installed backend. A concrete choice used to be applied by definition, since the installer recorded it only on an install that honoured it; it now PRESERVES a request the install could not honour (#11143: a Vulkan choice that landed the ROCm bundle used to be erased to "auto", which destroyed the setting and made every later update re-detect), so a concrete choice is applied only when it is the backend that actually landed. Unknown installed backend contradicts nothing and stays applied. ``auto`` is the one that drifts (a GPU or driver appearing after an automatic CPU install makes detection resolve elsewhere) and re-applying it is offered exactly then."""
     if backend_request != "auto":
-        return True
+        return installed_backend is None or installed_backend == backend_request
     auto = next((option for option in options if option["backend"] == "auto"), None)
     if not auto or not auto.get("available"):
         return True
@@ -797,6 +800,10 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
         "job": job,
     }
     if unsupported is not None:
+        return status
+    if update_checks_disabled():
+        status["supported"] = False
+        status["reason"] = "update_checks_disabled"
         return status
     if job["state"] == _JOB_RUNNING:
         return status
@@ -1267,6 +1274,18 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
 
 def start_update() -> dict:
     """Kick off a background update job chaining the llama phase with a whisper phase that runs only when whisper is behind; either phase no-ops cleanly when its component is current or unmanaged. Idempotent: a second call while one is running returns the in-flight job."""
+    if update_checks_disabled():
+        with _job_lock:
+            job = dict(_job)
+        return {
+            "started": False,
+            "reason": "update_checks_disabled",
+            "message": (
+                "Update checks are disabled (UNSLOTH_DISABLE_UPDATE_CHECK=1). "
+                "Unset it and restart Unsloth to update llama.cpp from here."
+            ),
+            "job": job,
+        }
     return _start_llama_job()
 
 
