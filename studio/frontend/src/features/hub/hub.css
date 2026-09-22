@@ -748,7 +748,7 @@
 @layer utilities {
   .hub-tag-soft,
   .hub-tag-meta {
-    @apply min-h-[26px] rounded-full bg-muted/70 ring-1 ring-inset;
+    @apply min-h-[calc(26px*var(--ui-space-scale,1))] rounded-full bg-muted/70 ring-1 ring-inset;
     --tw-ring-color: color-mix(in srgb, var(--foreground) calc(3.5% * var(--contrast-edge-gain, 1)), transparent);
   }
 
@@ -1072,7 +1072,7 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem;
+    gap: calc(0.5rem * var(--ui-space-scale, 1));
   }
 
   .hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > br {
@@ -1101,12 +1101,12 @@
     cursor: pointer;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
+    gap: calc(0.5rem * var(--ui-space-scale, 1));
     white-space: nowrap;
     border-radius: 9999px;
     background-color: transparent;
-    padding-left: 0.75rem;
-    padding-right: 0.75rem;
+    padding-left: calc(0.75rem * var(--ui-space-scale, 1));
+    padding-right: calc(0.75rem * var(--ui-space-scale, 1));
     font-size: calc(0.8125rem * var(--ui-font-scale, 1));
     font-weight: 500;
     line-height: calc(1.125rem * var(--ui-font-scale, 1));
@@ -1142,12 +1142,12 @@
     cursor: pointer;
     align-items: center;
     justify-content: center;
-    gap: 0.4rem;
+    gap: calc(0.4rem * var(--ui-space-scale, 1));
     white-space: nowrap;
     border-radius: 9999px;
     background-color: var(--status-success);
-    padding-left: 1rem;
-    padding-right: 1rem;
+    padding-left: calc(1rem * var(--ui-space-scale, 1));
+    padding-right: calc(1rem * var(--ui-space-scale, 1));
     font-size: calc(0.8125rem * var(--ui-font-scale, 1));
     font-weight: 600;
     line-height: calc(1.125rem * var(--ui-font-scale, 1));
@@ -1243,8 +1243,8 @@
   .hub-page .field-trigger.field-filter {
     color: var(--muted-foreground);
     font-weight: 400;
-    padding-top: 0.25rem;
-    padding-bottom: 0.25rem;
+    padding-top: calc(0.25rem * var(--ui-space-scale, 1));
+    padding-bottom: calc(0.25rem * var(--ui-space-scale, 1));
     line-height: calc(1.25rem * var(--ui-font-scale, 1));
   }
 
@@ -1256,9 +1256,9 @@
     display: inline-flex;
     flex-shrink: 0;
     align-items: center;
-    gap: 0.4rem;
+    gap: calc(0.4rem * var(--ui-space-scale, 1));
     height: 2rem;
-    padding-inline: 0.7rem;
+    padding-inline: calc(0.7rem * var(--ui-space-scale, 1));
     border-radius: 9999px;
     border: 1px solid color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-edge-gain, 1)), transparent);
     background-color: color-mix(in srgb, var(--foreground) calc(2.5% * var(--contrast-wash-gain, 1)), transparent);
@@ -1450,7 +1450,7 @@
 
 @layer utilities {
   .hub-chip {
-    @apply inline-flex items-center gap-1 rounded-full px-2 py-[3px] text-ui-11 font-medium leading-none;
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-[calc(3px*var(--ui-space-scale,1))] text-ui-11 font-medium leading-none;
     background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
     color: var(--muted-foreground);
   }
@@ -1460,7 +1460,7 @@
   }
 
   .hub-meta-tag {
-    @apply inline-flex h-[18px] shrink-0 items-center gap-1 rounded-full px-2 text-ui-11 font-medium leading-none;
+    @apply inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center gap-1 rounded-full px-2 text-ui-11 font-medium leading-none;
     background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
     color: var(--muted-foreground);
   }

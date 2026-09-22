@@ -3452,7 +3452,7 @@ function VideoGenerator({
       </Dialog>
       {/* Top: the model selector, clear of the sidebar and level with the controls column. Load
           progress shows in a toast. */}
-      <div className="@container pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+      <div className="@container pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
         {/* min-w-0: without it a long resident model name pushes the Images link off a phone screen. */}
         <div className="pointer-events-auto flex min-w-0 items-center gap-3">
           <ModelSelector
@@ -3464,7 +3464,7 @@ function VideoGenerator({
             resolveDownloadFootprint={resolveDownloadFootprint}
             onEject={status?.loaded ? handleUnload : undefined}
             variant="ghost"
-            className="!h-[34px]"
+            className="!h-[calc(34px*var(--ui-space-scale,1))]"
             task={VIDEO_GEN_TASKS}
             catalog={VIDEO_CATALOG}
             placeholder="Select video model"
@@ -3482,7 +3482,7 @@ function VideoGenerator({
                   variant="outline"
                   size="sm"
                   aria-label="Cancel load"
-                  className="!h-[34px] rounded-full text-xs"
+                  className="!h-[calc(34px*var(--ui-space-scale,1))] rounded-full text-xs"
                   onClick={() => void handleCancelLoad()}
                 >
                   Cancel load

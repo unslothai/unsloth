@@ -69,7 +69,7 @@ export function ProjectSwitcher({
                 ? "Loading project"
                 : "Pick a project"
           }
-          className="-mx-1 flex h-[34px] shrink-0 items-center gap-2 rounded-full pl-3 pr-2.5 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="-mx-1 flex h-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-full pl-3 pr-2.5 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <HugeiconsIcon
             icon={Folder01Icon}

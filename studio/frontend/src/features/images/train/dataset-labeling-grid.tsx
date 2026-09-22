@@ -153,7 +153,7 @@ function LabelTile({
           rows={2}
           spellCheck={false}
           placeholder="Describe this image..."
-          className="min-h-[2.75rem] rounded-sm px-2 py-1.5 text-ui-11! leading-snug md:text-ui-11!"
+          className="min-h-[calc(2.75rem*var(--ui-space-scale,1))] rounded-sm px-2 py-1.5 text-ui-11! leading-snug md:text-ui-11!"
           aria-label={`Caption for ${record.filename}`}
         />
         {/* No leading-none: truncate's overflow would crop the descenders. */}

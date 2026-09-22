@@ -40,7 +40,12 @@ import {
   NetworkErrorState,
   SkeletonList,
 } from "./catalog-states";
-import { InventoryRow, VirtualRows } from "./models-catalog-rows";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import {
+  CATALOG_COLUMN_GAP_PX,
+  InventoryRow,
+  VirtualRows,
+} from "./models-catalog-rows";
 import {
   type AllModelsView,
   type InventorySort,
@@ -390,6 +395,12 @@ export function DownloadedList({
     ? RESULT_SPLIT_ROW_HEIGHT_PX
     : RESULT_GRID_ROW_HEIGHT_PX;
   const cellHeightPx = compact ? RESULT_SPLIT_HEIGHT_PX : RESULT_GRID_HEIGHT_PX;
+  // VirtualRows scales its own slots with the UI font size. The pinned grid
+  // below lays the same rows out by hand, so it scales here to match.
+  const pinnedScale = useUiSpaceScale();
+  const pinnedRowHeightPx = Math.round(rowHeightPx * pinnedScale);
+  const pinnedCellHeightPx = Math.round(cellHeightPx * pinnedScale);
+  const pinnedColumnGapPx = Math.round(CATALOG_COLUMN_GAP_PX * pinnedScale);
   const renderInventoryRow = (item: InventoryItem) => (
     <InventoryRow
       row={item.row}
@@ -475,9 +486,9 @@ export function DownloadedList({
             style={{
               display: "grid",
               gridTemplateColumns: `repeat(${Math.max(1, columns)}, minmax(0, 1fr))`,
-              columnGap: 12,
-              rowGap: rowHeightPx - cellHeightPx,
-              paddingBottom: rowHeightPx - cellHeightPx,
+              columnGap: pinnedColumnGapPx,
+              rowGap: pinnedRowHeightPx - pinnedCellHeightPx,
+              paddingBottom: pinnedRowHeightPx - pinnedCellHeightPx,
             }}
           >
             {pinnedItems.map((item) => {
@@ -502,7 +513,7 @@ export function DownloadedList({
                   key={rowKey}
                   className="min-w-0"
                   style={{
-                    height: cellHeightPx,
+                    height: pinnedCellHeightPx,
                     opacity: dragRowKey === rowKey ? 0.4 : undefined,
                   }}
                   draggable={itemPinKey != null}

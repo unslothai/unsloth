@@ -580,7 +580,7 @@ export const ModelInspector = memo(function ModelInspector({
           <OwnerAvatar
             owner={model.owner}
             repoName={model.title}
-            className="size-[60px] rounded-[18px] text-ui-19"
+            className="size-[calc(60px*var(--ui-space-scale,1))] rounded-[18px] text-ui-19"
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
