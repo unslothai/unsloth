@@ -49,7 +49,6 @@ import {
   type PerModelConfig,
   resolveInitialConfig,
 } from "../model-config/per-model-config";
-import { keepSharedRunConfigOpen } from "../sharing";
 import { ModelConfigPage } from "./model-config-page";
 import {
   type ExternalConnectionRef,
@@ -407,7 +406,6 @@ function ModelSelectorContent({
   const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
     null,
   );
-  const contentRef = useRef<HTMLDivElement>(null);
   const [adoptedConfigRequestId, setAdoptedConfigRequestId] = useState<
     string | null
   >(null);
@@ -529,13 +527,7 @@ function ModelSelectorContent({
 
   return (
     <PopoverContent
-      ref={contentRef}
       align="start"
-      onFocusOutside={(event) => {
-        if (keepSharedRunConfigOpen(contentRef.current)) {
-          event.preventDefault();
-        }
-      }}
       alignOffset={10}
       aria-label={
         visibleConfigTarget

@@ -22,6 +22,12 @@ const fields = await import("../src/features/model-picker/sharing/fields.ts");
 const inboxModule = await import(
   "../src/features/model-picker/sharing/inbox.ts"
 );
+const { parseRunConfigLink } = await import(
+  "../src/features/model-picker/sharing/links.ts"
+);
+const { resolveLoadMaxSeqLength } = await import(
+  "../src/features/chat/presets/preset-policy.ts"
+);
 type Config = typeof DEFAULT_PER_MODEL_CONFIG;
 let sequence = 0;
 
@@ -67,6 +73,7 @@ function harness(t: TestContext, patch: Partial<Config> = { nParallel: 3 }) {
     canImport: true,
     ready: true,
     hydrated: true,
+    isGguf: true,
     pending: inbox.getSnapshot(),
     onImport: (value: Partial<Config>) => changes.push(value),
   };
@@ -81,6 +88,59 @@ function harness(t: TestContext, patch: Partial<Config> = { nParallel: 3 }) {
     schedule: scheduleRunConfigImport,
     releaseDraft,
   };
+}
+
+for (const isGguf of [true, false]) {
+  for (const context of ["8192", "null"]) {
+    test(`shared native context ${context} imports into ${isGguf ? "GGUF" : "native"} settings and load requests`, async (t) => {
+      const parsed = parseRunConfigLink(
+        `unsloth://run?v=1&maxSeqLength=${context}`,
+      );
+      assert.ok(parsed.kind === "valid");
+      const app = harness(t, parsed.value.config);
+      drafts.patchModelConfigDraft(app.key, (config) => ({
+        ...config,
+        customContextLength: 4096,
+      }));
+      app.schedule({ ...app.options, isGguf });
+      await Promise.resolve();
+      const config = drafts.readModelConfigDraft(app.key)?.config;
+      assert.ok(config);
+      const value = context === "null" ? null : 8192;
+      const expected = {
+        customContextLength: isGguf ? value : null,
+        maxSeqLength: isGguf ? null : value,
+      };
+      assert.equal(config.customContextLength, expected.customContextLength);
+      assert.equal(config.maxSeqLength, expected.maxSeqLength);
+      assert.deepEqual(app.changes, [expected]);
+      assert.deepEqual(config.llamaExtraArgs, ["--no-warmup"]);
+      assert.equal(app.inbox.getSnapshot(), null);
+      for (const presetSource of [
+        "builtin-default",
+        "custom",
+        "modified",
+      ] as const) {
+        const requested = resolveLoadMaxSeqLength({
+          modelId: "owner/model",
+          isGguf,
+          ggufVariant: isGguf ? "Q4_K_M" : null,
+          customContextLength: config.customContextLength,
+          pinnedMaxSeqLength: config.maxSeqLength,
+          loadedContextLength: 4096,
+          currentCheckpoint: "owner/model",
+          activeGgufVariant: isGguf ? "Q4_K_M" : null,
+          defaultMaxSeqLength: 2048,
+          presetSource,
+        });
+        assert.equal(
+          requested,
+          value ??
+            (isGguf ? (presetSource === "builtin-default" ? 0 : 4096) : 2048),
+        );
+      }
+    });
+  }
 }
 
 test("Strict Mode cleanup leaves the request for the surviving editor and applies once", async (t) => {

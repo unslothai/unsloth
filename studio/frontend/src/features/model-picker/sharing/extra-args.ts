@@ -177,7 +177,7 @@ function sharePolicyError(value: string[]): string | null {
 
 export function sharedExtraArgsError(value: unknown): string | null {
   if (!boundedTokens(value)) {
-    return `Extra arguments must be a list of at most ${EXTRA_ARGS_MAX_TOKENS} text tokens totaling at most ${EXTRA_ARGS_MAX_BYTES} bytes.`;
+    return `Extra arguments must be a list of at most ${EXTRA_ARGS_MAX_TOKENS} text tokens, each at most ${EXTRA_ARGS_MAX_BYTES} characters.`;
   }
   return sharePolicyError(value) ?? upstreamError(value);
 }

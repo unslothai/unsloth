@@ -146,7 +146,7 @@ test("sharing empty arguments preserves recipient arguments unless explicitly se
       const parsed = links.parseRunConfigLink(link as string);
       assert.equal(parsed.kind, "valid");
       assert.ok(parsed.kind === "valid");
-      return mergeSharedRunConfig(recipient, parsed.value.config);
+      return mergeSharedRunConfig(recipient, parsed.value.config, true);
     };
     const tree = render();
     const choice = tree.find(
@@ -179,7 +179,7 @@ test("sharing empty arguments preserves recipient arguments unless explicitly se
   }
 });
 
-test("only an open Share dialog protects the popover; dismissing a pending import gives feedback", async () => {
+test("Share opens and closes its dialog; dismissing a pending import gives feedback", async () => {
   const inbox = createRunConfigInbox();
   const target = {
     id: "owner/Model-GGUF",
@@ -251,21 +251,7 @@ test("only an open Share dialog protects the popover; dismissing a pending impor
     onImport: () => undefined,
   };
   const render = () => elements(SharedRunConfigControls(props));
-  const guarded = (tree: StubElement[]) =>
-    events.keepSharedRunConfigOpen({
-      querySelector: (selector: string) => {
-        assert.equal(selector, `[${events.SHARED_RUN_CONFIG_FOCUS_ATTRIBUTE}]`);
-        return (
-          tree.find(
-            (element) =>
-              element.props[events.SHARED_RUN_CONFIG_FOCUS_ATTRIBUTE] !==
-              undefined,
-          ) ?? null
-        );
-      },
-    } as unknown as ParentNode);
   const initial = render();
-  assert.equal(guarded(initial), false);
   assert.equal(
     initial.some((element) => element.type === dialog),
     false,
@@ -274,12 +260,13 @@ test("only an open Share dialog protects the popover; dismissing a pending impor
   assert.ok(share);
   (share.props.onClick as () => void)();
   const opened = render();
-  assert.equal(guarded(opened), true);
   const shownDialog = opened.find((element) => element.type === dialog);
   assert.ok(shownDialog);
   (shownDialog.props.onClose as () => void)();
-  assert.equal(guarded(render()), false);
-  assert.equal(events.keepSharedRunConfigOpen(null), false);
+  assert.equal(
+    render().some((element) => element.type === dialog),
+    false,
+  );
   assert.ok(release);
   assert.equal(notices.length, 0);
   release();

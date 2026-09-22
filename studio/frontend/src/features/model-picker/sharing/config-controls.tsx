@@ -68,9 +68,10 @@ export function SharedRunConfigControls({
         pending,
         key,
         hydrated,
+        isGguf: target.isGguf,
         onImport,
       }),
-    [canImport, hydrated, key, onImport, pending, ready],
+    [canImport, hydrated, key, onImport, pending, ready, target.isGguf],
   );
   return (
     <>
@@ -79,7 +80,6 @@ export function SharedRunConfigControls({
         size="sm"
         variant="ghost"
         className="h-8"
-        data-shared-run-config={sharing ? "" : undefined}
         disabled={!ready || disabled}
         onClick={() => setSharing(true)}
       >

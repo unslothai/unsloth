@@ -19,6 +19,7 @@ export type RunConfigRequest = {
 export function mergeSharedRunConfig(
   defaults: PerModelConfig,
   patch: Partial<PerModelConfig>,
+  isGguf: boolean,
 ): PerModelConfig {
   const provided = Object.fromEntries(
     SHARED_CONFIG_KEYS.filter((key) => Object.hasOwn(patch, key))
@@ -26,6 +27,10 @@ export function mergeSharedRunConfig(
       .filter(([, value]) => value !== undefined)
       .map(([key, value]) => [key, Array.isArray(value) ? [...value] : value]),
   );
+  if (isGguf && Object.hasOwn(provided, "maxSeqLength")) {
+    provided.customContextLength ??= provided.maxSeqLength;
+    provided.maxSeqLength = null;
+  }
   if (
     Object.hasOwn(provided, "customContextLength") &&
     !Object.hasOwn(provided, "maxSeqLength")

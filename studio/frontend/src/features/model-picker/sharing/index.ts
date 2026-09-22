@@ -9,7 +9,4 @@ export {
 } from "./receive-link";
 
 export { SharedRunConfigReview } from "./config-review";
-export {
-  isRunConfigEditorChange,
-  keepSharedRunConfigOpen,
-} from "./editor-events";
+export { isRunConfigEditorChange } from "./editor-events";

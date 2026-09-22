@@ -179,17 +179,20 @@ test("null, false, zero and empty values survive; omissions retain the existing 
     const parsed = parseRunConfigLink(createRunConfigLink({ config: patch }));
     assert.equal(parsed.kind, "valid");
     if (parsed.kind !== "valid") throw new Error("Invalid test fixture");
-    assert.deepEqual(mergeSharedRunConfig(defaults, parsed.value.config), {
-      ...defaults,
-      ...patch,
-    });
+    assert.deepEqual(
+      mergeSharedRunConfig(defaults, parsed.value.config, false),
+      {
+        ...defaults,
+        ...patch,
+      },
+    );
   }
   assert.deepEqual(
-    mergeSharedRunConfig(defaults, { nParallel: undefined }),
+    mergeSharedRunConfig(defaults, { nParallel: undefined }, false),
     defaults,
   );
   const patch = { llamaExtraArgs: ["--metrics"] };
-  const merged = mergeSharedRunConfig(defaults, patch);
+  const merged = mergeSharedRunConfig(defaults, patch, false);
   merged.llamaExtraArgs?.push("--verbose");
   assert.deepEqual(patch.llamaExtraArgs, ["--metrics"]);
   assert.deepEqual(defaults.llamaExtraArgs, ["--metrics"]);
@@ -203,13 +206,16 @@ test("a shared context pin replaces its legacy field while unrelated defaults re
     nParallel: 8,
   };
   for (const value of [8192, null]) {
-    assert.deepEqual(mergeSharedRunConfig(defaults, { maxSeqLength: value }), {
-      ...defaults,
-      customContextLength: null,
-      maxSeqLength: value,
-    });
     assert.deepEqual(
-      mergeSharedRunConfig(defaults, { customContextLength: value }),
+      mergeSharedRunConfig(defaults, { maxSeqLength: value }, false),
+      {
+        ...defaults,
+        customContextLength: null,
+        maxSeqLength: value,
+      },
+    );
+    assert.deepEqual(
+      mergeSharedRunConfig(defaults, { customContextLength: value }, false),
       {
         ...defaults,
         customContextLength: value,
@@ -217,20 +223,50 @@ test("a shared context pin replaces its legacy field while unrelated defaults re
       },
     );
   }
-  assert.deepEqual(mergeSharedRunConfig(defaults, { nParallel: 2 }), {
+  assert.deepEqual(mergeSharedRunConfig(defaults, { nParallel: 2 }, false), {
     ...defaults,
     nParallel: 2,
   });
   assert.deepEqual(
-    mergeSharedRunConfig(defaults, { maxSeqLength: undefined }),
+    mergeSharedRunConfig(defaults, { maxSeqLength: undefined }, false),
     defaults,
   );
   const agreed = { customContextLength: 8192, maxSeqLength: 8192 };
-  assert.deepEqual(mergeSharedRunConfig(defaults, agreed), {
+  assert.deepEqual(mergeSharedRunConfig(defaults, agreed, false), {
     ...defaults,
     ...agreed,
   });
   assert.throws(() => createRunConfigLink({ config: defaults }), /must agree/);
+});
+
+test("GGUF imports use the requested context when both context fields are shared", () => {
+  const defaults = {
+    ...DEFAULT_PER_MODEL_CONFIG,
+    customContextLength: 4096,
+    maxSeqLength: 2048,
+  };
+  for (const patch of [
+    { customContextLength: null, maxSeqLength: 8192 },
+    { customContextLength: 8192, maxSeqLength: null },
+    { customContextLength: 8192, maxSeqLength: 8192 },
+  ]) {
+    const parsed = parseRunConfigLink(createRunConfigLink({ config: patch }));
+    assert.ok(parsed.kind === "valid");
+    assert.deepEqual(
+      mergeSharedRunConfig(defaults, parsed.value.config, true),
+      {
+        ...defaults,
+        customContextLength: 8192,
+        maxSeqLength: null,
+      },
+    );
+  }
+  for (const patch of [{ nParallel: 2 }, { maxSeqLength: undefined }, {}]) {
+    assert.deepEqual(mergeSharedRunConfig(defaults, patch, true), {
+      ...defaults,
+      ...(patch.nParallel !== undefined ? { nParallel: patch.nParallel } : {}),
+    });
+  }
 });
 
 test("invalid input never produces a partial configuration", () => {

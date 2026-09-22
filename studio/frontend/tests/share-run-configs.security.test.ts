@@ -422,7 +422,7 @@ test("prototype and nested configuration keys are rejected without side effects"
   const patch = JSON.parse(
     '{"__proto__":{"polluted":true},"command":"whoami","nParallel":2}',
   );
-  const merged = mergeSharedRunConfig(DEFAULT_PER_MODEL_CONFIG, patch);
+  const merged = mergeSharedRunConfig(DEFAULT_PER_MODEL_CONFIG, patch, true);
   assert.equal(Object.getPrototypeOf(merged), Object.prototype);
   assert.equal(Object.hasOwn(merged, "__proto__"), false);
   assert.equal(Object.hasOwn(merged, "command"), false);
