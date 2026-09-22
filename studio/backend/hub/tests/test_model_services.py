@@ -6037,7 +6037,12 @@ def test_delete_variant_unlinks_unshared_blob(monkeypatch, tmp_path):
 _SHARED_XET_HASH = "ab" + "cd" * 31
 
 
-def _share_variant_blob(hub_cache, repo_dir, blob_name, xet_hash = _SHARED_XET_HASH):
+def _share_variant_blob(
+    hub_cache,
+    repo_dir,
+    blob_name,
+    xet_hash = _SHARED_XET_HASH,
+):
     pytest.importorskip("huggingface_hub.utils._shared_blobs")
     store = hub_cache / "blobs"
     store.mkdir(exist_ok = True)
