@@ -3008,6 +3008,10 @@ class TestEscapedNewlineIsNotACommandBoundary:
             # ran, so with a lexable command the walk decides. Checked against bash 5.2.21: this
             # is one `echo` and the file survives.
             pytest.param("echo '; A=1 rm -rf x'", id = "assignment_prefix_inside_quotes_is_data"),
+            pytest.param("echo esac", id = "esac_as_an_ordinary_argument"),
+            pytest.param(
+                'echo "$(case a in a) case b in b) echo x;; esac;; esac)"', id = "nested_case"
+            ),
             # A substitution's close stays inside the surrounding word, so a `#` right after it is
             # text, not a comment. Checked against bash 5.2.21: this is one `echo` printing
             # `x#note rm -rf victim`, and the file survives.
@@ -3094,6 +3098,14 @@ class TestEscapedNewlineIsNotACommandBoundary:
                 'echo "$(case x in x) echo hi;; esac; echo ok # comment \\\nrm -f victim\n)"',
                 "rm",
                 id = "case_pattern_inside_a_substitution",
+            ),
+            # `esac` closes a case only in COMMAND position. Here the first one is the word being
+            # matched on, and counting it closed the case early. Checked against bash 5.2.21: the
+            # file is deleted.
+            pytest.param(
+                'echo "$(case esac in x) echo hi;; esac; echo ok # comment \\\nrm -f victim\n)"',
+                "rm",
+                id = "esac_as_the_case_operand",
             ),
         ],
     )

@@ -1448,18 +1448,33 @@ def _join_escaped_newlines(text: str) -> str:
     case_depth = 0
     case_depths: list[int] = []
     word = ""
+    # Whether the word being read starts a command. `esac` CLOSES a case only there: in
+    # `case esac in x) ...;; esac; ...` the first `esac` is the word being matched on, and
+    # counting it closed the case early, which then let the pattern's `)` end the substitution and
+    # lost an `rm` that bash really runs. Both halves lean the same way: `case` is counted wherever
+    # it appears and `esac` only in command position, so the walk errs towards staying INSIDE.
+    at_command_position = True
+    word_at_command_position = True
     while i < n:
         ch = text[i]
         was_substitution_close, closed_substitution = closed_substitution, False
         if not in_single and not in_double and not in_comment:
             if ch.isalpha() or ch == "_":
+                if not word:
+                    word_at_command_position = at_command_position
                 word += ch
             else:
                 if word == "case":
                     case_depth += 1
-                elif word == "esac" and case_depth:
+                elif word == "esac" and word_at_command_position and case_depth:
                     case_depth -= 1
-                word = ""
+                if word:
+                    at_command_position = False
+                    word = ""
+                if ch in ";&|\n(":
+                    at_command_position = True
+                elif not ch.isspace():
+                    at_command_position = False
         if not in_single and not in_comment and ch == "$" and text[i + 1 : i + 2] == "(":
             substitutions.append((in_single, in_double, in_comment))
             group_depths.append(group_depth)
