@@ -945,8 +945,21 @@ def test_notes_surface_is_borderless_and_lifts_in_dark_mode():
     src = PANEL.read_text(encoding = "utf-8")
     layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
     assert "border border-border" not in src, "the notes box is a fill, not a bordered box"
-    # Lighter than the card behind it, rather than a darker inset.
-    assert "dark:bg-white/[0.06]" in layout
+    # Lighter than the card behind it, rather than a darker inset. #11459 respelled the
+    # shorthand as an rgb() whose alpha scales with --contrast-wash-gain, which is the same
+    # 0.06 white at the default gain of 1, so read the white and the amount rather than one
+    # spelling. A darker inset, or a different amount, still fails. The class also has to end
+    # where the match does, and start where it starts. Anything else and Tailwind reads a
+    # different candidate than the one named here: `-broken` names no utility at all, `/50`
+    # is a different lift, `:broken` is a variant on nothing, and a `hover:` in front paints
+    # the lift only under the pointer instead of on the dark surface.
+    assert re.search(
+        r"(?:(?<=[\s\"'`])|^)"
+        r"dark:bg-(?:white/\[0\.06\]"
+        r"|\[rgb\(255_255_255_/_calc\(0\.06\*var\(--contrast-wash-gain,\s*1\)\)\)\])"
+        r"(?=[\s\"'`]|$)",
+        layout,
+    ), "the dark notes surface is no longer a 0.06 white lift"
     # Streamdown's mt-6 clips the first heading against the scroller edge.
     assert "[&>*>*:first-child]:mt-0" in src
     # Shared utility: thumb hidden until the notes are hovered.
