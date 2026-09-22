@@ -7799,6 +7799,8 @@ class _ExtraSlot:
     last_used: float = 0.0
     # Cancel events of the generations it is serving.
     generations: set = dataclass_field(default_factory = set)
+    # Requests routed here that have not finished, generating or not yet.
+    refs: int = 0
 
 
 _extra_slots: list[_ExtraSlot] = []
@@ -7857,9 +7859,30 @@ async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]
         return None
     slot = await asyncio.to_thread(_slot_serving, requested, slots)
     if slot is not None:
+        if not _reserve_slot(slot):
+            # Evicted while the probe ran.
+            return None
         routed_slot.set(slot)
         slot.last_used = time.monotonic()
     return slot
+
+
+def _reserve_slot(slot: _ExtraSlot) -> bool:
+    """Hold ``slot`` against eviction until the current request ends; False once it is gone."""
+    from core.inference.llama_keepwarm import on_request_end
+
+    with _slot_lock:
+        if slot not in _extra_slots:
+            return False
+        slot.refs += 1
+    if not on_request_end(lambda: _release_slot(slot)):
+        _release_slot(slot)
+    return True
+
+
+def _release_slot(slot: _ExtraSlot) -> None:
+    with _slot_lock:
+        slot.refs -= 1
 
 
 def _restorable(request: LoadRequest) -> Optional[LoadRequest]:
@@ -7963,7 +7986,7 @@ def _eviction_victims(exclude: Optional[_ExtraSlot], short_mib: int) -> list[_Ex
         (
             s
             for s in _visible_extra_slots()
-            if s is not exclude and _slot_in_use(s) and not s.generations
+            if s is not exclude and _slot_in_use(s) and not s.generations and not s.refs
         ),
         key = lambda s: s.last_used,
     )
@@ -7979,9 +8002,9 @@ def _eviction_victims(exclude: Optional[_ExtraSlot], short_mib: int) -> list[_Ex
 
 
 def _claim_victim(slot: _ExtraSlot) -> bool:
-    """Take ``slot`` out of routing unless a chat started on it since it was picked."""
+    """Take ``slot`` out of routing unless a request reached it since it was picked."""
     with _slot_lock:
-        if slot.generations or slot not in _extra_slots:
+        if slot.generations or slot.refs or slot not in _extra_slots:
             return False
         _extra_slots.remove(slot)
         return True
@@ -8061,15 +8084,18 @@ def _drop_extra_slot(slot: _ExtraSlot, stash: bool = False) -> None:
         slot.orchestrator._cleanup()
 
 
-def unload_extra_models(keep = None, stash: bool = False) -> None:
-    """Drop every extra slot, or with ``keep`` only the loaded ones it does not spare."""
+def unload_extra_models(keep = None, stash: bool = False) -> int:
+    """Drop every extra slot, or with ``keep`` only the loaded ones it does not spare. Returns how many."""
+    dropped = 0
     for slot in list(_extra_slots):
         loaded = slot.llama.is_loaded or slot.orchestrator.active_model_name
         if keep is None or (loaded and not keep(slot.llama)):
+            dropped += 1
             try:
                 _drop_extra_slot(slot, stash)
             except Exception as exc:
                 logger.warning("Could not unload an extra model: %s", exc)
+    return dropped
 
 
 def _note_primary_load(request: LoadRequest) -> None:
@@ -16108,19 +16134,20 @@ async def load_model_gated(
                             request.model_path,
                         )
                         extra.llama._last_kill_monotonic = time.monotonic()
-        kv = _forget_evicted(request.model_path, keep_kv = True)
-        if kv is not None:
-            from core.inference.llama_keepwarm import restore_kv_resume
-            await asyncio.to_thread(restore_kv_resume, get_llama_cpp_backend(), kv)
-        if extra is None:
-            _note_primary_load(request)
-        else:
-            from core.inference.llama_keepwarm import _note_activity
+            # Under the gate, so a load queued behind this one cannot publish first and be overwritten.
+            kv = _forget_evicted(request.model_path, keep_kv = True)
+            if kv is not None:
+                from core.inference.llama_keepwarm import restore_kv_resume
+                await asyncio.to_thread(restore_kv_resume, get_llama_cpp_backend(), kv)
+            if extra is None:
+                _note_primary_load(request)
+            else:
+                from core.inference.llama_keepwarm import _note_activity
 
-            extra.request = _restorable(request)
-            extra.last_used = time.monotonic()
-            # A fresh load is use: without it the idle loop drops the slot on its next tick.
-            _note_activity()
+                extra.request = _restorable(request)
+                extra.last_used = time.monotonic()
+                # A fresh load is use: without it the idle loop drops the slot on its next tick.
+                _note_activity()
         # Record provenance only once the model is resident, and here rather than
         # inside the impl so the already-loaded fast paths are covered too. Preview
         # keeps the False default: only an explicit UI load pins. Outside the gate:

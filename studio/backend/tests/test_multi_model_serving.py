@@ -495,9 +495,13 @@ def test_an_evicted_slot_keeps_its_conversation_kv_until_it_is_back(backends, mo
     assert inf._evicted_kv == {"org/B-GGUF:Q8_0": manifest}
 
     restored, deleted = [], []
-    monkeypatch.setattr(
-        keepwarm, "restore_kv_resume", lambda backend, kv: restored.append((backend, kv))
-    )
+
+    def restore(backend, kv):
+        # Under the load gate, so a load queued behind this one cannot publish first.
+        assert keepwarm._load_lock.locked()
+        restored.append((backend, kv))
+
+    monkeypatch.setattr(keepwarm, "restore_kv_resume", restore)
     monkeypatch.setattr(keepwarm, "_delete_resume_files", lambda kv: deleted.append(kv))
     _gated_load_fakes(monkeypatch, short_fits = [])
     request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0", alongside = True)
@@ -900,3 +904,35 @@ def test_anthropic_messages_answers_with_the_model_it_restored(backends, monkeyp
             },
         )
     assert used == [inf._extra_slots[0].llama] and used[0] is not primary
+
+
+def test_a_routed_request_holds_its_slot_until_it_ends(backends):
+    import core.inference.llama_keepwarm as keepwarm
+
+    _, extra = backends
+    scope = {}
+
+    async def request():
+        keepwarm.set_current_response_scope(scope)
+        await inf._route_to_extra_slot("org/B-GGUF")
+
+    asyncio.run(request())
+    assert extra.refs == 1
+    assert inf._eviction_victims(None, 5000) == [] and not inf._claim_victim(extra)
+    keepwarm._run_end_callbacks(scope)
+    assert extra.refs == 0 and inf._eviction_victims(None, 5000) == [extra]
+    asyncio.run(request())
+    assert extra.refs == 0
+
+
+def test_a_slot_evicted_while_a_request_routes_is_not_served(backends, monkeypatch):
+    _, extra = backends
+    probe = inf._slot_serving
+
+    def evicted_mid_probe(requested, slots):
+        found = probe(requested, slots)
+        assert inf._claim_victim(extra)
+        return found
+
+    monkeypatch.setattr(inf, "_slot_serving", evicted_mid_probe)
+    assert _routed("org/B-GGUF") == (None, backends[0])
