@@ -17144,6 +17144,10 @@ def _check_signal_escape_patterns(code: str):
         top = f"{parts[0]}.{parts[-1]}"
         return top if top in _NETWORK_DESTINATION_ARG or top in _CLIENT_CLASSES else None
 
+    def _is_no_proxy(key) -> bool:
+        """A proxy mapping's `no_proxy` entry lists hosts to bypass, not a server to connect to."""
+        return isinstance(key, ast.Constant) and key.value == "no_proxy"
+
     def _paired(target, value):
         """The `(target, value)` pairs an assignment binds, matching a tuple target to a tuple value
         element by element, around a starred target. A shape that cannot be matched binds nothing
@@ -17687,6 +17691,8 @@ def _check_signal_escape_patterns(code: str):
             """`s.proxies = {...}`, `s.proxies["https"] = ...`, `c.base_url = ...`, and the same
             mutation through `p = s.proxies`, configure where the client connects."""
             if isinstance(target, ast.Subscript):
+                if _is_no_proxy(target.slice):
+                    return
                 target, mutated = target.value, True
             if isinstance(target, ast.Attribute) and target.attr in _DESTINATION_ATTRS:
                 owners = {(self._receiver_path(target.value), target.attr)}
@@ -17880,8 +17886,12 @@ def _check_signal_escape_patterns(code: str):
                     # dunder spellings of a subscript store and `|=`.
                     args = node.args
                     if func.attr in ("setdefault", "__setitem__"):
-                        args = args[1:2]  # the key is a scheme name, not a destination
-                    for value in [*args, *(kw.value for kw in node.keywords)]:
+                        # The key is a scheme name, not a destination.
+                        args = [] if args and _is_no_proxy(args[0]) else args[1:2]
+                    for value in [
+                        *args,
+                        *(kw.value for kw in node.keywords if kw.arg != "no_proxy"),
+                    ]:
                         self._record_proxy(func.value, value, mutated = True)
                 self.generic_visit(node)
                 return
@@ -18045,7 +18055,9 @@ def _check_signal_escape_patterns(code: str):
                     if isinstance(proxy, ast.Dict):
                         if None in proxy.keys:
                             unreadable = True  # `{**other}` merges a mapping not here to read
-                        values = proxy.values
+                        values = [
+                            v for k, v in zip(proxy.keys, proxy.values) if not _is_no_proxy(k)
+                        ]
                     else:
                         values = [proxy]
                     for value in values:
