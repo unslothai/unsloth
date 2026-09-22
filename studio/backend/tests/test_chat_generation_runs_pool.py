@@ -288,3 +288,43 @@ def test_borrowing_races_a_global_discard_without_handing_out_a_closed_handle():
         borrowed.close()
         invalidated.wait(timeout = 10)
     assert underlying is not None
+
+
+def test_a_connection_whose_migration_lost_the_lock_is_not_pooled():
+    """_prepare_connection deliberately returns without marking the path ready when the ALTER loses
+    to another writer, so the NEXT call retries. Caching such a connection would skip that next call
+    for the life of the thread: the lease columns would stay missing, progress updates would keep
+    degrading, and reconcile_runs(stale_after_ms=...) would keep reaping nothing."""
+    runs_db.reset_connection_pool_for_tests()
+    runs_db.reset_schema_state_for_tests()
+
+    real_prepare = runs_db._prepare_connection
+    calls = {"n": 0}
+
+    def blocked():
+        conn, _ready = real_prepare()
+        calls["n"] += 1
+        return conn, False
+
+    runs_db._prepare_connection = blocked
+    try:
+        first = runs_db._connect()
+        first.close()
+        second = runs_db._connect()
+        second.close()
+        assert (
+            calls["n"] == 2
+        ), "an unmigrated connection must not be reused; the retry is the point"
+    finally:
+        runs_db._prepare_connection = real_prepare
+        runs_db.reset_connection_pool_for_tests()
+
+    # And once it does complete, pooling resumes.
+    third = runs_db._connect()
+    underlying = third._conn
+    third.close()
+    fourth = runs_db._connect()
+    try:
+        assert fourth._conn is underlying
+    finally:
+        fourth.close()

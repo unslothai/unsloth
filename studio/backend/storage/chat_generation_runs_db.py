@@ -214,10 +214,13 @@ def _connect() -> sqlite3.Connection:
             pass
         entry = None
 
-    conn = _prepare_connection()
-    # A nested _connect() on one thread (a borrowed handle is already out) keeps the old
+    conn, migrated = _prepare_connection()
+    # An unmigrated connection is never pooled, so the next call runs _prepare_connection again and
+    # the retry this contention path exists for still happens.
+    #
+    # A nested _connect() on one thread (a borrowed handle is already out) also keeps the old
     # behaviour of its own connection: sharing one would put two callers in one transaction.
-    if entry is None:
+    if entry is None and migrated:
         entry = {
             "key": key,
             "conn": conn,
@@ -233,8 +236,13 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def _prepare_connection() -> sqlite3.Connection:
-    """The original, uncached body: a real connection with the lease migration applied.
+def _prepare_connection() -> tuple[sqlite3.Connection, bool]:
+    """The original, uncached body, plus whether the lease migration is done for this database.
+
+    The flag is what keeps a blocked migration retryable. When the ALTER loses to another writer
+    this returns without marking the path ready, so that the NEXT call tries again; caching such a
+    connection would skip that next call forever, leaving the lease columns missing, progress
+    updates degrading and reconcile_runs(stale_after_ms=...) reaping nothing.
 
     ``check_same_thread = False`` for the reason the WAL keeper sets it too: a pooled connection has
     to be closable by whichever thread tears the pool down. It is still only ever handed out through
@@ -243,7 +251,7 @@ def _prepare_connection() -> sqlite3.Connection:
     conn = get_connection(check_same_thread = False)
     db_path = _database_path(conn)
     if db_path in _schema_ready:
-        return conn
+        return conn, True
     try:
         with _schema_lock:
             schema_path = db_path.resolve()
@@ -273,7 +281,7 @@ def _prepare_connection() -> sqlite3.Connection:
     except Exception:
         conn.close()
         raise
-    return conn
+    return conn, db_path.resolve() in _schema_ready
 
 
 def _loads(value: str | None, fallback: Any) -> Any:
