@@ -2,9 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { register } from "node:module";
 import test from "node:test";
 
-import {
+// network.ts resolves the Hub origin through "@/lib/hf-endpoint", the way vite
+// resolves the alias. Bare node does not, so the import has to go through the
+// resolver, which in turn means a dynamic import after register().
+register("./bundler-resolver.mjs", import.meta.url);
+const {
   classifyFetchFailure,
   clearRemoteBackoff,
   fetchWithTimeout,
@@ -17,7 +22,7 @@ import {
   markRemoteNetworkOffline,
   markRemoteNetworkOnline,
   sanitizeHubErrorMessage,
-} from "../src/features/hub/lib/network.ts";
+} = await import("../src/features/hub/lib/network.ts");
 
 import { readSrcAsync } from "./helpers/kit.ts";
 

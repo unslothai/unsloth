@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from .thread_drain import join_when_started
+
 
 def _shared_setup_1(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
@@ -346,7 +348,7 @@ def test_legacy_sandbox_is_migrated(tmp_path, monkeypatch):
     # waits on the whole tree.
     for thread in threading.enumerate():
         if thread.name == "sandbox-migrate":
-            thread.join(30)
+            join_when_started(thread, timeout = 30)
     moved = wd.parent / "__LOCALID_old1234" / "results.csv"
     print(f"\nmigrated to {moved}")
     assert moved.is_file()
@@ -717,6 +719,387 @@ def test_the_migration_is_serialised(tmp_path, monkeypatch):
     assert len(results) == 6
     for workdir in results:
         assert (workdir / "data.csv").is_file(), f"{workdir} lost its files"
+
+
+def test_a_first_tool_call_waits_out_a_move_already_in_staging(tmp_path, monkeypatch):
+    """The window above, forced rather than raced for.
+
+    ``_staged_move`` renames the tree aside into staging before renaming it into place, so in
+    between the legacy copy is gone and the destination does not exist yet. A first tool call
+    landing there used to read the missing source as nothing to do, create an empty sandbox
+    under the name the pending rename needs, and hand the chat a directory with none of its
+    files in it. The test above only hits this when the scheduler happens to line the two up,
+    which on CI was about one run in a hundred; this one blocks the mover inside the window."""
+    import shutil
+    import threading
+
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    session = fake_home / "studio_sandbox" / "__LOCALID_staged"
+    session.mkdir(parents = True)
+    (session / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+
+    staged = threading.Event()
+    release = threading.Event()
+    real_move = shutil.move
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if "__LOCALID_staged" in str(destination):
+            staged.set()  # the source is gone and the destination is not in place yet
+            release.wait(10)
+        return moved
+
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+
+    mover = threading.Thread(
+        target = lambda: tools._migrate_legacy_sandbox(tools.sandbox_root()),
+        daemon = True,
+    )
+    mover.start()
+    assert staged.wait(10), "the migration never reached the staging window"
+
+    result = {}
+    caller = threading.Thread(
+        target = lambda: result.update(
+            workdir = Path(tools.get_sandbox_workdir("__LOCALID_staged")),
+        ),
+        daemon = True,
+    )
+    caller.start()
+    caller.join(1.0)
+    # The point of the test: answering from inside the window is what loses the files.
+    returned_early = not caller.is_alive()
+    release.set()
+    caller.join(10)
+    mover.join(10)
+
+    assert not returned_early, "the first tool call answered from inside the staging window"
+    assert "workdir" in result, "the first tool call never returned"
+    assert (result["workdir"] / "data.csv").is_file(), f"{result['workdir']} lost its files"
+
+
+def test_the_migrated_flag_cannot_be_set_over_a_move_still_in_staging(tmp_path, monkeypatch):
+    """A whole-tree pass must not call the migration finished over a move still in staging.
+
+    While one session sits in staging, neither root holds it, so a pass that lists the legacy
+    root right then finds it empty and moves nothing. Reporting that as finished retires the
+    retry a rollback would need, and removes the legacy root a rollback renames back into. The
+    first tool call underneath has to come back with the files either way."""
+    import shutil
+    import threading
+
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    session = fake_home / "studio_sandbox" / "__LOCALID_flag"
+    session.mkdir(parents = True)
+    (session / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+
+    staged = threading.Event()
+    release = threading.Event()
+    real_move = shutil.move
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if "__LOCALID_flag" in str(destination):
+            staged.set()
+            release.wait(10)
+        return moved
+
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+
+    root = tools.sandbox_root()
+    mover = threading.Thread(
+        target = lambda: tools._migrate_one_legacy_session(root, "__LOCALID_flag"),
+        daemon = True,
+    )
+    mover.start()
+    assert staged.wait(10), "the per-session move never reached the staging window"
+
+    tools._migrate_legacy_sandbox(root)  # sees an empty legacy root while this one is in staging
+    assert (
+        not tools._legacy_sandbox_migrated
+    ), "a pass that ran through another session's staging window called the migration finished"
+
+    result = {}
+    caller = threading.Thread(
+        target = lambda: result.update(
+            workdir = Path(tools.get_sandbox_workdir("__LOCALID_flag")),
+        ),
+        daemon = True,
+    )
+    caller.start()
+    caller.join(1.0)
+    returned_early = not caller.is_alive()
+    release.set()
+    caller.join(10)
+    mover.join(10)
+
+    assert not returned_early, "the first tool call answered from inside the staging window"
+    assert "workdir" in result, "the first tool call never returned"
+    assert (result["workdir"] / "data.csv").is_file(), f"{result['workdir']} lost its files"
+
+
+def test_a_rolled_back_move_puts_the_migration_back_on_the_table(tmp_path, monkeypatch):
+    """_staged_move restores the legacy copy when the final rename fails, and says so in its
+    own comment: put it back and let the next pass retry. With the done flag already set by a
+    pass that ran while this sat in staging there is no next pass, and every later call short
+    circuits on the flag, so the chat keeps an empty sandbox until the process restarts."""
+    import os
+    import shutil
+    import threading
+
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_rollback"
+    legacy.mkdir(parents = True)
+    (legacy / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+
+    staged = threading.Event()
+    release = threading.Event()
+    real_move = shutil.move
+    real_rename = os.rename
+    rename_failed = []
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if "__LOCALID_rollback" in str(destination):
+            staged.set()
+            release.wait(10)
+        return moved
+
+    def failing_rename(source, destination, *args, **kwargs):
+        # Only the staging -> target step, which is the one that fails on a live handle.
+        if str(destination).endswith("__LOCALID_rollback") and not rename_failed:
+            rename_failed.append(True)
+            raise OSError(39, "Directory not empty")
+        return real_rename(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+    monkeypatch.setattr(tools.os, "rename", failing_rename)
+
+    root = tools.sandbox_root()
+    mover = threading.Thread(
+        target = lambda: tools._migrate_one_legacy_session(root, "__LOCALID_rollback"),
+        daemon = True,
+    )
+    mover.start()
+    assert staged.wait(10), "the per-session move never reached the staging window"
+
+    # The pass itself now declines to finish over a move in staging, so the flag is set by hand
+    # here: it stands for the one gap that check cannot close, between a pass reading an empty
+    # in-flight set and assigning the flag, during which a request-path move can start.
+    tools._migrate_legacy_sandbox(root)
+    tools._legacy_sandbox_migrated = True
+
+    release.set()
+    mover.join(10)
+
+    assert rename_failed, "the rename was never made to fail"
+    assert (legacy / "data.csv").is_file(), "the rollback did not restore the legacy copy"
+    assert (
+        not tools._legacy_sandbox_migrated
+    ), "a restored legacy copy left the migration marked finished, so nothing retries it"
+
+    # And the retry the rollback asked for actually happens on the next call.
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_rollback"))
+    assert (workdir / "data.csv").is_file(), f"{workdir} never got the restored files"
+
+
+def test_a_move_that_begins_and_ends_inside_the_pass_still_counts(tmp_path, monkeypatch):
+    """The reversed interleaving: the rollback finishes before the pass looks.
+
+    Asking what is in flight only answers "right now". A move that starts after the pass has
+    listed the legacy root and rolls back before the pass reaches its check leaves nothing in
+    flight to find, yet the listing never saw it and the restored source is sitting at the
+    legacy root unlisted. The pass would call the migration done over it."""
+    import os
+    import shutil
+
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_inside"
+    legacy.mkdir(parents = True)
+    (legacy / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+    root = tools.sandbox_root()
+
+    real_listdir = os.listdir
+    real_rename = os.rename
+    rename_failed = []
+    ran = []
+
+    def failing_rename(source, destination, *args, **kwargs):
+        if str(destination).endswith("__LOCALID_inside") and not rename_failed:
+            rename_failed.append(True)
+            raise OSError(39, "Directory not empty")
+        return real_rename(source, destination, *args, **kwargs)
+
+    def listdir_then_move(path, *args, **kwargs):
+        entries = real_listdir(path, *args, **kwargs)
+        # Once, right after the pass reads the legacy root: a whole move, start to rollback,
+        # inside the pass and invisible to it.
+        if not ran and os.path.realpath(str(path)) == os.path.realpath(
+            str(fake_home / "studio_sandbox")
+        ):
+            ran.append(True)
+            monkeypatch.setattr(tools.os, "rename", failing_rename)
+            try:
+                tools._migrate_one_legacy_session(root, "__LOCALID_inside")
+            except OSError:
+                pass
+            monkeypatch.setattr(tools.os, "rename", real_rename)
+            return [e for e in entries if e != "__LOCALID_inside"]
+        return entries
+
+    monkeypatch.setattr(tools.os, "listdir", listdir_then_move)
+    monkeypatch.setattr(tools.shutil, "move", shutil.move)
+
+    tools._migrate_legacy_sandbox(root)
+
+    assert ran, "the nested move never ran"
+    assert rename_failed, "the rename was never made to fail"
+    assert (legacy / "data.csv").is_file(), "the rollback did not restore the legacy copy"
+    assert (
+        not tools._legacy_sandbox_migrated
+    ), "the pass finished over a move it never listed, so the restored copy is stranded"
+
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_inside"))
+    assert (workdir / "data.csv").is_file(), f"{workdir} never got the restored files"
+
+
+def test_a_rollback_between_the_two_reads_is_not_read_as_nothing_to_do(tmp_path, monkeypatch):
+    """Whether the session directory is there and whether a move is running are two reads.
+
+    A failing rename between them restores the tree, so the absence the first read saw and the
+    quiet the second saw describe different instants and neither is now. A caller splitting its
+    decision across that pair leaves without the files, which are back at the legacy root, and
+    caches an empty sandbox in their place. Nothing else picks it up either: the rolled-back
+    mover is the live background migration, so _start_legacy_migration hands back that same
+    thread rather than starting the pass that would have found it."""
+    import os
+    import shutil
+    import threading
+
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_split"
+    legacy.mkdir(parents = True)
+    (legacy / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+    root = tools.sandbox_root()
+
+    real_isdir = os.path.isdir
+    real_rename = os.rename
+    real_move = shutil.move
+    staged = threading.Event()
+    release = threading.Event()
+    rolled_back = threading.Event()
+    finish = threading.Event()
+    rename_failed = []
+    split = []
+
+    def failing_rename(source, destination, *args, **kwargs):
+        if str(destination).endswith("__LOCALID_split") and not rename_failed:
+            rename_failed.append(True)
+            raise OSError(39, "Directory not empty")
+        return real_rename(source, destination, *args, **kwargs)
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if "__LOCALID_split" in str(destination):
+            staged.set()
+            release.wait(10)
+        return moved
+
+    monkeypatch.setattr(tools.os, "rename", failing_rename)
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+
+    def run_mover():
+        try:
+            tools._migrate_one_legacy_session(root, "__LOCALID_split")
+        finally:
+            rolled_back.set()
+            finish.wait(10)  # stay alive, so this is still the running background migration
+
+    mover = threading.Thread(target = run_mover, daemon = True)
+    mover.start()
+    monkeypatch.setattr(tools, "_legacy_background", mover, raising = False)
+    assert staged.wait(10), "the move never reached the staging window"
+
+    def isdir_then_roll_back(path, *args, **kwargs):
+        answer = real_isdir(path, *args, **kwargs)
+        # The caller has just read the staged-away session. Let the rollback finish before it
+        # asks anything else, so its two reads straddle the restore.
+        if not split and str(path).endswith("__LOCALID_split") and not answer:
+            split.append(True)
+            release.set()
+            rolled_back.wait(10)
+        return answer
+
+    monkeypatch.setattr(tools.os.path, "isdir", isdir_then_roll_back)
+
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_split"))
+
+    monkeypatch.setattr(tools.os.path, "isdir", real_isdir)
+    finish.set()
+    mover.join(10)
+
+    assert rename_failed, "the rename was never made to fail"
+    assert split, "the caller never split its reads across the rollback"
+    assert (workdir / "data.csv").is_file(), f"{workdir} lost its files across the rollback"
+
+
+def test_a_stalled_migration_does_not_grow_a_lock_per_chat(tmp_path, monkeypatch):
+    """The legacy root staying put is the normal shape of a migration that keeps failing, and
+    every uncached session consults it. _legacy_session_locks is documented as bounded by the
+    chats that had a legacy folder, so a chat with nothing there must not leave an entry, or a
+    stalled migration turns the table into a per-chat cache that only a restart clears."""
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    legacy = fake_home / "studio_sandbox"
+    legacy.mkdir(parents = True)
+    (legacy / "__LOCALID_had_one").mkdir()
+    (legacy / "__LOCALID_had_one" / "data.csv").write_text("a\n")
+    # Left behind so the root itself survives, the way a migration that cannot finish leaves it.
+    (legacy / "_invalid").mkdir()
+
+    tools = _shared_setup_6()
+    tools._legacy_session_locks.clear()
+    root = tools.sandbox_root()
+
+    for index in range(25):
+        tools._migrate_one_legacy_session(root, f"__LOCALID_never_there{index}")
+
+    assert legacy.is_dir(), "this test needs the legacy root to still be there"
+    assert (
+        set(tools._legacy_session_locks) == set()
+    ), f"chats with nothing at the legacy root left locks behind: {sorted(tools._legacy_session_locks)}"
+
+    # The chat that does have one still migrates, and is still allowed its entry.
+    tools._migrate_one_legacy_session(root, "__LOCALID_had_one")
+    assert (Path(root) / "__LOCALID_had_one" / "data.csv").is_file(), "the real move did not happen"
+    assert set(tools._legacy_session_locks) == {"__LOCALID_had_one"}
 
 
 def test_every_reported_file_is_downloadable(tmp_path, monkeypatch):
@@ -4060,7 +4443,7 @@ def test_the_supervisor_is_told_even_with_no_row_left():
     from routes import chat_history
 
     source = inspect.getsource(chat_history._cancel_research_runs)
-    assert source.index("supervisor.cancel(run_id)") < source.index(
+    assert source.index("cancel_account_run(request, run_id,") < source.index(
         "research_runs_db.request_cancel(run_id)"
     )
 
@@ -4757,7 +5140,17 @@ def test_a_traversal_id_stays_inside_the_sandbox_root_and_opens_nothing(tmp_path
 
     from fastapi import HTTPException
 
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    # The legacy root is `~/studio_sandbox`, read straight off `expanduser("~")`, and an id the
+    # filesystem cannot hold is looked for in its shared `_invalid` bucket on the way to the 404.
+    # UNSLOTH_STUDIO_HOME does not move that, so without a fake home this test asks about whoever
+    # is running it: on a machine that has ever run Studio with a bad id the bucket is there, the
+    # resolver finds a real directory, and the reveal answers 200 instead. It passed on CI only
+    # because a fresh runner has no such folder.
+    _shared_setup_11(tmp_path / "fake-home", monkeypatch, tmp_path)
+    legacy_bucket = tmp_path / "fake-home" / "studio_sandbox" / "_invalid"
+    assert (
+        not legacy_bucket.exists()
+    ), "the refusals below only hold while the legacy bucket is absent"
 
     from routes import inference
 
@@ -4786,6 +5179,28 @@ def test_a_traversal_id_stays_inside_the_sandbox_root_and_opens_nothing(tmp_path
             Path(resolved).is_relative_to(tmp_path / "home") or not Path(resolved).exists()
         ), probe
     assert opened == [], "a refused id must never reach the file manager"
+
+
+def test_an_unusable_id_still_reads_the_legacy_shared_bucket(tmp_path, monkeypatch):
+    """The other half of the test above, and the reason it needs a fake home.
+
+    Before the per-id names, every id the filesystem could not hold shared one
+    bucket at the legacy root. `_legacy_session_dir` still reads that bucket, on
+    purpose, so those chats' files stay reachable after the upgrade. So "a
+    traversal id resolves to nothing" is not unconditional: it holds while the
+    bucket is absent, which is a precondition the previous test now states
+    instead of inheriting from whoever runs it. Pinning the read-back here means
+    deleting it cannot quietly turn that test into a tautology.
+    """
+    from core.inference import tools
+
+    _shared_setup_11(tmp_path / "fake-home", monkeypatch, tmp_path)
+    bucket = tmp_path / "fake-home" / "studio_sandbox" / tools._LEGACY_SHARED_BUCKET
+    bucket.mkdir(parents = True)
+
+    assert tools.resolve_sandbox_workdir("../../../../etc") == str(bucket)
+    # A usable id is a chat of its own and never lands in the shared bucket, whatever is in there.
+    assert tools.resolve_sandbox_workdir("thread-1") != str(bucket)
 
 
 def test_a_sandbox_file_named_reveal_is_still_served(tmp_path):

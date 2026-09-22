@@ -109,6 +109,31 @@ def _pwsh_cache_dir() -> str:
     return _CACHE_ROOT
 
 
+def pwsh_env(env: dict | None = None) -> dict:
+    """`env` (default: this process's) with XDG_CACHE_HOME pointed at the private cache.
+
+    The half of `run_pwsh` that a call site can take on its own. `run_pwsh` is a
+    `subprocess.run` wrapper, so it does not fit three shapes this suite really has:
+
+      * a long-lived `subprocess.Popen` holder that is written to over its stdin while a
+        second shell races it (tests/python/test_windows_installer_concurrency_guard.py);
+      * a deliberate control that must invoke pwsh the OLD way to show a fix changes
+        something (tests/python/test_pwsh_runner_encoding.py);
+      * a call site with its own crash policy that needs the crashed CompletedProcess
+        back rather than an exception (tests/studio/test_installer_av_shapes.py).
+
+    Rewriting those around `run_pwsh` would change what they test. Handing them the
+    cache directory instead removes them from the startup-cache race -- the only thing
+    they needed from this module -- and leaves their control flow alone.
+
+    `env = None` means "inherit", matching subprocess: the result is os.environ plus the
+    override. A dict is copied, never mutated, so a caller that reuses it is unaffected.
+    """
+    env = dict(os.environ if env is None else env)
+    env["XDG_CACHE_HOME"] = _pwsh_cache_dir()
+    return env
+
+
 class PwshInterpreterCrash(AssertionError):
     """The interpreter died before producing a verdict. Says nothing about the script."""
 
@@ -228,10 +253,7 @@ def run_pwsh(
 
     # Redirect only pwsh's own startup cache, leaving every other variable as the call site meant it: `env = None`
     # still means "inherit", and a hermetic env dict still gets exactly the keys it listed plus this one.
-    env = kwargs.get("env")
-    env = dict(os.environ if env is None else env)
-    env["XDG_CACHE_HOME"] = _pwsh_cache_dir()
-    kwargs["env"] = env
+    kwargs["env"] = pwsh_env(kwargs.get("env"))
 
     proc = None
     reason = None

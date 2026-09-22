@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import dataclasses
+import hashlib
 import importlib
 import json
 import ntpath
@@ -394,11 +395,21 @@ def test_sm103_host_drops_cuda128_windows_build():
     assert [a.name for a in kept_b200] == [cuda128.name, cuda129.name]
 
 
+def _fixture_digest(name: str) -> str:
+    """Stand-in for the digest GitHub publishes; a fixture without one selects nothing."""
+    return hashlib.sha256(name.encode()).hexdigest()
+
+
 def _upstream_release(tag, asset_names):
     return {
         "tag_name": tag,
         "assets": [
-            {"name": n, "browser_download_url": f"https://example/{n}"} for n in asset_names
+            {
+                "name": n,
+                "browser_download_url": f"https://example/{n}",
+                "digest": f"sha256:{_fixture_digest(n)}",
+            }
+            for n in asset_names
         ],
     }
 
@@ -1161,6 +1172,7 @@ def _detect_windows_host(
     monkeypatch,
     winreg_fake,
     powershell_stdout = "",
+    env = None,
 ):
     """Drive the real detect_host() as a GPU-less Windows host with a fake
     registry, recording every run_capture invocation. Pins the wiring the
@@ -1176,6 +1188,9 @@ def _detect_windows_host(
         "ROCM_PATH",
     ):
         monkeypatch.delenv(_env, raising = False)
+    # After the wipe, or the wipe would undo the very mask a caller set.
+    for _name, _value in (env or {}).items():
+        monkeypatch.setenv(_name, _value)
     monkeypatch.setattr(
         ilp.shutil,
         "which",
@@ -1204,6 +1219,39 @@ def test_detect_host_registry_intel_skips_cim_probe(monkeypatch):
     host, captured = _detect_windows_host(monkeypatch, winreg)
     assert host.has_intel_gpu is True
     assert "powershell" not in captured
+
+
+def test_detect_host_registry_amd_skips_cim_probe(monkeypatch):
+    # A single-vendor AMD box has no Intel match, so an `and` gate is what earns this skip.
+    winreg = _FakeWinreg(
+        _FakeRegKey(
+            subkeys = {
+                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_1002&DEV_1586"}),
+            }
+        )
+    )
+    host, captured = _detect_windows_host(monkeypatch, winreg)
+    assert host.has_amd_gpu_without_rocm is True
+    assert host.has_intel_gpu is False
+    assert "powershell" not in captured
+
+
+@pytest.mark.parametrize(
+    "mask_var", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
+)
+def test_detect_host_windows_amd_honours_every_hip_mask(monkeypatch, mask_var):
+    # Windows probes the AMD arch with hipinfo, a HIP application, so all three vars hide
+    # devices from it. Vulkan honours none of them (it selects via GGML_VK_VISIBLE_DEVICES),
+    # so routing a masked host there would hand llama.cpp the GPU the caller hid.
+    winreg = _FakeWinreg(
+        _FakeRegKey(
+            subkeys = {
+                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_1002&DEV_1586"}),
+            }
+        )
+    )
+    host, _captured = _detect_windows_host(monkeypatch, winreg, env = {mask_var: ""})
+    assert host.has_amd_gpu_without_rocm is False
 
 
 def test_detect_host_cim_fallback_fires_on_registry_miss(monkeypatch):
@@ -2162,9 +2210,16 @@ def test_a_manifest_the_loader_filters_out_does_not_answer_for_the_driver(monkey
 
     monkeypatch.setenv("VK_LOADER_DRIVERS_DISABLE", "*radeon*")
     assert ilp._amd_vulkan_icd_present() is False
-    # Disable is read first so a select list names drivers back in, which is the loader's order.
+    # Disable is read first and WINS: "the values from the disable environment variable will
+    # be considered before the enable or select environment variable" (Vulkan-Loader,
+    # LoaderInterfaceArchitecture.md), and drivers have no VK_LOADER_LAYERS_ALLOW counterpart
+    # to name one back in. This asserted the opposite, which is the misreading that counted a
+    # disabled Radeon as usable.
     monkeypatch.setenv("VK_LOADER_DRIVERS_SELECT", "RADEON_ICD.X86_64.JSON")
+    assert ilp._amd_vulkan_icd_present() is False
+    monkeypatch.delenv("VK_LOADER_DRIVERS_DISABLE")
     assert ilp._amd_vulkan_icd_present() is True
+    monkeypatch.setenv("VK_LOADER_DRIVERS_DISABLE", "*radeon*")
     # And a select list naming someone else's driver excludes this one on its own.
     monkeypatch.setenv("VK_LOADER_DRIVERS_SELECT", "intel_*")
     assert ilp._amd_vulkan_icd_present() is False

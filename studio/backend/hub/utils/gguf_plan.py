@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -107,17 +108,97 @@ def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
 
 
 def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
-    """The separate MTP drafter to fetch with every variant: the repo-root ``mtp-*.gguf`` copy unsloth ships for llama.cpp ``-hf`` auto-discovery (Gemma 4). Same pick as the loader's drafter resolution (root-level ``mtp-`` prefix, first in sort order) so download and load resolve the same file; the higher-precision ``MTP/`` subdir copies are for explicit selection and are not auto-fetched. None for repos with the head baked into the main GGUF (Qwen)."""
+    """Choose the root MTP drafter used by normal llama.cpp discovery, or the loader-compatible nested sidecar required by Qwen3.8 Flash Next."""
+    from utils.models.drafters import (
+        is_published_drafter_filename,
+        split_listing_is_complete,
+    )
+
+    gguf_names = [name for sibling in siblings if (name := _gguf_rfilename(sibling))]
+
+    def _complete(name: str) -> bool:
+        # Match detect_mtp_file's launchability gate. A half-published family
+        # must step aside before preference ranking so a complete fallback can
+        # be selected instead of making the plan omit MTP entirely.
+        return split_listing_is_complete(gguf_names, name)
+
     # Root-level only: the MTP/ subdir copies now share the mtp- prefix too.
     candidates = sorted(
         (
             s
             for s in siblings
-            if (name := _gguf_rfilename(s)) and "/" not in name and name.lower().startswith("mtp-")
+            if (name := _gguf_rfilename(s))
+            and "/" not in name
+            and is_published_drafter_filename(name, kind = "mtp", allow_legacy_suffix = False)
+            and _complete(name)
         ),
         key = lambda s: getattr(s, "rfilename"),
     )
-    return candidates[0] if candidates else None
+    if candidates:
+        return candidates[0]
+
+    # The remote planner cannot read an undownloaded GGUF header to prove
+    # ``qwen4exp`` the way the loader can. This family token is part of every
+    # main weight and every sidecar in the sole repo that needs the fallback,
+    # and boundary matching keeps future names such as Flash-Next2 out.
+    flash_next = any(
+        re.search(r"(?:^|[/_-])qwen3\.8-flash-next(?:$|[/_.-])", name, re.IGNORECASE)
+        for sibling in siblings
+        if (name := _gguf_rfilename(sibling)) and not is_mtp_drafter_path(name)
+    )
+    if not flash_next:
+        return None
+
+    from utils.models.drafters.preference import mtp_preference_key
+
+    nested = [
+        sibling
+        for sibling in siblings
+        if (name := _gguf_rfilename(sibling))
+        and "/" in name.replace("\\", "/")
+        and is_mtp_drafter_path(name)
+        and is_published_drafter_filename(name.replace("\\", "/").rsplit("/", 1)[-1], kind = "mtp")
+        and _complete(name)
+    ]
+    return (
+        min(nested, key = lambda sibling: mtp_preference_key(sibling.rfilename)) if nested else None
+    )
+
+
+def mtp_plan_files(siblings: Sequence) -> tuple[ExpectedFile, ...]:
+    """Every shard of the MTP sidecar selected by the loader-compatible preference rule."""
+    from utils.models.drafters import (
+        is_published_drafter_filename,
+        split_listing_is_complete,
+    )
+
+    selected = preferred_mtp_sibling(siblings)
+    selected_name = _gguf_rfilename(selected) if selected is not None else None
+    if selected_name is None:
+        return ()
+    family = gguf_variant_family(selected_name)
+    nested = "/" in selected_name.replace("\\", "/")
+    files = tuple(
+        sorted(
+            (
+                file
+                for sibling in siblings
+                if (name := _gguf_rfilename(sibling))
+                and gguf_variant_family(name) == family
+                and is_mtp_drafter_path(name)
+                and is_published_drafter_filename(
+                    name.replace("\\", "/").rsplit("/", 1)[-1],
+                    kind = "mtp",
+                    allow_legacy_suffix = nested,
+                )
+                and (file := expected_file_from_sibling(sibling)) is not None
+            ),
+            key = lambda file: file.path,
+        )
+    )
+    if not files or not split_listing_is_complete([file.path for file in files], selected_name):
+        return ()
+    return files
 
 
 def preferred_dflash_sibling(
@@ -202,8 +283,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     all_mmproj_hashes = frozenset(h for h in (sibling_sha256(s) for s in all_mmproj) if h)
     companion = preferred_mmproj_sibling(siblings)
     companion_expected = expected_file_from_sibling(companion) if companion is not None else None
-    mtp_sibling = preferred_mtp_sibling(siblings)
-    mtp_expected = expected_file_from_sibling(mtp_sibling) if mtp_sibling is not None else None
+    mtp_expected = mtp_plan_files(siblings)
     common_companions_expected = (companion_expected,) if companion_expected is not None else ()
 
     for sibling in siblings:
@@ -247,7 +327,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         expected_files = (
             *main_expected,
             *common_companions_expected,
-            *((mtp_expected,) if mtp_expected is not None else ()),
+            *mtp_expected,
             *dflash_expected,
         )
         plans[quant] = plan_from_expected_files(

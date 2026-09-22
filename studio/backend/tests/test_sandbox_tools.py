@@ -832,6 +832,88 @@ class TestBashBlocklistPosition:
             # Only the long spellings carry an attached command; -x belongs to too
             # many other utilities to read its neighbour as one.
             pytest.param("grep -x rm file.txt", id = "short_flag_neighbour_not_read_as_command"),
+            # `$(which python)` leaves the executed name visible in the body; the rest only
+            # feed text to their outer command.
+            pytest.param("$(which python) script.py", id = "which_lookup_allowed"),
+            pytest.param("env $(which python) script.py", id = "wrapper_which_lookup_allowed"),
+            pytest.param("echo $(date)", id = "arg_position_subst_allowed"),
+            pytest.param("echo $(ls /tmp)", id = "arg_position_listing_allowed"),
+            pytest.param("$(echo hello)", id = "subst_benign_literal_allowed"),
+            pytest.param("FOO=$(date) echo hi", id = "assignment_value_subst_allowed"),
+            pytest.param("echo $((1+2))", id = "arithmetic_expansion_allowed"),
+            # Same slots, benign bodies.
+            pytest.param("{ echo hi; }", id = "brace_group_benign_allowed"),
+            pytest.param("if true; then echo hi; fi", id = "branch_body_benign_allowed"),
+            pytest.param("for f in a b; do echo $f; done", id = "loop_var_benign_allowed"),
+            pytest.param("find . -name x -exec echo {} \\;", id = "find_exec_benign_allowed"),
+            pytest.param("c=hello; echo $c", id = "benign_var_arg_allowed"),
+            pytest.param("c=reboot; echo $c", id = "blocked_var_arg_allowed"),
+            pytest.param("PATH=/usr/bin; ls", id = "path_assignment_allowed"),
+            # A wrapper is spent on its first plain word, so nothing further along the line is
+            # at command position. Reading any word within reach of one refused these.
+            pytest.param(
+                "timeout 60 python train.py --data $(ls -d data/*)",
+                id = "wrapper_spent_on_its_own_command_allowed",
+            ),
+            pytest.param(
+                "stamp=$(date +%F); nohup ./run.sh $stamp &",
+                id = "laundered_var_as_wrapper_argument_allowed",
+            ),
+            pytest.param(
+                "out=$(pwd); timeout 300 ./run.sh $out", id = "laundered_var_as_operand_allowed"
+            ),
+            pytest.param(
+                "v=$(date); env FOO=1 ./run.sh $v", id = "laundered_var_after_env_assign_allowed"
+            ),
+            # `-P` takes a separate value, so the `$n` is that value, not the command.
+            pytest.param(
+                "n=$(nproc); xargs -P $n -I{} echo {}", id = "wrapper_value_flag_operand_allowed"
+            ),
+            # Arithmetic can never hold a command name, in an assignment either.
+            pytest.param(
+                "sec=$((60*5)); timeout $sec make test", id = "arithmetic_assignment_allowed"
+            ),
+            # Single quotes expand nothing; double quotes expand into an argument, not a command.
+            pytest.param(
+                'echo "check if $(ls -1 *.py | wc -l) files"',
+                id = "subst_inside_double_quoted_argument_allowed",
+            ),
+            pytest.param("sed 's|x|$(ls)|' f", id = "subst_inside_single_quotes_allowed"),
+            # A `)` is a command position only in a case arm. Treating every one as a separator
+            # would refuse these.
+            pytest.param("echo $(date) $(ls /tmp)", id = "two_arg_position_substs_allowed"),
+            pytest.param("(cd /tmp) $(date)", id = "subshell_close_then_subst_allowed"),
+            pytest.param("case x in x) echo hi;; esac", id = "case_arm_benign_allowed"),
+            pytest.param(">out.log echo hi", id = "leading_redirection_benign_allowed"),
+            pytest.param(
+                "timeout 1s python train.py --data $(ls -d data/*)",
+                id = "suffixed_duration_wrapper_spent_allowed",
+            ),
+            pytest.param("coproc echo hi", id = "coproc_benign_allowed"),
+            pytest.param("coproc MYJOB { cat train.log; }", id = "coproc_named_benign_allowed"),
+            # `coproc` is the keyword only unquoted at command position (`'coproc' echo rm` is "command not found"),
+            # so anywhere else it starts nothing and the blocked word behind it is data.
+            pytest.param("grep -rn coproc tools.py", id = "coproc_as_argument_allowed"),
+            pytest.param("grep coproc rm file", id = "coproc_then_blocked_word_as_args_allowed"),
+            pytest.param("echo coproc rm", id = "coproc_then_blocked_word_echoed_allowed"),
+            pytest.param("echo 'coproc rm'", id = "quoted_coproc_payload_allowed"),
+            pytest.param("coproc echo rm", id = "coproc_benign_command_blocked_arg_allowed"),
+            # The optional-name rule needs the same guard: these three words are arguments echo prints.
+            pytest.param(
+                "echo coproc JOB if rm -f victim; then :; fi",
+                id = "coproc_name_shape_as_args_allowed",
+            ),
+            pytest.param("> out.log echo hi", id = "spaced_redirection_benign_allowed"),
+            # A substitution that IS the redirection target names a file; nothing runs.
+            pytest.param("> $(date).log echo hi", id = "subst_as_redirection_target_allowed"),
+            pytest.param('echo "`date`"', id = "quoted_backtick_in_argument_allowed"),
+            pytest.param('echo "$(printf r)m"', id = "glued_subst_in_argument_allowed"),
+            pytest.param(
+                "env --chdir /tmp python train.py --data $(ls -d data/*)",
+                id = "env_long_option_value_wrapper_spent_allowed",
+            ),
+            # A laundered expansion glued into an ARGUMENT is not a command word.
+            pytest.param("v=$(date); echo ${v}Z", id = "laundered_prefix_in_argument_allowed"),
         ],
     )
     def test_bash_blocklist_finds_nothing_in_safe_commands(self, command):
@@ -863,6 +945,284 @@ class TestBashBlocklistPosition:
             pytest.param("curl", "if true; then curl --version; fi", id = "if_then_blocked"),
             pytest.param(
                 "curl", "while true; do curl --version; break; done", id = "while_do_blocked"
+            ),
+            # `$(echo reboot)` runs reboot without the name appearing literally.
+            pytest.param("reboot", "$(echo reboot)", id = "subst_synthesized_literal_blocked"),
+            pytest.param(
+                "shutdown",
+                '$(printf "%s" shutdown)',
+                id = "subst_printf_literal_blocked",
+            ),
+            # An enumeration through a selector gives an unknowable name: fail closed.
+            pytest.param(
+                "command substitution",
+                '$(ls /usr/bin/ | grep "^reb")',
+                id = "subst_enumerated_name_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                '$(ls /usr/bin/ | grep "^rm$") -rf ~/Downloads/can_delete',
+                id = "subst_enumerated_rm_with_args_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                '`ls /usr/bin/ | grep "^reb"`',
+                id = "backtick_enumerated_name_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "sudo $(ls /usr/bin | grep reb)",
+                id = "wrapper_prefixed_subst_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "env $(ls /usr/bin | grep reb)",
+                id = "env_wrapper_subst_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                '$(compgen -c | grep "^rm$")',
+                id = "subst_compgen_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "$(find /usr/bin -name 'r*')",
+                id = "subst_find_bin_dir_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "$(echo /usr/bin/r*)",
+                id = "subst_glob_expansion_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                '"$(ls /usr/bin | grep reb)"',
+                id = "quoted_subst_enumeration_blocked",
+            ),
+            # The same synthesis past separators, all of which execute it.
+            pytest.param(
+                "command substitution",
+                "{ $(ls /usr/bin|grep reb); }",
+                id = "brace_group_subst_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "if true; then $(ls /usr/bin|grep reb); fi",
+                id = "branch_body_subst_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "while true; do $(ls /usr/bin|grep reb); done",
+                id = "loop_body_subst_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "find /tmp -name x -exec $(ls /usr/bin | grep reb) \\;",
+                id = "find_exec_subst_blocked",
+            ),
+            # A variable launders the synthesis, a printf -v, or a plain literal.
+            pytest.param(
+                "command substitution",
+                "c=$(ls /usr/bin|grep reb); $c",
+                id = "laundered_subst_var_blocked",
+            ),
+            pytest.param("reboot", "c=$(echo reboot); ${c}", id = "laundered_literal_precise"),
+            pytest.param("reboot", "c=reboot; $c", id = "laundered_plain_literal_blocked"),
+            pytest.param(
+                "command substitution",
+                "printf -v c reboot; $c",
+                id = "printf_v_laundered_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "export c=$(compgen -c | grep rm); $c",
+                id = "exported_laundered_subst_blocked",
+            ),
+            # An assignment binds wherever it appears. Each of these really deletes: verified
+            # against a stand-in `rm` on PATH.
+            pytest.param(
+                "command substitution",
+                "if true; then c=$(ls /usr/bin|grep rm); fi; $c",
+                id = "laundered_behind_keyword_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "(c=$(ls /usr/bin|grep rm); $c)",
+                id = "laundered_in_subshell_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "x=1 c=$(ls /usr/bin|grep rm); $c",
+                id = "laundered_behind_assignment_prefix_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "for i in 1; do c=$(ls /usr/bin|grep rm); done; $c",
+                id = "laundered_in_loop_body_blocked",
+            ),
+            # The quoted spelling is the recommended one; it cannot be the one that escapes.
+            pytest.param(
+                "command substitution",
+                'c=$(ls /usr/bin|grep rm); "$c"',
+                id = "laundered_quoted_exec_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                'c=$(ls /usr/bin|grep rm); "${c}"',
+                id = "laundered_quoted_brace_exec_blocked",
+            ),
+            pytest.param("reboot", 'c=reboot; "$c"', id = "laundered_literal_quoted_exec_blocked"),
+            # Thousands of unterminated `$(` openers are refused, not scanned: each costs a
+            # span walk and this screen has no length cap.
+            pytest.param(
+                "command substitution",
+                ";$(" * 200,
+                id = "substitution_flood_refused_not_scanned",
+            ),
+            # Four spellings that reach the command word by a route the site scan did not walk.
+            # Each really deletes: verified against a stand-in `rm` on PATH.
+            #
+            # timeout's DURATION is a float with an optional s/m/h/d suffix (timeout --help), not
+            # the bare integer the scan accepted.
+            pytest.param(
+                "command substitution",
+                "timeout 1s $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "suffixed_duration_subst_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "timeout 0.5 $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "fractional_duration_subst_blocked",
+            ),
+            # `env [OPTION]...` is unbounded, so any cap on the option run is a count an attacker
+            # exceeds to make the whole site regex fail open.
+            pytest.param(
+                "command substitution",
+                "env -u A -u B -u C -u D -u E $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "many_wrapper_options_subst_blocked",
+            ),
+            # Redirections may precede the command word.
+            pytest.param(
+                "command substitution",
+                ">out.log $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "leading_redirection_subst_blocked",
+            ),
+            # A case arm's `)` is followed directly by the commands to run.
+            pytest.param(
+                "command substitution",
+                "case x in x) $(ls /usr/bin | grep '^rm$') -rf victim;; esac",
+                id = "case_arm_subst_blocked",
+            ),
+            # timeout's DURATION is a float, so strtod accepts the scientific spellings too and
+            # `timeout 1e1 true` really runs.
+            pytest.param(
+                "command substitution",
+                "timeout 1e1 $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "scientific_duration_subst_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "timeout 1.5e1s $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "scientific_suffixed_duration_subst_blocked",
+            ),
+            # `coproc [NAME] command` (help coproc) runs COMMAND asynchronously.
+            pytest.param(
+                "command substitution",
+                "coproc $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "coproc_subst_blocked",
+            ),
+            # ...and the plain spellings, where reading `coproc` as the command word left the real one as arguments.
+            pytest.param("rm", "coproc rm -f victim", id = "coproc_bare_blocked"),
+            pytest.param("pkill", "coproc pkill -f unsloth", id = "coproc_pkill_blocked"),
+            pytest.param("ssh", "coproc ssh internal-host", id = "coproc_ssh_blocked"),
+            # `coproc NAME compound` only NAMES the coprocess, so command position carries past the name.
+            pytest.param(
+                "rm", "coproc JOB if rm -f victim; then :; fi", id = "coproc_named_if_blocked"
+            ),
+            pytest.param("rm", "coproc JOB { rm -rf victim; }", id = "coproc_named_group_blocked"),
+            pytest.param(
+                "rm",
+                "x=1; coproc JOB if rm -f victim; then :; fi",
+                id = "coproc_named_after_sep_blocked",
+            ),
+            pytest.param(
+                "rm",
+                "FOO=bar coproc JOB if rm -f victim; then :; fi",
+                id = "coproc_named_after_assign_blocked",
+            ),
+            # Quoting forges the lookahead: shlex hands back the same token for `{` and `'{'`, while bash reads
+            # `coproc rm '{' -f victim` as the SIMPLE form and deletes.
+            pytest.param("rm", "coproc rm '{' -f victim", id = "coproc_quoted_brace_blocked"),
+            pytest.param("rm", "coproc rm 'if' -f victim", id = "coproc_quoted_keyword_blocked"),
+            # The name is read, not skipped, so a sed there still has its `e` program screened.
+            pytest.param(
+                "rm",
+                "coproc sed 'if' -e '1e rm -f victim' input",
+                id = "coproc_quoted_keyword_sed_program_blocked",
+            ),
+            pytest.param(
+                "pkill", "coproc pkill '{' -f unsloth", id = "coproc_quoted_brace_pkill_blocked"
+            ),
+            # `time` is a reserved word taking a pipeline, so it prefixes a coprocess and bash runs it (5.2.21);
+            # an external wrapper cannot, `env coproc JOB if ...` being a syntax error.
+            pytest.param("rm", "time coproc rm -f victim", id = "timed_coproc_blocked"),
+            pytest.param(
+                "rm",
+                "time coproc JOB if rm -f victim; then :; fi",
+                id = "timed_named_coproc_blocked",
+            ),
+            pytest.param(
+                "rm",
+                "time -p coproc JOB if rm -f victim; then :; fi",
+                id = "timed_p_named_coproc_blocked",
+            ),
+            pytest.param(
+                "rm",
+                "coproc JOB for f in x; do rm -f victim; done",
+                id = "coproc_named_for_blocked",
+            ),
+            # The two laundering routes the site fixes left behind: an arm runs a variable just
+            # as readily as a substitution, and bash concatenates `${x}m` into one command word.
+            pytest.param(
+                "command substitution",
+                "c=$(ls /usr/bin|grep '^rm$'); case x in x) $c -rf victim;; esac",
+                id = "case_arm_laundered_var_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "x=$(printf r); ${x}m -rf victim",
+                id = "laundered_prefix_command_word_blocked",
+            ),
+            # Bash allows whitespace between a redirection operator and its target.
+            pytest.param(
+                "command substitution",
+                "> out.log $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "spaced_redirection_subst_blocked",
+            ),
+            # `env -C/--chdir DIR` takes a separate value (env --help); unconsumed, the DIR read
+            # as the command and the real one behind it was never reached.
+            pytest.param(
+                "command substitution",
+                "env --chdir /tmp $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "env_long_option_value_subst_blocked",
+            ),
+            # A double-quoted backtick expands exactly like `"$(...)"`.
+            pytest.param(
+                "command substitution",
+                "\"`ls /usr/bin | grep '^rm$'`\" -rf victim",
+                id = "quoted_backtick_subst_blocked",
+            ),
+            # Bash concatenates adjacent fragments, so the body being benign proves nothing about
+            # the word that runs: `$(printf r)m` is `rm`.
+            pytest.param(
+                "command substitution",
+                '"$(printf r)"m -rf victim',
+                id = "quoted_subst_glued_to_literal_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "$(printf r)m -rf victim",
+                id = "bare_subst_glued_to_literal_blocked",
             ),
         ],
     )
@@ -1372,6 +1732,40 @@ class TestBashBlocklistPosition:
         assert "rm" in self._find()("env -u FOO find . -exec rm -rf victim {} +")
         assert "rm" in self._find()("timeout 5 find . -exec rm -rf victim {} +")
         assert "rm" in self._find()("nice -n 5 find . -exec rm -rf victim {} +")
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "rm -rf victim",
+            "ssh internal-host",
+            "curl http://127.0.0.1/",
+            "echo hi",
+            "cat train.log",
+        ],
+    )
+    def test_coproc_classifies_exactly_as_the_command_behind_it(self, command):
+        # Equal in BOTH directions: merely getting stricter would start prompting for coprocesses that are fine.
+        assert self._find()(f"coproc {command}") == self._find()(command)
+        # A forged lookahead moves nothing, since the walker reads the name rather than skipping it.
+        head, _, rest = command.partition(" ")
+        assert self._find()(f"coproc {head} 'if' {rest}") == self._find()(f"{head} 'if' {rest}")
+        assert is_high_risk_tool_call(
+            "terminal", {"command": f"coproc {command}"}
+        ) == is_high_risk_tool_call("terminal", {"command": command})
+        assert self._find()(f"coproc JOB if {command}; then :; fi") == self._find()(command)
+        # `git clean -fd` is destructive without being blocklisted, so the auto gate must reach past the name.
+        assert is_high_risk_tool_call(
+            "terminal", {"command": "coproc JOB if git clean -fd; then :; fi"}
+        ) == is_high_risk_tool_call("terminal", {"command": "git clean -fd"})
+        # ...including a name spelled like a wrapper, which bash allows and which used to eat the compound.
+        assert is_high_risk_tool_call(
+            "terminal", {"command": "coproc env if git clean -fd; then :; fi"}
+        ) == is_high_risk_tool_call("terminal", {"command": "git clean -fd"})
+        # `time` keeps command position for bash, so it must keep it for both classifiers too.
+        assert self._find()(f"time coproc {command}") == self._find()(f"time {command}")
+        assert is_high_risk_tool_call(
+            "terminal", {"command": f"time coproc {command}"}
+        ) == is_high_risk_tool_call("terminal", {"command": f"time {command}"})
 
     def test_quoted_operator_is_data_not_a_command_boundary(self):
         # A quoted operator reaches the command as an argument, so the word

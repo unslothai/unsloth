@@ -18,6 +18,7 @@ falls back to CPU without changing the embedding space.
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_hf_token, account_path, managed_account
 import logging
 import os
 import re
@@ -139,6 +140,8 @@ class EmbeddingModelDownloadRequiredError(RuntimeError):
 def _ambient_hf_token() -> str | None:
     """The HF token the loader itself would use (HF_TOKEN env or the cached login), so
     the scan can reach a gated/private repo instead of failing open. None if unavailable."""
+    if managed_account():
+        return False
     try:
         from huggingface_hub import get_token
         return get_token()
@@ -175,7 +178,7 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
                 local = hf_hub_download(
                     name,
                     "modules.json",
-                    token = token or None,
+                    token = account_hf_token(token or None),
                     cache_dir = active_hf_hub_cache(),
                 )
             except EntryNotFoundError:
@@ -404,6 +407,7 @@ def _st_accepts_local_files_only(st_cls) -> bool:
 def _get(model_name: str | None = None):
     """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16 on an
     accelerator for a ~1.5x speedup at negligible accuracy loss, fp32 on CPU."""
+    account_path(model_name, reference = True)
     global _model, _name
     name = model_name or config.effective_embedding_model()
     # Capture offline state once so the gate and the load agree.
@@ -431,6 +435,8 @@ def _get(model_name: str | None = None):
                 # answers by swapping the whole process to llama-server.
                 model_kwargs = dtype_kwargs("float32" if device == "cpu" else "float16"),
             )
+            if managed_account():
+                st_kwargs["token"] = False
             load_target = name
             from utils.paths import is_local_path
             from utils.utils import cached_st_source, hf_cache_snapshot_dir
@@ -656,6 +662,29 @@ def _resolve_auto() -> str:
     return "sentence-transformers"
 
 
+# _resolve_auto's answer, kept with the backend it built: every encode, token count and identity
+# check resolves auto, and its GPU probe is a subprocess (#10390).
+_resident_hardware: tuple[object, str] | None = None
+_hardware_probe = threading.local()
+
+
+def _resident_hardware_choice() -> str:
+    """_resolve_auto, asked once for the backend that is published."""
+    held = _resident_hardware
+    if held is not None and _backend is not None and held[0] is _backend:
+        return held[1]
+    _hardware_probe.choice = _resolve_auto()
+    return _hardware_probe.choice
+
+
+def _keep_hardware_choice(backend) -> None:
+    """Keep the answer only when THIS call resolved it; see the clear in _get_backend."""
+    global _resident_hardware
+    choice = getattr(_hardware_probe, "choice", None)
+    if choice is not None:
+        _resident_hardware = (backend, choice)
+
+
 def _model_is_local_gguf(model: str | None) -> bool:
     """Whether ``model`` names a local .gguf file, or a folder holding one.
 
@@ -722,7 +751,7 @@ def _resolve_auto_for_model(model_name: str | None = None) -> str:
     # safetensors has a validated ST plan.
     if _model_names_gguf_repo(model):
         return "llama-server"
-    return _resolve_auto()
+    return _resident_hardware_choice()
 
 
 def sentence_transformers_runtime_available() -> bool:
@@ -914,8 +943,12 @@ def _get_backend(model_name: str | None = None):
     with _backend_lock:
         model = model_name or config.effective_embedding_model()
         forced = _forced_backends.get(model)
+        # Load-bearing: the identity and active-backend probes also resolve auto outside this lock,
+        # so without the clear a build that short-circuited the hardware keeps their stale answer.
+        _hardware_probe.choice = None
         key = forced or (_resolve_auto_for_model(model) if raw in _AUTO_ALIASES else raw)
         if _backend is not None and _backend_key == _backend_cache_key(raw, key):
+            _keep_hardware_choice(_backend)
             return _backend
         old = _backend
         if key in _ST_ALIASES:
@@ -930,6 +963,7 @@ def _get_backend(model_name: str | None = None):
                 "'auto', 'sentence-transformers' or 'llama-server'"
             )
         _backend = new
+        _keep_hardware_choice(new)
         if key in _ST_ALIASES and _is_llama_backend(new):
             # Pin the backend the warm probe actually fell back to, but let a different model retry ST.
             key = "llama-server"
@@ -942,11 +976,12 @@ def _get_backend(model_name: str | None = None):
 
 def _reset_backend() -> None:
     """Drop the cached backend (test teardown / re-init)."""
-    global _backend, _backend_key
+    global _backend, _backend_key, _resident_hardware
     with _backend_lock:
         _forced_backends.clear()
         _backend = None
         _backend_key = None
+        _resident_hardware = None
 
 
 def backend_is_loaded(model_name: str | None = None) -> bool:
@@ -992,12 +1027,13 @@ def release_backend() -> bool:
 
     Safe mid-ingestion: the next embed rebuilds, and the llama backend's own POST
     retry already covers a server that went away under it."""
-    global _backend, _backend_key
+    global _backend, _backend_key, _resident_hardware
     with _backend_lock:
         # Unload is an explicit fresh start, so a past runtime fallback stops pinning the choice and the saved
         # model picks its backend again.
         _forced_backends.clear()
         backend, _backend, _backend_key = _backend, None, None
+        _resident_hardware = None
     if backend is None:
         # Nothing published, but the module-level model can still be there (see backend_is_loaded);
         # freeing it here is what keeps that leak from being permanent.

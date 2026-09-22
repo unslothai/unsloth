@@ -5,7 +5,8 @@
 #   --ipc=host           ample /dev/shm; the default 64MB crashes DataLoader workers
 #   --ulimit memlock=-1  unlimited pinned memory (else multi-GPU training stalls)
 #   --ulimit stack=64MB  larger libtorch thread stack (some kernels OOM the 8MB default)
-# Plus mounts the host HF + Triton caches so downloads and kernels persist.
+# Plus mounts the host HF + Triton caches so downloads and kernels persist, and the
+# LM Studio, Ollama and Hermes model folders it finds, read-only, so Studio lists them.
 #
 # With no command the image's own CMD runs, which on unsloth/unsloth:latest is the
 # Studio (8000) + JupyterLab (8888) launcher, not a REPL. $PWD is at /workspace/host.
@@ -22,6 +23,10 @@
 #   UNSLOTH_GPUS=none UNSLOTH_ALLOW_CPU=1 \
 #       UNSLOTH_PORTS="-p 8000:8000 -p 8888:8888" bash docker/run.sh
 #
+# AMD hosts: a leading --rocm (or UNSLOTH_ROCM=1) runs the ROCm image and passes
+# the AMD device nodes instead of --gpus, which is NVIDIA-only.
+#   bash docker/run.sh --rocm python /workspace/smoke_test_rocm.py
+#
 # Overridable env:
 #   UNSLOTH_IMAGE=unsloth/unsloth:latest    image and tag to pull/run
 #   UNSLOTH_GPUS=all                        "all" | "0" | "0,1" | "none"
@@ -30,8 +35,130 @@
 #   HF_HOME=$HOME/.cache/huggingface        host HF cache dir to mount
 #   TRITON_CACHE_DIR=...unsloth-triton      host Triton cache dir to mount
 #   UNSLOTH_WORKDIR=$PWD                    host dir mounted at /workspace/host
+#   UNSLOTH_LMSTUDIO_DIR=<detected>         host LM Studio models dir, "none" to skip
+#   UNSLOTH_OLLAMA_DIR=<detected>           host Ollama models dir, "none" to skip
+#   UNSLOTH_HERMES_DIR=<detected>           host Hermes models dir, "none" to skip
+#   UNSLOTH_MODELS_DIR=                     host dir of GGUFs/model folders for Studio
+#   UNSLOTH_STUDIO_VOLUME=unsloth-studio    named volume for Studio's data (accounts,
+#                                           chats, outputs) at /opt/unsloth-studio;
+#                                           set it empty to run without one
+#   UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=120  how long a training run gets to save a
+#                                           checkpoint on docker stop; --stop-timeout is
+#                                           set 30s above it
+#   UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S=600  when the training stop watchdog gives up
+#                                           on a saving worker; raise it alongside the
+#                                           budget above, which it caps
+# --rocm only:
+#   UNSLOTH_ROCM=1                          same as a leading --rocm
+#   HSA_OVERRIDE_GFX_VERSION                force a gfx target (e.g. 10.3.0)
+#   UNSLOTH_ROCM_GFX_ARCH                   gfx arch override (e.g. gfx1151)
 set -euo pipefail
 
+# --rocm is ours only as the FIRST argument; everything after it is the
+# container's command line, so a command's own --rocm is left alone.
+ROCM=0
+[[ "${UNSLOTH_ROCM:-}" == "1" ]] && ROCM=1
+if [[ $# -gt 0 && "$1" == "--rocm" ]]; then
+    ROCM=1
+    shift
+fi
+
+# UNSLOTH_DEV_ROOT prefixes the /dev probes (DESTDIR idiom). It exists so the
+# regression tests can stage a fake device tree; leave it unset in normal use.
+DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
+
+# WSL2 has no /dev/kfd: the amdgpu kernel driver is not loaded there and the card
+# is reached over the DXG bridge instead. /dev/dxg plus librocdxg is the same GPU
+# evidence install.sh gates on for a WSL host. The bridge is userspace, so this
+# needs a device and an env var, not group ids: WSL exposes /dev/dxg to everyone
+# and has no render group.
+wsl_dxg_host() {
+    [[ ! -e "$DEV_ROOT/dev/kfd" && -e "$DEV_ROOT/dev/dxg" ]]
+}
+amd_dxg_flags() {
+    printf '%s\n' --device /dev/dxg
+    # librocdxg is NOT in the image and cannot be: its cmake build needs the Windows
+    # 11 SDK 'shared' headers off the host (see scripts/install_rocm_wsl_strixhalo.sh),
+    # which no Linux build runner has. Mount the host's, which that helper installs.
+    local _so=""
+    for _c in "$DEV_ROOT"/opt/rocm/lib/librocdxg.so.1* "$DEV_ROOT"/opt/rocm-*/lib/librocdxg.so.1* \
+              "$DEV_ROOT"/opt/rocm/lib64/librocdxg.so.1* ; do
+        [[ -e "$_c" ]] && { _so="$_c"; break; }
+    done
+    if [[ -z "$_so" ]]; then
+        printf "\033[1;33mWARN:\033[0m /dev/dxg is present but no librocdxg was found under /opt/rocm.\n" >&2
+        printf "      Install ROCm for WSL first:  bash scripts/install_rocm_wsl_strixhalo.sh\n" >&2
+        return 0
+    fi
+    printf '%s\n' -v "${_so}:/usr/lib/x86_64-linux-gnu/librocdxg.so:ro"
+    # librocdxg dlopens libdxcore from WSL's own lib directory, which the image
+    # does not have on its search path.
+    if [[ -d "$DEV_ROOT/usr/lib/wsl/lib" ]]; then
+        printf '%s\n' -v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro -e LD_LIBRARY_PATH=/usr/lib/wsl/lib
+    else
+        printf "\033[1;33mWARN:\033[0m /usr/lib/wsl/lib is missing, so librocdxg cannot load libdxcore.\n" >&2
+    fi
+    # The standard HSA runtime only looks for the bridge when this is set.
+    printf '%s\n' -e HSA_ENABLE_DXG_DETECTION=1
+    return 0
+}
+# Named once: the NVIDIA toolkit installer, both as the fallback download below
+# and in the message that tells you to run it yourself.
+TOOLKIT_URL="${UNSLOTH_TOOLKIT_URL:-https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh}"
+
+# --group-add needs NUMERIC gids: a name is resolved INSIDE the container, where
+# the host's video/render groups do not exist.
+amd_device_flags() {
+    printf '%s\n' --device /dev/kfd
+    # docker refuses to start at all over a missing host device, so name /dev/dri
+    # only when it exists and let the entrypoint explain the incomplete driver.
+    if [[ -e "$DEV_ROOT/dev/dri" ]]; then
+        printf '%s\n' --device /dev/dri
+    else
+        printf "\033[1;33mWARN:\033[0m /dev/kfd is present but /dev/dri is not; passing the compute node alone.\n" >&2
+    fi
+    command -v getent >/dev/null 2>&1 || return 0
+    local _grp _gid
+    for _grp in video render; do
+        # getent exits nonzero for an unknown group (minimal hosts have no
+        # render group), which under pipefail + set -e would kill the assignment.
+        _gid="$(getent group "$_grp" | cut -d: -f3)" || _gid=""
+        [[ -n "$_gid" ]] && printf '%s\n' --group-add "$_gid"
+    done
+    return 0
+}
+# Into GPU_FLAG, one flag per line, with a read loop: macOS ships bash 3.2.
+collect_amd_device_flags() {
+    local _flag
+    GPU_FLAG=()
+    while IFS= read -r _flag; do
+        GPU_FLAG+=("$_flag")
+    done < <(amd_device_flags)
+}
+collect_amd_dxg_flags() {
+    local _flag
+    GPU_FLAG=()
+    while IFS= read -r _flag; do
+        GPU_FLAG+=("$_flag")
+    done < <(amd_dxg_flags)
+}
+
+if [[ $ROCM -eq 1 ]]; then
+    IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth-rocm:latest}"
+    GPUS=none
+    if [[ -e "$DEV_ROOT/dev/kfd" ]]; then
+        collect_amd_device_flags
+    elif wsl_dxg_host; then
+        collect_amd_dxg_flags
+        printf "\033[1;33mNOTE:\033[0m no /dev/kfd; passing /dev/dxg, the WSL2 bridge to the card.\n" >&2
+    else
+        GPU_FLAG=()
+        printf "\033[1;33mWARN:\033[0m /dev/kfd is not present, so no AMD GPU can be passed through.\n" >&2
+        printf "      On Linux install the amdgpu driver and add yourself to the video/render\n" >&2
+        printf "      groups. On Windows the card is reached over WSL2's /dev/dxg, which only a\n" >&2
+        printf "      docker engine running INSIDE your WSL distribution can pass through.\n\n" >&2
+    fi
+else
 IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth:latest}"
 GPUS="${UNSLOTH_GPUS:-all}"
 # Translate index selectors to Docker's `device=` form: a bare integer is a COUNT,
@@ -46,50 +173,128 @@ case "$GPUS" in
     *[!0-9]*) GPU_FLAG=(--gpus "\"device=${GPUS}\"") ;;  # comma list / UUID
     *)        GPU_FLAG=(--gpus "\"device=${GPUS}\"") ;;  # bare integer index
 esac
+fi
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
 TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
 WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"
+# Studio's data lives under /opt/unsloth-studio and the image relinks its code there at
+# every start, so the volume survives `docker rm` without pinning the code. `-` (not `:-`):
+# an explicitly empty value disables the mount. On :core it is an empty dir the image never reads.
+STUDIO_VOLUME="${UNSLOTH_STUDIO_VOLUME-unsloth-studio}"
+STUDIO_MOUNT=()
+if [ -n "$STUDIO_VOLUME" ]; then
+    STUDIO_MOUNT=(-v "$STUDIO_VOLUME":/opt/unsloth-studio)
+fi
 
 mkdir -p "$HF_CACHE" "$TRITON_CACHE"
+
+first_dir() {
+    local dir
+    for dir in "$@"; do
+        if [[ -n "$dir" && -d "$dir" ]]; then
+            printf '%s' "$dir"
+            return 0
+        fi
+    done
+}
+
+# Like Studio's _host_path: expand ~, and map a Windows path to its WSL mount.
+host_path() {
+    local path="$1"
+    case "$path" in
+        # backslash, not quotes: a quoted ~ reads to shellcheck as a literal tilde
+        # that will never expand (SC2088), and an unquoted one would be expanded
+        # in the pattern itself. Escaped, it matches the literal character.
+        \~ | \~/*) path="$HOME${path:1}" ;;
+        [A-Za-z]:\\* | [A-Za-z]:/*) path="$(wslpath -u "$path" 2>/dev/null)" || path="" ;;
+    esac
+    printf '%s' "$path"
+}
+
+lmstudio_dir() {
+    local settings="$HOME/.lmstudio/settings.json" custom=""
+    local re='"downloadsFolder"[[:space:]]*:[[:space:]]*"([^"]*)"'
+    if [[ -f "$settings" && "$(<"$settings")" =~ $re ]]; then
+        # JSON doubles any backslash in the path
+        custom="$(printf '%s' "${BASH_REMATCH[1]}" | sed 's/\\\\/\\/g')"
+        custom="$(host_path "$custom")"
+    fi
+    first_dir "$custom" "$HOME/.lmstudio/models" "$HOME/.cache/lm-studio/models"
+}
+
+# Mirrors Studio's _hermes_root: a HERMES_HOME outside ~/.hermes is the root, or
+# <root>/profiles/<name> for a profile; downloads land in <root>/models.
+hermes_dir() {
+    local native="$HOME/.hermes" root
+    root="$(host_path "${HERMES_HOME:-}")"
+    root="${root%/}"
+    if [[ -z "$root" || "$root" == "$native" || "$root" == "$native"/* ]]; then
+        root="$native"
+    elif [[ "${root%/*}" == */profiles ]]; then
+        root="${root%/profiles/*}"
+    fi
+    first_dir "$root/models" "$native/models"
+}
+
+ollama_dir() {
+    first_dir "$(host_path "${OLLAMA_MODELS:-}")" "$HOME/.ollama/models" \
+        /usr/share/ollama/.ollama/models /var/lib/ollama/.ollama/models
+}
+
+declare -a MODEL_MOUNTS=()
+mount_models() {
+    local name="$1" dir="$2" target="$3"
+    [[ -z "$dir" || "$dir" == none ]] && return 0
+    if [[ ! -d "$dir" ]]; then
+        printf "\033[1;33mWARN:\033[0m %s models folder %s does not exist; not mounting it.\n" "$name" "$dir" >&2
+        return 0
+    fi
+    [[ "$dir" == /* ]] || dir="$PWD/$dir"
+    MODEL_MOUNTS+=(-v "$dir:$target:ro")
+    printf "Mounting %s models from %s (read-only)\n" "$name" "$dir" >&2
+}
+
+mount_models "LM Studio" "${UNSLOTH_LMSTUDIO_DIR:-$(lmstudio_dir)}" /root/.lmstudio/models
+mount_models Ollama "${UNSLOTH_OLLAMA_DIR:-$(ollama_dir)}" /root/.ollama/models
+mount_models Hermes "${UNSLOTH_HERMES_DIR:-$(hermes_dir)}" /root/.hermes/models
+mount_models local "${UNSLOTH_MODELS_DIR:-}" /workspace/models
 
 # Docker resolves --gpus in the DAEMON, before the container exists: on a host with
 # no NVIDIA GPU it dies with "failed to discover GPU vendor from CDI: no known GPU
 # vendor found" and exit 125, so entrypoint.sh never runs and its diagnostics never
 # print. Drop the flag instead and let the container start, so the user gets the
 # entrypoint's explanation (or, on :latest, Studio in CPU mode).
-# UNSLOTH_DEV_ROOT prefixes the /dev probes below (DESTDIR idiom). It exists so the
-# regression tests can stage a fake device tree; leave it unset in normal use.
-DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
 host_has_nvidia() {
+    local listing
     [[ -e "$DEV_ROOT/dev/nvidiactl" ]] && return 0
-    command -v nvidia-smi >/dev/null 2>&1 \
-        && nvidia-smi -L 2>/dev/null | grep -q '^GPU' && return 0
-    return 1
+    command -v nvidia-smi >/dev/null 2>&1 || return 1
+    # buffer before grep -q: under pipefail the producer's SIGPIPE can become the pipeline status, which reads as "no GPU" and silently drops --gpus
+    listing="$(nvidia-smi -L 2>/dev/null || true)"
+    grep -q '^GPU' <<< "${listing}"
 }
 
-if [[ ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
+if [[ $ROCM -eq 0 && ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
     printf "\033[1;33mWARN:\033[0m no NVIDIA GPU on this host; dropping --gpus %s.\n" "$GPUS" >&2
     printf "      'docker run --gpus' would fail at the daemon (exit 125) before the\n" >&2
     printf "      container starts. Set UNSLOTH_GPUS=none to silence this.\n" >&2
     GPU_FLAG=()
     # AMD host: hand llama.cpp/GGUF the render nodes. This is NOT torch acceleration
     # -- torch in the image is cu128 and torch.cuda.is_available() stays False here.
-    # --group-add needs NUMERIC gids: a name is resolved INSIDE the container, where
-    # the host's video/render groups do not exist.
+    # Run --rocm instead for a torch that can use the card.
     if [[ -e "$DEV_ROOT/dev/kfd" && -d "$DEV_ROOT/dev/dri" ]]; then
-        GPU_FLAG=(--device /dev/kfd --device /dev/dri)
-        # A missing group is not fatal: getent exits nonzero when the name is not in
-        # NSS, and under `set -o pipefail` that would take the whole assignment down
-        # with `set -e` before docker run is ever reached. Trailing `|| _gid=` puts the
-        # assignment in an OR-list, which suppresses that and leaves the gid empty.
-        # Minimal hosts really do ship without a render group.
-        if command -v getent >/dev/null 2>&1; then
-            for _grp in video render; do
-                _gid="$(getent group "$_grp" | cut -d: -f3)" || _gid=""
-                [[ -n "$_gid" ]] && GPU_FLAG+=(--group-add "$_gid")
-            done
-        fi
+        collect_amd_device_flags
         printf "      AMD devices found: passing /dev/kfd and /dev/dri through.\n" >&2
+        # published images only (untagged is :latest); a custom image may carry a HIP or Vulkan build
+        if [[ "$IMAGE" == unsloth/unsloth || "$IMAGE" == unsloth/unsloth:* ]]; then
+            printf "      Nothing in the image uses them yet: torch is cu128 and the bundled\n" >&2
+            printf "      llama.cpp has no HIP or Vulkan backend, so this container runs on the CPU.\n" >&2
+            if [[ "$IMAGE" == unsloth/unsloth:core* ]]; then
+                printf "      :core refuses a CPU-only start unless UNSLOTH_ALLOW_CPU=1 is set (:latest allows it).\n" >&2
+            fi
+        else
+            printf "      The published unsloth/unsloth images cannot use them (cu128 torch, no HIP\n" >&2
+            printf "      or Vulkan llama.cpp); whether %s does is up to that image.\n" "$IMAGE" >&2
+        fi
     fi
     printf "\n" >&2
 fi
@@ -98,31 +303,45 @@ fi
 # UNSLOTH_INSTALL_TOOLKIT=1 says yes without a prompt, =0 never asks; with neither and no terminal, print the one-liner and continue.
 DOCKER_INFO=""
 DOCKER_ERR=""
-if [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia; then
+# A mixed NVIDIA + AMD host under --rocm is not missing anything: it runs the ROCm
+# image through the AMD device nodes, so the toolkit is irrelevant there.
+if [[ $ROCM -eq 0 && ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia; then
     # stderr folded in: on failure the captured text IS the daemon's error
     DOCKER_INFO="$(docker info 2>&1)" || { DOCKER_ERR="$DOCKER_INFO"; DOCKER_INFO=""; }
 fi
 if [[ -n "$DOCKER_ERR" ]]; then
     printf "\033[1;33mWARN:\033[0m 'docker info' failed, so the GPU runtime could not be checked:\n      %s\n" "${DOCKER_ERR##*$'\n'}" >&2
     printf "      Start the Docker daemon, or add yourself to the docker group (newgrp docker).\n\n" >&2
-elif [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
+elif [[ $ROCM -eq 0 && ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
         && ! grep -qi 'Runtimes:.*nvidia' <<<"$DOCKER_INFO"; then
+    # run.sh is also published on its own, so the sibling installer is missing
+    # whenever it was curled rather than cloned. Fetch it in that case: offering
+    # to run a path that does not exist is worse than not offering at all.
     INSTALLER="$(dirname "${BASH_SOURCE[0]}")/install_nvidia_toolkit.sh"
+    # Download it next to run.sh rather than into a scratch file: the path is then
+    # the one the message names, and a second run reuses it instead of refetching.
+    if [[ ! -f "$INSTALLER" ]]; then
+        curl -fsSL "$TOOLKIT_URL" -o "$INSTALLER" 2>/dev/null || { rm -f "$INSTALLER"; INSTALLER=""; }
+    fi
     printf "\033[1;33mWARN:\033[0m 'docker info' does not list 'nvidia' as a runtime: the NVIDIA\n" >&2
     printf "      Container Toolkit is not set up, so --gpus %s would fail at the daemon.\n" "$GPUS" >&2
     answer="${UNSLOTH_INSTALL_TOOLKIT:-}"
-    if [[ -z "$answer" && -t 0 && -t 1 ]]; then
+    if [[ -n "$INSTALLER" && -z "$answer" && -t 0 && -t 1 ]]; then
         read -r -p "      Install it now with sudo (bash $INSTALLER)? [Y/n] " answer </dev/tty || answer=n
         answer="${answer:-y}"
     fi
+    # Nothing on disk to run: a forced UNSLOTH_INSTALL_TOOLKIT=1 would otherwise
+    # select the branch below and `bash ""` would fail into `|| true`, leaving the
+    # user with no toolkit, no error, and a docker run that still lacks the runtime.
+    [[ -n "$INSTALLER" ]] || answer=n
     case "$answer" in
         1|[Yy]*)
             # -E keeps UNSLOTH_TOOLKIT_VERIFY and the proxy settings through env_reset; a failed, cancelled or driver-too-old install (exit 3) must not stop the docker run below.
             if [[ "$(id -u)" = 0 ]]; then bash "$INSTALLER" || true; else sudo -E bash "$INSTALLER" || true; fi
             ;;
         *)
-            printf "      Install it with one command (Linux, needs sudo):\n" >&2
-            printf "      curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh\n\n" >&2
+            printf "      Install it with one command (Linux, needs root):\n" >&2
+            printf "      curl -fsSL %s -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh\n\n" "$TOOLKIT_URL" >&2
             ;;
     esac
 fi
@@ -134,13 +353,33 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${WANDB_API_KEY:-}"     ]] && ENV_FORWARD+=(-e WANDB_API_KEY)
 [[ -n "${UNSLOTH_LICENSE:-}"   ]] && ENV_FORWARD+=(-e UNSLOTH_LICENSE)
 [[ -n "${UNSLOTH_ALLOW_CPU:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_ALLOW_CPU)
+# gfx overrides for cards the installed ROCm build has no kernels for
+[[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]] && ENV_FORWARD+=(-e HSA_OVERRIDE_GFX_VERSION)
+[[ -n "${UNSLOTH_ROCM_GFX_ARCH:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_ROCM_GFX_ARCH)
 # read by studio_launch.sh; without these it uses a random password and no sshd
 [[ -n "${JUPYTER_PASSWORD:-}"           ]] && ENV_FORWARD+=(-e JUPYTER_PASSWORD)
 [[ -n "${UNSLOTH_STUDIO_PASSWORD:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PASSWORD)
+[[ -n "${UNSLOTH_STUDIO_PORT:-}"        ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PORT)
 [[ -n "${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT)
+# both, or raising only the shutdown budget waits on a save the watchdog kills at its own cap
+[[ -n "${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S)
+[[ -n "${UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S)
 [[ -n "${PUBLIC_KEY:-}"                 ]] && ENV_FORWARD+=(-e PUBLIC_KEY)
 [[ -n "${SSH_KEY:-}"                    ]] && ENV_FORWARD+=(-e SSH_KEY)
 [[ -n "${UNSLOTH_JUPYTER_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_JUPYTER_CLOUDFLARE)
+# Studio's two exposure modes, read by studio_run.sh inside the container. The
+# allowlist is explicit, so leaving them out made both silently inert through the
+# helper the documentation recommends.
+[[ -n "${UNSLOTH_STUDIO_SECURE:-}" ]]     && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SECURE)
+[[ -n "${UNSLOTH_STUDIO_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_CLOUDFLARE)
+
+STOP_BUDGET="${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-120}"
+if ! [[ "$STOP_BUDGET" =~ ^[0-9]+$ ]]; then
+    printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=%s is not a number of seconds.\n" "$STOP_BUDGET" >&2
+    exit 1
+fi
+# 10# as in studio_launch.sh: a leading zero must not read as octal
+STOP_TIMEOUT=$(( 10#$STOP_BUDGET + 30 ))
 
 declare -a PORT_FLAGS=()
 if [[ -n "${UNSLOTH_PORTS:-}" ]]; then
@@ -159,11 +398,14 @@ fi
 exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     ${GPU_FLAG[@]+"${GPU_FLAG[@]}"} \
     --ipc=host \
+    --stop-timeout "$STOP_TIMEOUT" \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
     -v "$HF_CACHE":/workspace/.cache/huggingface \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
+    ${STUDIO_MOUNT[@]+"${STUDIO_MOUNT[@]}"} \
+    ${MODEL_MOUNTS[@]+"${MODEL_MOUNTS[@]}"} \
     "${ENV_FORWARD[@]}" \
     ${PORT_FLAGS[@]+"${PORT_FLAGS[@]}"} \
     "$IMAGE" "$@"

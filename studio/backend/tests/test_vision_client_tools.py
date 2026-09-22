@@ -171,7 +171,11 @@ def _vision_probe(chat_template = _CHATML_WITH_TOOLS):
                 return "PROMPT-WITH-TOOLS"
             return "PROMPT"
 
-        def __call__(self, *_args, **_kwargs):
+        def __call__(self, *args, **_kwargs):
+            # The pixels arrive as the first positional argument, one object when
+            # there is a single image and the list itself when there are several.
+            if args:
+                seen["images"] = args[0]
             return Batch({"input_ids": torch.zeros((1, 1), dtype = torch.long)})
 
     class Model:
@@ -487,7 +491,12 @@ def test_the_worker_forwards_the_processor_template_to_the_parent():
     import ast
     import pathlib
 
-    source = pathlib.Path("core/inference/worker.py").read_text()
+    # Anchored on this file, like the same read in test_native_context_length and
+    # test_audio_unsupported_backend_error. A bare relative path resolves against the
+    # working directory, so this only found the worker when pytest happened to be
+    # invoked from studio/backend and raised FileNotFoundError from anywhere else.
+    worker = pathlib.Path(__file__).resolve().parents[1] / "core/inference/worker.py"
+    source = worker.read_text("utf-8")
     tree = ast.parse(source)
     keys: set = set()
     for node in ast.walk(tree):
@@ -573,6 +582,30 @@ def test_a_folded_system_turn_is_wrapped_as_content_parts():
     assert out[0] is not None
 
 
+def test_the_plain_vision_render_keeps_the_participant_name():
+    backend, seen = _vision_probe()
+    _drain(
+        backend,
+        messages = [{"role": "user", "name": "alice", "content": "what is in this picture"}],
+    )
+    assert [(m["role"], m.get("name")) for m in seen["messages"]] == [("user", "alice")]
+
+
+def test_the_folded_vision_history_keeps_participant_names():
+    backend, seen = _vision_probe()
+    _drain(
+        backend,
+        messages = [
+            {"role": "system", "name": "supervisor", "content": "be brief"},
+            {"role": "user", "name": "alice", "content": "what is in this picture"},
+        ],
+    )
+    assert [(m["role"], m.get("name")) for m in seen["messages"]] == [
+        ("system", "supervisor"),
+        ("user", "alice"),
+    ]
+
+
 def test_a_nudge_retry_keeps_the_image_on_the_question_turn():
     """A plain reverse scan hands the image marker to the nudge retry's appended
     correction, so the question that asked about the picture renders image-less (#10092)."""
@@ -597,6 +630,36 @@ def test_a_nudge_retry_keeps_the_image_on_the_question_turn():
     assert not isinstance(correction["content"], list) or not count_structured_images(
         correction["content"]
     )
+
+
+def test_a_video_is_attached_the_way_an_image_is():
+    """Every attached medium lands on the newest user turn, media before text, never doubled."""
+    from core.inference.chat_template_helpers import messages_with_attached_image
+
+    alone = messages_with_attached_image(
+        [{"role": "user", "content": "what moves"}], image = False, video = True
+    )
+    assert alone[-1]["content"] == [{"type": "video"}, {"type": "text", "text": "what moves"}]
+
+    both = messages_with_attached_image(
+        [{"role": "user", "content": [{"type": "text", "text": "compare"}]}], video = True
+    )
+    assert both[-1]["content"] == [
+        {"type": "image"},
+        {"type": "video"},
+        {"type": "text", "text": "compare"},
+    ]
+
+    placed = messages_with_attached_image(
+        [
+            {"role": "user", "content": [{"type": "video_url", "video_url": {"url": "x"}}]},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "and now?"},
+        ],
+        video = True,
+    )
+    assert [p["type"] for p in placed[-1]["content"]] == ["image", "text"]
+    assert [p["type"] for p in placed[0]["content"]] == ["video_url"]
 
 
 def test_an_mlx_processor_without_apply_chat_template_is_not_mirrored():
@@ -698,6 +761,58 @@ def test_image_tool_support_is_classified_from_the_processor_template():
 
     assert backend.calls, "generation never ran"
     assert backend.calls[0]["tools"] == [passthrough.LOOKUP_TOOL]
+
+
+def test_video_tool_support_is_classified_from_the_processor_template():
+    """A clip renders through the processor, so tool support is read off the processor template."""
+    import asyncio
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import routes.inference as inf
+    import test_sf_client_tools_passthrough as passthrough
+    from models.inference import ChatCompletionRequest, ChatMessage
+
+    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    backend.models["sf-model"]["has_video_input"] = True
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": _PROCESSOR_TEMPLATE_NO_TOOLS,
+        "processor_template": _CHATML_WITH_TOOLS,
+    }
+    clip = "AAAAGGZ0eXBtcDQy"
+    payload = ChatCompletionRequest(
+        model = "default",
+        messages = [ChatMessage(role = "user", content = "what moves")],
+        video_base64 = clip,
+        tools = [passthrough.LOOKUP_TOOL],
+        stream = False,
+    )
+
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._install(monkeypatch, backend)
+        monkeypatch.setattr(
+            inf,
+            "_detect_safetensors_features",
+            lambda _backend, template, **k: {"supports_tools": template == _CHATML_WITH_TOOLS},
+        )
+
+        async def _run():
+            return await inf.openai_chat_completions(
+                payload, request = passthrough._Request(), current_subject = "u"
+            )
+
+        asyncio.run(_run())
+    finally:
+        monkeypatch.undo()
+
+    assert backend.calls, "generation never ran"
+    assert backend.calls[0]["tools"] == [passthrough.LOOKUP_TOOL]
+    assert backend.calls[0]["video"] == clip
 
 
 def test_mlx_selects_structured_content_for_a_processor_render():
@@ -894,6 +1009,218 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it_without_tools():
     assert owning["content"][1]["text"] == "IMAGE_QUESTION about the picture"
     assert earlier["content"] == "EARLIER_QUESTION with no picture"
     assert later["content"] == "LATER_QUESTION unrelated to it"
+
+
+def test_an_image_turn_without_tools_keeps_the_earlier_turns():
+    backend, seen = _vision_probe()
+    _drain(
+        backend,
+        messages = [
+            {"role": "user", "content": "EARLIER"},
+            {"role": "assistant", "content": "ANSWER_ONE"},
+            {"role": "user", "content": "LATER"},
+        ],
+    )
+    rendered = json.dumps(seen["messages"])
+    assert "EARLIER" in rendered
+    assert "ANSWER_ONE" in rendered
+    assert [m["role"] for m in seen["messages"]] == ["user", "assistant", "user"]
+    assert [p["type"] for p in seen["messages"][-1]["content"]] == ["image", "text"]
+
+
+def test_an_image_turn_without_tools_leaves_the_image_on_the_turn_that_sent_it():
+    backend, seen = _vision_probe()
+    _drain(
+        backend,
+        system_prompt = "SYSTEM_RULE",
+        messages = [
+            {"role": "user", "content": "EARLIER"},
+            {"role": "assistant", "content": "ANSWER_ONE"},
+            {
+                "role": "user",
+                "content": [{"type": "image"}, {"type": "text", "text": "IMAGE_QUESTION"}],
+            },
+            {"role": "assistant", "content": "ANSWER_TWO"},
+            {"role": "user", "content": "LATER"},
+        ],
+    )
+    sent = seen["messages"]
+    assert [m["role"] for m in sent] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert [[p["type"] for p in m["content"]] for m in sent] == [
+        ["text"],
+        ["text"],
+        ["text"],
+        ["image", "text"],
+        ["text"],
+        ["text"],
+    ]
+
+
+def test_an_image_only_turn_still_asks_about_the_image():
+    backend, seen = _vision_probe()
+    _drain(
+        backend,
+        messages = [
+            {"role": "user", "content": "EARLIER"},
+            {"role": "assistant", "content": "ANSWER_ONE"},
+            {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": ""}]},
+        ],
+    )
+    assert seen["messages"][0]["content"] == [{"type": "text", "text": "EARLIER"}]
+    assert seen["messages"][-1]["content"][-1] == {"type": "text", "text": "Describe this image."}
+
+
+def test_an_image_continuation_resumes_the_replayed_partial_after_the_no_system_retry():
+    backend, _ = _vision_probe()
+    renders = []
+
+    def apply_chat_template(messages, **kwargs):
+        renders.append((messages, kwargs))
+        if any(m["role"] == "system" for m in messages):
+            raise ValueError("system role not supported")
+        return "PROMPT"
+
+    backend.models["vision-tools"]["processor"].apply_chat_template = apply_chat_template
+    _drain(
+        backend,
+        system_prompt = "SYSTEM_RULE",
+        continue_final_message = True,
+        messages = [
+            {"role": "user", "content": "EARLIER"},
+            {"role": "assistant", "content": "ANSWER_ONE"},
+            {"role": "user", "content": "LATER"},
+            {"role": "assistant", "content": "PARTIAL_ANSWER"},
+        ],
+    )
+    assert len(renders) == 2
+    assert renders[0][0][0]["role"] == "system"
+    messages, kwargs = renders[1]
+    assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
+    assert messages[-1]["content"] == [{"type": "text", "text": "PARTIAL_ANSWER"}]
+    assert [p["type"] for p in messages[-2]["content"]] == ["image", "text"]
+    assert kwargs["continue_final_message"] is True
+
+
+@pytest.mark.parametrize(
+    "system_prompt, messages, tools",
+    [
+        ("SYSTEM_RULE", [{"role": "user", "content": "what is in this picture"}], None),
+        (
+            "",
+            [
+                {"role": "system", "content": "SYSTEM_RULE"},
+                {"role": "user", "content": "what is in this picture"},
+            ],
+            [_LOOKUP],
+        ),
+    ],
+)
+def test_every_image_render_carries_the_reasoning_controls(system_prompt, messages, tools):
+    backend, _ = _vision_probe()
+    renders = []
+
+    def apply_chat_template(messages, **kwargs):
+        renders.append(kwargs)
+        if any(m["role"] == "system" for m in messages):
+            raise ValueError("system role not supported")
+        return "PROMPT"
+
+    backend.models["vision-tools"]["processor"].apply_chat_template = apply_chat_template
+    _drain(
+        backend,
+        system_prompt = system_prompt,
+        messages = messages,
+        tools = tools,
+        enable_thinking = False,
+        reasoning_effort = "low",
+        preserve_thinking = True,
+    )
+    assert len(renders) >= 2
+    for kwargs in renders:
+        assert kwargs["enable_thinking"] is False
+        assert kwargs["reasoning_effort"] == "low"
+        assert kwargs["preserve_thinking"] is True
+
+
+def test_an_image_turn_penalizes_repeats_in_the_generated_tokens_only():
+    torch = pytest.importorskip("torch")
+    from transformers import RepetitionPenaltyLogitsProcessor
+
+    backend, _ = _vision_probe()
+    calls = []
+    backend.models["vision-tools"]["model"].generate = lambda **kwargs: calls.append(kwargs)
+    messages = [{"role": "user", "content": "what is in this picture"}]
+    _drain(backend, messages = messages, repetition_penalty = 1.0)
+    _drain(backend, messages = messages, repetition_penalty = 2.0)
+
+    def penalties(call):
+        return [
+            p for p in call["logits_processor"] if isinstance(p, RepetitionPenaltyLogitsProcessor)
+        ]
+
+    assert penalties(calls[0]) == []
+    (penalty,) = penalties(calls[1])
+    scores = penalty(torch.tensor([[9, 2]]), torch.ones((1, 4)))
+    assert scores.tolist() == [[1.0, 1.0, 0.5, 1.0]]
+
+
+def test_an_image_turn_still_penalizes_on_a_transformers_without_prompt_ignore_length(monkeypatch):
+    """``prompt_ignore_length`` arrived in transformers 4.52; pyproject still allows
+    4.51.3, whose processor takes ``penalty`` alone and raised TypeError here."""
+    torch = pytest.importorskip("torch")
+    import transformers
+
+    live = sys.modules["transformers"]
+    real = live.RepetitionPenaltyLogitsProcessor
+
+    class Floor(real):
+        def __init__(self, penalty: float):
+            super().__init__(penalty)
+
+    monkeypatch.setattr(live, "RepetitionPenaltyLogitsProcessor", Floor, raising = False)
+    monkeypatch.setattr(transformers, "RepetitionPenaltyLogitsProcessor", Floor, raising = False)
+
+    backend, _ = _vision_probe()
+    calls = []
+    backend.models["vision-tools"]["model"].generate = lambda **kwargs: calls.append(kwargs)
+    _drain(
+        backend,
+        messages = [{"role": "user", "content": "what is in this picture"}],
+        repetition_penalty = 2.0,
+    )
+
+    (penalty,) = [p for p in calls[0]["logits_processor"] if isinstance(p, Floor)]
+    # Same slice the 4.52+ processor does internally: the one prompt id is skipped,
+    # so id 9 never indexes past this 4-wide vocabulary and only id 2 is penalized.
+    scores = penalty(torch.tensor([[9, 2]]), torch.ones((1, 4)))
+    assert scores.tolist() == [[1.0, 1.0, 0.5, 1.0]]
+
+
+@pytest.mark.parametrize(
+    "content, structured, expected",
+    [
+        ("", False, [{"type": "image"}, {"type": "text", "text": ""}]),
+        ("", True, [{"type": "image"}]),
+        (
+            [{"type": "image_url", "image_url": {"url": "x"}}],
+            True,
+            [{"type": "image_url", "image_url": {"url": "x"}}],
+        ),
+    ],
+)
+def test_an_image_only_turn_without_a_fallback_is_unchanged(content, structured, expected):
+    from core.inference.chat_template_helpers import messages_with_attached_image
+    out = messages_with_attached_image(
+        [{"role": "user", "content": content}], structured_content = structured
+    )
+    assert out == [{"role": "user", "content": expected}]
 
 
 def test_no_image_marker_on_the_plain_route_when_renders_image_is_false():
@@ -1211,3 +1538,136 @@ def test_the_nudge_retry_skips_the_image_marker_on_a_text_only_fallback():
             body = message.get("content")
             if isinstance(body, list):
                 assert not any(p.get("type") == "image" for p in body), message
+
+
+def test_an_earlier_attachment_keeps_its_own_turn_against_a_newer_replay():
+    """The attachment's turn can PRECEDE a tool's picture. The plain route used to
+    pre-add its marker, so this backend counted that marker as history's, the top-up
+    became a no-op, and pixels_in_marker_order could no longer tell the two apart --
+    the model was shown the screenshot where the user's own diagram belonged."""
+    from core.inference.mcp_images import placeholder_turn
+
+    backend, seen = _vision_probe()
+    attachment, replayed = object(), object()
+
+    # What the plain route hands the backend once it stops pre-marking: the
+    # attachment's turn is a plain string and the only marker is the replay's.
+    messages = [
+        {"role": "user", "content": "here is my diagram"},
+        {"role": "assistant", "content": "noted"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "mcp__s__shot", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "[1 image returned]"},
+        placeholder_turn(1, 1),
+        {"role": "user", "content": "which one is bluer?"},
+    ]
+
+    _drain(
+        backend,
+        messages = messages,
+        image = attachment,
+        images = [replayed],
+        image_ordinal = 0,
+    )
+
+    rendered = seen["messages"]
+    marker_turns = [
+        index
+        for index, message in enumerate(rendered)
+        if isinstance(message.get("content"), list)
+        and any(part.get("type") == "image" for part in message["content"])
+    ]
+    assert len(marker_turns) == 2, rendered
+    assert marker_turns[0] < marker_turns[1]
+    assert seen["images"] == [attachment, replayed], "the pixels bound to each other's markers"
+
+
+@pytest.mark.parametrize(
+    "initial, requested", [(True, False), (False, True), ("first", "second"), ("first", None)]
+)
+def test_replayed_vision_images_honor_adapter_selection_under_lock(initial, requested):
+    backend, seen = _vision_probe()
+    backend.models[backend.active_model_name]["is_vision"] = True
+    model = backend.models[backend.active_model_name]["model"]
+    state = {"active": initial, "applied": []}
+
+    def apply(value):
+        assert backend._generation_lock.locked()
+        # The real helper's contract: None leaves the loaded state alone.
+        if value is None:
+            return
+        state["applied"].append(value)
+        state["active"] = value
+
+    def generate(**kwargs):
+        assert backend._generation_lock.locked()
+        state["generated_with"] = state["active"]
+
+    backend._apply_adapter_state = apply
+    model.generate = generate
+    replay = object()
+    list(
+        backend.generate_with_adapter_control(
+            use_adapter = requested,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": "Describe the tool image"},
+                    ],
+                }
+            ],
+            image = None,
+            images = [replay],
+            max_new_tokens = 1,
+        )
+    )
+    assert seen["images"] is replay
+    assert state["generated_with"] == (initial if requested is None else requested)
+    assert state["applied"] == ([] if requested is None else [requested])
+
+
+def test_each_compare_pane_applies_its_own_adapter_state_on_an_image_turn(monkeypatch):
+    backend, _ = _vision_probe()
+    info = backend.models["vision-tools"]
+    info["is_vision"] = True
+    events = []
+    monkeypatch.setattr(
+        backend,
+        "_apply_adapter_state",
+        lambda state: events.append((state, backend._generation_lock.locked())),
+    )
+    monkeypatch.setattr(
+        info["model"],
+        "generate",
+        lambda **_kwargs: events.append(("generate", backend._generation_lock.locked())),
+    )
+
+    def pane(use_adapter):
+        list(
+            backend.generate_with_adapter_control(
+                use_adapter = use_adapter,
+                messages = [{"role": "user", "content": "what is in this picture"}],
+                image = object(),
+                max_new_tokens = 1,
+            )
+        )
+
+    panes = [threading.Thread(target = pane, args = (state,)) for state in (False, True)]
+    for thread in panes:
+        thread.start()
+    for thread in panes:
+        thread.join()
+
+    assert sorted(events[0::2]) == [(False, True), (True, True)]
+    assert events[1::2] == [("generate", True)] * 2

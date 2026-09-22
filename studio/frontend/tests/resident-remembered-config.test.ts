@@ -36,6 +36,8 @@ function config(nParallel: number | null, maxSeqLength: number | null = null) {
     speculativeType: null,
     specDraftNMax: null,
     nParallel,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     nBatch: null,
     nUbatch: null,
     tensorParallel: false,
@@ -78,6 +80,63 @@ test("the quant still separates two variants of one cached repo", () => {
     false,
   );
 });
+
+for (const modelId of [
+  "/home/u/.lmstudio/models/unsloth/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf",
+  String.raw`C:\Users\u\.lmstudio\models\unsloth\Qwen3-0.6B-GGUF\Qwen3-0.6B-Q4_K_M.gguf`,
+  "Qwen3-0.6B-Q4_K_M.gguf",
+]) {
+  test(`a resident standalone GGUF restores the settings saved by the picker: ${modelId}`, () => {
+    store.clear();
+    savePerModelConfig(modelId, null, {
+      ...config(2),
+      customContextLength: 4096,
+    });
+
+    const resolved = resolveResidentInitialConfig(modelId, "Q4_K_M");
+    assert.equal(resolved.remembered, true);
+    assert.equal(resolved.config.customContextLength, 4096);
+    assert.equal(resolved.config.nParallel, 2);
+  });
+}
+
+for (const modelId of [
+  "/home/u/.lmstudio/models/unsloth/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf",
+  "Qwen3-0.6B-Q4_K_M.gguf",
+]) {
+  test(`a record the picker keyed by the quant label before #7473 is still read: ${modelId}`, () => {
+    store.clear();
+    savePerModelConfig(modelId, "Q4_K_M", config(5));
+
+    // Only the label is on disk, so the fallback is what answers.
+    const resolved = resolveResidentInitialConfig(modelId, "Q4_K_M");
+    assert.equal(resolved.remembered, true);
+    assert.equal(resolved.config.nParallel, 5);
+
+    // A record under the path still wins over the older labelled one.
+    savePerModelConfig(modelId, null, config(6));
+    assert.equal(
+      resolveResidentInitialConfig(modelId, "Q4_K_M").config.nParallel,
+      6,
+    );
+  });
+}
+
+for (const modelId of [
+  "/home/u/.lmstudio/models/unsloth/Qwen3-0.6B-GGUF",
+  "org/model.gguf",
+]) {
+  test(`a model containing several GGUF variants keeps their settings separate: ${modelId}`, () => {
+    store.clear();
+    savePerModelConfig(modelId, null, config(8));
+    savePerModelConfig(modelId, "Q4_K_M", config(2));
+    savePerModelConfig(modelId, "Q8_0", config(4));
+
+    assert.equal(resolveResidentInitialConfig(modelId, "Q4_K_M").config.nParallel, 2);
+    assert.equal(resolveResidentInitialConfig(modelId, "Q8_0").config.nParallel, 4);
+    assert.equal(resolveResidentInitialConfig(modelId, "Q6_K").remembered, false);
+  });
+}
 
 test("a stem two models can share is never read as an alias", () => {
   store.clear();

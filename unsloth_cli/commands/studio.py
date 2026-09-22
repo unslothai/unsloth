@@ -40,7 +40,9 @@ def _enable_verbose_access_logs() -> None:
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"] = "0"
 
 
-# Root order: UNSLOTH_STUDIO_HOME, STUDIO_HOME, sys.prefix, legacy ~/.unsloth/studio. Markers mirror install.ps1 / uninstall.ps1 and are matched as bytes.
+# Root order: UNSLOTH_STUDIO_HOME, STUDIO_HOME, UNSLOTH_HOME/studio, sys.prefix,
+# legacy ~/.unsloth/studio. Keep this aligned with storage_roots.studio_root().
+# Shim markers mirror install.ps1 / uninstall.ps1 and are matched as bytes.
 _CMD_SHIM_MARKERS = (b"unsloth-studio-managed-launcher", b"from unsloth_cli import app")
 _CMD_SHIM_MAX_BYTES = 8192
 
@@ -76,6 +78,25 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             return Path(override).expanduser().resolve(), True
         except (OSError, ValueError):
             return Path(override).expanduser(), True
+    # Keeps the CLI on the same root as storage_roots.py; see test_unsloth_home_root_agreement.py.
+    master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if master:
+        try:
+            candidate = Path(master).expanduser().resolve() / "studio"
+        except (OSError, ValueError):
+            candidate = Path(master).expanduser() / "studio"
+        try:
+            legacy = (Path.home() / ".unsloth" / "studio").resolve()
+        except (OSError, ValueError):
+            legacy = Path.home() / ".unsloth" / "studio"
+        # install.sh and install.ps1 do not read UNSLOTH_HOME yet, so they leave the venv and the
+        # launcher at the legacy root while setup puts the runtimes under the master root:
+        # preferring <master>/studio unconditionally reported "Unsloth Studio not set up" for an
+        # install that is right there. The master root wins only when it HAS an install.
+        if candidate != legacy and not _looks_like_installer_managed_studio_home(candidate):
+            if _looks_like_installer_managed_studio_home(legacy):
+                return legacy, False
+        return candidate, candidate != legacy
     try:
         prefix = Path(sys.prefix).resolve()
         if prefix.name == "unsloth_studio":
@@ -90,25 +111,93 @@ def _resolve_studio_home() -> tuple[Path, bool]:
 
 STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()
 
+MASTER_ROOT_NOTE = ".unsloth-master-root"
+
+
+def _recorded_master_root() -> Optional[Path]:
+    """The master root setup recorded in this Studio tree, or None.
+
+    Keep this aligned with storage_roots._recorded_master_root(); see
+    test_unsloth_home_root_agreement.py. `UNSLOTH_HOME=/mnt/portable unsloth studio update` puts
+    node, llama.cpp and whisper.cpp BESIDE studio/ and leaves nothing in a later environment. The
+    backend recovers that from the note, so a `unsloth studio update` that did not would hand
+    setup a plain Studio root, have it refresh the runtimes one level down at <master>/studio/,
+    and leave the backend still launching the stale trees at <master>/.
+
+    The recorded root must exist and THIS Studio directory must lie inside it, so a tree copied
+    from one master root to another does not send the update, or a removal, into the original
+    install. Containment, not an exact <root>/studio match: the flat layout names one directory
+    for both, and UNSLOTH_HOME=/root with UNSLOTH_STUDIO_HOME=/root/custom/studio is a root that
+    genuinely contains its Studio somewhere other than the default child. The backend and both
+    uninstallers apply exactly this rule, and a stricter one here would have the CLI decline a
+    note the backend accepts, which is the same split this function exists to close.
+    """
+    try:
+        recorded = (STUDIO_HOME / "share" / MASTER_ROOT_NOTE).read_text(encoding = "utf-8").strip()
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not recorded:
+        return None
+    try:
+        master = Path(recorded).expanduser().resolve()
+        here = STUDIO_HOME.resolve()
+        if not (master.is_dir() and (here == master or master in here.parents)):
+            return None
+        # A legacy-rooted install has no master root, and both uninstallers already refuse what
+        # that shape records. storage_roots._is_legacy_studio_tree declines it too, and
+        # test_unsloth_home_root_agreement.py holds the two together: without this the CLI would
+        # export UNSLOTH_HOME for a note the backend has declined. Keyed on the TREE, so a note
+        # naming $HOME or any other ancestor goes with it.
+        try:
+            if here == (Path.home() / ".unsloth" / "studio").resolve():
+                return None
+        except (OSError, RuntimeError, ValueError):
+            pass
+        return master
+    except (OSError, ValueError):
+        return None
+    return None
+
 
 def _ensure_studio_env_exported() -> None:
-    """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots only, per
-    subcommand rather than at import, so unrelated importers see no env changes."""
-    if not _STUDIO_HOME_IS_CUSTOM:
+    """Re-export UNSLOTH_STUDIO_HOME / UNSLOTH_LLAMA_CPP_PATH for custom roots, and for a master
+    root the resolver above declined, per subcommand rather than at import, so unrelated
+    importers see no env changes."""
+    # storage_roots.studio_root() honours UNSLOTH_HOME with no install check, so the fallback
+    # keeping this CLI on an installed legacy root must be told to the backend too: unexported,
+    # `unsloth studio` runs the legacy venv while the backend inside it writes studio.db, auth
+    # and the pid file under <master>/studio. Exporting the root does not make it custom, since
+    # the value equals the legacy path both installers compare against.
+    # The note, when this run has no UNSLOTH_HOME of its own. Exported rather than merely read,
+    # because setup runs as a subprocess and would otherwise refresh the runtimes at
+    # <master>/studio/ while the backend kept launching the ones at <master>/.
+    if not (os.environ.get("UNSLOTH_HOME") or "").strip():
+        _recorded = _recorded_master_root()
+        if _recorded is not None:
+            os.environ["UNSLOTH_HOME"] = str(_recorded)
+    if not _STUDIO_HOME_IS_CUSTOM and not (os.environ.get("UNSLOTH_HOME") or "").strip():
         return
     # Truthy-check, not setdefault: a blank UNSLOTH_STUDIO_HOME= must not win.
-    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+    if not (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip():
         os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
     try:
         _legacy_studio = (Path.home() / ".unsloth" / "studio").resolve()
         _is_legacy = STUDIO_HOME.resolve() == _legacy_studio
     except (OSError, ValueError):
         _is_legacy = STUDIO_HOME == (Path.home() / ".unsloth" / "studio")
-    if _is_legacy:
+    # The runtimes are siblings of studio/, at the master root, so STUDIO_HOME/llama.cpp is one
+    # level too deep. run.py keeps a non-blank value, so a wrong export here wins everywhere.
+    _master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if _master:
+        try:
+            _llama_dir = Path(_master).expanduser().resolve() / "llama.cpp"
+        except (OSError, ValueError):
+            _llama_dir = Path(_master).expanduser() / "llama.cpp"
+    elif _is_legacy:
         _llama_dir = Path.home() / ".unsloth" / "llama.cpp"
     else:
         _llama_dir = STUDIO_HOME / "llama.cpp"
-    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+    if not (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip():
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_llama_dir)
 
 
@@ -414,6 +503,14 @@ def _torch_requires_rocm_metapackage(venv_dir: Path) -> bool:
     return False
 
 
+# The single gfx arch this install carries kernels for, published for the backend.
+# Read by studio/backend/utils/desktop_shell_env.py, which imports ROCm variables a
+# desktop launch never received out of the login shell: that profile is where the
+# #7331 override lives, so the backend needs the same arbiter this guard uses, not
+# just the outcome of running it against a GUI environment that never had the value.
+ROCM_INSTALLED_ARCH_ENV = "UNSLOTH_ROCM_INSTALLED_ARCH"
+
+
 def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
     """gfx arch the ROCm runtime in *venv_dir* ACTIVELY carries kernels for, or None. Read from the
     `rocm` meta-package: globbing for rocm_sdk_libraries_gfx* would read an ORPHAN. None also
@@ -472,9 +569,14 @@ def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
 def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
     """Run the #7331 spoof clear for whichever entry point is about to launch. Idempotent."""
     _venv = STUDIO_HOME / "unsloth_studio"
-    _arch = _clear_hsa_override_contradicting_install(
-        Path(sys.prefix) if sys.prefix.startswith(str(_venv)) else _venv
-    )
+    _root = Path(sys.prefix) if sys.prefix.startswith(str(_venv)) else _venv
+    _arch = _clear_hsa_override_contradicting_install(_root)
+    # Published whether or not anything was cleared here: on a desktop launch the GUI
+    # environment never carried the override, so the clear above is a no-op and the
+    # contradicting value is still sitting in the profile the backend is about to read.
+    _installed = _installed_rocm_single_arch(_root)
+    if _installed and platform.system() != "Windows":
+        os.environ[ROCM_INSTALLED_ARCH_ENV] = _installed
     if _arch is not None and not silent:
         typer.echo(
             f"Cleared HSA_OVERRIDE_GFX_VERSION: this install carries {_arch} kernels "
@@ -530,7 +632,7 @@ def _load_run_module():
 
     spec = importlib.util.spec_from_file_location("studio.backend.run", run_py)
     if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load studio backend from {run_py}")
+        raise ImportError(f"Could not load Unsloth backend from {run_py}")
     module = importlib.util.module_from_spec(spec)
     sys.modules["studio.backend.run"] = module
     try:
@@ -771,6 +873,12 @@ def _load_backend_auth_storage():
 
 def _write_auth_secret(path: Path, secret: str) -> None:
     path.parent.mkdir(parents = True, exist_ok = True)
+    # mkdir under a 022 umask leaves auth/ world-readable when this runs before the DB connection does it; the files
+    # below are 0600 either way, but the directory listing names them. Best-effort, like the chmods below.
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
     fd, tmp_name = tempfile.mkstemp(prefix = f".{path.name}.", dir = path.parent)
     tmp_path = Path(tmp_name)
     try:
@@ -1067,22 +1175,48 @@ def _cli_update_password(
     """CLI mirror of backend update_password + change-password effects, in one transaction. File
     cleanup runs after commit, so it cannot roll back."""
     password_salt, password_hash = _hash_password(new_password)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
+    # Managed credentials live in the account_* columns behind the downgrade fence; the owner's row keeps the legacy columns.
+    managed = False
+    if "account_jwt_secret" in columns:
+        row = conn.execute("SELECT role FROM auth_user WHERE username = ?", (username,)).fetchone()
+        managed = bool(row) and row[0] not in (None, "owner")
+    target_columns = (
+        "account_password_salt = ?, account_password_hash = ?, account_jwt_secret = ?"
+        if managed
+        else "password_salt = ?, password_hash = ?, jwt_secret = ?"
+    )
     with conn:
         conn.execute(
-            """
+            f"""
             UPDATE auth_user
-            SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+            SET {target_columns}, must_change_password = 0
             WHERE username = ?
             """,
             (password_salt, password_hash, secrets.token_urlsafe(64), username),
         )
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
-        conn.execute(
-            "DELETE FROM app_secrets WHERE key IN (?, ?)",
-            (DESKTOP_SECRET_HASH_KEY, DESKTOP_SECRET_CREATED_AT_KEY),
-        )
+        if username == DEFAULT_ADMIN_USERNAME:
+            conn.execute(
+                "DELETE FROM app_secrets WHERE key IN (?, ?)",
+                (DESKTOP_SECRET_HASH_KEY, DESKTOP_SECRET_CREATED_AT_KEY),
+            )
         if revoke_api_keys:
-            conn.execute("DELETE FROM api_keys")
+            conn.execute("DELETE FROM api_keys WHERE username = ?", (username,))
+            if managed:
+                conn.execute(
+                    "DELETE FROM account_api_keys WHERE account_id = "
+                    "(SELECT account_id FROM auth_user WHERE username = ?)",
+                    (username,),
+                )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
+            if "setup_code_hash" in columns:
+                conn.execute(
+                    "UPDATE auth_user SET setup_code_hash = NULL, setup_code_expires_at = NULL WHERE username = ?",
+                    (username,),
+                )
+    if username != DEFAULT_ADMIN_USERNAME:
+        return
     stale_files = [BOOTSTRAP_PASSWORD_FILE, DESKTOP_SECRET_FILE]
     if revoke_api_keys:
         # Reset only: the rows are gone, so each cached key is now plaintext for a
@@ -1441,14 +1575,9 @@ def _enforce_password_change_before_exposure(
                 _pbkdf2_hex(candidate, password_salt.encode("utf-8")), password_hash
             )
 
-        # Ctrl+C aborts a TUNNEL launch only; on a raw bind it declines the prompt, because that launch worked before this gate existed.
-        refusal = (
-            "Ctrl+C to abort."
-            if tunnel_will_start
-            else "Ctrl+C to skip, and Unsloth starts with the auto-generated password."
-        )
         typer.echo(
-            f"Unsloth Studio will be reachable {exposure}, so set a password now. {refusal}",
+            f"Unsloth Studio will be reachable {exposure}, so set a password now. "
+            "Ctrl+C to abort.",
             err = True,
         )
         try:
@@ -1469,25 +1598,19 @@ def _enforce_password_change_before_exposure(
             os.environ[_UNATTENDED_PROMPT_DONE_ENV] = "1"
             return
         except (KeyboardInterrupt, EOFError):
-            if tunnel_will_start:
-                typer.echo(
-                    "\nError: password change aborted; refusing to publish Unsloth "
-                    "on a public URL with the default admin password. Re-run and "
-                    "set a password, or launch without --secure/--cloudflare.",
-                    err = True,
-                )
-                raise typer.Exit(1)
-            # A raw bind is not a publication, so Ctrl+C returns it to pre-prompt behaviour, as run.py's gate does.
+            # An abort needs the non-interactive hatch more than the old warn did.
             typer.echo(
-                "\nWarning: password change aborted, so Unsloth is starting with "
-                "the auto-generated admin password on a bind that is reachable "
-                f"from the network. {_deadline_sentence()} Change it by logging "
-                "in, with `unsloth studio reset-password`, or by passing "
-                "--password / UNSLOTH_STUDIO_PASSWORD.",
+                "\nError: password change aborted; refusing to expose Unsloth "
+                "with the default admin password. Re-run and set a password, or "
+                "pass one with --password / UNSLOTH_STUDIO_PASSWORD, or "
+                + (
+                    "launch without --secure/--cloudflare."
+                    if tunnel_will_start
+                    else "launch with -H 127.0.0.1 to stay off the network."
+                ),
                 err = True,
             )
-            os.environ[_UNATTENDED_PROMPT_DONE_ENV] = "1"
-            return
+            raise typer.Exit(1)
         _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, new_password)
         typer.echo(f"Password updated for '{DEFAULT_ADMIN_USERNAME}'.", err = True)
     finally:
@@ -1905,6 +2028,7 @@ def studio_default(
             run_kwargs["frontend_path"] = resolved_frontend
         run_server(**run_kwargs)
 
+    _graceful_shutdown_on_sigterm()
     try:
         if run_mod._shutdown_event is not None:
             # Event.wait() with no timeout blocks at C level on Linux and swallows SIGINT.
@@ -2555,6 +2679,7 @@ def run(
 
         api_key = _create_api_key_inprocess(api_key_name)
         if start_api_key_marker:
+            typer.echo(f"UNSLOTH_START_PORT: {actual_port}")
             typer.echo(f"UNSLOTH_START_API_KEY: {api_key}")
 
         if not silent:
@@ -2668,6 +2793,7 @@ def run(
         typer.echo(f"API Key: {api_key}")
         typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
+    _graceful_shutdown_on_sigterm()
     try:
         if run_mod._shutdown_event is not None:
             while not run_mod._shutdown_event.is_set():
@@ -2712,7 +2838,7 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _parse_pid_record(text: str) -> "tuple[int, float | None] | None":
+def _parse_pid_record(text: str) -> "tuple[int, float | None, str | None] | None":
     lines = text.splitlines()
     if not lines or not lines[0].strip().isdigit():
         return None
@@ -2730,10 +2856,12 @@ def _parse_pid_record(text: str) -> "tuple[int, float | None] | None":
             created = float(lines[1].strip())
         except ValueError:
             created = None
-    return pid, created
+    # Third line: the addresses run.py bound, absent in a legacy record.
+    address = lines[2].strip() if len(lines) > 2 and lines[2].strip() else None
+    return pid, created, address
 
 
-def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
+def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None":
     try:
         text = path.read_text(encoding = "utf-8")
     except (OSError, UnicodeDecodeError):
@@ -2789,7 +2917,7 @@ def _pid_file_entries(
             typer.echo(f"Ignoring invalid PID file {path.name}")
             _unlink_quietly(path)
             continue
-        pid, created = record
+        pid, created, _address = record
         created_times, files = by_pid.setdefault(pid, ([], []))
         created_times.append(created)
         files.append(path)
@@ -2808,6 +2936,19 @@ def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()
     except Exception:
         return True
     return any(abs(actual - c) < 1.0 for c in known)
+
+
+def _graceful_shutdown_on_sigterm() -> None:
+    """Route SIGTERM (docker stop, `unsloth studio stop`) into the wait loop's Ctrl+C path,
+    which stops and saves a running training job before anything is killed."""
+    import signal as _signal
+
+    def _handler(signum, frame):
+        # Restore the default so a second signal force-quits if the shutdown stalls.
+        _signal.signal(_signal.SIGTERM, _signal.SIG_DFL)
+        raise KeyboardInterrupt
+
+    _signal.signal(_signal.SIGTERM, _handler)
 
 
 def _signal_stop(pid: int) -> "str | None":
@@ -3156,18 +3297,64 @@ _PS_PROXY_DEFAULTS_PRELUDE = (
 )
 
 
-_UV_CACHE_BUCKETS = ("archive-", "builds-", "built-wheels-", "wheels-", "sdists-")
+_UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")
+# The subset `uv pip install` CREATES, which is the only uv command studio/setup.sh runs. The
+# rule is what uv is measured to write: a `git+` requirement creates git-v0 and builds-v0, so
+# those are in, while flat-index-v2 is not created even by `--find-links --no-index`, and
+# binaries, environments, osv and python belong to uv self-update, uv venv and uv python.
+# Probing a store uv never touches only throws warm caches away. Re-measure on a pin bump.
+_UV_PIP_STORES = (
+    "archive",
+    "builds",
+    "built-wheels",
+    "git",
+    "interpreter",
+    "sdists",
+    "simple",
+    "wheels",
+)
 _UV_CACHE_METADATA_SUFFIXES = (".lock", ".msgpack", ".http", ".rev")
+
+
+def _uv_is_bucket_name(name: str) -> bool:
+    """A name uv itself creates: <kind>-v<N>, whole suffix numeric, kind from the LAST `-v`.
+    Same shape rule as _uv_is_bucket_name in install.sh and Test-StudioUvBucketName in
+    install.ps1, over the narrower kind list: this one only answers whether a bucket holds
+    package BYTES, where the installers also probe the kinds uv merely writes."""
+    kind, marker, version = name.rpartition("-v")
+    # isascii too: str.isdigit() is true for Arabic-Indic and superscript digits, which the sh
+    # `*[!0-9]*` case and the PowerShell \A[0-9]+\z both reject. uv writes ASCII.
+    return bool(marker) and version.isascii() and version.isdigit() and kind in _UV_CACHE_BUCKETS
+
+
+def _uv_bucket_entry_name(cache_dir: Path, entry: Path) -> Optional[str]:
+    """The name uv opens this entry as, or None if uv does not own it.
+
+    On APFS or NTFS `Archive-V0` IS the directory uv writes at `archive-v0`, so a case-sensitive
+    match called a full cache cold while studio/setup.sh, which folds, called it warm, and the
+    two then chose different caches. samefile rather than a write probe: only existing entries
+    matter here, so the filesystem can be asked without creating anything."""
+    if _uv_is_bucket_name(entry.name):
+        return entry.name
+    lowered = entry.name.lower()
+    if lowered == entry.name or not _uv_is_bucket_name(lowered):
+        return None
+    try:
+        return lowered if (cache_dir / lowered).samefile(entry) else None
+    except OSError:
+        return None
 
 
 def _uv_cache_has_packages(cache_dir: Path) -> bool:
     """wheels-* is metadata only on uv 0.10, so counting any file reads a merely-resolved cache
-    as warm. Same rule as install.sh:_configure_uv_cache."""
+    as warm. Same rule as install.sh:_configure_uv_cache, the WHOLE `-v` suffix included: a
+    prefix match also takes `archive-v0.backup` and `archive-backup-v0`, whose bytes uv cannot
+    reuse, so an update could prefer a cache that is cold in practice and redownload."""
     try:
         buckets = [
             entry
             for entry in cache_dir.iterdir()
-            if entry.name.startswith(_UV_CACHE_BUCKETS) and entry.is_dir()
+            if entry.is_dir() and _uv_bucket_entry_name(cache_dir, entry) is not None
         ]
     except (OSError, ValueError):
         return False
@@ -3193,14 +3380,19 @@ def _uv_platform_cache_dir() -> Optional[Path]:
     return Path(home) / ".cache" / "uv" if home else None
 
 
-# uv's boolish spelling. Anything outside it is a value uv refuses to run on.
-_UV_TRUE = ("1", "true", "yes", "on")
+# clap's literals, which is what uv binds UV_NO_CACHE to (BoolishValueParser). `y` and `t` are
+# real spellings uv honours, and were missing here, in install.sh and in install.ps1 alike.
+_UV_TRUE = ("1", "y", "yes", "t", "true", "on")
 
 
 def _uv_no_cache_requested() -> bool:
     """uv --no-cache caches in a temporary directory and discards it, outranks --cache-dir,
-    and recording it would aim later updates at a cache that never existed."""
-    return (os.environ.get("UV_NO_CACHE") or "").strip().lower() in _UV_TRUE
+    and recording it would aim later updates at a cache that never existed.
+
+    Not stripped, matching clap and therefore both installers: uv rejects a padded value
+    outright rather than reading it as true, so ` true ` leaves uv's cache ON and this must
+    not stand the selection down for it."""
+    return (os.environ.get("UV_NO_CACHE") or "").lower() in _UV_TRUE
 
 
 def _uv_default_cache_dir(cwd: Optional[Path] = None) -> Optional[Path]:
@@ -3284,22 +3476,161 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
         pass
 
 
+def _uv_is_store_name(name: str) -> bool:
+    """The kinds `uv pip install` writes: _uv_is_bucket_name answers warmth, this answers what a
+    write probe has to cover. Narrower than install.sh's list on purpose, since install.sh also
+    runs uv venv and uv python; re-read uv-cache/src/lib.rs on a pin bump."""
+    kind, marker, version = name.rpartition("-v")
+    return bool(marker) and version.isascii() and version.isdigit() and kind in _UV_PIP_STORES
+
+
+def _uv_cache_folds_case(cache_dir: Path) -> bool:
+    """Measured on the cache filesystem, not assumed from the platform, exactly as install.sh
+    does it: default APFS folds, ext4 does not, and a Mac can have either mounted."""
+    probe = cache_dir / f".unsloth-case-probe.{os.getpid()}-A"
+    try:
+        probe.mkdir()
+    except OSError:
+        return False
+    try:
+        return (cache_dir / f".unsloth-case-probe.{os.getpid()}-a").is_dir()
+    finally:
+        try:
+            probe.rmdir()
+        except OSError:
+            pass
+
+
+def _uv_cache_is_writable(cache_dir: Path) -> bool:
+    """A real create, as install.sh's write probe does: mode bits do not answer for a network mount, and uv aborts on a cache it
+    cannot write rather than falling back.
+
+    The stores too, not just the root: uv writes into them, so a root-only probe passes on a
+    cache uv then aborts on. Mirrors install.sh's _uv_cache_is_writable."""
+    probes = [cache_dir]
+    folds = _uv_cache_folds_case(cache_dir)
+    try:
+        # Only the directories uv OWNS: an unrelated read-only one must not disqualify a
+        # usable cache, and that is what the kind list above is for.
+        for entry in cache_dir.iterdir():
+            if not _uv_is_store_name(entry.name):
+                # On APFS or NTFS `Python-V0` is the same path uv opens as `python-v0`, so
+                # skipping it would report a cache writable that uv then aborts on.
+                if not (folds and _uv_is_store_name(entry.name.lower())):
+                    continue
+            if not entry.is_dir():
+                # A file, or a symlink dangling or not, is an existing path to mkdir, so uv
+                # cannot make the store and aborts. Skipping it would report the cache writable.
+                return False
+            probes.append(entry)
+            # One level inside the index stores, and only those. uv REWRITES this metadata on
+            # every resolve, so a shard another account owns aborts it. Measured on BOTH the
+            # pinned uv 0.12.1 and 0.10.7: a 0555 `simple-*/pypi` or `wheels-*/pypi` gives
+            # "Failed to write to the client cache", exit 2. One level is the leaf on both:
+            # 0.12.1 lays this out as `simple-v24/pypi`, not `simple-v24/index/<hash>`, and a
+            # 0555 `wheels-v6/pypi/requests` one deeper installs fine. Bounded on purpose.
+            if entry.name.lower().startswith(("simple-", "wheels-")):
+                # `index/<hash>`, one per CUSTOM index, is where uv puts metadata when
+                # --index-url is set, which Studio does for the torch wheels. Measured on the
+                # pinned uv 0.12.1: a 0555 `simple-v24/index/<hash>` passes a one-level probe
+                # and then aborts with "Failed to write to the client cache".
+                shards = list(entry.iterdir())
+                index_dir = entry / "index"
+                if index_dir.is_dir():
+                    shards.extend(index_dir.iterdir())
+                for shard in shards:
+                    if not shard.is_dir():
+                        # Same rule as the store level: a file, or a symlink dangling or not, is
+                        # an existing path uv can neither open nor mkdir. Measured on the pinned
+                        # uv 0.12.1, both abort with "Failed to write to the client cache".
+                        return False
+                    probes.append(shard)
+    except OSError:
+        return False
+    for target in probes:
+        try:
+            with tempfile.NamedTemporaryFile(dir = target, prefix = ".unsloth-write-probe."):
+                pass
+        except OSError:
+            return False
+    # Only the names uv is measured to need writable: rejecting more throws away the warm cache
+    # this path exists to find. Every control file at 0444 against uv 0.10.7: the root .lock
+    # aborts (exit 2) and sdists-v9/.git aborts (exit 2); root CACHEDIR.TAG and .gitignore, and
+    # .git/.gitignore/.lock under archive-v0, interpreter-v4, simple-v20 and wheels-v6, all
+    # install fine. uv creates only the three root files, so a per-store .git is someone else's.
+    for target in probes:
+        if target == cache_dir:
+            names = (".lock",)
+        elif target.name.lower().startswith("sdists-"):
+            # The one store measured to abort on a read-only .git. Rejecting a cache uv accepts
+            # costs the warm cache this path exists to find, so the rest are left alone.
+            names = (".git",)
+        else:
+            continue
+        for name in names:
+            control = target / name
+            if not control.exists() and not control.is_symlink():
+                continue
+            # Not a regular file, so uv cannot open it at all: measured on uv 0.10.7, a `.lock`
+            # DIRECTORY or a symlink to one exits 2 with "Could not acquire lock ... Is a
+            # directory". is_file() alone skipped it and reported the cache usable.
+            if not control.is_file() or not os.access(control, os.R_OK | os.W_OK):
+                return False
+    return True
+
+
 def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Optional[dict]:
     """An update reached neither installer nor _setup_cache_env, so uv re-downloaded
     what the install had just fetched."""
     if (os.environ.get("UV_CACHE_DIR") or "").strip():
         return env
     if _uv_no_cache_requested():
-        return env
+        # Removed, not left alone: uv parses an exported EMPTY value as `--cache-dir ''` even
+        # under --no-cache and exits 2, "a value is required for '--cache-dir'". setup.sh unsets
+        # it in its own no-cache branch; setup.ps1 has no cache handling at all, so on Windows a
+        # blank inherited value reached uv and failed the update before no-cache took effect.
+        no_cache = {**(env or os.environ)}
+        no_cache.pop("UV_CACHE_DIR", None)
+        return no_cache
     studio_cache = STUDIO_HOME / "cache" / "uv"
     recorded = _recorded_install_uv_cache()
-    if recorded is not None and _uv_cache_has_packages(recorded):
-        # Only while it holds something: a marker for an emptied cache loses to a warm one.
+    if (
+        recorded is not None
+        and _uv_cache_has_packages(recorded)
+        and _uv_cache_is_writable(recorded)
+    ):
+        # Only while it holds something and uv can still write to it: a marker for an emptied cache loses to a warm one, and setup treats
+        # the value this hands it as the caller's choice, so a cache gone read-only since the install would abort every uv command.
         return {**(env or os.environ), "UV_CACHE_DIR": str(recorded)}
-    # No marker, and content cannot settle it: one on-demand wheel warms the Studio cache even in shared mode, so use uv's default.
+    # Content cannot settle it: one on-demand wheel warms the Studio cache even in shared mode,
+    # so uv's default goes first and a warm Studio cache is the fallback below. The installers
+    # order the same three the same way.
     default_cache = _uv_default_cache_dir(cwd)
-    if default_cache is not None and _uv_cache_has_packages(default_cache):
+    if (
+        default_cache is not None
+        and _uv_cache_has_packages(default_cache)
+        and _uv_cache_is_writable(default_cache)
+    ):
         return {**(env or os.environ), "UV_CACHE_DIR": str(default_cache)}
+    # setup.sh treats an inherited UV_CACHE_DIR as the caller's choice and skips its own write
+    # probe, so handing it an unwritable Studio cache aborts every uv command in the update --
+    # the one branch here that was still unprobed. Left unset, setup.sh probes and falls back.
+    #
+    # Only for a root that already exists, and the root is never created here: setup.sh fails
+    # fast on a STUDIO_HOME override that does not, exactly so a typo cannot materialise an
+    # empty workspace, and making the cache under it first would satisfy that guard and let the
+    # update run on against a tree with no venv.
+    if STUDIO_HOME.is_dir():
+        try:
+            studio_cache.mkdir(parents = True, exist_ok = True)
+        except OSError:
+            pass
+        if not _uv_cache_is_writable(studio_cache):
+            # Explicitly absent rather than a bare `return env`: the other branches all hand back
+            # a dict, and setup.sh's own probe wants the variable gone, not inherited from here.
+            unset = {**(env or os.environ)}
+            unset.pop("UV_CACHE_DIR", None)
+            return unset
     return {**(env or os.environ), "UV_CACHE_DIR": str(studio_cache)}
 
 
@@ -3319,6 +3650,11 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     # Where setup runs uv from: setup.sh cds into its own directory, setup.ps1 keeps this cwd.
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
+    # Saves setup.ps1 the process walk. A HINT, not a promise: only the desktop spawn guarantees
+    # the managed venv's python, while a pip install, a checkout or a staged run puts an
+    # interpreter here that is nowhere near $VenvDir. Get-SetupHostInterpreterInVenv tests
+    # containment itself, so presence of this name is never proof setup runs from the venv.
+    env = {**(env or os.environ), "UNSLOTH_SETUP_HOST_PYTHON": sys.executable}
 
     if platform.system() == "Windows":
         # Resolved, not bare: PATH is not trusted here (#9440) and the Popen below has no OSError handler.
@@ -4286,14 +4622,30 @@ def provision_desktop_auth():
     typer.echo("Desktop auth ready.")
 
 
-@studio_app.command("reset-password")
-def reset_password():
-    """Reset the Unsloth admin password.
+def _reset_password_username(conn: sqlite3.Connection, username: Optional[str]) -> str:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
+    active_filter = " WHERE is_active = 1" if "is_active" in columns else ""
+    count = conn.execute("SELECT COUNT(*) FROM auth_user" + active_filter).fetchone()[0]
+    if username is None and count > 1:
+        typer.echo("Error: --username is required when multiple accounts are active.", err = True)
+        raise typer.Exit(1)
+    target = DEFAULT_ADMIN_USERNAME if username is None else username.casefold()
+    if target == DEFAULT_ADMIN_USERNAME:
+        _ensure_cli_default_admin(conn)
+    elif conn.execute("SELECT 1 FROM auth_user WHERE username = ?", (target,)).fetchone() is None:
+        typer.echo("Error: account not found.", err = True)
+        raise typer.Exit(1)
+    return target
 
-    Rotates the credential in place: a running Unsloth accepts the new password on
-    its next request, so there is nothing to restart. Shared /p preview links are
-    not revoked -- rotate those in Settings if the old password leaked.
-    """
+
+@studio_app.command("reset-password")
+def reset_password(
+    username: Optional[str] = typer.Option(
+        None, "--username", help = "Account to reset; required with multiple active accounts."
+    ),
+):
+    """Reset an Unsloth account password. Rotates in place, so nothing needs restarting. Shared /p
+    preview links are not revoked; rotate those in Settings if the old password leaked."""
     new_password = _generate_reset_password()
     try:
         conn = _connect_auth_db()
@@ -4307,15 +4659,16 @@ def reset_password():
         raise typer.Exit(1)
 
     try:
-        _ensure_cli_default_admin(conn)
-        _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, new_password, revoke_api_keys = True)
+        conn.execute("BEGIN IMMEDIATE")
+        target = _reset_password_username(conn, username)
+        _cli_update_password(conn, target, new_password, revoke_api_keys = True)
     except (OSError, sqlite3.Error) as exc:
         typer.echo(f"Error: could not reset the password ({exc}).", err = True)
         raise typer.Exit(1)
     finally:
         conn.close()
 
-    typer.echo(f"New password for '{DEFAULT_ADMIN_USERNAME}': {new_password}")
+    typer.echo(f"New password for '{target}': {new_password}")
     typer.echo(
         "Sessions and API keys revoked. A running Unsloth takes it on the next request, "
         "though repeated failed logins can hold the rate limit shut for up to a minute."

@@ -622,15 +622,18 @@ def _target_state_gpu_ids(backend, gpu_ids):
     )
 
 
-def test_gpu_ids_reload_detection_is_order_insensitive():
+def test_gpu_ids_reload_detection_is_order_sensitive():
     backend = _loaded_backend("auto")
     backend._gpu_ids = [0, 1]
     # A real non-narrowed load records the raw request too; the non-diffusion
-    # dedupe now compares that raw pin (#7239). Set it to match the effective pin
-    # (no narrowing) so this exercises the order-insensitive comparison.
+    # dedupe compares that raw pin (#7239). Set it to match the effective pin
+    # (no narrowing) so this exercises the order comparison alone.
     backend._requested_gpu_ids = [0, 1]
-    # Same set, different order -> no reload.
-    assert _target_state_gpu_ids(backend, [1, 0]) is True
+    # The picker's order IS the device order, so the same set dragged into a
+    # different order is a different placement and has to reload.
+    assert _target_state_gpu_ids(backend, [1, 0]) is False
+    # Same set, same order -> no reload.
+    assert _target_state_gpu_ids(backend, [0, 1]) is True
     # Different set -> reload.
     assert _target_state_gpu_ids(backend, [0]) is False
     # Dropping the pick (auto) -> reload.
@@ -647,7 +650,7 @@ def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
     )
 
     # The original request still matches after the fitter narrows it.
-    assert _target_state_gpu_ids(backend, [1, 0]) is True
+    assert _target_state_gpu_ids(backend, [0, 1]) is True
     assert backend.requested_gpu_ids == [0, 1]
     # The status response echoes the effective pin, which must also round-trip.
     # Treat the incoming subset as the latest intent so status and a future

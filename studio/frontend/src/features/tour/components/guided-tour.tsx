@@ -45,7 +45,14 @@ export function GuidedTour({
   const closeLockRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const lastRectRef = useRef<Rect | null>(null);
-  const activeStepRef = useRef<TourStep | null>(null);
+
+  // Rewound during render: an effect runs after the onEnter effect below, so reopening would fire
+  // the last step's onEnter (Chat's compare step navigates) before rewinding to the first.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setIdx(0);
+  }
 
   const step = steps[idx] ?? null;
   const total = steps.length;
@@ -57,30 +64,19 @@ export function GuidedTour({
     return padded(targetRect, pad, vw, vh);
   }, [step?.target, targetRect, vw, vh]);
 
+  // Cleanup, not a second effect: a step is then also left when the tour unmounts mid-step, as a
+  // page hiding its tour on navigation does. Without it onEnter's side effects leak onto the next
+  // page, and a persisted one (the sidebar pin) is never put back.
   useEffect(() => {
-    if (!open) return;
-    const prev = activeStepRef.current;
-    if (prev && prev.id !== step?.id) {
-      void prev.onExit?.();
-    }
-    activeStepRef.current = step;
-    if (step) {
-      void step.onEnter?.();
-    }
-  }, [open, step?.id]); // run before target lookup effect below
-
-  useEffect(() => {
-    if (open) return;
-    const prev = activeStepRef.current;
-    activeStepRef.current = null;
-    if (prev) {
-      void prev.onExit?.();
-    }
-  }, [open]);
+    if (!open || !step) return;
+    void step.onEnter?.();
+    return () => {
+      void step.onExit?.();
+    };
+  }, [open, step?.id]); // stays above the target lookup effect below
 
   useEffect(() => {
     if (!open) return;
-    setIdx(0);
     setTargetRect(null);
     closeLockRef.current = false;
     lastRectRef.current = null;
@@ -291,7 +287,10 @@ export function GuidedTour({
                   exit={{ opacity: 0, scale: 0.99, y: 10 }}
                   transition={{ duration: 0.22, ease: [0.165, 0.84, 0.44, 1] }}
                   className={cn(
-                    "relative overflow-hidden rounded-[28px] corner-squircle",
+                    // Plain rounded, no corner-squircle: at this radius superellipse(2)
+                    // hugs the corner about twice as tightly as the arc, which reads as a
+                    // boxed-in card rather than a rounded one.
+                    "relative overflow-hidden rounded-[28px]",
                     "bg-white/95 text-foreground ring-1 ring-black/10 dark:bg-zinc-900/96 dark:text-zinc-100 dark:ring-white/12",
                     "shadow-[0_30px_120px_rgba(0,0,0,0.35)]",
                   )}
@@ -313,7 +312,9 @@ export function GuidedTour({
                     )}
                     aria-hidden={true}
                   />
-                  <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-control-accent/18 via-control-accent/6 to-transparent dark:from-control-accent/24 dark:via-control-accent/12" />
+                  {/* Rounded to match the card. A square-cornered rectangle here reads as a
+                      second, boxier outline whenever it is not clipped to the card's radius. */}
+                  <div className="absolute inset-x-0 top-0 h-20 rounded-t-[28px] bg-gradient-to-b from-control-accent/18 via-control-accent/6 to-transparent dark:from-control-accent/24 dark:via-control-accent/12" />
                   <div className="absolute -left-14 -top-16 size-44 rounded-full bg-control-accent/20 blur-2xl dark:bg-control-accent/26" />
                   <div className="absolute -right-14 -bottom-16 size-44 rounded-full bg-cyan-300/18 blur-2xl dark:bg-cyan-300/24" />
 
