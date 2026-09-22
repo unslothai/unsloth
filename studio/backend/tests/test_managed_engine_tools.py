@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import httpx
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -59,6 +58,10 @@ def test_named_tool_template_and_unknown_syntax(tmp_path):
 
 @pytest.fixture
 def native(monkeypatch):
+    from routes import managed_engine_chat
+
+    # The module the route really uses: another test module re-imports httpx at collection.
+    httpx = managed_engine_chat.httpx
     backend = route_test._ScriptedBackend(route_test._fixed("plain"))
     backend.models["sf-model"].update(engine = "vllm", supports_tools = True)
     backend._managed_engine = SimpleNamespace(
