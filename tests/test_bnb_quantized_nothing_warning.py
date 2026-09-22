@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A load handed a bitsandbytes config that still built a 16bit model must say so.
-
-Every branch that turns 4bit/8bit off prints why, but a load can keep the request and
-still quantize nothing (every Linear in the skip list, or weights in module types
-bitsandbytes does not replace). Without a message that surfaces as an out of memory
-error, or as a 16bit run reported as 4bit.
-"""
+"""A load handed a bitsandbytes config that still built a 16bit model must say so."""
 
 import ast
 from pathlib import Path

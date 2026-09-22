@@ -1417,8 +1417,7 @@ def _bnb_bits_requested(quantization_config):
         get = lambda key, default = None: getattr(quantization_config, key, default)
     method = get("quant_method", "") or ""
     method = str(getattr(method, "value", method)).lower()
-    # The dict shorthand {"load_in_4bit": True} carries no quant_method; the loader and
-    # AutoQuantizationConfig.from_dict both read bitsandbytes off the flags.
+    # The dict shorthand {"load_in_4bit": True} has no quant_method but is still bitsandbytes.
     if not method and isinstance(quantization_config, dict):
         method = "bitsandbytes"
     if "bitsandbytes" not in method:
@@ -1435,11 +1434,7 @@ def warn_if_bitsandbytes_quantized_nothing(
     quantization_config,
     model_name = "",
 ):
-    """Print a warning when a load handed transformers a bitsandbytes config but no weight came out quantized.
-
-    Every branch that turns 4bit or 8bit off says so; this catches the load that kept the request and still built a
-    16bit model (every Linear in the skip list, or weights in module types bitsandbytes does not replace), which
-    otherwise only surfaces as an out of memory error or a 16bit run labelled 4bit. Returns True when it warned."""
+    """Warn (and return True) when a bitsandbytes load quantized no weight, e.g. every Linear was skipped."""
     bits = _bnb_bits_requested(quantization_config)
     if bits is None or model is None:
         return False
