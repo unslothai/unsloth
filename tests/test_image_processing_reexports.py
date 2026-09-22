@@ -381,3 +381,31 @@ def test_the_wrapper_is_reinstalled_after_a_module_reload():
     finally:
         dynamic_module_utils.get_class_in_module = wrapped
         dynamic_module_utils._unsloth_patched_get_class_in_module = True
+
+
+def test_the_module_shims_are_reinstalled_after_a_module_reload(siglip2_module):
+    """Reload restores the helpers the module body assigns; the flag survives.
+
+    Measured, not assumed: `__getattr__` survives because the source never
+    assigns it, while `convert_image_to_patches` and `pad_along_first_dim` are
+    assigned by the body and come back as upstream torch implementations. So
+    the module ends up HALF patched, and a guard reading the module flag would
+    call that done and leave remote-code preprocessing broken again.
+    """
+    if not _image_processing_reexports_are_missing(siglip2_module):
+        pytest.skip("this transformers still re-exports the image helpers")
+
+    _install_legacy_image_reexports(SIGLIP2)
+    dispatched = lambda: getattr(
+        siglip2_module.convert_image_to_patches, "_unsloth_numpy_dispatch", False
+    )
+    assert dispatched()
+    try:
+        assert importlib.reload(siglip2_module) is siglip2_module
+        assert getattr(siglip2_module, _IMAGE_REEXPORT_FLAG, False), "the flag survives"
+        assert not dispatched(), "the numpy dispatch does not"
+
+        assert _install_legacy_image_reexports(SIGLIP2) is True
+        assert dispatched()
+    finally:
+        _remove_legacy_image_reexports(SIGLIP2)

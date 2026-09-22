@@ -731,6 +731,29 @@ def _image_processing_reexports_are_missing(module):
     return not hasattr(module, _IMAGE_REEXPORT_PROBE)
 
 
+def _image_reexports_are_installed(module):
+    """Are the live bindings ours, right now?
+
+    Asked of the FUNCTIONS rather than of a flag on the module, for the reason
+    spelled out in `_sdpa_mask_is_patched`: `importlib.reload` re-runs the module
+    body in the EXISTING namespace, so every name the source assigns goes back to
+    upstream while anything we merely added survives. Measured on
+    `image_processing_siglip2`: the module-level `__getattr__` survives a reload
+    because the source never assigns it, but `convert_image_to_patches` and
+    `pad_along_first_dim` do not, so the numpy dispatch is silently gone while the
+    flag that would gate reinstalling it is still True.
+
+    Both halves must be live, so a half-installed module re-runs.
+    """
+    if not getattr(getattr(module, "__getattr__", None), _IMAGE_REEXPORT_FLAG, False):
+        return False
+    for name in _LEGACY_NUMPY_IMAGE_HELPERS:
+        current = getattr(module, name, None)
+        if current is not None and not getattr(current, "_unsloth_numpy_dispatch", False):
+            return False
+    return True
+
+
 def _install_legacy_image_reexports(module_name):
     """Resolve dropped image helpers off `module_name` from their current homes.
 
@@ -744,8 +767,17 @@ def _install_legacy_image_reexports(module_name):
         module = importlib.import_module(module_name)
     except Exception:
         return False
-    if getattr(module, _IMAGE_REEXPORT_FLAG, False):
+    if _image_reexports_are_installed(module):
         return False
+    # A surviving forwarder answers for every missing name, so the probe below would report
+    # the re-exports as present and bail with the numpy half still unpatched. Reinstall just
+    # that half: reload wiped only the names the module body assigns.
+    if getattr(getattr(module, "__getattr__", None), _IMAGE_REEXPORT_FLAG, False):
+        try:
+            _install_legacy_numpy_image_helpers(module)
+        except Exception as e:
+            logger.info(f"Unsloth: Skipping numpy image helper shim for {module_name} ({e})")
+        return True
     if not _image_processing_reexports_are_missing(module):
         return False
 
@@ -773,6 +805,8 @@ def _install_legacy_image_reexports(module_name):
 
     # Keep the original reachable, so the patch can be tested and undone.
     __getattr__.__wrapped__ = previous
+    # On the function, so the guard above survives a reload of the module.
+    setattr(__getattr__, _IMAGE_REEXPORT_FLAG, True)
     module.__getattr__ = __getattr__
     setattr(module, _IMAGE_REEXPORT_FLAG, True)
     setattr(module, _IMAGE_REEXPORT_BOUND, bound)
