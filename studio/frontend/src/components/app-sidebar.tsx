@@ -142,6 +142,7 @@ import {
   exportConversationByFormat,
   forkChatRow,
   getSidebarItemThreadIds,
+  useForkInFlight,
   sandboxSessionIdsHolding,
   deleteChatProject,
   deleteChatItem,
@@ -1140,6 +1141,8 @@ export function AppSidebar() {
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   // The whole map, so each row can show its own spinner.
   const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
+  // Shared with the thread's own Fork, so neither surface can post a second one.
+  const forkInFlight = useForkInFlight((s) => s.forking);
   // Rows, not raw thread ids: a compare conversation runs two pane threads but is one row.
   const runningChatCount = useMemo(() => {
     const running = new Set(
@@ -2415,6 +2418,11 @@ export function AppSidebar() {
 
   /** Forks a chat from the row menu and opens the copy, the way the thread's own Fork does. */
   async function forkChatFromRow(item: SidebarItem) {
+    // Read, do not trust the render: reopening the menu and picking Fork again before the first
+    // request lands would post a second, each with its own new thread id.
+    const inFlight = useForkInFlight.getState();
+    if (inFlight.forking) return;
+    inFlight.setForking(true);
     try {
       const result = await forkChatRow(item);
       setActiveThreadId(result.thread.id);
@@ -2430,6 +2438,8 @@ export function AppSidebar() {
       toast.error("Failed to fork", {
         description: error instanceof Error ? error.message : undefined,
       });
+    } finally {
+      inFlight.setForking(false);
     }
   }
 
@@ -3493,7 +3503,7 @@ export function AppSidebar() {
                 </span>
               </DropdownMenuItem>
               <DropdownMenuItem
-                disabled={!canForkChatRow(item)}
+                disabled={!canForkChatRow(item) || isGenerating || forkInFlight}
                 title="Copy this chat into a new one, from its last message"
                 onSelect={() => void forkChatFromRow(item)}
               >

@@ -202,7 +202,7 @@ test("a chat row forks from its own menu", async () => {
   // Below Mark as unread, and before the rule that sets off the rest.
   assert.match(
     APP_SIDEBAR,
-    /t\("shell\.selection\.markUnread"\)\}\n\s*<\/span>\n\s*<\/DropdownMenuItem>\n\s*<DropdownMenuItem\n\s*disabled=\{!canForkChatRow\(item\)\}/,
+    /t\("shell\.selection\.markUnread"\)\}\n\s*<\/span>\n\s*<\/DropdownMenuItem>\n\s*<DropdownMenuItem\n\s*disabled=\{!canForkChatRow\(item\)/,
   );
   assert.match(APP_SIDEBAR, /<span>Fork<\/span>\n\s*<\/DropdownMenuItem>\n\s*\{\/\*[^]*?\*\/\}\n\s*<DropdownMenuSeparator \/>/);
   // A comparison has two threads and no single tip to fork from.
@@ -218,4 +218,25 @@ test("a chat row forks from its own menu", async () => {
     APP_SIDEBAR,
     /setActiveThreadId\(result\.thread\.id\);\n\s*navigate\(\{ to: "\/chat", search: \{ thread: result\.thread\.id \} \}\);/,
   );
+});
+
+// A streaming chat has no settled tip: its last stored message is the prompt, or a reply still
+// being written, so the fork would end mid-answer. The message-level Fork disables on isRunning
+// for the same reason.
+test("a row being generated into cannot be forked", async () => {
+  const THREAD = await readSrcAsync("components/assistant-ui/thread.tsx");
+  assert.match(
+    APP_SIDEBAR,
+    /disabled=\{!canForkChatRow\(item\) \|\| isGenerating \|\| forkInFlight\}/,
+  );
+  // One fork at a time, and the row menu shares the guard with the thread's own Fork rather
+  // than keeping a second one: two surfaces with a flag each would still post two.
+  assert.match(APP_SIDEBAR, /const inFlight = useForkInFlight\.getState\(\);\n\s*if \(inFlight\.forking\) return;\n\s*inFlight\.setForking\(true\);/);
+  assert.match(APP_SIDEBAR, /\} finally \{\n\s*inFlight\.setForking\(false\);/);
+  assert.match(APP_SIDEBAR, /const forkInFlight = useForkInFlight\(\(s\) => s\.forking\);/);
+  // The store moved out of thread.tsx so both callers read the one flag.
+  assert.ok(!/const useForkInFlight = create</.test(THREAD));
+  assert.match(THREAD, /^\s*useForkInFlight,$/m);
+  const STORE = await readSrcAsync("features/chat/utils/fork-in-flight.ts");
+  assert.match(STORE, /export const useForkInFlight = create</);
 });
