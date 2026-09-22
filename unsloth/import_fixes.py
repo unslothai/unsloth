@@ -918,50 +918,6 @@ def _zoo_composite_prefix_renaming_installed():
 _COMPOSITE_RENAMING_SAMPLE = 8
 
 
-def _transformers_rescopes_submodule_prefix_renamings():
-    """Does this transformers scope a submodule's conversion mapping to where the submodule lives?
-
-    `get_model_conversion_mapping` recurses into every `PreTrainedModel` submodule and merges
-    each one's registered conversions into the parent's mapping. A submodule's mapping is
-    written against ITS OWN key space, so a renaming anchored at the start of the key is
-    meaningless once the submodule is nested, and upstream's correction (transformers PR
-    #45567) was to re-scope those by the submodule's dotted path: it added a `PrefixChange`
-    transform and a `model_prefix` argument to `extract_weight_conversions_for_model`.
-
-    Asked of that API, never of a version number. A transformers without `conversion_mapping`
-    at all (4.x) has no recursion to correct, so it answers True as well -- True means "leave
-    transformers alone".
-
-    Upstream has spelled the scoping three ways since, so all three count: the `model_prefix`
-    argument of 5.6 to 5.9, `PrefixChange.with_submodel_prefix` over the same range, and the
-    `scope_prefix` field every transform carries from 5.10 on. Any one of them present means
-    the recursion knows where a submodule's mapping belongs; none of them present is the
-    defect. Anything unrecognisable answers True, because guessing wrong in that direction
-    only leaves transformers as it was.
-    """
-    try:
-        from transformers import conversion_mapping
-        from transformers import core_model_loading
-    except Exception:
-        return True
-    extract = getattr(conversion_mapping, "extract_weight_conversions_for_model", None)
-    if extract is None:
-        # No per-submodule extraction, so no recursion to correct. This is every 5.x before
-        # 5.4.0, which reads the top model's mapping and stops, and it is also the answer for
-        # any future build whose machinery we cannot recognise.
-        return True
-    transform = getattr(core_model_loading, "WeightTransform", None)
-    if transform is not None and hasattr(transform, "scope_prefix"):
-        return True
-    prefix_change = getattr(core_model_loading, "PrefixChange", None)
-    if prefix_change is not None and hasattr(prefix_change, "with_submodel_prefix"):
-        return True
-    try:
-        return "model_prefix" in inspect.signature(extract).parameters
-    except Exception:
-        return True
-
-
 def _renaming_signature(conversion):
     """Identity of a renaming by VALUE, because the mapping is handed out as deep copies.
 

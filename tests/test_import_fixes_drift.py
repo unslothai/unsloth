@@ -1821,3 +1821,29 @@ def test_composite_renaming_patch_wired_into_gpu_init():
         "DRIFT DETECTED: fix_transformers_composite_prefix_renaming is defined but "
         "never called in _gpu_init.py, so real imports never install it."
     )
+
+
+def test_no_top_level_definition_is_shadowed_by_a_later_one():
+    """A second `def` of the same name silently wins and the first becomes dead code.
+
+    This branch stacks on #11450, which moved `_transformers_rescopes_submodule_prefix_renamings`
+    into the base. The merge landed both copies in different regions of the file, so git
+    reported no conflict while Python bound the later one and the earlier one, which
+    answered differently when `core_model_loading` failed to import, stopped running.
+    """
+    import ast
+    from collections import Counter
+
+    source = (Path(__file__).resolve().parent.parent / "unsloth" / "import_fixes.py").read_text(
+        encoding = "utf-8"
+    )
+    counts = Counter(
+        node.name
+        for node in ast.parse(source).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    shadowed = {name: n for name, n in counts.items() if n > 1}
+    assert not shadowed, (
+        f"DRIFT DETECTED: import_fixes.py defines these names more than once at module "
+        f"level, so every copy but the last is dead code: {shadowed}"
+    )
