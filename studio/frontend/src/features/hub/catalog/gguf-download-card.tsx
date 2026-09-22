@@ -833,8 +833,13 @@ export function GgufDownloadCard({
   const deleteTargetLabel = deleteTargetVariant
     ? ggufVariantDisplayLabel(deleteTargetVariant)
     : deleteTarget;
-  const deleteImpact = useDeleteImpact(deleteTarget !== null, repoId, deleteTarget);
-  const { deleting, runDelete } = useDeleteConfirmAction({
+  // The same identity the delete below sends, so the preview measures the copy that goes.
+  const deleteImpact = useDeleteImpact(
+    deleteTarget !== null,
+    repoId,
+    deleteTarget,
+    deleteTargetVariant?.cache_ref ?? deleteTargetVariant?.cache_path ?? cachePath ?? undefined,
+  );
     action: async () => {
       if (!deleteTarget) return;
       await deleteCachedModel(

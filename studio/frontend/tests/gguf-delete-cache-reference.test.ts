@@ -47,10 +47,12 @@ test("a logical quant delete carries the copy its own row was listed in", () => 
   // The server re-resolves a quant-level delete that carries no copy, and that resolution
   // cannot see the scoped companion readiness the online listing ranked duplicates by, so the
   // row's own cache path is the only thing that keeps the delete on the advertised copy.
-  const expanderCall = pickers.text.match(/await onDeleteVariant\(v\.quant, v\.cache_path\)/);
+  const expanderCall = pickers.text.match(
+    /await onDeleteVariant\(v\.quant, v\.cache_ref \?\? v\.cache_path\)/,
+  );
   assert.ok(expanderCall, "the expander row must hand its listed copy to the delete");
   const impact = pickers.text.match(
-    /impact: \{ repoId, variant: v\.quant, cachePath: v\.cache_path \}/,
+    /impact: \{\s*repoId,\s*variant: v\.quant,\s*cachePath: v\.cache_ref \?\? v\.cache_path,\s*\}/,
   );
   assert.ok(impact, "the confirm preview must measure the same copy the delete removes");
 
@@ -95,5 +97,63 @@ test("the delete preview accepts the copy so it measures that one", () => {
     menu.text,
     /del\?\.impact\?\.cachePath,/,
     "the row menu must pass the copy to the preview hook",
+  );
+});
+
+
+test("a redacted listing keeps the copy on the picker rows and their previews", () => {
+  // Redaction nulls `cache_path` and answers with `cache_ref`. A row that reads only the path
+  // sends nothing, and the server then ranks duplicates itself, which cannot see the scoped
+  // readiness the listing ranked them by.
+  const chatTypes = readSource("../src/features/chat/types/api.ts");
+  const declaration = chatTypes.source.statements.find(
+    (node) => ts.isInterfaceDeclaration(node) && node.name.text === "GgufVariantDetail",
+  );
+  assert.ok(declaration, "the chat GgufVariantDetail must exist");
+  const fields = declaration.members
+    .filter(ts.isPropertySignature)
+    .map((member) => member.name.getText(chatTypes.source));
+  assert.ok(
+    fields.includes("cache_ref"),
+    `the chat variant model must declare cache_ref: ${fields.join(", ")}`,
+  );
+
+  // The picker rows: expander, sole quant, and the pinned copy the validation listing resolved.
+  assert.match(
+    pickers.text,
+    /await onDeleteVariant\(v\.quant, v\.cache_ref \?\? v\.cache_path\)/,
+    "the expander delete must prefer the reference",
+  );
+  assert.match(
+    pickers.text,
+    /cachePath: v\.cache_ref \?\? v\.cache_path,/,
+    "the expander preview must measure the same copy",
+  );
+  assert.match(
+    pickers.text,
+    /\[pinKey\(repoId, variant\.quant\), variant\.cache_ref \?\? variant\.cache_path \?\? null\] as const,/,
+    "the pinned copy lookup must prefer the reference",
+  );
+  assert.match(
+    pickers.text,
+    /variant\.cache_ref \?\?\n\s*variant\.cache_path \?\?\n\s*\(mediaPageForTask\(c\.task\) \? c\.cache_path : null\)/,
+    "the On Device row preview must prefer the reference and keep the media fallback",
+  );
+  assert.match(
+    pickers.text,
+    /variant\.cache_ref \?\?\n\s*variant\.cache_path \?\?\n\s*\(mediaPageForTask\(c\.task\) \? c\.cache_path : undefined\)/,
+    "the On Device delete must prefer the reference and keep the media fallback",
+  );
+});
+
+test("the disk card previews the copy its delete sends", () => {
+  // The delete already preferred the reference; the preview above it did not, so an API-key
+  // caller was shown another duplicate's reclaimed bytes.
+  const preview = card.text.slice(card.text.indexOf("const deleteImpact = useDeleteImpact("));
+  const args = preview.slice(0, preview.indexOf(");"));
+  assert.match(
+    args,
+    /deleteTargetVariant\?\.cache_ref \?\? deleteTargetVariant\?\.cache_path \?\? cachePath \?\? undefined/,
+    "the preview must receive the same reference the delete sends",
   );
 });

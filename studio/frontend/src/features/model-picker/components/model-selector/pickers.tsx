@@ -2311,7 +2311,11 @@ function GgufVariantExpander({
                     onDeleteVariant
                       ? {
                           title: deleteVariantTitle,
-                          impact: { repoId, variant: v.quant, cachePath: v.cache_path },
+                          impact: {
+                            repoId,
+                            variant: v.quant,
+                            cachePath: v.cache_ref ?? v.cache_path,
+                          },
                           description: renderDeleteVariantDescription?.(
                             v.quant,
                           ) ?? (
@@ -2328,7 +2332,7 @@ function GgufVariantExpander({
                             `Deleted ${repoId} ${v.quant}`,
                           disabled: deleteDisabled,
                           onConfirm: async () => {
-                            await onDeleteVariant(v.quant, v.cache_path);
+                            await onDeleteVariant(v.quant, v.cache_ref ?? v.cache_path);
                             if (isChatGgufTask(pipelineTag)) {
                               await reconcileGgufPinsAfterDelete(repoId, hfToken);
                             } else if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
@@ -4519,7 +4523,7 @@ export function HubModelPicker({
             .variants.filter((variant) => variant.downloaded === true)
             .map(
               (variant) =>
-                [pinKey(repoId, variant.quant), variant.cache_path ?? null] as const,
+                [pinKey(repoId, variant.quant), variant.cache_ref ?? variant.cache_path ?? null] as const,
             );
         } catch {
           // If the backend cannot verify a quant, hiding the direct-load row is safer than claiming a
@@ -5796,7 +5800,14 @@ export function HubModelPicker({
             }}
             del={{
               title: "Delete cached model?",
-              impact: { repoId: c.repo_id, variant: variant.quant },
+              impact: {
+                repoId: c.repo_id,
+                variant: variant.quant,
+                cachePath:
+                  variant.cache_ref ??
+                  variant.cache_path ??
+                  (mediaPageForTask(c.task) ? c.cache_path : null),
+              },
               description: (
                 <>
                   This will remove{" "}
@@ -5813,7 +5824,10 @@ export function HubModelPicker({
                   c.repo_id,
                   variant.quant,
                   hfToken || undefined,
-                  variant.cache_path || (mediaPageForTask(c.task) ? c.cache_path : undefined) || undefined,
+                  variant.cache_ref ??
+                    variant.cache_path ??
+                    (mediaPageForTask(c.task) ? c.cache_path : undefined) ??
+                    undefined,
                 );
                 if (isChatGgufTask(c.task)) {
                   await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
