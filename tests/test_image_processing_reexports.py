@@ -848,11 +848,15 @@ _SPAWN_CHILD = """
 import pickle, sys
 {preamble}
 import numpy as np
-# What a real worker already has: transformers puts HF_MODULES_CACHE on sys.path
-# so a checkpoint's own module is importable. Without it the child fails on the
-# harness instead of on the thing under test.
-from transformers.dynamic_module_utils import init_hf_modules
-init_hf_modules()
+# The modules root is handed over in argv rather than recomputed from the
+# environment. `init_hf_modules()` alone left the child with
+# ModuleNotFoundError: No module named 'transformers_modules' on CI, because
+# parent and child need not resolve HF_MODULES_CACHE to the same place, and the
+# test would then be measuring the harness.
+sys.path.insert(0, sys.argv[2])
+# Marks the preamble as survived, so a runner where `import unsloth` cannot
+# finish is told apart from a real failure of the thing under test.
+print("PREAMBLE_OK")
 with open(sys.argv[1], "rb") as handle:
     processor = pickle.load(handle)
 image = np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
@@ -863,8 +867,16 @@ print("DTYPE", processor.preprocess_like_2024(image).dtype)
 def _run_spawn_child(pickled, preamble):
     import subprocess
     import sys
+
+    target, modules_root = pickled
     return subprocess.run(
-        [sys.executable, "-c", _SPAWN_CHILD.format(preamble = preamble), str(pickled)],
+        [
+            sys.executable,
+            "-c",
+            _SPAWN_CHILD.format(preamble = preamble),
+            str(target),
+            str(modules_root),
+        ],
         capture_output = True,
         text = True,
     )
@@ -888,33 +900,22 @@ def pickled_remote_processor(tmp_path):
         target = tmp_path / "processor.pkl"
         with open(target, "wb") as handle:
             pickle.dump(module.SpawnProbeImageProcessor(), handle)
-        yield target
+        # The root the child must put on sys.path: the parent of the
+        # `transformers_modules` package, not the package itself.
+        yield target, package.parent.parent
     finally:
         shutil.rmtree(package, ignore_errors = True)
         sys.modules.pop(module_name, None)
 
 
-def _skip_when_the_child_cannot_run(out):
-    """A child that dies before the class is even unpickled says nothing about the finder:
-    no accelerator for `import unsloth` (the CPU CI runners), or the dynamic-module cache
-    the pickled class lives in is not on the child's path."""
-    if out.returncode == 0:
-        return
-    stderr = out.stderr
-    if "cannot find any torch accelerator" in stderr or "get_device_type" in stderr:
-        pytest.skip(f"the child has no accelerator for unsloth: {stderr.strip()[-300:]}")
-    if "No module named 'transformers_modules" in stderr:
-        pytest.skip(f"the child cannot see the dynamic-module cache: {stderr.strip()[-300:]}")
-
-
 def test_a_spawn_started_worker_rebuilds_a_patched_class(pickled_remote_processor):
     """The finder's test: a fresh interpreter must still honour numpy."""
     out = _run_spawn_child(pickled_remote_processor, "import unsloth")
-    _skip_when_the_child_cannot_run(out)
-    if (
-        out.returncode != 0
-        and ("unsloth" in out.stderr and "Error" in out.stderr and "TypeError" not in out.stderr)
-    ):
+    # The sentinel, not a list of stderr strings: a CPU runner where the child
+    # has no accelerator for `import unsloth` says nothing about the finder,
+    # and sniffing for each way that can read leaves the real failure skipped
+    # too. Past the sentinel, every failure is this test's to report.
+    if "PREAMBLE_OK" not in out.stdout:
         pytest.skip(f"the child could not import unsloth: {out.stderr.strip()[-400:]}")
     assert out.returncode == 0, out.stderr[-2000:]
     assert "DTYPE float32" in out.stdout, (out.stdout, out.stderr[-2000:])
@@ -927,7 +928,7 @@ def test_a_spawn_started_worker_without_unsloth_is_the_documented_limit(pickled_
     unpatched, and the failure is loud rather than a silent dtype change.
     """
     out = _run_spawn_child(pickled_remote_processor, "")
-    _skip_when_the_child_cannot_run(out)
+    assert "PREAMBLE_OK" in out.stdout, out.stderr[-2000:]
     assert out.returncode != 0, out.stdout
     # Either failure mode counts: unpatched, the child now dies earlier on the
     # class-body decorator rather than later on numpy `normalize`, and pinning
@@ -945,7 +946,7 @@ def test_deepcopy_and_pickle_keep_the_override_in_process(pickled_remote_process
     import pickle
 
     np = pytest.importorskip("numpy")
-    with open(pickled_remote_processor, "rb") as handle:
+    with open(pickled_remote_processor[0], "rb") as handle:
         processor = pickle.load(handle)
     image = np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
 
