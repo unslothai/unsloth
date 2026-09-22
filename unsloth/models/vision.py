@@ -1339,7 +1339,8 @@ def _text_trainable_core(model, text_intent = True):
     required = [] if has_no_forward else _required_non_text_inputs(forward)
     if not has_no_forward and not required:
         return model
-    if not text_intent:
+    if not text_intent and not has_no_forward:
+        # A wrapper with no forward cannot train on any batch, so it is always handed over.
         print(
             f"Unsloth: `{type(model).__name__}.forward` requires {', '.join(required)}, so it "
             "trains on multimodal batches only. Pass `text_only = True` to from_pretrained to "

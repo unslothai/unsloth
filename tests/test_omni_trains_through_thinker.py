@@ -123,3 +123,13 @@ def test_the_off_switch_keeps_the_wrapper(monkeypatch):
     monkeypatch.setenv("UNSLOTH_KEEP_COMPOSED_WRAPPER", "1")
     model = Composed(TinyConfig())
     assert _text_trainable_core(model) is model
+
+
+def test_a_composition_without_a_forward_is_handed_over_even_for_a_multimodal_load():
+    """text_intent = False keeps a wrapper whose forward takes image batches; a
+    wrapper with no forward at all trains nothing either way, so it is handed to
+    its thinker regardless."""
+    from unsloth.models.vision import _text_trainable_core
+    model = Composed(TinyConfig())
+    core = _text_trainable_core(model, text_intent = False)
+    assert isinstance(core, Thinker)
