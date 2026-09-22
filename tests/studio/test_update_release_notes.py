@@ -945,8 +945,14 @@ def test_notes_surface_is_borderless_and_lifts_in_dark_mode():
     src = PANEL.read_text(encoding = "utf-8")
     layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
     assert "border border-border" not in src, "the notes box is a fill, not a bordered box"
-    # Lighter than the card behind it, rather than a darker inset.
-    assert "dark:bg-white/[0.06]" in layout
+    # Lighter than the card behind it, rather than a darker inset. Read as a claim:
+    # #11459 made the wash scale with the contrast slider, so the literal
+    # dark:bg-white/[0.06] is now an rgb() carrying the same 0.06 white.
+    dark_wash = re.search(r"dark:bg-\[([^\]]*)\]|dark:bg-white/\[([^\]]*)\]", layout)
+    assert dark_wash, "the notes surface has no dark-mode wash"
+    wash = dark_wash.group(0)
+    assert "255" in wash or "white" in wash, wash
+    assert "0.06" in wash, wash
     # Streamdown's mt-6 clips the first heading against the scroller edge.
     assert "[&>*>*:first-child]:mt-0" in src
     # Shared utility: thumb hidden until the notes are hovered.
