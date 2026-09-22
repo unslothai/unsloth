@@ -1030,3 +1030,42 @@ def test_the_video_prefetch_advances_only_on_a_missing_name():
     # Anything else is about the repo, not the name.
     assert miss(PermissionError("401"), local_files_only = False) is False
     assert miss(OSError("corrupt cache"), local_files_only = True) is False
+
+
+# ── the family opt-in ────────────────────────────────────────────────────────────
+
+
+def test_every_family_default_scheme_is_one_we_actually_host_for_that_family():
+    """``te_quant_auto`` promises a scheme an UNSET request gets. If the family has no hosted
+    pre-cast encoder for it, that promise costs a dense download and an in-place cast on every
+    default load, which is the opposite of why the field exists. Catches a family opting in
+    before its artifact is published, and a scheme/component pair that does not line up."""
+    from core.inference.diffusion_families import _FAMILIES
+    from core.inference.diffusion_te_prequant import family_te_prequant_repo
+
+    offenders = []
+    for fam in _FAMILIES:
+        scheme = getattr(fam, "te_quant_auto", None)
+        if scheme is None:
+            continue
+        if not any(
+            family_te_prequant_repo(fam, scheme, component) for component in tpq.TE_PREQUANT_COMPONENTS
+        ):
+            offenders.append(f"{fam.name}: te_quant_auto={scheme!r} with no hosted {scheme} encoder")
+    assert not offenders, "\n  ".join(["families default to an unhosted encoder scheme:", *offenders])
+
+
+def test_qwen_image_2_1_defaults_to_the_hosted_fp8_encoder():
+    """The family this was built for. Its encoder (Qwen3-VL-8B, 16.33 GiB dense) is bigger than
+    its INT8 denoiser (6.76 GiB), so leaving it dense is what made a quantised pick still cost
+    ~26 GB. Named rather than covered only by the sweep above, because the whole change is
+    pointless if this one row regresses."""
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_te_prequant import resolve_te_prequant_source
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam.te_quant_auto == "fp8"
+    source = resolve_te_prequant_source(fam, "text_encoder", "fp8")
+    assert source is not None and source.kind == "repo"
+    assert source.location == "unsloth/Qwen-Image-2.1-FP8"
+    assert source.filename == "Qwen-Image-2.1-text_encoder-FP8.safetensors"
