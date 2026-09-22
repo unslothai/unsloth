@@ -63,14 +63,29 @@ def cached_gguf_source_partial(repo_id: str, quant: str, snapshot: Path) -> bool
     )
 
 
-def _prefer_duplicate(repo_id: str, quant: str, previous: Path, candidate: Path) -> bool:
+def _prefer_duplicate(
+    repo_id: str,
+    quant: str,
+    previous: Path,
+    candidate: Path,
+    scoped_ready = None,
+) -> bool:
     """Whether *candidate* should replace *previous* as this quant's source.
 
     Manifest verification alone misses a copy that its own snapshot state marks partial -- a
     cancel marker or an unfinished companion -- which the merge then reports as unusable even
     though a complete duplicate of the same quant exists. Rank on the full per-snapshot verdict
     so the healthy copy wins, and keep the completed-vs-incomplete manifest rule it refines.
+
+    *scoped_ready* adds the one verdict no local rule can see: whether a copy satisfies the
+    companion set the CURRENT revision asks for, which only that copy's Hub answer knows.
     """
+    if scoped_ready is not None:
+        previous_ready = scoped_ready(previous, quant)
+        candidate_ready = scoped_ready(candidate, quant)
+        if previous_ready is not None and candidate_ready is not None:
+            if previous_ready != candidate_ready:
+                return candidate_ready
     if not cached_gguf_manifest_complete(
         repo_id, quant, previous
     ) and cached_gguf_manifest_complete(repo_id, quant, candidate):
@@ -108,7 +123,7 @@ class CachedGgufSource:
         return str(self.snapshot.parent.parent)
 
 
-def cached_gguf_sources(repo_id: str) -> dict[str, CachedGgufSource]:
+def cached_gguf_sources(repo_id: str, *, scoped_ready = None) -> dict[str, CachedGgufSource]:
     """One complete source per quant. Never assemble split weights across snapshots."""
     from hub.services.models.catalog_classification import _gguf_path_task
     from hub.utils.gguf import list_local_gguf_variants
@@ -129,7 +144,11 @@ def cached_gguf_sources(repo_id: str) -> dict[str, CachedGgufSource]:
             if variant.quant in complete:
                 previous = sources.get(key)
                 if previous is None or _prefer_duplicate(
-                    repo_id, variant.quant, previous.snapshot, snapshot
+                    repo_id,
+                    variant.quant,
+                    previous.snapshot,
+                    snapshot,
+                    scoped_ready,
                 ):
                     sources[key] = CachedGgufSource(variant, snapshot, has_vision)
                 partials.pop(key, None)

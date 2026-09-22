@@ -1920,6 +1920,38 @@ async def get_gguf_variants_answer(
             cache_authorized[0] = False
         # Explicit filesystem requests keep their original scope. Logical repository requests
         # include complete quantizations from remembered locations without adding inventory rows.
+        # Scoped online verdicts, shared by duplicate ranking and the merge below: whether a
+        # copy satisfies the companion set the CURRENT revision asks for is only known from
+        # the Hub answer for that copy's own snapshot.
+        scoped_responses = {}
+
+        def _scoped_variant_row(snapshot: Path, quant: str):
+            cached = scoped_responses.get(snapshot)
+            if cached is None:
+                original_source = answered_from[0]
+                original_local = answered_locally[0]
+                try:
+                    scoped = _compute(str(snapshot))
+                finally:
+                    answered_from[0] = original_source
+                    # Restored too: this is a nested lookup, not the outer answer, and
+                    # leaving it set would suppress the merge that reads it.
+                    answered_locally[0] = original_local
+                cached = {item.quant.lower(): item for item in scoped.variants}
+                scoped_responses[snapshot] = cached
+            return cached.get(quant.lower()) if quant else None
+
+        def _scoped_quant_ready(snapshot: Path, quant: str) -> Optional[bool]:
+            """This snapshot's readiness for *quant* per its own Hub answer; None when unknown.
+
+            None for a local-only request: companion readiness is Hub metadata, and a
+            ``prefer_local_cache``/``offline`` answer must rank on local state alone.
+            """
+            if prefer_local_cache or offline:
+                return None
+            row = _scoped_variant_row(snapshot, quant)
+            return None if row is None else bool(row.downloaded)
+
         sources = {}
         if (
             include_cache_locations
@@ -1933,7 +1965,7 @@ async def get_gguf_variants_answer(
                 cached_gguf_source_partial,
                 cached_gguf_sources,
             )
-            sources = cached_gguf_sources(repo_id)
+            sources = cached_gguf_sources(repo_id, scoped_ready = _scoped_quant_ready)
         try:
             response = _compute()
         except Exception as exc:
@@ -1953,7 +1985,6 @@ async def get_gguf_variants_answer(
         if sources and not answered_locally[0]:
             variants = {v.quant.lower(): v for v in response.variants}
             online_answer = not (prefer_local_cache or offline or answered_from[0])
-            scoped_responses = {}
             for key, source in sources.items():
                 v = source.variant
                 previous = variants.get(key)
@@ -1982,16 +2013,7 @@ async def get_gguf_variants_answer(
                     variant_context_sources.pop(key, None)
                 if online_answer:
                     # Apply the same readiness and update checks as a request for this snapshot.
-                    if source.snapshot not in scoped_responses:
-                        original_source = answered_from[0]
-                        try:
-                            scoped = _compute(str(source.snapshot))
-                        finally:
-                            answered_from[0] = original_source
-                        scoped_responses[source.snapshot] = {
-                            item.quant.lower(): item for item in scoped.variants
-                        }
-                    checked = scoped_responses[source.snapshot].get(key)
+                    checked = _scoped_variant_row(source.snapshot, key)
                     if checked is not None:
                         detail = checked.model_copy(update = {"cache_path": source.cache_path})
                         if detail.downloaded:
@@ -1999,6 +2021,12 @@ async def get_gguf_variants_answer(
                             detail.size_bytes = v.size_bytes
                         else:
                             variant_context_sources.pop(key, None)
+                    elif cached_gguf_source_partial(repo_id, v.quant, source.snapshot):
+                        # The current revision no longer describes this quant, so its scoped
+                        # answer cannot judge it; the copy's own manifest and marker still can.
+                        variant_context_sources.pop(key, None)
+                        detail.downloaded = False
+                        detail.partial = True
                 elif cached_gguf_source_partial(repo_id, v.quant, source.snapshot):
                     # A local-only or offline answer never reaches the Hub path above, so
                     # that readiness check cannot run; this is its local twin. A remembered
@@ -2009,14 +2037,33 @@ async def get_gguf_variants_answer(
                     variant_context_sources.pop(key, None)
                     detail.downloaded = False
                     detail.partial = True
+                if detail.partial:
+                    # Resume metadata comes from THIS copy's folder: a remembered partial keeps
+                    # its marker and manifest beside its own snapshot, not in the active root.
+                    source_cache_dir = Path(source.cache_path)
+                    detail = detail.model_copy(
+                        update = {
+                            "download_remaining_bytes": variant_remaining_bytes_from_state(
+                                repo_id, v.quant, source_cache_dir
+                            ),
+                            "partial_transport": _partial_transport_for_variant(
+                                repo_id, v.quant, source_cache_dir
+                            ),
+                            "partial_resumable": _partial_resumable_for_variant(
+                                repo_id, v.quant, source_cache_dir
+                            ),
+                        }
+                    )
                 variants[key] = detail
             response.variants = list(variants.values())
             response.has_vision = response.has_vision or any(s.has_vision for s in sources.values())
             # Merging changes which rows are root-level, and _default_variant_candidates picks
             # among root rows, so a default chosen from the active cache alone can name the
-            # wrong checkpoint once a remembered folder contributes a root row.
+            # wrong checkpoint once a remembered folder contributes a root row. A partial row
+            # is not a load the picker may recommend while a ready row exists, so prefer ready.
             if sources or not response.default_variant:
-                best = pick_best_gguf(_default_variant_candidates(response.variants))
+                ready = [v for v in response.variants if v.downloaded and not v.partial]
+                best = pick_best_gguf(_default_variant_candidates(ready or response.variants))
                 response.default_variant = gguf_variant_key(best) if best else None
         if skip or answered_locally[0]:
             return response

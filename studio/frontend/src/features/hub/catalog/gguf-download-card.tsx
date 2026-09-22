@@ -841,7 +841,12 @@ export function GgufDownloadCard({
         repoId,
         deleteTarget,
         hfToken || undefined,
-        deleteTargetVariant?.cache_path ?? cachePath ?? undefined,
+        // Redaction clears the path and leaves the reference: forwarding it keeps the
+        // delete on this row instead of whichever duplicate the server ranks first.
+        deleteTargetVariant?.cache_ref ??
+          deleteTargetVariant?.cache_path ??
+          cachePath ??
+          undefined,
       );
     },
     successMessage: () =>

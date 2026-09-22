@@ -179,6 +179,9 @@ export interface ScanFolderInfo {
 export interface GgufVariantDetail {
   context_length?: number | null;
   cache_path?: string | null;
+  /** Opaque stand-in for `cache_path` under host-path redaction; the only name an
+   *  API-key caller has for one specific copy. */
+  cache_ref?: string | null;
   filename: string;
   quant: string;
   display_label?: string | null;

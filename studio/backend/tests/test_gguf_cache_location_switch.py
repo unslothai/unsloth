@@ -723,3 +723,125 @@ def test_merging_a_root_row_recomputes_the_default(cache_locations, monkeypatch)
         )
     )
     assert response.default_variant == quant, response.default_variant
+
+
+def test_duplicate_ranking_honors_current_companion_readiness(cache_locations):
+    """No local rule can see a companion the CURRENT revision newly requires, so a duplicate
+    the snapshot itself judges partial must not outrank a usable copy of the same quant."""
+    from hub.utils.gguf_sources import cached_gguf_sources
+
+    repo_id, expected = cache_locations
+    active = hf_cache_settings.get_hf_cache_paths().hub_cache
+    quant = "Q4_K_M"
+    for repo, path in expected.values():
+        (path.parent / f"Model-{quant}.gguf").write_bytes(b"0" * 256)
+    inventory_scan.invalidate_hf_cache_scans()
+    active_snap, remembered_snap = sorted(
+        path.parent for repo, path in expected.values()
+    ) if False else (
+        next(path.parent for repo, path in expected.values() if repo.parent == active),
+        next(path.parent for repo, path in expected.values() if repo.parent != active),
+    )
+    # The active copy satisfies every local rule but its scoped Hub answer does not.
+    readiness = {active_snap: False, remembered_snap: True}
+    chosen = cached_gguf_sources(
+        repo_id, scoped_ready = lambda snapshot, _quant: readiness.get(snapshot)
+    )[quant.lower()].snapshot
+    assert chosen == remembered_snap
+
+    # The reverse verdict keeps the active copy: ranking is the comparison, not a bias.
+    readiness = {active_snap: True, remembered_snap: False}
+    kept = cached_gguf_sources(
+        repo_id, scoped_ready = lambda snapshot, _quant: readiness.get(snapshot)
+    )[quant.lower()].snapshot
+    assert kept == active_snap
+
+
+def test_the_merged_default_prefers_a_ready_row(cache_locations):
+    """An offline merge that offers a complete Q8_0 must not recommend a torn remembered
+    quant just because that quant ranks higher."""
+    repo_id, expected = cache_locations
+    active = hf_cache_settings.get_hf_cache_paths().hub_cache
+    active_repo = next(repo for repo, _ in expected.values() if repo.parent == active)
+    (active_repo / "snapshots" / ("d" * 40) / "Model-Q8_0.gguf").write_bytes(b"0" * 256)
+    remembered = next(repo for repo, _ in expected.values() if repo.parent != active)
+    snapped = remembered / "snapshots" / ("d" * 40)
+    (snapped / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"0" * 256)
+    inventory_scan.invalidate_hf_cache_scans()
+
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(
+            repo_id, prefer_local_cache = True, offline = True, include_cache_locations = True
+        )
+    )
+    ready = {v.quant for v in response.variants if v.downloaded and not v.partial}
+    assert "Q8_0" in ready
+    assert response.default_variant in ready
+
+
+def test_a_remembered_partial_keeps_its_resume_metadata(cache_locations, monkeypatch):
+    """A direct listing of the same snapshot reports how the transfer can be continued, so the
+    merge must not flatten a byte-resumable partial into a bare retry."""
+    from hub.utils import download_manifest
+
+    repo_id, expected = cache_locations
+    active = hf_cache_settings.get_hf_cache_paths().hub_cache
+    quant, (repo, _path) = next(
+        (q, value) for q, value in expected.items() if value[0].parent != active
+    )
+    snap = repo / "snapshots" / ("d" * 40)
+    (snap / f"Model-{quant}-00001-of-00002.gguf").write_bytes(b"0" * 256)
+    assert download_manifest.write_cancel_marker(
+        "model", repo_id, quant, "http", hub_cache = repo.parent
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    monkeypatch.setattr(
+        gguf_variants, "_partial_resumable_for_variant", lambda *a, **k: True
+    )
+    monkeypatch.setattr(
+        gguf_variants, "variant_remaining_bytes_from_state", lambda *a, **k: 4096
+    )
+
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(
+            repo_id, prefer_local_cache = True, offline = True, include_cache_locations = True
+        )
+    )
+    variant = next(v for v in response.variants if v.quant == quant)
+    assert variant.partial and not variant.downloaded
+    assert variant.partial_transport == "http"
+    assert variant.partial_resumable is True
+    assert variant.download_remaining_bytes == 4096
+
+
+def test_a_cached_only_quant_is_judged_by_its_own_partial_state(cache_locations, monkeypatch):
+    """A quant the current revision no longer lists has no scoped answer to consult, so the
+    merge has to fall back to the copy's own per-snapshot verdict instead of trusting the
+    synthesized row and advertising a cancelled download as loadable."""
+    from hub.utils import gguf_sources
+    from hub.utils.gguf import GgufVariantInfo
+
+    repo_id, expected = cache_locations
+    active = hf_cache_settings.get_hf_cache_paths().hub_cache
+    quant, (repo, path) = next(
+        (q, value) for q, value in expected.items() if value[0].parent != active
+    )
+    other = next(q for q, value in expected.items() if value[0].parent == active)
+    listed = GgufVariantInfo(filename = f"Model-{other}.gguf", quant = other, size_bytes = 256)
+    monkeypatch.setattr(gguf_variants, "list_gguf_variants", lambda *a, **k: ([listed], False, []))
+    source = gguf_sources.CachedGgufSource(
+        GgufVariantInfo(filename = path.name, quant = quant, size_bytes = 256),
+        path.parent,
+        False,
+    )
+    # The current revision cannot describe this quant, so its scoped answer returns no row.
+    monkeypatch.setattr(gguf_sources, "cached_gguf_sources", lambda *a, **k: {quant.lower(): source})
+    monkeypatch.setattr(gguf_sources, "cached_gguf_source_partial", lambda *a, **k: True)
+    inventory_scan.invalidate_hf_cache_scans()
+
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(repo_id, include_cache_locations = True)
+    )
+    variant = next(v for v in response.variants if v.quant == quant)
+    assert not variant.downloaded
+    assert variant.partial
