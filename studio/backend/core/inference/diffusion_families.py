@@ -139,6 +139,17 @@ class DiffusionFamily:
     # sd-cli defaults.
     sd_cpp_sampling_method: Optional[str] = None
     sd_cpp_flow_shift: Optional[float] = None
+    # A literal this family's ARCHITECTURE puts in an sd.cpp build that can run it. Set it for a
+    # family whose support landed upstream after builds were already in the wild: the asset mapping
+    # above says what to hand sd-cli, not whether the sd-cli on this disk understands the model, and
+    # a binary installed before the support existed is reused as-is (nothing upgrades a runnable
+    # build of the right accelerator). Without a gate that is a load that reports ready and dies on
+    # the first generation, where falling back to diffusers is both possible and correct.
+    #
+    # Matched against the binary's BYTES rather than the install record's tag: every mirror release
+    # carries the upstream base in its tag name whatever tree was built, so the tag cannot answer
+    # this, and a custom SD_CLI_PATH build has no record at all.
+    sd_cpp_arch_marker: Optional[str] = None
     # True when Unsloth can TRAIN a LoRA on this family; the training-start path refuses a non-trainable family up
     # front.
     trainable: bool = False
@@ -339,6 +350,84 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen-Image's supported sd.cpp invocation (docs/qwen_image.md).
         sd_cpp_sampling_method = "euler",
         sd_cpp_flow_shift = 3.0,
+    ),
+    DiffusionFamily(
+        # Qwen-Image-2.1 is a different ARCHITECTURE, not a refreshed checkpoint, so it is its own
+        # family rather than a prequant_variant_repos row on qwen-image: 32 single-stream blocks
+        # against 60 dual-stream MMDiT ones, nine weights per block, no bias tensors anywhere, one
+        # global modulation projection, a Qwen3-VL text encoder and its own VAE class. Sharing the
+        # qwen-image entry would hand it that family's pipeline, transformer, VAE and exclusion
+        # rules, none of which fit.
+        name = "qwen-image-2.1",
+        pipeline_class = "QwenImage21Pipeline",
+        transformer_class = "QwenImage21Transformer2DModel",
+        base_repo = "Qwen/Qwen-Image-2.1",
+        prequant_repos = (
+            ("int8", "unsloth/Qwen-Image-2.1-FP8"),
+            ("fp8", "unsloth/Qwen-Image-2.1-FP8"),
+        ),
+        # The artifacts are safetensors, not the historical torch.save pickle, so the family has to
+        # NAME them: every derived fallback ends in .pt, and without these rows the loader would ask
+        # the Hub for a file that is not there and silently fall back to the dense bf16 download.
+        prequant_filenames = (
+            ("fp8", "Qwen-Image-2.1-FP8.safetensors"),
+            ("int8", "Qwen-Image-2.1-INT8.safetensors"),
+        ),
+        # Qwen3-VL 8B, pre-cast. Independent of the DiT scheme, as on every other family.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-2.1-FP8"),),
+        cfg_kwarg = "true_cfg_scale",
+        # 2.1 is UNIFIED: one pipeline, and QwenImage21Pipeline.__call__ takes ``image`` as condition
+        # images alongside the prompt, so this is the FLUX.2 shape rather than the Qwen-Image-Edit
+        # one. Not ``edit``, which means the pipeline IS the edit pipeline and there is no plain
+        # text-to-image: here text-to-image is the default and the images are optional context. The
+        # encoder reads each one as vision context and the VAE turns it into latent tokens prepended
+        # to the noise, with no ``strength`` anywhere, which is exactly what the reference workflow
+        # passes. Without this flag diffusion.py refuses reference images for this family and the
+        # capability ships dark.
+        reference = True,
+        aliases = ("qwen_image_21", "qwenimage21", "qwen-image-21"),
+        # Built by us from Qwen/Qwen-Image-2.1 itself: the same 238 tensors under upstream's own
+        # names, cast fp32 -> bf16 and written as one file, because sd-cli takes --vae as a single
+        # file rather than a diffusers subfolder. That is 0.63 GiB against upstream's 1.26 GiB of
+        # fp32, and a fixed-seed 1024 render through it is PIXEL-identical to one made with the
+        # fp32 original. No third-party repack is in the chain; the file is nonetheless
+        # value-identical to Comfy-Org's bf16 repack, all 238 tensors, so either works.
+        #
+        # It lives beside the pre-cast text encoder in the FP8 repo rather than in a companion repo
+        # of its own, and NOT in the GGUF repo: sd_cpp_companion_only_repo_ids() is companions
+        # minus loadable, and the GGUF repo appears in no family field, so pointing here at it
+        # would classify the repo that holds every denoiser as fetch-only and hide it from the
+        # catalog. The FP8 repo is in prequant_repos, so it is subtracted and stays loadable.
+        # FP8 and INT8 picks do not use this file at all; they take the VAE from the base repo
+        # through diffusers, as every prequant family does.
+        #
+        # 2.1 has its own VAE class, so the qwen-image or Wan 2.2 file decodes to noise here
+        # rather than failing.
+        sd_cpp_vae = ("unsloth/Qwen-Image-2.1-FP8", "vae/qwen_image_2.1_vae_bf16.safetensors"),
+        # Qwen3-VL 8B, not Qwen2.5-VL, and supplied through --llm rather than --qwen2vl: the
+        # qwen2vl flag carries Qwen2-VL's vision preprocessing, which this encoder does not want.
+        # Q4_K_M keeps the CPU RAM win the no-GPU route exists for (bf16 is 16.4 GB, this is 4.7).
+        # Text to image only, which is all this family exposes (edit is False, and there are no
+        # img2img / inpaint pipelines). Upstream's docs/qwen_image_2.1.md requires a separate
+        # mmproj through --llm_vision before a GGUF encoder can do image editing; turning editing
+        # on here without adding it would load an encoder that logs "vision disabled" and carry on.
+        sd_cpp_text_encoders = (
+            (
+                "unsloth/Qwen3-VL-8B-Instruct-GGUF",
+                "Qwen3-VL-8B-Instruct-Q4_K_M.gguf",
+                "llm",
+            ),
+        ),
+        sd_cpp_sampling_method = "euler",
+        # No flow shift on purpose. Qwen-Image pins 3.0, but upstream sd.cpp selects a
+        # resolution-dependent schedule for qwen_image_2_1 itself, and passing a fixed shift
+        # overrides that silently: the render still succeeds and is simply worse off-square.
+        #
+        # Support landed upstream on 2026-09-20, long after builds shipped, so the gate matters
+        # here more than anywhere: measured across six builds on this host, only the pinned
+        # release (both sd-cli and sd-server, CPU and CUDA) carries this literal, and the five
+        # older ones, including the previous pin, do not.
+        sd_cpp_arch_marker = "qwen_image_2_1",
     ),
     DiffusionFamily(
         name = "z-image",
@@ -1127,6 +1216,10 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "LTX2Pipeline": "0.37.0",
     "Flux2KleinInpaintPipeline": "0.38.0",
     "Ideogram4Pipeline": "0.39.0",
+    # Qwen-Image-2.1 merged upstream on 2026-09-18, four weeks after 0.40.0 was cut, so 0.41.0 is
+    # the first release that can carry it. ``_version_tuple`` stops at the first non-numeric part,
+    # so a 0.41.0.dev0 build from main reads as (0, 41, 0) and satisfies this too.
+    "QwenImage21Pipeline": "0.41.0",
     "Krea2Pipeline": "0.39.0",
     # Older than the 0.35 baseline, but listed anyway: the packaging leaves an UNCONSTRAINED diffusers installable
     # below 3.10, so an already-present ancient one satisfies the pin, and quoting the 0.39 floor at a family that has
@@ -1170,6 +1263,14 @@ def pipeline_class_requirement(pipeline_class: str) -> tuple[Optional[str], bool
     return minimum, _version_tuple(minimum) >= _version_tuple(_DIFFUSERS_DROPPED_PY39)
 
 
+# Minimums that name a release which does not EXIST yet. ``pip install -U 'diffusers>=0.41.0'`` has
+# no candidate today, so quoting it as the remedy sends someone to a command that cannot succeed.
+# Studio installs the pinned main build for exactly these classes (studio/backend/requirements/
+# diffusers-main.txt), so the remedy is to put that back, not to chase a release. Delete an entry
+# here the moment its version ships, which is the same moment diffusers-pin.txt moves to it.
+_UNRELEASED_MIN_DIFFUSERS = frozenset({"0.41.0"})
+
+
 def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> str:
     """The refusal text: what is missing, what is installed, and a remedy this interpreter can
     actually carry out."""
@@ -1178,6 +1279,14 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
         return (
             f"'{family_name}' needs a newer diffusers ({pipeline_class}); this environment has "
             f"diffusers {installed}. Upgrade with: pip install -U diffusers."
+        )
+    if minimum in _UNRELEASED_MIN_DIFFUSERS:
+        return (
+            f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}), which has not been "
+            f"released yet; this environment has diffusers {installed}. Unsloth installs a pinned "
+            "build of diffusers main for this, so re-run the Unsloth installer (and leave "
+            "UNSLOTH_DIFFUSERS_MAIN unset), or install it directly with: pip install -r "
+            "studio/backend/requirements/diffusers-main.txt"
         )
     remedy = f"Upgrade with: pip install -U 'diffusers>={minimum}'."
     if needs_py310:
@@ -1409,7 +1518,11 @@ def family_gguf_loadable(fam: DiffusionFamily) -> bool:
 
 def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
     """True when the family has the single-file VAE + text-encoder mapping sd.cpp needs; without it
-    the no-GPU route falls back to diffusers."""
+    the no-GPU route falls back to diffusers.
+
+    Says nothing about the sd.cpp build on this disk. A family that also declares
+    ``sd_cpp_arch_marker`` needs ``sd_cpp_binary_runs_family`` on top of this before the native
+    route is really available."""
     return bool(fam.sd_cpp_vae and fam.sd_cpp_text_encoders)
 
 

@@ -33,6 +33,12 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+# The launcher fixtures live beside this file, and the tensor-split cells at the bottom
+# drive the real load_model through them rather than re-deriving a command builder.
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+
 # Same external-dep stubs as the other llama_cpp unit tests so importing
 # the backend doesn't drag in structlog / httpx / loggers.
 _loggers_stub = _types.ModuleType("loggers")
@@ -301,15 +307,15 @@ def test_route_normalizes_explicit_extras_before_reload_dedupe():
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
     preserve = load_impl.index("_gpu_layers_override = parse_gpu_layers_override")
-    translate = load_impl.index(
-        'request = request.model_copy(update = {"gpu_layers": _gpu_layers_override})'
-    )
+    translate = load_impl.index('_manual_updates["gpu_layers"] = _gpu_layers_override')
+    preserve_ts = load_impl.index("_tensor_split_override = parse_tensor_split_override")
+    translate_ts = load_impl.index('_manual_updates["tensor_split"] = _tensor_split_override')
     strip = load_impl.index("_stripped_explicit = strip_shadowing_flags")
     normalize = load_impl.index(
         'request = request.model_copy(update = {"llama_extra_args": extra_llama_args})'
     )
     dedupe = load_impl.index("_reuse_loaded_gguf(")
-    assert preserve < translate < strip < normalize < dedupe
+    assert preserve < translate < preserve_ts < translate_ts < strip < normalize < dedupe
 
 
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
@@ -1495,3 +1501,75 @@ def test_zero_vram_chat_load_treats_an_absent_mode_as_auto(not_vulkan):
     assert zero("manual", 0, [], False, "   ") is False
     # Only the canonical spelling still exempts it.
     assert zero("manual", 0, [], False, "off") is True
+
+
+def test_manual_auto_layers_never_emits_two_tensor_splits(tmp_path):
+    """Manual + Auto layers is the one cell where the route holds the ratio twice: the
+    strip is False at ``gpu_layers < 0`` while the promotion still fires (#11330).
+    llama.cpp reads the LAST ``--tensor-split``, so a launch path that kept either copy
+    would place by the wrong one; both die here, and that is the launcher's doing rather
+    than the route's, which is why it is pinned.
+    """
+    from test_llama_cpp_placement import _backend, _launch
+
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = False,
+        memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)],
+    )
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = -1,
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+        # Exactly the state the /load promotion leaves behind: the field set AND the
+        # raw flag still in extras, because the strip did not fire at gpu_layers < 0.
+        tensor_split = [2.2, 1.0],
+        extra_args = ["-ts", "2.2,1", "-sm", "layer"],
+    )["cmd"]
+    tokens = [tok for tok in cmd if tok in ("--tensor-split", "-ts")]
+    assert len(tokens) <= 1, f"the ratio reached argv twice: {cmd}"
+    # Today both copies are dropped, so /status must not claim a ratio llama-server
+    # never received.
+    assert tokens == []
+    assert backend.tensor_split is None
+
+
+def test_manual_explicit_layers_emits_the_promoted_ratio_once(tmp_path):
+    """The control for the cell above: with layers pinned the strip DOES fire, so the
+    promoted field is the only copy and it is the one that reaches argv (#11330)."""
+    from test_llama_cpp_placement import _backend, _launch
+
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = False,
+        memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)],
+    )
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 49,
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+        tensor_split = [2.2, 1.0],
+        # strip_shadowing_flags already removed the raw -ts at this point.
+        extra_args = ["-sm", "layer"],
+    )["cmd"]
+    assert cmd.count("--tensor-split") == 1
+    assert cmd[cmd.index("--tensor-split") + 1] == "2.2,1"
+    assert backend.tensor_split == [2.2, 1.0]
+
+
+def test_manual_auto_layers_does_not_judge_a_rewrite_that_never_happens():
+    """At Auto layers the launcher drops both copies of the ratio, so the route must not refuse
+    a value over the six-digit rendering it will never produce (the strip predicate and the
+    reserialized predicate are the same question)."""
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    for marker in (
+        "reserialized = _resolved_layers >= 0",
+        "reserialized = _validate_resolved_layers >= 0",
+    ):
+        assert marker in route_src, marker

@@ -571,7 +571,16 @@ export const ru = {
       sourceHint: "Средства запуска моделей ведут собственные журналы, поэтому причина неудачной загрузки или генерации чаще всего указана именно в них, а не в журнале сервера.",
       path: "Расположение",
       pathCopy: "Копировать путь",
-      refreshSection: "Обновление",
+      currentSession: "Текущий",
+      statusLive: "В реальном времени",
+      statusPaused: "Пауза",
+      statusStale: "Устарел",
+      filterPlaceholder: "Фильтр строк",
+      lineCount: "Строк: {count}",
+      filteredLineCount: "{shown} из {total} строк",
+      wrapLines: "Перенос строк",
+      jumpToLatest: "К последним",
+      noMatches: "Ни одна строка не соответствует фильтру.",
       mode: "Режим",
       modeLive: "В реальном времени",
       modeInterval: "Каждые 3 секунды",
@@ -1141,7 +1150,7 @@ export const ru = {
       custom: {
         chatWidth: {
           label: "Ширина чата",
-          description: "Задайте ширину сообщений и поля ввода. Полная ширина использует пространство между боковыми панелями.",
+          description: "Ширина сообщений и поля ввода.",
           standard: "Стандартная",
           wide: "Широкая",
           full: "Полная ширина",
@@ -1214,7 +1223,6 @@ export const ru = {
         },
         contrast: {
           label: "Контраст",
-          description: "Выраженность границ и второстепенного текста.",
         },
         reduceMotion: {
           label: "Уменьшить анимацию",
@@ -1244,7 +1252,7 @@ export const ru = {
       sidebarNav: {
         title: "Навигация боковой панели",
         description:
-          "Закрепляйте вкладки боковой панели и меняйте их порядок. Незакреплённые вкладки собираются в меню «Ещё»; если незакреплённая вкладка всего одна, она просто скрывается, а не превращается в меню из одного пункта. «Новый чат» остаётся на месте.",
+          "Закрепляйте вкладки боковой панели и меняйте порядок. Незакреплённые уходят в меню «Ещё».",
         dragToReorder: "Перетащите, чтобы изменить порядок",
         pinToSidebar: "Закрепить на боковой панели: {name}",
         moreHolds: "Ещё ({count})",
@@ -1252,7 +1260,7 @@ export const ru = {
       sidebarMenu: {
         title: "Меню боковой панели",
         description:
-          "Показывайте, скрывайте и меняйте порядок пунктов в меню профиля на боковой панели. «Настройки», «Справка», «Выйти» и «Выключить» остаются на месте.",
+          "Выберите ярлыки меню профиля и их порядок.",
         darkModeToggle: "Переключатель тёмной темы",
         dragToReorder: "Перетащите, чтобы изменить порядок",
       },
@@ -1394,6 +1402,61 @@ export const ru = {
         copied: "Путь скопирован",
         openError: "Не удалось открыть папку",
         copyError: "Не удалось скопировать путь",
+        caches: {
+          label: "Файлы кеша",
+          description:
+            "{size} в кешах, из них {reclaimable} можно очистить сейчас.",
+          hint: "Загрузки пакетов, скомпилированные ядра и кеши передачи, которые Unsloth создаёт заново, когда они нужны. Загруженные модели, проекты, чаты, настройки и ваш токен Hugging Face здесь никогда не очищаются.",
+          keywords:
+            "кеш кэш кеши очистить удалить почистить освободить место диск временные скомпилированные cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Измерение размера кешей...",
+          measureFailed: "Не удалось измерить кеши",
+          empty: "Файлы кеша не найдены.",
+          detailsAction: "Подробности",
+          recheckAction: "Проверить снова",
+          hideDetailsAction: "Скрыть подробности",
+          clearAction: "Очистить кеши",
+          clearOneAction: "Очистить",
+          clearingAction: "Очистка...",
+          confirmTitle: "Очистить кешированные файлы?",
+          confirmDescription: "Это освободит примерно {size}.",
+          confirmOneTitle: "Очистить {name}?",
+          safety:
+            "Unsloth создаст кеш заново, когда он снова понадобится. Загруженные модели, проекты, чаты, настройки и ваш токен Hugging Face не затрагиваются.",
+          hubCost:
+            "Это кеш моделей. После очистки эти модели будут загружены заново при следующем использовании.",
+          datasetsCost:
+            "После очистки эти наборы данных будут загружены заново при следующем использовании.",
+          blocked: "Не очищено: {reason}",
+          cleared: "Очищено {size}",
+          partial: "Некоторые файлы кеша не удалось удалить",
+          clearFailed: "Не удалось очистить кеши",
+          names: {
+            uv: "Кеш пакетов uv",
+            pip: "Кеш загрузок pip",
+            npm: "Кеш пакетов npm",
+            bun: "Кеш пакетов Bun",
+            torchInductor: "Кеш компиляции Torch Inductor",
+            torchExtensions: "Сборки расширений Torch",
+            triton: "Кеш ядер Triton",
+            cuda: "Кеш ядер CUDA",
+            numba: "Кеш компиляции Numba",
+            matplotlib: "Кеш шрифтов Matplotlib",
+            vllm: "Кеш vLLM",
+            unslothCompiled: "Скомпилированные модули Unsloth",
+            hfXet: "Кеш передачи Hugging Face",
+            hfAssets: "Кеш ресурсов Hugging Face",
+            hfDatasets: "Кеш наборов данных Hugging Face",
+            hfHub: "Кеш моделей Hugging Face",
+          },
+        },
+        lowDisk: {
+          title: "Заканчивается место на диске",
+          criticalTitle: "Критически мало места на диске",
+          description:
+            "Свободно {free} из {total}. Очистка кешей может освободить место.",
+          action: "Посмотреть кеши",
+        },
         futureDownloads: "Только новые загрузки",
         environmentManaged: "Управляется переменной окружения {variable}.",
         locationFree: "{free} свободно",

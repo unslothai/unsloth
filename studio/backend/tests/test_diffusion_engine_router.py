@@ -403,3 +403,58 @@ def test_predict_engine_returns_diffusers_for_a_family_without_native_assets(mon
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     _set_runnable(monkeypatch)
     assert r.predict_engine(detect_family("sdxl"), model_kind = "gguf") == ENGINE_DIFFUSERS
+
+
+# ── the architecture gate: a runnable build is not always a CAPABLE one ───────
+
+
+def _write_binary(tmp_path, name, *, marker: bool):
+    """A stand-in sd.cpp executable, with or without the 2.1 architecture literal in it."""
+    path = tmp_path / name
+    body = b"ELF-ish padding " * 64
+    if marker:
+        body += b"qwen_image_2_1.hpp"
+    path.write_bytes(body + b" trailing")
+    return str(path)
+
+
+def test_a_build_that_predates_the_family_does_not_get_the_native_route(monkeypatch, tmp_path):
+    # The real regression: nothing upgrades a runnable sd.cpp build of the right accelerator, so a
+    # host that installed one before upstream added Qwen-Image-2.1 keeps it, and without this gate
+    # the router hands it a model it cannot read -- a load that reports ready and dies on the first
+    # generation. Diffusers can run it, so the fallback is the right answer and the reason says so.
+    _set_device(monkeypatch, "cpu")
+    _set_runnable(monkeypatch)
+    _set_binary(monkeypatch, _write_binary(tmp_path, "sd-cli-old", marker = False))
+    assert _select("qwen-image-2.1") == ENGINE_DIFFUSERS
+    assert "predates" in (r._fallback_reason or "")
+
+    _set_binary(monkeypatch, _write_binary(tmp_path, "sd-cli-new", marker = True))
+    assert _select("qwen-image-2.1") == ENGINE_SD_CPP
+
+
+def test_the_gate_only_speaks_for_families_that_declare_a_marker(monkeypatch, tmp_path):
+    # z-image has been in sd.cpp for as long as the native route has existed and declares no
+    # marker, so the same old binary that is refused above must still serve it. A gate that read
+    # "no marker found" as "cannot run" would take the native engine away from every family.
+    _set_device(monkeypatch, "cpu")
+    _set_runnable(monkeypatch)
+    _set_binary(monkeypatch, _write_binary(tmp_path, "sd-cli-old2", marker = False))
+    assert _select("z-image") == ENGINE_SD_CPP
+
+
+def test_the_prediction_agrees_with_the_selection_about_an_incapable_build(monkeypatch, tmp_path):
+    # The download plan is built from the prediction. Installs are ALLOWED here and there is a
+    # resident binary, which is exactly the case where a permitted install changes nothing: the
+    # ensure helpers keep a runnable build of the right accelerator. Predicting native would stage
+    # sd-cli's companion VAE and text encoder for a load that goes to diffusers.
+    _set_device(monkeypatch, "cpu")
+    _set_runnable(monkeypatch)
+    _set_binary(monkeypatch, _write_binary(tmp_path, "sd-cli-old3", marker = False))
+    fam = detect_family("qwen-image-2.1")
+    assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_DIFFUSERS
+    # ... and a fresh host with nothing installed still predicts native, since the install lands on
+    # the pinned prebuilt, which does carry the architecture.
+    _set_binary(monkeypatch, None)
+    monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
+    assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
