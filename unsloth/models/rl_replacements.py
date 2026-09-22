@@ -2747,7 +2747,11 @@ def _patch_grpo_accumulated_loss_hidden_states_dispatch(function):
     return source
 
 
-def grpo_update_SamplingParams(SamplingParams, generation_kwargs, vllm_sampling_params = None):
+def grpo_update_SamplingParams(
+    SamplingParams,
+    generation_kwargs,
+    vllm_sampling_params = None,
+):
     good_sampling_params_keys = inspect.signature(SamplingParams).parameters.keys()
 
     new_generation_kwargs = {}
@@ -2768,7 +2772,13 @@ def grpo_update_SamplingParams(SamplingParams, generation_kwargs, vllm_sampling_
                 if overwrited_key != getattr(default_sampling_params, key, None):
                     overwrites[key] = overwrited_key
         for key, overwrited_key in overwrites.items():
-            if key in good_sampling_params_keys and key not in ("seed", "n", "temperature", "max_tokens", "logprobs"):
+            if key in good_sampling_params_keys and key not in (
+                "seed",
+                "n",
+                "temperature",
+                "max_tokens",
+                "logprobs",
+            ):
                 generation_kwargs[key] = overwrited_key
     return generation_kwargs
 

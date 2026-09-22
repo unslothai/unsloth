@@ -98,7 +98,9 @@ def test_notebook_scalar_fields_reach_generation(helper):
 def test_default_sampling_params_overlay_nothing(helper):
     generation_kwargs = _trl_generation_kwargs()
     result = helper(SamplingParams, generation_kwargs, SamplingParams())
-    expected = {k: v for k, v in generation_kwargs.items() if k in SamplingParams.__dataclass_fields__}
+    expected = {
+        k: v for k, v in generation_kwargs.items() if k in SamplingParams.__dataclass_fields__
+    }
     assert result == expected
 
 
