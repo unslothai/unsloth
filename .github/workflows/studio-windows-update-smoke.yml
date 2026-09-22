@@ -39,6 +39,16 @@ on:
       - 'unsloth_cli/__init__.py'
       - 'unsloth_cli/_system_dir_guard.py'
       - 'pyproject.toml'
+      # The two installer entrypoints above are not self-contained: these are their
+      # first-order local imports, so a commit touching only one of them changes what
+      # this workflow runs while matching none of the entrypoints. Invisible while the
+      # push trigger was unfiltered, because every commit re-ran this after merge.
+      - 'studio/install_manifest.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/backend/utils/wheel_utils.py'
+      - 'studio/backend/utils/uv_path_safety.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
       - '.github/workflows/studio-windows-update-smoke.yml'
   push:
     branches: [main]
@@ -60,6 +70,12 @@ on:
       - 'unsloth_cli/__init__.py'
       - 'unsloth_cli/_system_dir_guard.py'
       - 'pyproject.toml'
+      - 'studio/install_manifest.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/backend/utils/wheel_utils.py'
+      - 'studio/backend/utils/uv_path_safety.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
       - '.github/workflows/studio-windows-update-smoke.yml'
   workflow_dispatch:
 
