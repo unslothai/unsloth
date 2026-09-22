@@ -488,7 +488,13 @@ def test_active_model_config_round_trips_gpu_fields():
         "selectedGpuIndexKind",
     ):
         assert field in src, field
-    assert "if (!isGguf)" in src and "return base" in src
+    # Only GGUF carries the offload knobs; an optional engine keeps just its GPU pick.
+    flat = " ".join(src.split())
+    assert "if (!isGguf) {" in flat and ": base; }" in flat
+    assert (
+        'engine === "vllm" || engine === "sglang" ? { ...base, selectedGpuIds, selectedGpuIndexKind }'
+        in flat
+    )
     assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
     # Live config sync is in the shared draft store; instance keys still remount on signature.
     shared = _read("features/model-picker/model-config/config-signature.ts")
@@ -3005,9 +3011,13 @@ def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
     """A settings target opened from the Chat model picker carried no apiLoadable, so the
     `??"""
     handoff = " ".join(_read("features/model-picker/model-config/model-config-handoff.ts").split())
-    assert "apiLoadable: isGguf && !isOllamaLinkPath(id) && !isOllamaLinkPath(loadId)," in handoff
+    # Safetensors configs are mirrored too, so API auto-loads keep an optional engine choice.
+    assert (
+        "apiLoadable: !meta.isLora && !isOllamaLinkPath(id) && !isOllamaLinkPath(loadId),"
+        in handoff
+    )
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
-    assert "apiLoadable: isGguf && !isOllamaLinkPath(modelId)," in sidebar
+    assert "apiLoadable: !isOllamaLinkPath(modelId)," in sidebar
     # The same classification gates the backfill, or an older config still reaches the server.
     backfill = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
     assert "!isOllamaLinkPath(entry.modelId) &&" in backfill

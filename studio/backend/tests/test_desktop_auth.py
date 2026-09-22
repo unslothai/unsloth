@@ -809,6 +809,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     settings_module.router = APIRouter()
     llama_module = ModuleType("routes.llama")
     llama_module.router = APIRouter()
+    engines_module = ModuleType("routes.engines")
+    engines_module.router = APIRouter()
     llama_compat_module = ModuleType("routes.llama_compat")
     llama_compat_module.router = APIRouter()
     # main.py imports this name alongside the router and calls it from serve_frontend.
@@ -840,6 +842,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes", routes_module)
     monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
     monkeypatch.setitem(sys.modules, "routes.llama", llama_module)
+    monkeypatch.setitem(sys.modules, "routes.engines", engines_module)
     monkeypatch.setitem(sys.modules, "routes.llama_compat", llama_compat_module)
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
     monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
