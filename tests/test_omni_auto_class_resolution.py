@@ -135,3 +135,33 @@ class _Normal:
 def test_embeddings_or_none(model, expected):
     """`hasattr` does not answer the question; only calling does."""
     assert _embeddings_or_none(model, "get_input_embeddings") == expected
+
+
+class _NoEmbeddings:
+    """A model that cannot answer for its embeddings, like Qwen3-Omni."""
+
+    def get_input_embeddings(self):
+        raise NotImplementedError("composite model, no single embedding")
+
+    def get_output_embeddings(self):
+        raise NotImplementedError("composite model, no single embedding")
+
+
+@pytest.mark.parametrize("requested", [True, "auto"])
+def test_offload_embedding_declines_a_model_it_cannot_inspect(requested, capsys):
+    """An uninspectable embedding must decline, including an explicit request.
+
+    The caller goes straight on to `model.get_input_embeddings()` unguarded, so
+    returning the explicit True turned a VRAM optimisation that cannot be
+    applied into a failed load. Qwen3-Omni only reaches this line now that it
+    loads at all.
+    """
+    from unsloth.models.vision import _resolve_offload_embedding
+
+    assert _resolve_offload_embedding(_NoEmbeddings(), requested) is False
+    printed = capsys.readouterr().out
+    if requested == "auto":
+        # the default declines silently: nobody asked for it
+        assert "Not offloading embeddings" not in printed
+    else:
+        assert "Not offloading embeddings" in printed

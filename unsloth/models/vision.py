@@ -609,8 +609,12 @@ def _resolve_offload_embedding(model, offload_embedding):
             model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
         )
     except Exception:
-        # Cannot inspect it, so leave an explicit request alone and decline the default.
-        return False if automatic else offload_embedding
+        # Cannot inspect it, so the offload cannot run: the caller of this
+        # function goes straight on to call get_input_embeddings() unguarded.
+        # Honouring an explicit request here turned "a VRAM optimisation we
+        # cannot apply" into a failed load, which is what this function exists
+        # to avoid. Qwen3-Omni reaches this only now that it loads at all.
+        return _decline("its embeddings cannot be inspected.")
     if _embeddings_are_tied(in_embed, out_embed):
         return _decline("this model ties embed_tokens to lm_head, so offloading saves no VRAM.")
     if _embedding_dispatch_device(in_embed) is not None:
