@@ -439,9 +439,15 @@ test("the preference ships off and survives a reload", () => {
 test("the setting is in the Chat tab and findable", () => {
   const chatTab = readSrc("features/settings/tabs/chat-tab.tsx");
   assert.match(chatTab, /t\("settings\.chat\.tools\.foldIntoThinking"\)/);
+  // The switch reads as off, and refuses input, exactly when the fold cannot apply.
   assert.match(
     chatTab,
-    /checked=\{foldToolActivityIntoThinking\}\n\s*onCheckedChange=\{setFoldToolActivityIntoThinking\}/,
+    /checked=\{foldToolActivityIntoThinking && !foldBlockedByAlwaysExpanded\}\n\s*disabled=\{foldBlockedByAlwaysExpanded\}\n\s*onCheckedChange=\{setFoldToolActivityIntoThinking\}/,
+  );
+  assert.match(
+    chatTab,
+    /const foldBlockedByAlwaysExpanded = toolVisibility === "expanded";/,
+    "the row no longer works out when the fold is unavailable",
   );
   assert.ok(
     SETTINGS_SEARCH_INDEX.chat.includes("settings.chat.tools.foldIntoThinking"),
@@ -449,7 +455,37 @@ test("the setting is in the Chat tab and findable", () => {
   );
   assert.equal(
     en.settings.chat.tools.foldIntoThinking,
-    "Fold tool calls into Thinking",
+    "Group tool calls under Thinking",
   );
   assert.ok(en.settings.chat.tools.foldIntoThinkingDescription.length > 0);
+  assert.ok(en.settings.chat.tools.foldIntoThinkingBlocked.length > 0);
+});
+
+test("the two visibility rows replaced the pair of collapse switches", () => {
+  const chatTab = readSrc("features/settings/tabs/chat-tab.tsx");
+  for (const key of [
+    "settings.chat.thinking.visibility",
+    "settings.chat.tools.visibility",
+  ]) {
+    assert.ok(
+      SETTINGS_SEARCH_INDEX.chat.includes(key as never),
+      `${key} cannot be found by search`,
+    );
+    assert.ok(
+      chatTab.includes(`t("${key}")`),
+      `${key} is indexed but not rendered, so search scrolls to nothing`,
+    );
+  }
+  // All three states are offered, and no old switch is left claiming the same job.
+  for (const value of ["collapsed", "auto", "expanded"]) {
+    assert.ok(
+      chatTab.includes(`<SelectItem value="${value}">`),
+      `the ${value} option is missing from Display`,
+    );
+  }
+  assert.equal(
+    /collapseThinkingByDefault|collapseToolActivityByDefault/.test(chatTab),
+    false,
+    "an old collapse switch is still wired up alongside its replacement",
+  );
 });

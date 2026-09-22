@@ -5063,7 +5063,13 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
         except Exception:
             continue
 
-    return resolve_attention_implementation(model_class, config_copy)
+    impl = resolve_attention_implementation(model_class, config_copy)
+    # A per-sub-config mapping collapses to the decoder's name for the frozenset lookup. Inlined
+    # because callers stub the unsloth import.
+    if isinstance(impl, dict):
+        named = [value for key, value in impl.items() if key != "" and value is not None]
+        impl = named[0] if named else impl.get("", "eager")
+    return impl
 
 
 def _estimate_fp16_model_size_bytes_from_config(config) -> Optional[int]:
