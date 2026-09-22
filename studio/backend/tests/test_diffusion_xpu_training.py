@@ -68,10 +68,10 @@ def test_an_xpu_box_resolves_to_xpu_not_cpu(host):
 @pytest.mark.parametrize(
     "xpu",
     [
-        None,                                        # a torch build with no xpu module at all
-        _fake_xpu(),                                 # present, but predates is_available()
-        _fake_xpu(is_available = True),              # present, non-callable
-        _fake_xpu(is_available = lambda: False),     # present, no device
+        None,  # a torch build with no xpu module at all
+        _fake_xpu(),  # present, but predates is_available()
+        _fake_xpu(is_available = True),  # present, non-callable
+        _fake_xpu(is_available = lambda: False),  # present, no device
     ],
     ids = ["absent", "no-probe", "non-callable", "unavailable"],
 )
@@ -97,32 +97,39 @@ def test_an_emulation_only_xpu_is_refused(host):
     """``torch.xpu.is_bf16_supported()`` defaults to ``including_emulation=True`` and
     short-circuits to True for EVERY available XPU, so the bare call is not a capability check at
     all -- the same emulation trap ``native_bf16_supported`` exists to avoid on the CUDA side."""
-    host(cuda = False, xpu = _fake_xpu(
-        is_available = lambda: True,
-        is_bf16_supported = lambda including_emulation = True: bool(including_emulation),
-    ))
-    assert torch.xpu.is_bf16_supported() is True        # what the bare call claims
-    assert native_bf16_supported_xpu() is False         # what the hardware can actually do
+    host(
+        cuda = False,
+        xpu = _fake_xpu(
+            is_available = lambda: True,
+            is_bf16_supported = lambda including_emulation = True: bool(including_emulation),
+        ),
+    )
+    assert torch.xpu.is_bf16_supported() is True  # what the bare call claims
+    assert native_bf16_supported_xpu() is False  # what the hardware can actually do
 
 
 def test_a_native_bf16_xpu_is_accepted(host):
-    host(cuda = False, xpu = _fake_xpu(
-        is_available = lambda: True,
-        is_bf16_supported = lambda including_emulation = True: True,
-    ))
+    host(
+        cuda = False,
+        xpu = _fake_xpu(
+            is_available = lambda: True,
+            is_bf16_supported = lambda including_emulation = True: True,
+        ),
+    )
     assert native_bf16_supported_xpu() is True
 
 
 def test_a_torch_predating_the_emulation_flag_still_answers(host):
     """``including_emulation`` is recent; on an older torch the no-argument answer is the only one
     there is, and must not surface as a TypeError."""
-    host(cuda = False, xpu = _fake_xpu(is_available = lambda: True,
-                                       is_bf16_supported = lambda: True))
+    host(cuda = False, xpu = _fake_xpu(is_available = lambda: True, is_bf16_supported = lambda: True))
     assert native_bf16_supported_xpu() is True
 
 
 @pytest.mark.parametrize(
-    "probe", [None, True], ids = ["absent", "non-callable"],
+    "probe",
+    [None, True],
+    ids = ["absent", "non-callable"],
 )
 def test_an_xpu_without_a_usable_bf16_probe_is_refused(host, probe):
     attrs = {"is_available": lambda: True}
@@ -135,15 +142,21 @@ def test_an_xpu_without_a_usable_bf16_probe_is_refused(host, probe):
 # ── what the trainers actually bind ──────────────────────────────────────────
 def _dit_cfg():
     return DiffusionLoraConfig(
-        base_model = "black-forest-labs/FLUX.1-dev", data_dir = "/tmp/d",
-        output_dir = "/tmp/o", instance_prompt = "p", mixed_precision = "bf16",
+        base_model = "black-forest-labs/FLUX.1-dev",
+        data_dir = "/tmp/d",
+        output_dir = "/tmp/o",
+        instance_prompt = "p",
+        mixed_precision = "bf16",
     )
 
 
 def _h3_cfg():
     return DiffusionLoraConfig(
-        base_model = "MiniMaxAI/MiniMax-H3", data_dir = "/tmp/clips",
-        output_dir = "/tmp/out", mixed_precision = "bf16", resolution = 768,
+        base_model = "MiniMaxAI/MiniMax-H3",
+        data_dir = "/tmp/clips",
+        output_dir = "/tmp/out",
+        mixed_precision = "bf16",
+        resolution = 768,
     )
 
 
@@ -186,11 +199,16 @@ def _decide(monkeypatch, module, entry, cfg):
     [(dit, dit.run_dit_lora_training, _dit_cfg()), (h3, h3.run_h3_lora_training, _h3_cfg())],
     ids = ["dit", "h3"],
 )
-def test_both_flow_trainers_run_an_xpu_box_in_bf16_on_the_xpu(monkeypatch, host, module, entry, cfg):
-    host(cuda = False, xpu = _fake_xpu(
-        is_available = lambda: True,
-        is_bf16_supported = lambda including_emulation = True: True,
-    ))
+def test_both_flow_trainers_run_an_xpu_box_in_bf16_on_the_xpu(
+    monkeypatch, host, module, entry, cfg
+):
+    host(
+        cuda = False,
+        xpu = _fake_xpu(
+            is_available = lambda: True,
+            is_bf16_supported = lambda including_emulation = True: True,
+        ),
+    )
     assert _decide(monkeypatch, module, entry, cfg) == ("xpu", torch.bfloat16)
 
 
@@ -200,10 +218,13 @@ def test_both_flow_trainers_run_an_xpu_box_in_bf16_on_the_xpu(monkeypatch, host,
     ids = ["dit", "h3"],
 )
 def test_both_flow_trainers_refuse_an_emulation_only_xpu(monkeypatch, host, module, entry, cfg):
-    host(cuda = False, xpu = _fake_xpu(
-        is_available = lambda: True,
-        is_bf16_supported = lambda including_emulation = True: bool(including_emulation),
-    ))
+    host(
+        cuda = False,
+        xpu = _fake_xpu(
+            is_available = lambda: True,
+            is_bf16_supported = lambda including_emulation = True: bool(including_emulation),
+        ),
+    )
     with pytest.raises(ValueError, match = "bfloat16-capable"):
         _decide(monkeypatch, module, entry, cfg)
 
