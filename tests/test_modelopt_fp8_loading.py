@@ -350,3 +350,21 @@ def test_tiny_modelopt_llama_round_trip(tmp_path, dequantize):
     rel = ((got - want).norm() / want.norm()).item()
     # Dequantized weights are exact; the fp8 path also rounds activations to e4m3.
     assert rel < (0.01 if dequantize else 0.08), rel
+
+
+def test_rewrite_follows_who_loads_the_weights():
+    # vLLM reads ModelOpt natively, but only when it really owns the load: a num_labels
+    # classification load and a missing vLLM both stay in process and need the rewrite.
+    import inspect
+    from unsloth.models import llama, vision
+
+    llama_source = inspect.getsource(llama.FastLlamaModel.from_pretrained)
+    assert (
+        "rewrite_modelopt = not _vllm_will_load_weights(fast_inference, num_labels)" in llama_source
+    )
+    assert llama._vllm_will_load_weights(True, num_labels = 2) is False
+    vision_source = inspect.getsource(vision.FastBaseModel.from_pretrained)
+    assert "rewrite_modelopt = not (fast_inference and is_vLLM_available())" in vision_source
+    # The un-rewritten ModelOpt config must not be looked up in transformers' quantizer map.
+    assert "AUTO_QUANTIZATION_CONFIG_MAPPING.get(quant_method)" in vision_source
+    assert "AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]" not in vision_source

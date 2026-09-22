@@ -2603,7 +2603,7 @@ class FastLlamaModel:
             model_config,
             load_in_4bit = load_in_4bit,
             load_in_8bit = load_in_8bit,
-            rewrite_modelopt = not fast_inference,
+            rewrite_modelopt = not _vllm_will_load_weights(fast_inference, num_labels),
         )
         # A ModelOpt FP8 checkpoint was rewritten to the transformers fp8 form above. The rewrite
         # lives on model_config, so it has to be the config the weights load against.

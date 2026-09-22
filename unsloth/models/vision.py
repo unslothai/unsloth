@@ -1488,7 +1488,7 @@ class FastBaseModel:
             auto_config,
             load_in_4bit = load_in_4bit,
             load_in_8bit = load_in_8bit,
-            rewrite_modelopt = not fast_inference,
+            rewrite_modelopt = not (fast_inference and is_vLLM_available()),
         )
         # A ModelOpt FP8 checkpoint was rewritten to the transformers fp8 form above; its two
         # scale tensors are renamed on the way in.
@@ -1695,9 +1695,11 @@ class FastBaseModel:
                         )
                     quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING["bitsandbytes_4bit"]
                 else:
-                    quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]
+                    quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING.get(quant_method)
                 quantizer_kwargs = {}
-                if quant_method == "compressed-tensors":
+                # A method transformers has no quantizer for (ModelOpt left as is because vLLM
+                # reads it natively) is not converted here.
+                if quant_method == "compressed-tensors" or quantizer is None:
                     pass
                 else:
                     # Cannot dequantize, since gpt-oss-20b MXFP4 would become gpt-oss-20b-BF16.
