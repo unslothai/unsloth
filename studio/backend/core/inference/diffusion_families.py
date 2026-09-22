@@ -372,9 +372,18 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # fp32, and a fixed-seed 1024 render through it is PIXEL-identical to one made with the
         # fp32 original. No third-party repack is in the chain; the file is nonetheless
         # value-identical to Comfy-Org's bf16 repack, all 238 tensors, so either works.
+        #
+        # It lives beside the pre-cast text encoder in the FP8 repo rather than in a companion repo
+        # of its own, and NOT in the GGUF repo: sd_cpp_companion_only_repo_ids() is companions
+        # minus loadable, and the GGUF repo appears in no family field, so pointing here at it
+        # would classify the repo that holds every denoiser as fetch-only and hide it from the
+        # catalog. The FP8 repo is in prequant_repos, so it is subtracted and stays loadable.
+        # FP8 and INT8 picks do not use this file at all; they take the VAE from the base repo
+        # through diffusers, as every prequant family does.
+        #
         # 2.1 has its own VAE class, so the qwen-image or Wan 2.2 file decodes to noise here
         # rather than failing.
-        sd_cpp_vae = ("unsloth/Qwen-Image-2.1-ComfyUI", "vae/qwen_image_2.1_vae_bf16.safetensors"),
+        sd_cpp_vae = ("unsloth/Qwen-Image-2.1-FP8", "vae/qwen_image_2.1_vae_bf16.safetensors"),
         # Qwen3-VL 8B, not Qwen2.5-VL, and supplied through --llm rather than --qwen2vl: the
         # qwen2vl flag carries Qwen2-VL's vision preprocessing, which this encoder does not want.
         # Q4_K_M keeps the CPU RAM win the no-GPU route exists for (bf16 is 16.4 GB, this is 4.7).

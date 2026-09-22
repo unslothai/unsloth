@@ -681,7 +681,7 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
     assert family_sd_cpp_supported(fam)
 
     assert fam.sd_cpp_vae == (
-        "unsloth/Qwen-Image-2.1-ComfyUI",
+        "unsloth/Qwen-Image-2.1-FP8",
         "vae/qwen_image_2.1_vae_bf16.safetensors",
     )
     # Not the qwen-image VAE: a different class for a different latent space, which decodes to
@@ -703,6 +703,8 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
     # the base itself, so it must NOT be classified that way.
     companions = sd_cpp_companion_only_repo_ids()
     assert "unsloth/qwen3-vl-8b-instruct-gguf" in companions
-    assert "unsloth/qwen-image-2.1-comfyui" in companions
-    # The base itself is loadable, so it must never be classified as fetch-only.
+    # The VAE ships inside a repo that is itself loadable, so it must NOT be classified fetch-only.
+    # Putting it in the GGUF repo instead WOULD be: that repo appears in no family field, so
+    # companions-minus-loadable would mark the home of every denoiser as a companion and hide it.
+    assert "unsloth/qwen-image-2.1-fp8" not in companions
     assert "qwen/qwen-image-2.1" not in companions
