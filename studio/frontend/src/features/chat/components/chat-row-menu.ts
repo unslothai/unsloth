@@ -66,6 +66,45 @@ export function getSidebarItemThreadIds(item: SidebarItem): string[] {
   return item.threadIds?.length ? item.threadIds : [item.id];
 }
 
+/** A comparison is two threads with no single tip to fork from. */
+export function canForkChatRow(item: SidebarItem): boolean {
+  return item.type === "single";
+}
+
+/**
+ * Forks a chat from its last message, which is what the thread's own Fork does from the message
+ * it is on. Settings are settled first: the fork copies `settings_json` in its own transaction,
+ * so an edit still in the debounce would be left out and the copy would open on the older modes.
+ */
+export async function forkChatRow(item: SidebarItem) {
+  const { forkChatThread } = await import("../api/chat-api");
+  const { settleThreadScopedSettingsForCopy } = await import(
+    "../stores/chat-runtime-store"
+  );
+  await settleThreadScopedSettingsForCopy(item.id);
+  try {
+    // No messageId: the route picks the tip itself, after its own check that nothing is
+    // generating. Reading it here instead put a round trip between the read and the check,
+    // and either order left a window where the tip chosen was one still being written.
+    return await forkChatThread(item.id, {
+      newThreadId: crypto.randomUUID(),
+      createdAt: Date.now(),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("still generating")) throw forkRefused();
+    throw error;
+  }
+}
+
+/** Tagged, so the caller says this rather than reporting a failure that did not happen. */
+function forkRefused(): Error {
+  return Object.assign(
+    new Error("This chat is still generating. Fork it once it finishes."),
+    { unslothForkRefused: true },
+  );
+}
+
 /** The sandbox sessions this chat's stored tool results name, if any. */
 export async function recordedSandboxSessionIds(
   ids: string[],

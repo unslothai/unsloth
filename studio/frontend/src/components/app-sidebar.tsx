@@ -123,7 +123,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, ChevronUp, Moon } from "lucide-react";
+import { ArrowRightIcon, ChevronDown, ChevronUp, GitBranchIcon, Moon } from "lucide-react";
 import {
   Link,
   useNavigate,
@@ -134,11 +134,14 @@ import {
   archiveChatItem,
   ChatSearchDialog,
   clearNewChatDraft,
+  canForkChatRow,
   chatExportOptions,
   EditProjectDialog,
   OpenChatFolderUnavailableItem,
   exportConversationByFormat,
+  forkChatRow,
   getSidebarItemThreadIds,
+  useForkInFlight,
   sandboxSessionIdsHolding,
   deleteChatProject,
   deleteChatItem,
@@ -1136,6 +1139,8 @@ export function AppSidebar() {
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   // The whole map, so each row can show its own spinner.
   const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
+  // Shared with the thread's own Fork, so neither surface can post a second one.
+  const forkInFlight = useForkInFlight((s) => s.forking);
   // Rows, not raw thread ids: a compare conversation runs two pane threads but is one row.
   const runningChatCount = useMemo(() => {
     const running = new Set(
@@ -2354,6 +2359,38 @@ export function AppSidebar() {
     }
   }
 
+  /** Forks a chat from the row menu and opens the copy, the way the thread's own Fork does. */
+  async function forkChatFromRow(item: SidebarItem) {
+    // Read, do not trust the render: reopening the menu and picking Fork again before the first
+    // request lands would post a second, each with its own new thread id.
+    const inFlight = useForkInFlight.getState();
+    if (inFlight.forking) return;
+    inFlight.setForking(true);
+    try {
+      const result = await forkChatRow(item);
+      setActiveThreadId(result.thread.id);
+      navigate({ to: "/chat", search: { thread: result.thread.id } });
+      if (result.containerSnapshotWarning) {
+        toast.info("Fork created", {
+          description: result.containerSnapshotWarning,
+        });
+      } else {
+        toast.success("Fork created");
+      }
+    } catch (error) {
+      // A chat still generating is a refusal, not a failure: say so without the alarm.
+      if ((error as { unslothForkRefused?: boolean } | null)?.unslothForkRefused) {
+        toast.info(error instanceof Error ? error.message : "Cannot fork this chat.");
+      } else {
+        toast.error("Failed to fork", {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
+    } finally {
+      inFlight.setForking(false);
+    }
+  }
+
   type RenameTarget =
     // `inline` is the row's own pill, and a chord has no row under the cursor
     // and may have none on screen at all, so it opens the dialog instead.
@@ -3413,6 +3450,16 @@ export function AppSidebar() {
                     : t("shell.selection.markUnread")}
                 </span>
               </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!canForkChatRow(item) || isGenerating || forkInFlight}
+                title="Copy this chat into a new one, from its last message"
+                onSelect={() => void forkChatFromRow(item)}
+              >
+                <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+                <span>Fork</span>
+              </DropdownMenuItem>
+              {/* Rename through Fork act on the row; the rule sets off what reaches outside it. */}
+              <DropdownMenuSeparator />
               {sandboxSessionId ? (
                 isTauri ? (
                   <DropdownMenuItem

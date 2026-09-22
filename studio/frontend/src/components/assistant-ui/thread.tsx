@@ -244,6 +244,7 @@ import {
   usePromptQueueUI,
   forkCountFor,
   subscribeForkCounts,
+  useForkInFlight,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
@@ -7889,22 +7890,6 @@ const ForkCountBadge: FC = () => {
     </span>
   );
 };
-
-/**
- * One fork at a time, across every caller of the hook below.
- *
- * The chord and the button each hold their own instance, so a `useState` flag
- * only disables the one that was used: pressing the chord and then clicking
- * Fork before the first request lands would post two, each with its own new
- * thread id, and race their navigations. A store is what both of them read.
- */
-const useForkInFlight = create<{
-  forking: boolean;
-  setForking: (forking: boolean) => void;
-}>((set) => ({
-  forking: false,
-  setForking: (forking) => set({ forking }),
-}));
 
 const useForkMessageAction = () => {
   const aui = useAui();
