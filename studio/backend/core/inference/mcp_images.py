@@ -1160,6 +1160,10 @@ def _promote(
         content = message.get("content")
         if message.get("role") == "tool" and isinstance(content, str):
             text, images = split_images(content)
+            # The suffix always comes off -- it is megabytes of base64 and the model
+            # must never read it as text. Provenance decides only whether it becomes
+            # IMAGE input: a named non-MCP tool that happens to end in a valid
+            # envelope is not one an MCP server served.
             name = message.get("name") or call_names.get(position)
             if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
                 # A non-MCP result sitting between the images and their turn makes
