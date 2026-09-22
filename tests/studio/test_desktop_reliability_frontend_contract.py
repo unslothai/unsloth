@@ -773,7 +773,7 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
 
 
 def test_fixed_sheets_start_below_the_custom_titlebar():
-    provider = _ui_source(APP_PROVIDER)
+    provider = _window_chrome_source(APP_PROVIDER)
     sheet = _ui_source(SHEET)
 
     # Portalled sheets read the height off <html>, so the mirror has to stay.
@@ -1037,6 +1037,19 @@ def _ui_source(path) -> str:
     each contract asking about the length it was written for instead of the spelling.
     """
     return _at_default_scale(path.read_text(encoding = "utf-8"))
+
+
+def _window_chrome_source(path) -> str:
+    """A checked-in source, read exactly as written.
+
+    Window chrome does not scale with the interface font size. The custom titlebar is 34px
+    because the Tauri window decoration is 34px, and `DesktopChromeVarsEffect` only mirrors
+    that number onto `<html>` for the portalled sheets to sit below. Reading that mirror
+    through `_ui_source` would accept `calc(34px * var(--ui-space-scale, 1))` as 34px while
+    the real titlebar stayed put and every fixed sheet slid off it at a non-default UI size,
+    so the chrome is read raw and a scale wrapper fails the contract.
+    """
+    return path.read_text(encoding = "utf-8")
 
 
 def _spacing_rem(live_css: str) -> float | None:
