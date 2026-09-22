@@ -2545,10 +2545,22 @@ def get_disk_space(
         # boundary for the Hub inventory routes; a capacity reading is not a reason to cross
         # it, and the low-disk client uses only the numbers.
         #
+        # A managed account is the same disclosure by a different door: its session JWT also
+        # satisfies get_current_subject, and via_api_key is false for it, so the API-key test
+        # alone would hand it the owner's home layout. Resources is owner-only and
+        # /settings/caches sits behind _owner_settings_router, so the path is owner-only here
+        # too. Redacted rather than 403: requestStart and the poll loop call this for whoever
+        # is downloading, owner or not, and the numbers are what that caller needs. On a
+        # single-user install the context defaults to OWNER, so nothing changes.
+        #
         # The INVENTORY redactor, not redact_host_paths: the latter runs _redact with
         # redact_ambiguous_path=False and so leaves a field literally named "path" alone,
         # which is the whole value here. Verified against the real helper, not assumed.
-        return redact_inventory_host_paths(answer, via_api_key = via_api_key)
+        from utils.account_context import is_owner_context
+
+        return redact_inventory_host_paths(
+            answer, via_api_key = via_api_key or not is_owner_context()
+        )
     # Every probe failed. Nulls, not zeros: diskPressure() reads a zero total as psutil having
     # failed and a zero free as a full disk, and this is neither.
     return {"path": None, "total_gb": None, "free_gb": None, "percent_used": None}

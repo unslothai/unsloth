@@ -96,6 +96,7 @@ def _load_route(
     studio,
     xet_cache = None,
     via_api_key = False,
+    is_owner = True,
 ):
     """Run the real route body against stub resolvers, without importing main.py.
 
@@ -121,8 +122,11 @@ def _load_route(
     settings.get_hf_cache_paths = lambda: types.SimpleNamespace(
         hub_cache = hub_cache, xet_cache = hub_cache if xet_cache is None else xet_cache
     )
+    accounts = types.ModuleType("utils.account_context")
+    accounts.is_owner_context = lambda: is_owner
     monkeypatch.setitem(sys.modules, "utils.paths.storage_roots", storage)
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
+    monkeypatch.setitem(sys.modules, "utils.account_context", accounts)
     exec(compile(_route_source(), "<route>", "exec"), namespace)
     return namespace["get_disk_space"]
 
@@ -333,6 +337,52 @@ def test_a_ui_session_still_sees_the_path(monkeypatch, tmp_path):
     reading = route(current_subject = "alice", via_api_key = False)
 
     assert reading["path"], "a UI session lost the path it needs to identify the volume"
+
+
+def test_a_managed_account_is_not_told_the_host_path(monkeypatch, tmp_path):
+    """The same disclosure as the API key, through a different door.
+
+    A managed user's session JWT satisfies get_current_subject and leaves via_api_key false,
+    so testing the key alone would hand a non-owner the owner's home layout. Resources is
+    owner-only and /settings/caches sits behind _owner_settings_router; the path is owner-only
+    here too. The numbers survive, because requestStart calls this for whoever downloads.
+    """
+    hub = tmp_path / "cache" / "hub"
+    hub.mkdir(parents = True)
+
+    route = _load_route(
+        monkeypatch,
+        hub_cache = hub,
+        default_cache = tmp_path / "d",
+        studio = tmp_path / "s",
+        is_owner = False,
+    )
+    reading = route(current_subject = "bob", via_api_key = False)
+
+    assert not reading.get("path"), "the raw host path went out to a managed account"
+    assert reading["free_gb"] is not None, "the capacity fields must survive redaction"
+
+
+def test_a_single_user_install_still_sees_the_path(monkeypatch, tmp_path):
+    """The non-vacuous control for the check above.
+
+    account_context defaults to OWNER, so an install that never made a managed account takes
+    the same branch it did before this guard existed. If this fails, the guard is redacting
+    for everybody and the test above passes for the wrong reason.
+    """
+    hub = tmp_path / "cache" / "hub"
+    hub.mkdir(parents = True)
+
+    route = _load_route(
+        monkeypatch,
+        hub_cache = hub,
+        default_cache = tmp_path / "d",
+        studio = tmp_path / "s",
+        is_owner = True,
+    )
+    reading = route(current_subject = "alice", via_api_key = False)
+
+    assert reading["path"], "the owner lost the path on a single-user install"
 
 
 def test_an_unreadable_cache_volume_is_not_reported_as_its_parent(monkeypatch, tmp_path):
