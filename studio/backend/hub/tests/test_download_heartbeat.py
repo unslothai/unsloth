@@ -204,8 +204,11 @@ def test_worker_files_are_removed_once_the_worker_exits(tmp_path):
 
 def test_only_xet_workers_get_a_heartbeat(monkeypatch, tmp_path):
     spawned = []
+    real_popen = download_lifecycle.subprocess.Popen
 
-    def fake_popen(args, **_kwargs):
+    def fake_popen(args, **kwargs):
+        if "hub.workers.hf_download" not in args:
+            return real_popen(args, **kwargs)
         spawned.append(args)
         return _Proc(tmp_path / "unused", rc = 0)
 

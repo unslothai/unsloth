@@ -54,7 +54,7 @@ class HeartbeatWriter:
         self._path = path
         self._interval = interval
         self._total = 0
-        self._flushed_at = 0.0
+        self._flushed_at = float("-inf")
         self._lock = threading.Lock()
 
     def add(self, n: int) -> None:
