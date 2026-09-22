@@ -46,6 +46,14 @@ on:
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
       - 'unsloth_cli/**'
+      # frontend-dist-restore keys its cache on exactly these three globs, and a miss
+      # makes the checked-out setup.ps1 run npm run build (setup.ps1:5060), so a
+      # Windows-only build failure changes this job's verdict. Mirrors the cache key
+      # rather than studio/frontend/**: the key excludes tests, scripts and e2e, and a
+      # change confined to those cannot cause the miss that triggers the build.
+      - 'studio/frontend/*'
+      - 'studio/frontend/src/**'
+      - 'studio/frontend/public/**'
       - '.github/workflows/studio-windows-update-smoke.yml'
   push:
     branches: [main]
@@ -68,6 +76,9 @@ on:
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
       - 'unsloth_cli/**'
+      - 'studio/frontend/*'
+      - 'studio/frontend/src/**'
+      - 'studio/frontend/public/**'
       - '.github/workflows/studio-windows-update-smoke.yml'
   workflow_dispatch:
 

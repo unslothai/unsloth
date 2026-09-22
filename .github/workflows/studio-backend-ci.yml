@@ -54,6 +54,13 @@ on:
       # execute tests/studio, and skipped Backend CI, which does. The guards were then
       # absent for exactly the change they guard. Same reason as install.sh above.
       - '.github/actions/**'
+      # Test inputs, not sources: tests/python/test_docker_publish_tag_scheme.py and
+      # test_docker_publish_ref_freeze.py read docker-publish.yml, and
+      # tests/test_formatter_fixed_point.py plus the pinned-ruff step read
+      # .pre-commit-config.yaml. Editing either changes this job's verdict with no
+      # source change, and docker-publish.yml runs only on tags so it cannot self-check.
+      - '.github/workflows/docker-publish.yml'
+      - '.pre-commit-config.yaml'
       - '.github/workflows/studio-backend-ci.yml'
       # tests/python/test_amd_extras_contract.py asserts against this file.
       - '.github/workflows/security-audit.yml'
@@ -70,6 +77,8 @@ on:
       - 'scripts/**'
       - 'pyproject.toml'
       - '.github/actions/**'
+      - '.github/workflows/docker-publish.yml'
+      - '.pre-commit-config.yaml'
       - '.github/workflows/studio-backend-ci.yml'
       - '.github/workflows/security-audit.yml'
 
