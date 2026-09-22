@@ -1928,7 +1928,10 @@ async def get_gguf_variants_answer(
             and not is_anonymous(hf_token)
             and (not local_path or local_path == repo_id)
         ):
-            from hub.utils.gguf_sources import cached_gguf_sources
+            from hub.utils.gguf_sources import (
+                cached_gguf_source_partial,
+                cached_gguf_sources,
+            )
             sources = cached_gguf_sources(repo_id)
         try:
             response = _compute()
@@ -1990,6 +1993,16 @@ async def get_gguf_variants_answer(
                             detail.size_bytes = v.size_bytes
                         else:
                             variant_context_sources.pop(key, None)
+                elif cached_gguf_source_partial(repo_id, v.quant, source.snapshot):
+                    # A local-only or offline answer never reaches the Hub path above, so
+                    # that readiness check cannot run; this is its local twin. A remembered
+                    # copy whose own manifest, marker or blobs make the quant incomplete is
+                    # not a complete copy the picker may offer to load, or the row would
+                    # advertise a load that fails where the matching direct request offers
+                    # a resume.
+                    variant_context_sources.pop(key, None)
+                    detail.downloaded = False
+                    detail.partial = True
                 variants[key] = detail
             response.variants = list(variants.values())
             response.has_vision = response.has_vision or any(s.has_vision for s in sources.values())

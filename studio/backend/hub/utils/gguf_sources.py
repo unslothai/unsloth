@@ -36,6 +36,33 @@ def gguf_cache_snapshots(repo_id: str):
             yield snapshot
 
 
+def cached_gguf_source_partial(repo_id: str, quant: str, snapshot: Path) -> bool:
+    """Whether this snapshot's quant is incomplete by its own manifest, cancellation marker or blobs.
+
+    The per-snapshot twin of the readiness check a listing runs for the cache it names. A
+    caller merging remembered folders has to ask it about every source it reports: with
+    ``prefer_local_cache``/``offline`` there is no Hub answer to fall back on, so an
+    interrupted companion download would otherwise be advertised as a complete copy that
+    the picker offers to load instead of to resume.
+
+    Local-only by construction -- it reads the manifest and marker next to *snapshot* and
+    never consults the Hub -- and judged against that same snapshot's own repo cache
+    directory, since a cancellation marker belongs to the attempt that wrote it.
+    """
+    from hub.utils import inventory_scan
+
+    repo_cache_dir = snapshot.parent.parent
+    return inventory_scan.is_variant_partial(
+        repo_id,
+        quant,
+        snapshot,
+        repo_cache_dir = repo_cache_dir,
+        repo_signal_applies = inventory_scan.repo_signal_applies_to_snapshot(
+            repo_cache_dir, snapshot
+        ),
+    )
+
+
 def cached_gguf_manifest_complete(repo_id: str, quant: str, snapshot: Path) -> bool:
     """Prefer completed downloads without applying a newer revision's manifest to an older copy."""
     from hub.services.models.catalog_classification import _gguf_path_task

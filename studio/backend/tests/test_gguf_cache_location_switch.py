@@ -522,3 +522,58 @@ def test_pin_listing_needs_explicit_token_when_ambient_is_denied(
     )
     actual = next(v for v in response.variants if v.quant == quant)
     assert actual.downloaded is bool(token)
+
+
+@pytest.mark.parametrize("entrypoint", ["listing", "source"])
+def test_incomplete_remembered_copy_is_not_advertised_complete(cache_locations, monkeypatch, entrypoint):
+    """An offline/local answer has no Hub check to fall back on, so the remembered copy is
+    judged by its own manifest: a quant whose companion never finished is not a complete
+    copy the picker may offer to load, even though every main shard is on disk."""
+    from hub.utils import download_manifest
+    from hub.utils.gguf_sources import cached_gguf_source_partial, cached_gguf_sources
+
+    repo_id, expected = cache_locations
+    active = hf_cache_settings.get_hf_cache_paths().hub_cache
+    quant = "Q4_K_M"
+    filename = f"Model-{quant}.gguf"
+    # The remembered copy holds every main shard but is missing its projector, which is
+    # exactly the torn state a completed-looking snapshot can hide.
+    remembered = None
+    for repo, path in expected.values():
+        if repo.parent == active:
+            continue
+        snapshot = path.parent
+        (snapshot / filename).write_bytes(b"0" * 256)
+        remembered = snapshot
+        assert download_manifest.write_manifest(
+            "model",
+            repo_id,
+            quant,
+            [
+                download_manifest.ExpectedFile(filename, 256),
+                download_manifest.ExpectedFile("mmproj-F16.gguf", 128),
+            ],
+            hub_cache = repo.parent,
+            commit_hash = snapshot.name,
+        )
+    assert remembered is not None
+    inventory_scan.invalidate_hf_cache_scans()
+    assert not (remembered / "mmproj-F16.gguf").is_file()
+    assert cached_gguf_source_partial(repo_id, quant, remembered)
+
+    if entrypoint == "source":
+        assert cached_gguf_sources(repo_id)[quant.lower()].snapshot == remembered
+        return
+
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(
+            repo_id,
+            prefer_local_cache = True,
+            offline = True,
+            include_cache_locations = True,
+        )
+    )
+    variant = next(v for v in response.variants if v.quant == quant)
+    assert not variant.downloaded
+    assert variant.partial
+    assert variant.cache_path == str(remembered.parent.parent)
