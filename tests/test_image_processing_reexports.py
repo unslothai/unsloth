@@ -166,7 +166,13 @@ def test_import_unsloth_does_not_pull_in_the_image_stack():
         # `import unsloth` refuses to finish without an accelerator, so on a
         # CPU-only runner there is no import to measure the laziness of. Skip
         # rather than fail: asserting here tests the runner, not the fix.
-        if "cannot find any torch accelerator" in out.stderr:
+        #
+        # Keyed on the raising function, not its message: the wording is
+        # unsloth_zoo's and differs by version ("cannot find any torch
+        # accelerator" on current builds, "only works on NVIDIA GPUs and Intel
+        # GPUs" on 2026.3.6), so a message match fails the test on the older
+        # one for a reason that has nothing to do with this fix.
+        if "get_device_type" in out.stderr and "NotImplementedError" in out.stderr:
             pytest.skip("import unsloth requires an accelerator; nothing to measure here")
         raise AssertionError(out.stderr[-2000:])
     assert out.stdout.strip().splitlines()[-1] == "False", out.stdout[-2000:]
