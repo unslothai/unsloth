@@ -129,7 +129,11 @@ def _prefix_candidates(key: str) -> list[str]:
     which is comparable. Anything still expression-led afterwards is genuinely
     undecidable and is reported rather than dropped.
     """
-    keys = [_RUNNER_OS_EXPR.sub(v, key) for v in _RUNNER_OS_VALUES] if _RUNNER_OS_EXPR.search(key) else [key]
+    keys = (
+        [_RUNNER_OS_EXPR.sub(v, key) for v in _RUNNER_OS_VALUES]
+        if _RUNNER_OS_EXPR.search(key)
+        else [key]
+    )
     return [h for h in (_literal_prefix(k) for k in keys) if h]
 
 
@@ -204,7 +208,6 @@ def _pr_reachable_action_dirs(workflows_dir: Path, pr_paths: list) -> set:
                     dirs.add(action)
                     queue.append(action)
     return dirs
-
 
 
 def _on_field(yaml_doc):
@@ -590,9 +593,7 @@ def main() -> int:
                 )
                 continue
             for pub_head in pub_heads:
-                hit = next(
-                    (h for h in sorted(pr_heads) if _prefix_compatible(h, pub_head)), None
-                )
+                hit = next((h for h in sorted(pr_heads) if _prefix_compatible(h, pub_head)), None)
                 if hit is not None:
                     findings.append(
                         f"{pub_path.name}: restore-keys prefix {pub_head!r} matches "

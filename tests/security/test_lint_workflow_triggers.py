@@ -1181,9 +1181,9 @@ def test_an_expression_led_pr_key_is_expanded_not_dropped(tmp_path):
         _publish_with_restore_keys("pub-${{ runner.os }}", "            Linux-shared-\n")
     )
     proc = _run(wf)
-    assert proc.returncode == 1, (
-        f"expression-led PR key silently dropped:\n{proc.stdout}\n{proc.stderr}"
-    )
+    assert (
+        proc.returncode == 1
+    ), f"expression-led PR key silently dropped:\n{proc.stdout}\n{proc.stderr}"
     assert "Linux-shared-" in proc.stderr
 
 
@@ -1280,6 +1280,5 @@ def test_a_publish_only_composite_is_not_treated_as_a_pr_namespace(tmp_path):
     )
     proc = _run(wf)
     assert proc.returncode == 0, (
-        f"a publish-only composite was treated as a PR namespace:\n"
-        f"{proc.stdout}\n{proc.stderr}"
+        f"a publish-only composite was treated as a PR namespace:\n" f"{proc.stdout}\n{proc.stderr}"
     )
