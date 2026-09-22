@@ -22,7 +22,15 @@ class EngineHTTPError(RuntimeError):
         super().__init__(f"Engine rejected generation (HTTP {status_code}): {self.body}")
 
 
+def engine_request_timeout():
+    """The llama-server first-token deadline: long prefill, queueing or a non-streamed
+    reply routinely outlast a fixed short read timeout."""
+    from routes.inference import _first_token_timeout_s
+    return httpx.Timeout(_first_token_timeout_s(), connect = 5)
+
+
 def stream_chat_events(base_url, headers, payload, cancelled):
+    timeout = engine_request_timeout()
     items = queue.Queue(maxsize = 64)
     done = threading.Event()
     stopped = threading.Event()
@@ -34,9 +42,7 @@ def stream_chat_events(base_url, headers, payload, cancelled):
         control["task"] = asyncio.current_task()
         if stopped.is_set() or cancelled():
             return
-        async with httpx.AsyncClient(
-            trust_env = False, timeout = httpx.Timeout(120, connect = 5)
-        ) as client:
+        async with httpx.AsyncClient(trust_env = False, timeout = timeout) as client:
             async with client.stream(
                 "POST", base_url + "/v1/chat/completions", headers = headers, json = payload
             ) as response:

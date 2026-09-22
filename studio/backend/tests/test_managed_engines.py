@@ -238,6 +238,49 @@ def peer():
     thread.join(2)
 
 
+@pytest.mark.parametrize("deadline,completes", [(0.3, False), (10, True)])
+def test_engine_stream_waits_for_the_first_token_deadline(monkeypatch, deadline, completes):
+    import time
+    import httpx
+    from core.inference.engine_transport import stream_chat_events
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.flush()
+            # A long prefill sends nothing before the first token.
+            time.sleep(1)
+            try:
+                self.wfile.write(
+                    b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
+                )
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    monkeypatch.setenv("UNSLOTH_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT", str(deadline))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target = server.serve_forever, daemon = True)
+    thread.start()
+    try:
+        events = stream_chat_events(f"http://127.0.0.1:{server.server_port}", {}, {}, lambda: False)
+        if completes:
+            assert [e["choices"][0]["delta"]["content"] for e in events] == ["hi"]
+        else:
+            with pytest.raises(httpx.ReadTimeout):
+                list(events)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(2)
+
+
 def test_real_http_stream_and_usage(peer):
     engine, requests = peer
     stats = {}

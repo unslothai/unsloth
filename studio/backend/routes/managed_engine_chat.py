@@ -13,6 +13,7 @@ import httpx
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
+from core.inference.engine_transport import engine_request_timeout
 from core.inference.http_stream import closing_response_lines
 from core.inference.studio_tool_loop import ToolLoopPolicy, ToolLoopRun, stream_with_studio_tools
 
@@ -167,7 +168,7 @@ async def managed_tool_chat(
     tracker.__enter__()
 
     async def events():
-        client = httpx.AsyncClient(trust_env = False, timeout = httpx.Timeout(120, connect = 5))
+        client = httpx.AsyncClient(trust_env = False, timeout = engine_request_timeout())
         watcher = asyncio.create_task(
             api._await_cancel_or_disconnect_then_close_client(
                 cancel_event = cancel, request = request, client = client
