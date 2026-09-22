@@ -788,3 +788,43 @@ def test_the_probe_flag_answers_without_a_traceback():
     )
     assert result.returncode in (0, 1), result.stderr
     assert "Traceback" not in result.stderr, result.stderr
+
+
+def _repair_module(
+    monkeypatch,
+    *,
+    needed,
+    resident_after,
+    uncontended = True,
+):
+    import contextlib
+
+    module = _probe_module("install_python_stack_repair_probe")
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.setattr(module, "_diffusers_main_needs_dependency_pass", lambda: needed)
+    monkeypatch.setattr(module, "_bootstrap_uv", lambda: True)
+    monkeypatch.setattr(module, "_diffusers_main_resident", lambda *a, **k: resident_after)
+    monkeypatch.setattr(
+        module.install_manifest,
+        "pass_lock",
+        lambda *a, **k: contextlib.nullcontext(uncontended),
+    )
+    ran = []
+    monkeypatch.setattr(module, "_diffusers_main_step", lambda: ran.append(True))
+    return module, ran
+
+
+def test_the_startup_repair_runs_only_the_main_step(monkeypatch):
+    """The backend's self-heal: 0 once the build is in, 2 when the step could not install it."""
+    module, ran = _repair_module(monkeypatch, needed = True, resident_after = True)
+    assert module._repair_diffusers_main() == 0 and ran == [True]
+    module, ran = _repair_module(monkeypatch, needed = True, resident_after = False)
+    assert module._repair_diffusers_main() == 2 and ran == [True]
+
+
+def test_the_startup_repair_leaves_a_healthy_or_busy_install_alone(monkeypatch):
+    module, ran = _repair_module(monkeypatch, needed = False, resident_after = True)
+    assert module._repair_diffusers_main() == 1 and ran == []
+    # An update holds the pass lock and installs the build itself.
+    module, ran = _repair_module(monkeypatch, needed = True, resident_after = False, uncontended = False)
+    assert module._repair_diffusers_main() == 1 and ran == []

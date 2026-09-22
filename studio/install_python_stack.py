@@ -10644,6 +10644,25 @@ def _diffusers_main_needs_dependency_pass() -> bool:
     return last != "failed"
 
 
+def _repair_diffusers_main() -> int:
+    """11c on its own, for the backend's startup self-heal: 0 installed, 1 nothing to do, 2 failed.
+
+    An update from a release that predates 11c runs that release's installer, which never installs
+    the build; the backend that starts afterwards is the first new code such a host runs.
+    """
+    global USE_UV, _STEP, _TOTAL
+    if not _diffusers_main_requested() or not _diffusers_main_needs_dependency_pass():
+        return 1
+    with install_manifest.pass_lock() as uncontended:
+        if not uncontended:
+            # An update is running, and its own pass installs the build.
+            return 1
+        USE_UV = _bootstrap_uv()
+        _STEP, _TOTAL = 0, 1
+        _diffusers_main_step()
+    return 0 if _diffusers_main_resident() else 2
+
+
 def _diffusers_main_step() -> None:
     """Install the pinned Diffusers commit, or leave the release pin alone.
 
@@ -11929,6 +11948,8 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--missing-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _missing_torch_needs_dependency_pass() else 1)
+    if sys.argv[1:] == ["--repair-diffusers-main"]:
+        sys.exit(_repair_diffusers_main())
     if sys.argv[1:] == ["--diffusers-main-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _diffusers_main_needs_dependency_pass() else 1)

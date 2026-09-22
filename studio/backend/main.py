@@ -616,6 +616,14 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     runtime before the socket bound; joining first keeps that optional probe out of the login-screen
     critical path. Linked-folder startup only loads embeddings when a queued sync has real ingestion
     work."""
+    # Before the join: a metadata read, then a thread, and the install itself takes minutes.
+    try:
+        from utils.diffusers_repair import start_diffusers_autorepair_if_needed
+        start_diffusers_autorepair_if_needed()
+    except Exception as _diffusers_exc:  # noqa: BLE001 -- a self-heal must never end the worker
+        import structlog as _structlog
+        _structlog.get_logger(__name__).warning("diffusers autorepair skipped: %s", _diffusers_exc)
+
     # No-op when the warm never started, so this is safe under the kill switch.
     join_background_warm()
 
@@ -662,7 +670,11 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     if _post_warm_retired(generation):
         return
     try:
-        prewarm_diffusers_if_image_models_exist()
+        from utils.diffusers_repair import diffusers_repair_in_flight
+
+        # Importing the release now would pin it in this process for the whole session.
+        if not diffusers_repair_in_flight():
+            prewarm_diffusers_if_image_models_exist()
     except Exception as _prewarm_exc:  # noqa: BLE001 -- latency work must never end the worker
         import structlog as _structlog
         _structlog.get_logger(__name__).debug("diffusers prewarm skipped: %s", _prewarm_exc)

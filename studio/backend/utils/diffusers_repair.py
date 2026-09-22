@@ -1,0 +1,182 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Startup self-heal for the pinned Diffusers main build.
+
+An update from a release that predates the installer's Diffusers main step runs that release's
+installer, so the build never goes in and Qwen-Image-2.1 refuses to load until a second update. The
+backend is the first new code such a host runs, so it runs the installer's own step here, on a
+background thread (git, or the zip route without git). Opt out with
+UNSLOTH_DISABLE_DIFFUSERS_AUTOREPAIR=1.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import threading
+from pathlib import Path
+from typing import Optional
+
+import structlog
+
+logger = structlog.get_logger(__name__)
+
+DISABLE_ENV_VAR = "UNSLOTH_DISABLE_DIFFUSERS_AUTOREPAIR"
+_STUDIO_DIR = Path(__file__).resolve().parents[2]
+_INSTALLER = _STUDIO_DIR / "install_python_stack.py"
+_MAIN_PIN = _STUDIO_DIR / "backend" / "requirements" / "diffusers-main.txt"
+_REPAIR_TIMEOUT_S = 900
+# The installer's exit codes for --repair-diffusers-main.
+_INSTALLED, _NOTHING_TO_DO = 0, 1
+
+# Unattended, so secrets and index redirects stay out, as in mlx_repair. The Windows names are what
+# Python, git and uv need to start at all there.
+_ENV_ALLOWLIST = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "all_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "UV_SYSTEM_CERTS",
+        "UV_NATIVE_TLS",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "UNSLOTH_DIFFUSERS_MAIN",
+    }
+)
+
+_lock = threading.Lock()
+_thread: Optional[threading.Thread] = None
+_installed = False
+
+
+def _opted_out() -> bool:
+    if os.environ.get(DISABLE_ENV_VAR) == "1":
+        return True
+    value = (os.environ.get("UNSLOTH_DIFFUSERS_MAIN") or "").strip().lower()
+    return value in ("0", "false", "no", "off")
+
+
+def _diffusers_is_an_index_install() -> bool:
+    """True when diffusers came from an index, the only state the repair acts on.
+
+    Read from metadata, so the common healthy boot spawns nothing: the pinned build is a direct
+    reference (git or zip) and records one in direct_url.json.
+    """
+    try:
+        from importlib.metadata import distribution
+        dist = distribution("diffusers")
+    except Exception:  # noqa: BLE001 - no diffusers at all is the installer's job, not this one
+        return False
+    try:
+        payload = json.loads(dist.read_text("direct_url.json") or "{}")
+    except (ValueError, OSError):
+        payload = {}
+    if not isinstance(payload, dict):
+        return True
+    return not ("vcs_info" in payload or "archive_info" in payload)
+
+
+def _repair_env() -> dict[str, str]:
+    env = {key: os.environ[key] for key in _ENV_ALLOWLIST if key in os.environ}
+    env["VIRTUAL_ENV"] = sys.prefix
+    try:
+        from utils.mlx_repair import _uv_executable
+        uv = _uv_executable()
+    except Exception:  # noqa: BLE001 - without uv the installer falls back to pip
+        uv = None
+    # A GUI launch starts with a minimal PATH, and the installer looks uv up there.
+    if uv:
+        env["PATH"] = os.pathsep.join(filter(None, (str(Path(uv).parent), env.get("PATH"))))
+    return env
+
+
+def _run_repair() -> None:
+    global _installed
+    kwargs = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            [sys.executable, str(_INSTALLER), "--repair-diffusers-main"],
+            env = _repair_env(),
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            errors = "replace",
+            timeout = _REPAIR_TIMEOUT_S,
+            **kwargs,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("diffusers self-heal timed out after %ss", _REPAIR_TIMEOUT_S)
+        return
+    except OSError as exc:
+        logger.warning("diffusers self-heal could not start the installer: %s", exc)
+        return
+    if result.returncode == _INSTALLED:
+        _installed = True
+        logger.info("diffusers self-heal installed the pinned Diffusers main build")
+    elif result.returncode != _NOTHING_TO_DO:
+        logger.warning(
+            "diffusers self-heal could not install the pinned build; run `unsloth studio "
+            "update` to retry. Installer output:\n%s",
+            (result.stdout or "")[-4000:],
+        )
+
+
+def start_diffusers_autorepair_if_needed() -> bool:
+    """Start the background install when diffusers is an index release and the pin wants main.
+    True iff a repair thread was started; at most once per process."""
+    global _thread
+    if _opted_out() or not _MAIN_PIN.is_file() or not _INSTALLER.is_file():
+        return False
+    if not _diffusers_is_an_index_install():
+        return False
+    with _lock:
+        if _thread is not None:
+            return False
+        _thread = threading.Thread(target = _run_repair, daemon = True, name = "diffusers-autorepair")
+        _thread.start()
+    logger.info(
+        "diffusers is the release build; checking for the pinned Diffusers main build in the "
+        "background. Set %s=1 to disable.",
+        DISABLE_ENV_VAR,
+    )
+    return True
+
+
+def diffusers_repair_in_flight() -> bool:
+    thread = _thread
+    return thread is not None and thread.is_alive()
+
+
+def diffusers_repair_installed() -> bool:
+    return _installed

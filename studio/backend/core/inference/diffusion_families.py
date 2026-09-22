@@ -1343,6 +1343,17 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
             f"diffusers {installed}. Upgrade with: pip install -U diffusers."
         )
     if minimum in _UNRELEASED_MIN_DIFFUSERS:
+        try:
+            from utils.diffusers_repair import diffusers_repair_installed
+            installed_since = diffusers_repair_installed()
+        except Exception:  # noqa: BLE001 - no self-heal module is no repair
+            installed_since = False
+        if installed_since:
+            return (
+                f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}). Unsloth has just "
+                f"installed it, but this session already loaded diffusers {installed}. Restart "
+                "Unsloth Studio to use it."
+            )
         remedy = _diffusers_main_archive_remedy()
         return (
             f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}), which has not been "
@@ -1426,6 +1437,19 @@ def assert_pipeline_class_available(
         close_dynamo_import_window(get_logger(__name__))
     except Exception:  # noqa: BLE001, S110 - optimisation only, and this module has no logger
         pass
+
+    if "diffusers" not in sys.modules:
+        try:
+            from utils.diffusers_repair import diffusers_repair_in_flight
+            repairing = diffusers_repair_in_flight()
+        except Exception:  # noqa: BLE001 - no self-heal module is no repair
+            repairing = False
+        # Importing now would read files the install is replacing, and pin the release for the session.
+        if repairing:
+            raise ValueError(
+                "Unsloth is installing the pinned diffusers build in the background, which takes a "
+                "few minutes on the first start after an update. Try again shortly."
+            )
 
     try:
         import diffusers
