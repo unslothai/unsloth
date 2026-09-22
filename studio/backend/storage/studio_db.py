@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 
 from utils.account_context import is_owner_context
@@ -1308,12 +1308,32 @@ def _close_keeper(conn: sqlite3.Connection) -> None:
         logger.warning("Could not close the studio.db WAL keeper: %s", exc)
 
 
+#: Called when a keeper is closed, so modules holding their own long-lived connections can drop
+#: them too. Closing the keeper is meant to leave the database checkpointed and its -wal gone
+#: (#9934), and any other open connection silently prevents that.
+_keeper_close_listeners: list[Callable[[], None]] = []
+
+
+def on_wal_keeper_closed(listener: Callable[[], None]) -> None:
+    _keeper_close_listeners.append(listener)
+
+
+def _notify_keeper_closed() -> None:
+    for listener in tuple(_keeper_close_listeners):
+        try:
+            listener()
+        except Exception:
+            logger.warning("A WAL keeper close listener failed", exc_info = True)
+
+
 def close_wal_keeper_for(path: str | Path) -> None:
     db_path = Path(path).resolve()
     with _wal_keeper_lock:
         conn = _wal_keepers.pop(db_path, None)
         if conn is not None:
             _close_keeper(conn)
+    if conn is not None:
+        _notify_keeper_closed()
 
 
 def close_wal_keeper() -> None:
@@ -1322,6 +1342,7 @@ def close_wal_keeper() -> None:
             _close_keeper(conn)
         _wal_keepers.clear()
         _wal_unsupported.clear()
+    _notify_keeper_closed()
 
 
 def create_run(
