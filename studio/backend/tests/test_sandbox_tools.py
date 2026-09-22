@@ -737,6 +737,24 @@ class TestNetworkTargetResolution:
                 "urllib.request.urlopen(urllib.request.Request(u))\nu = 'https://pypi.org/'",
                 id = "request_url_variable_rebound_after_call",
             ),
+            pytest.param(
+                f"import requests\ns: requests.Session = requests.Session()\ns.get('http://{_H}/')",
+                id = "annotated_session",
+            ),
+            pytest.param(
+                f"import requests\nr: object = requests\nr.get('http://{_H}/')",
+                id = "annotated_module_alias",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\nt = s\n"
+                f"t.proxies = {{'https': 'http://{_H}'}}\ns.get('https://pypi.org/')",
+                id = "proxy_set_through_a_copy",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\nt = s\n"
+                f"s.proxies = {{'https': 'http://{_H}'}}\nt.get('https://pypi.org/')",
+                id = "proxy_read_through_a_copy",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -929,6 +947,9 @@ class TestNetworkTargetResolution:
             # A receiver that holds a client on only some paths is not refused for an allowlisted host.
             "import paramiko\nclient = get_db()\nif flag:\n    client = paramiko.SSHClient()\n"
             "client.connect(hostname='pypi.org')",
+            # A static method has no instance, so its first parameter is not `self`.
+            "import requests\nclass A:\n    def __init__(self):\n        self.s = requests.Session()\n"
+            "    @staticmethod\n    def go(other):\n        other.s.get('http://203.0.113.5/')",
         ],
     )
     def test_non_connecting_calls_run(self, code):

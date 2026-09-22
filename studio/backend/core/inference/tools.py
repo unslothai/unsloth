@@ -16889,7 +16889,7 @@ def _check_signal_escape_patterns(code: str):
     )
 
     # Their handlers rebind first and then register, so generic_visit must not sweep them again.
-    _REBOUND_BY_HANDLER = (ast.Import, ast.ImportFrom, ast.Assign)
+    _REBOUND_BY_HANDLER = (ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign)
 
     # Statement kinds that really run when the module runs. A shadow REMOVES a way to recognise a
     # call, so unlike everything else here it may only be believed when it cannot be skipped:
@@ -17226,6 +17226,9 @@ def _check_signal_escape_patterns(code: str):
             # Receiver path -> every value stored in its `proxies` / `proxy`, including by
             # `update()` and subscript.
             self.proxy_values: "dict[str, list[ast.AST]]" = {}
+            # Receiver path -> the paths copied to or from it, which may be the same client: a
+            # proxy set through `t` after `t = s` is used by `s.get(...)`.
+            self.path_links: "dict[str, set[str]]" = {}
             # Class id -> its family: the classes in this file joined through their base names.
             self.class_family: "dict[int, str]" = {}
             # Method id -> (first parameter, class family); `self_names` is the stack in effect.
@@ -17247,7 +17250,10 @@ def _check_signal_escape_patterns(code: str):
                     family = f"<{find(c.name)}>"
                     self.class_family[id(c)] = family
                     for fn in c.body:
-                        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and not any(
+                            (getattr(d, "id", None) or getattr(d, "attr", None)) == "staticmethod"
+                            for d in fn.decorator_list
+                        ):
                             params = fn.args.posonlyargs + fn.args.args
                             if params:
                                 self.method_self[id(fn)] = (params[0].arg, family)
@@ -17600,7 +17606,28 @@ def _check_signal_escape_patterns(code: str):
             return False
 
         def _carry(self, target, value, at, node) -> bool:
+            self._link(target, value)
             return self._register(target, self._named_by(value, at), node)
+
+        def _link(self, target, value) -> None:
+            path = self._receiver_path(target)
+            if path is None:
+                return
+            for alt in _alternatives(value):
+                other = self._receiver_path(alt)
+                if other is not None and other != path:
+                    self.path_links.setdefault(path, set()).add(other)
+                    self.path_links.setdefault(other, set()).add(path)
+
+        def _linked_paths(self, path: str) -> "set[str]":
+            seen = {path}
+            stack = [path]
+            while stack:
+                for other in self.path_links.get(stack.pop(), ()):
+                    if other not in seen:
+                        seen.add(other)
+                        stack.append(other)
+            return seen
 
         def _record_proxy(self, target, value) -> None:
             """`s.proxies = {...}` and `s.proxies["https"] = ...` configure where `s` connects."""
@@ -17626,9 +17653,23 @@ def _check_signal_escape_patterns(code: str):
             registered: set[str] = set()
             for target, value, named in pairs:
                 self._record_proxy(target, value)
+                self._link(target, value)
                 if self._register(target, named, node):
                     registered.add(target.id)
             self._rebind(node, exempt = registered)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node):
+            # `s: requests.Session = requests.Session()` binds exactly as the plain assignment.
+            if self.collecting and node.value is not None:
+                at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                self._record_proxy(node.target, node.value)
+                if self._carry(node.target, node.value, at, node):
+                    self._rebind(node, exempt = {node.target.id})
+                    self.generic_visit(node)
+                    return
+            if self.collecting:
+                self._rebind(node)
             self.generic_visit(node)
 
         def visit_NamedExpr(self, node):
@@ -17896,7 +17937,8 @@ def _check_signal_escape_patterns(code: str):
                 proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
                 if isinstance(node.func, ast.Attribute):
                     receiver = self._receiver_path(node.func.value)
-                    proxies.extend(self.proxy_values.get(receiver, ()) if receiver else ())
+                    for path in self._linked_paths(receiver) if receiver else ():
+                        proxies.extend(self.proxy_values.get(path, ()))
                 for proxy in proxies:
                     if isinstance(proxy, ast.Dict):
                         if None in proxy.keys:
