@@ -5,6 +5,7 @@ import { createCodePlugin, normalizeLanguage } from "./code-plugin";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import {
   reasoningHighlightReply,
+  reasoningHighlightSource,
   type ReasoningHighlightRequest,
 } from "./reasoning-highlight";
 
@@ -12,6 +13,7 @@ const themes = [unslothLightTheme, unslothDarkTheme] as const;
 const highlighter = createCodePlugin({ themes: [...themes] });
 const pending = new Map<number, ReasoningHighlightRequest>();
 const revisions = new Map<number, number>();
+const sources = new Map<number, string>();
 let scheduled = false;
 
 self.onmessage = ({
@@ -20,9 +22,15 @@ self.onmessage = ({
   if ("cancel" in data) {
     pending.delete(data.cancel);
     revisions.delete(data.cancel);
+    sources.delete(data.cancel);
     return;
   }
-  pending.set(data.client, data);
+  const source = reasoningHighlightSource(
+    sources.get(data.client) ?? "",
+    data.source,
+  );
+  sources.set(data.client, source);
+  pending.set(data.client, { ...data, source });
   revisions.set(data.client, data.revision);
   if (scheduled) return;
   scheduled = true;
@@ -41,7 +49,7 @@ self.onmessage = ({
       try {
         const result = highlighter.highlight(
           {
-            code: request.source,
+            code: request.source as string,
             language: normalizeLanguage(request.language ?? "text"),
             themes: [...themes],
           },

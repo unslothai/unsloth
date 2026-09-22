@@ -8,6 +8,7 @@ import {
   type VirtualItem,
 } from "@tanstack/react-virtual";
 import {
+  Fragment as InlineFragment,
   memo,
   useCallback,
   useEffect,
@@ -27,10 +28,14 @@ import {
 } from "./use-reasoning-highlight";
 import {
   ReasoningTranscriptIndex,
-  findReasoningAnchor,
+  resolveReasoningAnchor,
   type ReasoningReadingAnchor,
   type ReasoningFragment,
 } from "./reasoning-transcript-index";
+import {
+  captureReasoningAnchor,
+  reasoningTextRange,
+} from "./reasoning-reading-anchor";
 import {
   useAdjustForContentInsertedAbove,
   useDetachThreadFromBottom,
@@ -52,61 +57,45 @@ const CodeFragment = memo(
   }: { fragment: ReasoningFragment; result: ReasoningLineTokens }) {
     const code = fragment.code!;
     return (
-      <div
-        data-slot="reasoning-code-fragment"
-        data-language={code.language ?? undefined}
-        className={cn(
-          "aui-reasoning-code-fragment",
-          fragment.first && "aui-reasoning-code-first",
-          fragment.last && "aui-reasoning-code-last",
-        )}
-      >
-        {fragment.first && code.language && (
-          <div className="mb-2 text-xs text-muted-foreground">
-            {code.language}
-          </div>
-        )}
-        <pre className="!m-0 whitespace-pre-wrap [overflow-wrap:anywhere] font-mono">
-          <code>
-            {code.lines.map(({ line, column, text }) => {
-              const tokens = result.get(line);
-              // A delayed grammar must never display the previous, shorter source.
-              if (
-                !tokens ||
-                tokens
-                  .map((token) => token.content)
-                  .join("")
-                  .slice(column, column + text.length) !== text
-              ) {
-                return (
-                  <span key={`${line}:${column}`} className="block min-h-[1lh]">
-                    {text || "\n"}
-                  </span>
-                );
-              }
-              let offset = 0;
-              const clipped = tokens.flatMap((token) => {
-                const start = offset;
-                offset += token.content.length;
-                const content = token.content.slice(
-                  Math.max(0, column - start),
-                  Math.max(
-                    0,
-                    Math.min(
-                      token.content.length,
-                      column + text.length - start,
-                    ),
-                  ),
-                );
-                return content ? [{ ...token, content }] : [];
-              });
-              return (
-                <FenceLine key={`${line}:${column}`} line={clipped} windowed />
-              );
-            })}
-          </code>
-        </pre>
-      </div>
+      <>
+        {code.lines.map(({ line, column, text }) => {
+          const tokens = result.get(line);
+          // A delayed grammar must never display the previous, shorter source.
+          if (
+            !tokens ||
+            tokens
+              .map((token) => token.content)
+              .join("")
+              .slice(column, column + text.length) !== text
+          ) {
+            return (
+              <InlineFragment key={`${line}:${column}`}>
+                {column === 0 && line > 0 ? "\n" : ""}
+                {text}
+              </InlineFragment>
+            );
+          }
+          let offset = 0;
+          const clipped = tokens.flatMap((token) => {
+            const start = offset;
+            offset += token.content.length;
+            const content = token.content.slice(
+              Math.max(0, column - start),
+              Math.max(
+                0,
+                Math.min(token.content.length, column + text.length - start),
+              ),
+            );
+            return content ? [{ ...token, content }] : [];
+          });
+          return (
+            <InlineFragment key={`${line}:${column}`}>
+              {column === 0 && line > 0 ? "\n" : ""}
+              <FenceLine line={clipped} windowed inline />
+            </InlineFragment>
+          );
+        })}
+      </>
     );
   },
   (previous, next) => {
@@ -130,7 +119,7 @@ type RowProps = {
   item: VirtualItem;
   fragment: ReasoningFragment;
   top: number;
-  measure: (element: HTMLDivElement | null) => void;
+  measure: (element: HTMLElement | null) => void;
   children: React.ReactNode;
 };
 
@@ -162,6 +151,21 @@ function CodeGroup({
   top: number;
   measure: RowProps["measure"];
 }) {
+  const surface = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = surface.current;
+    if (!element) return;
+    // ResizeObserver does not report inline span geometry. Observe their shared
+    // formatting surface and feed each bounded row's measured contribution back.
+    const observer = new ResizeObserver(() => {
+      for (const row of element.querySelectorAll<HTMLElement>(
+        "[data-reasoning-code-row]",
+      ))
+        measure(row);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [measure]);
   const code = fragments[items[0].index].code!;
   // One highlighter subscription per visible fence, with its complete grammar context.
   const lines = [
@@ -172,17 +176,54 @@ function CodeGroup({
     ),
   ];
   const result = useReasoningHighlight(code.source, code.language, lines);
-  return items.map((item) => (
-    <Row
-      key={item.key}
-      item={item}
-      fragment={fragments[item.index]}
-      top={top}
-      measure={measure}
+  const first = fragments[items[0].index];
+  const last = fragments[items.at(-1)!.index];
+  return (
+    <div
+      ref={surface}
+      data-slot="reasoning-code-fragment"
+      data-language={code.language ?? undefined}
+      className={cn(
+        "aui-reasoning-code-fragment absolute top-0 left-0 w-full min-w-0",
+        first.first && "aui-reasoning-code-first",
+        last.last && "aui-reasoning-code-last",
+      )}
+      style={{ transform: `translateY(${items[0].start - top}px)` }}
     >
-      <CodeFragment fragment={fragments[item.index]} result={result} />
-    </Row>
-  ));
+      {first.first && code.language && (
+        <div className="mb-2 text-xs text-muted-foreground">
+          {code.language}
+        </div>
+      )}
+      <pre className="!m-0 min-h-[1lh] whitespace-pre-wrap [overflow-wrap:anywhere] font-mono">
+        <code>
+          {items.map((item, i) => (
+            <InlineFragment key={item.key}>
+              {i > 0 && items[i - 1].index + 1 !== item.index && (
+                <span
+                  aria-hidden="true"
+                  data-reasoning-code-gap=""
+                  className="block"
+                  style={{ height: Math.max(0, item.start - items[i - 1].end) }}
+                />
+              )}
+              <span
+                ref={measure}
+                data-index={item.index}
+                data-reasoning-fragment={fragments[item.index].key}
+                data-reasoning-code-row=""
+              >
+                <CodeFragment
+                  fragment={fragments[item.index]}
+                  result={result}
+                />
+              </span>
+            </InlineFragment>
+          ))}
+        </code>
+      </pre>
+    </div>
+  );
 }
 
 const Fragment = memo(function Fragment({
@@ -219,9 +260,11 @@ const Fragment = memo(function Fragment({
       for (const item of items) delete item.dataset.reasoningListContinuation;
     };
   }, [fragment]);
+  if (fragment.hidden) return null;
   return (
     <div
       ref={root}
+      data-table-continuation={fragment.tableContinuation || undefined}
       className={cn("aui-reasoning-prose-fragment", fragment.first && "pt-4")}
     >
       <MarkdownTextSource
@@ -245,11 +288,7 @@ export function ReasoningTranscript({
   const [index] = useState(() => new ReasoningTranscriptIndex());
   const fragments = useMemo(() => index.update(documents), [documents, index]);
   const [anchor, setAnchor] = useState(
-    () =>
-      initialAnchor && {
-        ...initialAnchor,
-        index: findReasoningAnchor(fragments, initialAnchor.text),
-      },
+    () => initialAnchor && resolveReasoningAnchor(fragments, initialAnchor),
   );
   const [anchoring, setAnchoring] = useState(
     Boolean(anchor && anchor.index >= 0),
@@ -258,7 +297,7 @@ export function ReasoningTranscript({
     top: 0,
     width: 640,
     lineHeight: 24,
-    fontSize: 15,
+    fontPixels: 15,
   });
   const [protectedKeys, setProtectedKeys] = useState<Set<string>>(
     () => new Set(),
@@ -270,7 +309,7 @@ export function ReasoningTranscript({
     [],
   );
 
-  const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+  const virtualizer = useVirtualizer<HTMLDivElement, HTMLElement>({
     count: fragments.length,
     getScrollElement: viewport,
     getItemKey: (i) => fragments[i].key,
@@ -283,15 +322,33 @@ export function ReasoningTranscript({
       return observeElementOffset(instance, callback);
     },
     overscan: 2,
-    measureElement: (element) => element.getBoundingClientRect().height,
+    measureElement: (element) => {
+      if (!element.hasAttribute("data-reasoning-code-row"))
+        return element.getBoundingClientRect().height;
+      const surface = element.closest<HTMLElement>(
+        '[data-slot="reasoning-code-fragment"]',
+      )!;
+      const previous = element.previousElementSibling;
+      const bottom = element.nextElementSibling
+        ? element.getBoundingClientRect().bottom
+        : surface.getBoundingClientRect().bottom;
+      const top = previous
+        ? previous.getBoundingClientRect().bottom
+        : surface.getBoundingClientRect().top;
+      const margin = previous
+        ? 0
+        : Number.parseFloat(getComputedStyle(surface).marginTop) || 0;
+      return Math.max(0, bottom - top + margin);
+    },
     estimateSize: (i) => {
       const fragment = fragments[i];
+      if (fragment.hidden) return 0;
       const code = fragment.code;
       const columns = Math.max(
         12,
         Math.floor(
           (geometry.width - (code ? 32 : 0)) /
-            (geometry.fontSize * (code ? 0.58 : 0.48)),
+            (geometry.fontPixels * (code ? 0.58 : 0.48)),
         ),
       );
       const lines = fragment.text
@@ -347,7 +404,7 @@ export function ReasoningTranscript({
         top: rect.top - scroll.getBoundingClientRect().top + scroll.scrollTop,
         width: rect.width,
         lineHeight: Number.parseFloat(style.lineHeight) || 24,
-        fontSize: Number.parseFloat(style.fontSize) || 15,
+        fontPixels: Number.parseFloat(style.fontSize) || 15,
       };
       setGeometry((old) =>
         Object.keys(next).every(
@@ -366,27 +423,16 @@ export function ReasoningTranscript({
         }
         virtualizer.measure();
       } else {
-        const viewportTop = scroll.getBoundingClientRect().top;
-        const passage = [
-          ...element.querySelectorAll<HTMLElement>(
-            "p, pre, li, h1, h2, h3, h4, h5, h6",
-          ),
-        ].find(
-          (node) =>
-            node.textContent &&
-            node.getBoundingClientRect().top >= viewportTop &&
-            node.getBoundingClientRect().top <
-              viewportTop + scroll.clientHeight,
-        );
-        const row = passage?.closest<HTMLElement>("[data-index]");
-        readingAnchor =
-          passage && row
-            ? {
-                text: passage.textContent!.slice(0, 200),
-                top: passage.getBoundingClientRect().top,
-                index: Number(row.dataset.index),
-              }
-            : undefined;
+        readingAnchor = undefined;
+        for (const row of element.querySelectorAll<HTMLElement>(
+          "[data-index]",
+        )) {
+          const captured = captureReasoningAnchor(row, scroll);
+          if (captured) {
+            readingAnchor = { ...captured, index: Number(row.dataset.index) };
+            break;
+          }
+        }
       }
       width = rect.width;
     };
@@ -413,12 +459,7 @@ export function ReasoningTranscript({
     const frame = requestAnimationFrame(() => {
       const row = root.current?.querySelector(`[data-index="${anchor.index}"]`);
       const passage =
-        row &&
-        [
-          ...row.querySelectorAll<HTMLElement>(
-            "p, pre, li, h1, h2, h3, h4, h5, h6",
-          ),
-        ].find((node) => node.textContent?.includes(anchor.text));
+        row && reasoningTextRange(row, anchor.text, anchor.occurrence);
       if (passage)
         adjustAbove(passage.getBoundingClientRect().top - anchor.top);
       setAnchoring(false);
@@ -461,7 +502,11 @@ export function ReasoningTranscript({
     };
   }, [detach]);
 
-  const groups: { key: string; code: boolean; items: VirtualItem[] }[] = [];
+  const groups: {
+    key: string;
+    code: boolean;
+    items: VirtualItem[];
+  }[] = [];
   for (const item of virtualizer.getVirtualItems()) {
     const fragment = fragments[item.index];
     const key = fragment.code
@@ -469,7 +514,12 @@ export function ReasoningTranscript({
       : fragment.key;
     const previous = groups.at(-1);
     if (previous?.key === key) previous.items.push(item);
-    else groups.push({ key, code: Boolean(fragment.code), items: [item] });
+    else
+      groups.push({
+        key,
+        code: Boolean(fragment.code),
+        items: [item],
+      });
   }
 
   return (

@@ -14,6 +14,7 @@ import {
   type ReasoningReadingAnchor,
 } from "./reasoning-transcript-index";
 import { ReasoningTranscript } from "./reasoning-transcript";
+import { captureReasoningAnchor } from "./reasoning-reading-anchor";
 import {
   Collapsible,
   CollapsibleContent,
@@ -431,29 +432,13 @@ function useReasoningTranscriptMode({
     const activate = () => {
       const content = reasoningContentRef.current;
       const viewport = content?.closest(".aui-thread-viewport");
-      const top = viewport?.getBoundingClientRect().top ?? 0;
-      const passage =
-        content &&
-        [
-          ...content.querySelectorAll<HTMLElement>(
-            "p, pre, li, h1, h2, h3, h4, h5, h6",
-          ),
-        ].find(
-          (node) =>
-            node.textContent &&
-            node.getBoundingClientRect().top >= top &&
-            node.getBoundingClientRect().top <
-              top + (viewport?.clientHeight ?? 0),
-        );
       setSession({
         messageId,
         active: true,
-        anchor: passage
-          ? {
-              text: passage.textContent!.slice(0, 200),
-              top: passage.getBoundingClientRect().top,
-            }
-          : undefined,
+        anchor:
+          content && viewport
+            ? captureReasoningAnchor(content, viewport)
+            : undefined,
       });
     };
     if (

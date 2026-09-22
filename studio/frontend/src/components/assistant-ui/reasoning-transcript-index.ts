@@ -9,13 +9,17 @@ import { math } from "micromark-extension-math";
 import remend from "remend";
 import type { Definition, RootContent } from "mdast";
 import { markdownBlockFallback } from "./markdown-block-fallback.ts";
+import { ReasoningCodeIndex } from "./reasoning-code-index.ts";
 
 export const REASONING_TRANSCRIPT_THRESHOLD = 16_384;
 export const REASONING_FRAGMENT_CHARACTERS = 8_192;
-const CODE_LINES_PER_FRAGMENT = 16;
 
 export type ReasoningCodeLine = { line: number; column: number; text: string };
-export type ReasoningReadingAnchor = { text: string; top: number };
+export type ReasoningReadingAnchor = {
+  text: string;
+  top: number;
+  occurrence?: number;
+};
 export type ReasoningFragment = {
   key: string;
   document: number;
@@ -25,6 +29,8 @@ export type ReasoningFragment = {
   renderText?: string;
   /** Synthetic list containers continue an item without repeating its marker. */
   listContinuationDepth?: number;
+  tableContinuation?: boolean;
+  hidden?: boolean;
   /** Continuations have no paragraph gap or repeated code header. */
   first: boolean;
   last: boolean;
@@ -42,8 +48,23 @@ type Block = {
   continued: boolean;
   prefix?: string;
   listContinuationDepth?: number;
+  tableContinuation?: boolean;
+  hidden?: boolean;
+  fence?: {
+    bodyStart: number;
+    bodyEnd: number;
+    indent: number;
+    language: string | null;
+    index?: ReasoningCodeIndex;
+  };
 };
-type Fence = { marker: string; scan: number };
+type Fence = {
+  marker: string;
+  scan: number;
+  bodyStart: number;
+  closeStart?: number;
+  block?: Block;
+};
 
 type MarkdownNode = {
   type: string;
@@ -56,15 +77,49 @@ type MarkdownNode = {
 export function findReasoningAnchor(
   fragments: readonly ReasoningFragment[],
   text: string,
+  occurrence = 0,
 ): number {
+  return resolveReasoningAnchor(fragments, { text, top: 0, occurrence }).index;
+}
+
+export function resolveReasoningAnchor(
+  fragments: readonly ReasoningFragment[],
+  anchor: ReasoningReadingAnchor,
+): ReasoningReadingAnchor & { index: number } {
+  const { text, occurrence = 0 } = anchor;
   const plain = (node: MarkdownNode): string =>
     node.value ?? node.children?.map(plain).join("") ?? "";
-  return fragments.findIndex((fragment) =>
-    (fragment.code
+  const texts = fragments.map((fragment) =>
+    fragment.code
       ? fragment.text
-      : plain(fromMarkdown(fragment.renderText ?? fragment.text))
-    ).includes(text),
+      : plain(fromMarkdown(fragment.renderText ?? fragment.text)),
   );
+  const source = texts.join("");
+  let start = -1;
+  for (let i = 0; i <= occurrence; i += 1) {
+    start = source.indexOf(text, start + 1);
+    if (start < 0) return { ...anchor, index: -1 };
+  }
+  let offset = 0;
+  for (const [index, part] of texts.entries()) {
+    if (offset + part.length > start) {
+      const local = start - offset;
+      const needle = part.slice(
+        local,
+        Math.min(part.length, local + text.length),
+      );
+      let repeated = 0;
+      for (
+        let at = part.indexOf(needle);
+        at >= 0 && at < local;
+        at = part.indexOf(needle, at + 1)
+      )
+        repeated += 1;
+      return { ...anchor, text: needle, occurrence: repeated, index };
+    }
+    offset += part.length;
+  }
+  return { ...anchor, index: -1 };
 }
 
 // Context is render-only: copy/export always use the original document. A long
@@ -74,7 +129,7 @@ function continuationPrefix(
   text: string,
   nodes: readonly MarkdownNode[],
   cut: number,
-): { prefix: string; listDepth: number } {
+): { prefix: string; listDepth: number; table?: boolean } {
   const atCut = (siblings: readonly MarkdownNode[]) => {
     if (siblings.some((node) => node.position?.start.offset === cut))
       return undefined;
@@ -88,6 +143,18 @@ function continuationPrefix(
     );
   };
   let last = atCut(nodes);
+  const table = last?.type === "table" ? last : undefined;
+  if (table) {
+    const start = table.position?.start.offset ?? 0;
+    const headerEnd = text.indexOf("\n", start);
+    const delimiterEnd = text.indexOf("\n", headerEnd + 1);
+    if (headerEnd >= 0 && delimiterEnd >= 0)
+      return {
+        prefix: text.slice(start, delimiterEnd + 1),
+        listDepth: 0,
+        table: true,
+      };
+  }
   const containers: { marker: string; list: boolean }[] = [];
   while (last) {
     if (last.type === "listItem") {
@@ -181,11 +248,12 @@ function fenceAt(source: string, start: number): Fence | null {
     source.slice(start, newline),
   );
   if (!match || (match[2][0] === "`" && match[3].includes("`"))) return null;
-  return { marker: match[2], scan: newline + 1 };
+  return { marker: match[2], scan: newline + 1, bodyStart: newline + 1 };
 }
 
 /** Returns the end of a complete closing line. Only newly appended lines are scanned. */
 function fenceEnd(source: string, fence: Fence): number | null {
+  fence.closeStart = undefined;
   for (let from = fence.scan; from < source.length; ) {
     const newline = source.indexOf("\n", from);
     const end = newline < 0 ? source.length : newline;
@@ -197,6 +265,7 @@ function fenceEnd(source: string, fence: Fence): number | null {
       match[1].length >= fence.marker.length
     ) {
       // A partial closing line can acquire non-whitespace on the next append.
+      fence.closeStart = from;
       return newline < 0 ? null : newline + 1;
     }
     if (newline < 0) break;
@@ -234,6 +303,7 @@ class DocumentIndex {
   private continued = false;
   private prefix = "";
   private listContinuationDepth = 0;
+  private tableContinuation = false;
   definitions = new Map<string, { start: number; source: string }>();
   definitionsRevision = 0;
   generation = 0;
@@ -247,6 +317,7 @@ class DocumentIndex {
       this.continued = false;
       this.prefix = "";
       this.listContinuationDepth = 0;
+      this.tableContinuation = false;
       this.definitions.clear();
       this.definitionsRevision += 1;
       this.generation += 1;
@@ -262,12 +333,24 @@ class DocumentIndex {
       if (!this.prefix) this.fence ??= fenceAt(source, this.offset);
       if (this.fence) {
         const end = fenceEnd(source, this.fence);
-        const block = {
+        const block = (this.fence.block ??= {
           start: this.offset,
           end: end ?? source.length,
           text: source.slice(this.offset, end ?? source.length),
           continued: false,
-        };
+          fence: {
+            bodyStart: this.fence.bodyStart - this.offset,
+            bodyEnd: 0,
+            indent: /^ */.exec(source.slice(this.offset))![0].length,
+            language: markdownBlockFallback(
+              source.slice(this.offset, this.fence.bodyStart),
+            ).language,
+          },
+        });
+        block.end = end ?? source.length;
+        block.text = source.slice(this.offset, block.end);
+        block.fence!.bodyEnd =
+          (this.fence.closeStart ?? block.end) - this.offset;
         if (end === null) {
           pending.push(block);
           break;
@@ -315,6 +398,7 @@ class DocumentIndex {
             continued: this.continued,
             prefix: this.prefix,
             listContinuationDepth: this.listContinuationDepth,
+            tableContinuation: this.tableContinuation,
           });
         }
         for (let n = 0; n < nodes.length - 1; n += 1) {
@@ -336,12 +420,15 @@ class DocumentIndex {
             continued: n === 0 && this.continued,
             prefix: n === 0 ? this.prefix : "",
             listContinuationDepth: n === 0 ? this.listContinuationDepth : 0,
+            tableContinuation: n === 0 && this.tableContinuation,
+            hidden: nodes[n].type === "definition",
           });
         }
         this.offset += lastStart;
         this.continued = false;
         this.prefix = "";
         this.listContinuationDepth = 0;
+        this.tableContinuation = false;
         continue;
       }
       if (end < source.length) {
@@ -358,6 +445,7 @@ class DocumentIndex {
           continued: this.continued,
           prefix: this.prefix,
           listContinuationDepth: this.listContinuationDepth,
+          tableContinuation: this.tableContinuation,
         });
         const context = continuationPrefix(
           parsedText,
@@ -366,6 +454,7 @@ class DocumentIndex {
         );
         this.prefix = context.prefix;
         this.listContinuationDepth = context.listDepth;
+        this.tableContinuation = Boolean(context.table);
         this.offset += cut;
         this.continued = true;
         continue;
@@ -377,6 +466,8 @@ class DocumentIndex {
         continued: this.continued,
         prefix: this.prefix,
         listContinuationDepth: this.listContinuationDepth,
+        tableContinuation: this.tableContinuation,
+        hidden: nodes.every((node) => node.type === "definition"),
       });
       break;
     }
@@ -401,7 +492,11 @@ function fragmentsOf(
     block.prefix ? block.prefix + block.text : block.text,
   );
   const key = `${document}:${generation}:${block.start}`;
-  if (!fallback.fenced) {
+  if (
+    !fallback.fenced ||
+    (fallback.language === "mermaid" &&
+      block.text.length <= REASONING_FRAGMENT_CHARACTERS)
+  ) {
     return [
       {
         key,
@@ -411,55 +506,21 @@ function fragmentsOf(
         text: block.text,
         renderText: block.prefix ? block.prefix + block.text : undefined,
         listContinuationDepth: block.listContinuationDepth,
+        tableContinuation: block.tableContinuation,
+        hidden: block.hidden,
         first: !block.continued,
         last: true,
       },
     ];
   }
-  // Match the highlighter's line convention while retaining original bytes in DocumentIndex.
-  const source = fallback.text.replace(/\r\n/g, "\n").replace(/\n$/, "");
-  const lines = source.split("\n");
-  const result: ReasoningFragment[] = [];
-  let group: ReasoningCodeLine[] = [];
-  let characters = 0;
-  const flush = () => {
-    if (group.length === 0) return;
-    const firstLine = group[0];
-    result.push({
-      key: `${key}:code:${firstLine.line}:${firstLine.column}`,
-      document,
-      start: block.start,
-      end: block.end,
-      text: group.map((line) => line.text).join("\n"),
-      first: result.length === 0,
-      last: false,
-      code: { source, language: fallback.language, lines: group },
-    });
-    group = [];
-    characters = 0;
-  };
-  for (let line = 0; line < lines.length; line += 1) {
-    const text = lines[line];
-    for (let column = 0; column < Math.max(1, text.length); ) {
-      const end = reasoningFragmentEnd(
-        text,
-        column,
-        REASONING_FRAGMENT_CHARACTERS,
-      );
-      const part = text.slice(column, end);
-      if (
-        characters + part.length + 1 > REASONING_FRAGMENT_CHARACTERS ||
-        group.length === CODE_LINES_PER_FRAGMENT
-      )
-        flush();
-      group.push({ line, column, text: part });
-      characters += part.length + 1;
-      column = end;
-    }
-  }
-  flush();
-  result[result.length - 1].last = true;
-  return result;
+  return new ReasoningCodeIndex({
+    bodyStart: 0,
+    indent: 0,
+    language: fallback.language,
+    key,
+    document,
+    start: block.start,
+  }).update(fallback.text, fallback.text.length);
 }
 
 /** Stored Markdown documents never share fence or paragraph state. */
@@ -469,6 +530,7 @@ export class ReasoningTranscriptIndex {
     Block,
     {
       revision: number;
+      text: string;
       base: ReasoningFragment[];
       rows: ReasoningFragment[];
     }
@@ -480,10 +542,34 @@ export class ReasoningTranscriptIndex {
       const index = (this.documents[document] ??= new DocumentIndex());
       index.update(source);
       return index.blocks.flatMap((block) => {
+        if (
+          block.fence &&
+          !(
+            block.fence.language === "mermaid" &&
+            block.text.length <= REASONING_FRAGMENT_CHARACTERS
+          )
+        ) {
+          const fence = block.fence;
+          fence.index ??= new ReasoningCodeIndex({
+            bodyStart: fence.bodyStart,
+            indent: fence.indent,
+            language: fence.language,
+            key: `${document}:${index.generation}:${block.start}`,
+            document,
+            start: block.start,
+          });
+          return fence.index.update(block.text, fence.bodyEnd);
+        }
         let cached = this.fragments.get(block);
-        if (!cached || cached.revision !== index.definitionsRevision) {
+        if (
+          !cached ||
+          cached.revision !== index.definitionsRevision ||
+          cached.text !== block.text
+        ) {
           const base =
-            cached?.base ?? fragmentsOf(block, document, index.generation);
+            cached?.text === block.text
+              ? cached.base
+              : fragmentsOf(block, document, index.generation);
           const rows = base.map((row) => ({ ...row }));
           if (index.definitions.size) {
             for (const row of rows) {
@@ -504,13 +590,18 @@ export class ReasoningTranscriptIndex {
           }
           // New definitions only invalidate consumers; ordinary prose and code keep
           // their memoized row identity even when a distant reference is completed.
-          if (cached) {
+          if (cached?.text === block.text) {
             for (let i = 0; i < rows.length; i += 1) {
               if (rows[i].renderText === cached.rows[i]?.renderText)
                 rows[i] = cached.rows[i];
             }
           }
-          cached = { revision: index.definitionsRevision, base, rows };
+          cached = {
+            revision: index.definitionsRevision,
+            text: block.text,
+            base,
+            rows,
+          };
           this.fragments.set(block, cached);
         }
         return cached.rows;

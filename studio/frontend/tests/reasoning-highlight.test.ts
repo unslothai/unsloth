@@ -3,7 +3,24 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { reasoningHighlightReply } from "../src/components/assistant-ui/reasoning-highlight.ts";
+import {
+  reasoningHighlightReply,
+  reasoningHighlightSource,
+} from "../src/components/assistant-ui/reasoning-highlight.ts";
+
+test("worker sources accept ordered deltas, viewport-only requests, and resets", () => {
+  let source = reasoningHighlightSource("", "const bird = ");
+  source = reasoningHighlightSource(source, {
+    from: source.length,
+    text: "true;",
+  });
+  assert.equal(source, "const bird = true;");
+  assert.equal(
+    reasoningHighlightSource(source, { from: source.length, text: "" }),
+    source,
+  );
+  assert.equal(reasoningHighlightSource(source, "new source"), "new source");
+});
 
 test("highlighting transfers only requested lines, preserving grammar tokens", () => {
   const tokens = Array.from({ length: 10000 }, (_, i) => [

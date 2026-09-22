@@ -6,10 +6,20 @@ import type { HighlightResult } from "@streamdown/code";
 export type ReasoningHighlightRequest = {
   client: number;
   revision: number;
-  source: string;
+  source: string | { from: number; text: string };
   language: string | null;
   lines: number[];
 };
+
+/** A client sends its complete source once, then only newly appended bytes. */
+export function reasoningHighlightSource(
+  previous: string,
+  source: ReasoningHighlightRequest["source"],
+): string {
+  return typeof source === "string"
+    ? source
+    : previous.slice(0, source.from) + source.text;
+}
 export type ReasoningHighlightReply = {
   client: number;
   revision: number;

@@ -689,20 +689,26 @@ const tokenStyle = (
 export const FenceLine = memo(function FenceLine({
   line,
   windowed,
+  inline = false,
 }: {
   line: TokenLine;
   windowed: boolean;
+  inline?: boolean;
 }) {
-  if (isBlankLine(line)) {
+  if (!inline && isBlankLine(line)) {
     return <span className={LINE_CLASS}>{"\n"}</span>;
   }
   if (!windowed) {
     // One text node for the whole line. Same characters, same block box, same height: the only
     // thing this line has given up is its colour, and it is off screen.
-    return <span className={LINE_CLASS}>{plainLineText(line)}</span>;
+    return (
+      <span className={inline ? "inline" : LINE_CLASS}>
+        {plainLineText(line)}
+      </span>
+    );
   }
   return (
-    <span className={LINE_CLASS}>
+    <span className={inline ? "inline" : LINE_CLASS}>
       {line.map((token, index) => {
         const { style, hasBackground } = tokenStyle(token);
         return (

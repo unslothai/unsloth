@@ -46,6 +46,7 @@ export function useReasoningHighlight(
   const [tokens, setTokens] = useState<ReasoningLineTokens>(() => new Map());
   const client = useRef<number | null>(null);
   const revision = useRef(0);
+  const sent = useRef<{ worker: Worker; source: string } | null>(null);
   const lineKey = lines.join(",");
   useEffect(() => {
     const instance = getWorker();
@@ -59,15 +60,24 @@ export function useReasoningHighlight(
     const request: ReasoningHighlightRequest = {
       client: id,
       revision: version,
-      source,
+      source:
+        sent.current?.worker === instance &&
+        source.startsWith(sent.current.source)
+          ? {
+              from: sent.current.source.length,
+              text: source.slice(sent.current.source.length),
+            }
+          : source,
       language,
       lines: lineKey.split(",").filter(Boolean).map(Number),
     };
     instance.postMessage(request);
+    sent.current = { worker: instance, source };
   }, [source, language, lineKey]);
   useEffect(
     () => () => {
       if (client.current !== null) {
+        sent.current = null;
         listeners.delete(client.current);
         worker?.postMessage({ cancel: client.current });
       }

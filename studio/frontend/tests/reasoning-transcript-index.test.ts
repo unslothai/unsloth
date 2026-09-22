@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import remend from "remend";
+import { gfm } from "micromark-extension-gfm";
+import { gfmFromMarkdown } from "mdast-util-gfm";
 import {
   ReasoningTranscriptIndex,
   findReasoningAnchor,
@@ -62,6 +64,88 @@ test("a giant fence does not swallow the surrounding prose", () => {
   );
   assert.equal(code.filter((row) => row.first).length, 1);
   assert.equal(code.filter((row) => row.last).length, 1);
+});
+
+test("streaming fences retain completed rows and normalize only their pending tail", () => {
+  const index = new ReasoningTranscriptIndex();
+  let body = "const bird = 1;\r\n".repeat(10000);
+  const rows = index.update(["```js\r\n" + body]);
+  for (let i = 0; i < 100; i += 1) {
+    body += `const bird${i} = ${i};\r\n`;
+    const next = index.update(["```js\r\n" + body]);
+    assert.equal(next[0], rows[0]);
+    assert.equal(next[500], rows[500]);
+    assert.equal(
+      next[0].code!.source,
+      body.replace(/\r\n/g, "\n").replace(/\n$/, ""),
+    );
+  }
+});
+
+test("incremental fence text matches Markdown indentation, CRLF, and closing semantics", () => {
+  for (const indent of ["", " ", "   "]) {
+    const source =
+      indent +
+      "~~~js\r\n" +
+      (indent + "\tconst bird = '😀';\r\n").repeat(1000) +
+      "\r\n" +
+      indent +
+      "~~~\n";
+    const index = new ReasoningTranscriptIndex();
+    for (let end = 100; end < source.length; end += 257) {
+      const part = source.slice(0, end);
+      const expected = fromMarkdown(part).children[0];
+      const rows = index.update([part]);
+      assert.equal(
+        rows[0].code!.source,
+        expected.type === "code"
+          ? expected.value.replace(/\r\n/g, "\n")
+          : "not code",
+      );
+    }
+    const expected = fromMarkdown(source).children[0];
+    assert.equal(
+      index.update([source])[0].code!.source,
+      expected.type === "code"
+        ? expected.value.replace(/\r\n/g, "\n")
+        : "not code",
+    );
+  }
+});
+
+test("bounded mermaid fences retain their specialized renderer while streaming", () => {
+  const index = new ReasoningTranscriptIndex();
+  const prefix = "Earlier thought.\n\n".repeat(1000);
+  const first = index.update([prefix + "```mermaid\ngraph TD\nA"]);
+  assert.equal(first.at(-1)!.code, undefined);
+  const next = index.update([prefix + "```mermaid\ngraph TD\nA-->B\n```"]);
+  assert.equal(next.at(-1)!.code, undefined);
+  assert.match(next.at(-1)!.text, /A-->B/);
+});
+
+test("large tables retain headers and alignment as render-only continuation context", () => {
+  const source =
+    "| Item | Value |\n| :--- | ---: |\n" + "| bird | 42 |\n".repeat(3000);
+  const rows = new ReasoningTranscriptIndex().update([source]);
+  assert.equal(rows.map((row) => row.text).join(""), source);
+  for (const [i, row] of rows.entries()) {
+    const table = fromMarkdown(row.renderText ?? row.text, {
+      extensions: [gfm()],
+      mdastExtensions: [gfmFromMarkdown()],
+    }).children[0];
+    assert.equal(table.type, "table");
+    assert.equal(Boolean(row.tableContinuation), i > 0);
+  }
+});
+
+test("definition-only fragments do not create visible spacing rows", () => {
+  const rows = new ReasoningTranscriptIndex().update([
+    "Before\n\n[a]: https://a.org\n\n[b]: https://b.org\n\nAfter",
+  ]);
+  assert.deepEqual(
+    rows.map((row) => Boolean(row.hidden)),
+    [false, true, true, false],
+  );
 });
 
 test("fence grammar and independent document boundaries survive streaming", () => {

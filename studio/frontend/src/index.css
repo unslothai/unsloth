@@ -2851,6 +2851,9 @@ html[data-chat-font] .aui-root {
 	li[data-reasoning-list-continuation] {
 		list-style-type: none;
 	}
+	.aui-reasoning-prose-fragment[data-table-continuation] thead {
+		display: none;
+	}
 	[data-reasoning-fragment][data-index="0"] > .aui-reasoning-prose-fragment {
 		padding-top: 0;
 	}
