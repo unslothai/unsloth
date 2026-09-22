@@ -942,6 +942,15 @@ def loaded_text_encoder_mib(pipe: Any) -> Optional[int]:
     return (storage_bytes + mib - 1) // mib if storage_bytes else None
 
 
+def _holds_torchao_tensors(module: Any) -> bool:
+    """Whether ``module`` carries torchao-quantised weights."""
+    try:
+        from torchao.utils import TorchAOBaseTensor
+    except Exception:  # noqa: BLE001 - no torchao, nothing quantised by it
+        return False
+    return any(isinstance(p, TorchAOBaseTensor) for p in module.parameters())
+
+
 def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
     """Replace whole-module offload when a loaded component cannot fit on the device.
 
@@ -966,6 +975,10 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
         components = getattr(pipe, "components", {})
         transformer = getattr(pipe, "transformer", None)
         if not isinstance(components, dict) or not isinstance(transformer, torch.nn.Module):
+            return plan
+        # Streaming cannot move torchao weights, and the loader quantised under whole-module offload only because the
+        # quantised transformer fits the budget (its bf16-shaped numel would misread here).
+        if _holds_torchao_tensors(transformer):
             return plan
         streamable = _streamable_components(pipe, torch)
 

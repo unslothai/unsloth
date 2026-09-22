@@ -89,8 +89,8 @@ from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
     DeviceMemory,
+    OFFLOAD_MODEL,
     OFFLOAD_NONE,
-    OFFLOAD_SEQUENTIAL,
     OFFLOAD_STREAMING,
     apply_memory_plan,
     estimate_gguf_resident_mib,
@@ -1646,17 +1646,21 @@ class DiffusionBackend:
                     f"{getattr(fam, 'denoiser_attr', 'unet')}, not a transformer, and the dense torchao schemes "
                     "do not cover it"
                 )
-            elif model_kind != "pipeline" and _memory_request_forces_offload(
-                memory_mode, cpu_offload
+            elif _memory_request_forces_offload(memory_mode, cpu_offload) and (
+                model_kind != "pipeline"
+                or normalize_memory_mode(memory_mode) == MEMORY_MODE_BALANCED
             ):
                 # Not a measurement: balanced and low_vram name their policy outright, and the legacy flag forces
-                # model offload. A pipeline quantises in place under group and model offload, but a GGUF pick swaps
-                # in the dense quantised transformer only when it fits resident, so the strict refusal would land
-                # after the resident model was already gone. The two requests are incompatible on their face.
+                # model offload. A pipeline quantises under whole-module offload only (see load_pipeline), and a GGUF
+                # pick swaps in the dense quantised transformer only when it fits resident, so the strict refusal
+                # would land after the resident model was already gone.
                 requested_memory = normalize_memory_mode(memory_mode) or "cpu_offload"
                 reason = (
                     f"'{requested_memory}' memory places the transformer under CPU offload, and a "
                     "GGUF pick only swaps in the quantised dense transformer when it fits resident"
+                    if model_kind != "pipeline"
+                    else "'balanced' memory streams the transformer through group-offload hooks "
+                    "torchao weights do not survive; use low_vram to combine the two"
                 )
             elif not dense_transformer_supported(target):
                 reason = dense_transformer_unsupported_reason(target)
@@ -5165,10 +5169,10 @@ class DiffusionBackend:
                     )
 
                     # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and pre-quantised
-                    # pipelines; only a sequential-offload plan stays dense (see below). The pipeline is still on the
-                    # CPU here, unlike the GGUF path, which quantises after _assemble_pipe places it. Both orders give
-                    # bit-identical output: apply_memory_plan's one-shot `pipe.to(placement)` is survived by the
-                    # subclasses (measured on sm_89, fp8 and int8, max|diff| 0.0).
+                    # pipelines; an offloaded plan stays dense unless it is whole-module (see below). The pipeline is
+                    # still on the CPU here, unlike the GGUF path, which quantises after _assemble_pipe places it. Both
+                    # orders give bit-identical output: apply_memory_plan's one-shot `pipe.to(placement)` is survived
+                    # by the subclasses (measured on sm_89, fp8 and int8, max|diff| 0.0).
                     if (
                         pipe is not None
                         and kind == "pipeline"
@@ -5249,20 +5253,30 @@ class DiffusionBackend:
                                             plan.offload_policy,
                                         )
                                         plan = replanned
-                            # torchao tensors survive group and whole-module offload (int8 round-trips cuda->cpu->cuda
-                            # with max|diff| 0.0 on sm_80/sm_89; Qwen-Image-2.1 renders identically on sm_100), and
-                            # offload is picked because the dense weights do not fit, so quantising is what helps.
-                            # Sequential is unmeasured and keeps the refusal.
-                            if plan.offload_policy == OFFLOAD_SEQUENTIAL:
+                            # Only whole-module offload moves torchao weights through Studio's render: diffusers'
+                            # group-offload stream cache aliases them (its .cpu() returns the live weight) and the
+                            # streamless path cannot swap_tensors a compiled module's parameters. Whole-module offload
+                            # onloads the transformer alone, so the quantised transformer must fit the budget.
+                            quant_budget = int(plan.estimates.get("safe_device_budget_mib") or 0)
+                            if plan.offload_policy != OFFLOAD_NONE and (
+                                plan.offload_policy != OFFLOAD_MODEL
+                                or estimate is None
+                                or estimate.steady_transformer_mib > quant_budget
+                            ):
+                                if plan.offload_policy == OFFLOAD_MODEL:
+                                    transformer_quant_decline = (
+                                        "whole-module offload onloads the transformer alone, and the "
+                                        "quantised transformer is not known to fit the device budget"
+                                    )
+                                else:
+                                    transformer_quant_decline = (
+                                        f"'{plan.offload_policy}' offload streams the transformer through "
+                                        "hooks torchao weights do not survive. Pin low_vram or a resident "
+                                        "memory mode to combine the two"
+                                    )
                                 logger.info(
-                                    "diffusion.transformer_quant: skipped (sequential offload moves "
-                                    "the transformer submodule by submodule, which this has not been "
-                                    "measured against)"
-                                )
-                                transformer_quant_decline = (
-                                    "sequential offload moves the transformer submodule by "
-                                    "submodule and quantisation has not been measured against it. "
-                                    "Pin a resident or group memory mode to combine the two"
+                                    "diffusion.transformer_quant: skipped (%s)",
+                                    transformer_quant_decline,
                                 )
                             else:
                                 if _has_active_lora(loras):
@@ -7278,8 +7292,15 @@ class DiffusionBackend:
                     if state.transformer_cache:
                         self._reset_step_cache(state.pipe)
                     try:
-                        # inference_mode is faster than no_grad and numerically identical here.
-                        with torch.inference_mode():
+                        # inference_mode is faster than no_grad and numerically identical here, except that torchao
+                        # tensors cannot change device under it (their aten.to handler fails torch's aliasing check),
+                        # and every offload tier moves the quantised transformer inside the forward.
+                        grad_mode = (
+                            torch.no_grad
+                            if state.transformer_quant and state.offload_policy != OFFLOAD_NONE
+                            else torch.inference_mode
+                        )
+                        with grad_mode():
                             out = pipe(**chunk_kwargs).images
                     except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
                         oom = is_oom_error(exc)

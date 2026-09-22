@@ -794,6 +794,28 @@ def test_loaded_text_encoder_mib_counts_every_encoder_the_pipe_holds_once(monkey
     assert loaded_text_encoder_mib(types.SimpleNamespace(components = {"vae": Module(100)})) is None
 
 
+def test_refine_keeps_model_offload_for_a_torchao_transformer(monkeypatch):
+    """Streaming cannot move torchao weights, and the loader quantised under whole-module offload
+    only because the quantised transformer fits, so its bf16-shaped size must not force streaming."""
+    Module = _install_sized_torch(monkeypatch)
+    plan = MemoryPlan(
+        requested_mode = "low_vram",
+        offload_policy = OFFLOAD_MODEL,
+        vae_tiling = True,
+        vae_slicing = True,
+        device_memory = _discrete(8000),
+        estimates = {"safe_device_budget_mib": 6000},
+    )
+    transformer = Module(7500)
+    pipe = types.SimpleNamespace(
+        transformer = transformer,
+        components = {"transformer": transformer, "text_encoder": Module(1200)},
+    )
+    assert refine_memory_plan_for_components(pipe, plan).offload_policy == OFFLOAD_STREAMING
+    monkeypatch.setattr(diffusion_memory, "_holds_torchao_tensors", lambda module: True)
+    assert refine_memory_plan_for_components(pipe, plan) is plan
+
+
 def test_refine_keeps_model_offload_when_streaming_cannot_help(monkeypatch):
     """Only a component streaming can actually hook justifies leaving whole-module offload."""
     Module = _install_sized_torch(monkeypatch)

@@ -2182,17 +2182,7 @@ def test_an_offloading_memory_request_refuses_an_explicit_precision(monkeypatch,
     assert "offload" in str(excinfo.value)
 
 
-@pytest.mark.parametrize(
-    "memory",
-    [
-        {"memory_mode": "balanced"},
-        {"memory_mode": "low_vram"},
-        {"cpu_offload": True},
-    ],
-)
-def test_an_offloading_memory_request_admits_a_pipeline_precision(monkeypatch, memory):
-    """A pipeline quantises in place under group and whole-module offload, which is what balanced,
-    low_vram and cpu_offload pick, so the gate must not 409 a combination the loader runs."""
+def _pipeline_precision_gate(monkeypatch, **memory):
     from core.inference.diffusion import DiffusionBackend
 
     backend = DiffusionBackend.__new__(DiffusionBackend)
@@ -2209,6 +2199,20 @@ def test_an_offloading_memory_request_admits_a_pipeline_precision(monkeypatch, m
         transformer_quant = "fp8",
         **memory,
     )
+
+
+@pytest.mark.parametrize("memory", [{"memory_mode": "low_vram"}, {"cpu_offload": True}])
+def test_a_whole_module_offload_request_admits_a_pipeline_precision(monkeypatch, memory):
+    """A pipeline quantises under whole-module offload, which low_vram and cpu_offload pick, so the
+    gate must not 409 a combination the loader runs."""
+    _pipeline_precision_gate(monkeypatch, **memory)
+
+
+def test_balanced_memory_refuses_a_pipeline_precision(monkeypatch):
+    """balanced is group offload, which the loader never quantises under."""
+    with pytest.raises(RuntimeError) as excinfo:
+        _pipeline_precision_gate(monkeypatch, memory_mode = "balanced")
+    assert "group-offload hooks" in str(excinfo.value)
 
 
 def test_a_measured_memory_mode_is_not_refused_by_the_precision_gate(monkeypatch):
