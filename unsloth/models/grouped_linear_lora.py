@@ -108,13 +108,38 @@ def _grouped_lora_layer():
     return GroupedLinearLoRA
 
 
-def register_grouped_linear_lora(lora_config, model):
-    """Map every grouped-linear class in `model` to `GroupedLinearLoRA` on `lora_config`.
+def _targets_module(lora_config, name):
+    """Whether `lora_config` selects the module called `name`, by PEFT's own matcher.
 
-    Returns the classes registered, empty when the model has none or PEFT
-    predates custom module registration.
+    `target_modules = None` (PEFT resolves it later) or a config PEFT cannot read
+    counts as targeted: keep the grouped forward rather than drop it.
     """
-    classes = grouped_linear_classes(model)
+    target_modules = getattr(lora_config, "target_modules", None)
+    if target_modules is None or target_modules == "all-linear":
+        return True
+    try:
+        from peft.tuners.tuners_utils import check_target_module_exists
+        return bool(check_target_module_exists(lora_config, name))
+    except Exception:
+        return True
+
+
+def targeted_grouped_linear_classes(lora_config, model):
+    """The grouped-linear classes `lora_config.target_modules` actually selects in `model`."""
+    classes = []
+    for name, module in model.named_modules():
+        if is_grouped_linear(module) and type(module) not in classes and _targets_module(lora_config, name):
+            classes.append(type(module))
+    return classes
+
+
+def register_grouped_linear_lora(lora_config, model):
+    """Map every targeted grouped-linear class in `model` to `GroupedLinearLoRA` on `lora_config`.
+
+    Returns the classes registered, empty when `target_modules` selects no grouped
+    linear or PEFT predates custom module registration.
+    """
+    classes = targeted_grouped_linear_classes(lora_config, model)
     if not classes or not hasattr(lora_config, "_register_custom_module"):
         return []
     if getattr(lora_config, "use_dora", False):
@@ -127,3 +152,24 @@ def register_grouped_linear_lora(lora_config, model):
     layer = _grouped_lora_layer()
     lora_config._register_custom_module({cls: layer for cls in classes})
     return classes
+
+
+def register_grouped_linear_lora_for_adapter(model, adapter_path, **hub_kwargs):
+    """The `PeftConfig` of a saved adapter with the grouped mapping registered, or None.
+
+    PEFT's custom module mapping holds class objects, so it is not in the saved
+    adapter config; a reload through `PeftModel.from_pretrained` would wrap a
+    grouped linear with the dense LoRA layer again. Returns None when the model
+    has no targeted grouped linear or the config cannot be read, in which case
+    the caller loads exactly as before.
+    """
+    if not grouped_linear_classes(model):
+        return None
+    try:
+        from peft import PeftConfig
+        peft_config = PeftConfig.from_pretrained(adapter_path, **hub_kwargs)
+    except Exception:
+        return None
+    if not register_grouped_linear_lora(peft_config, model):
+        return None
+    return peft_config

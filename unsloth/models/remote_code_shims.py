@@ -240,8 +240,18 @@ def _fill_missing_loss(cls):
                 f"Unsloth: `{cls.__name__}.forward` returned neither a loss nor logits, so no loss can be trained on."
             )
         if isinstance(output, dict):
-            output["loss"] = loss
-            return output
+            # `loss` must be the first ordered entry: HF Trainer reads output["loss"], but
+            # positional readers take output[0] and to_tuple()[0] as the loss when labels
+            # were given. Rebuild rather than append.
+            fields = {k: v for k, v in output.items() if k != "loss"}
+            try:
+                return type(output)(loss = loss, **fields)
+            except Exception:
+                rebuilt = type(output)()
+                rebuilt["loss"] = loss
+                for k, v in fields.items():
+                    rebuilt[k] = v
+                return rebuilt
         return (loss,) + tuple(output)
 
     cls.forward = forward

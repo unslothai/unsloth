@@ -190,3 +190,14 @@ def test_the_repaired_forward_is_reached_through_an_accelerate_hook():
     ids = torch.randint(0, 32, (2, 6))
     out = model(input_ids = ids, labels = ids)
     assert out.loss is not None and torch.isfinite(out.loss)
+
+
+def test_the_synthesized_loss_is_the_first_ordered_entry(model):
+    """Positional readers take output[0] and to_tuple()[0] as the loss when labels were given."""
+    from unsloth.models.remote_code_shims import apply_remote_code_shims
+
+    apply_remote_code_shims(model)
+    ids = torch.randint(0, 32, (2, 6))
+    out = model(input_ids = ids, labels = ids)
+    assert list(out.keys())[0] == "loss"
+    assert out[0] is out.loss and out.to_tuple()[0] is out.loss

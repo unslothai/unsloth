@@ -133,3 +133,47 @@ def test_a_variant_reaching_the_forward_is_refused():
     layer.lora_variant["default"] = object()
     with pytest.raises(NotImplementedError, match = "variants"):
         peft_model(torch.randn(2, 4, 16))
+
+
+def test_dora_is_allowed_when_no_grouped_linear_is_targeted():
+    """DoRA on the dense o_b_proj alone is valid: the grouped forward is never built."""
+    from peft import LoraConfig
+    from unsloth.models.grouped_linear_lora import register_grouped_linear_lora
+
+    model = Block()
+    config = LoraConfig(r = 4, lora_alpha = 8, target_modules = ["o_b_proj"], use_dora = True)
+    assert register_grouped_linear_lora(config, model) == []
+    regex = LoraConfig(r = 4, lora_alpha = 8, target_modules = ".*o_b_proj", use_dora = True)
+    assert register_grouped_linear_lora(regex, model) == []
+    everything = LoraConfig(r = 4, lora_alpha = 8, target_modules = None, use_dora = True)
+    with pytest.raises(NotImplementedError, match = "DoRA"):
+        register_grouped_linear_lora(everything, model)
+
+
+def test_a_saved_adapter_reloads_onto_the_grouped_forward(tmp_path):
+    """The custom mapping is not in adapter_config.json, so a reload must register it again."""
+    from peft import PeftModel
+    from unsloth.models.grouped_linear_lora import register_grouped_linear_lora_for_adapter
+
+    peft_model = _peft_model(register = True)
+    x = torch.randn(2, 5, 4, 16)
+    with torch.no_grad():
+        want = peft_model(x)
+    peft_model.save_pretrained(str(tmp_path))
+
+    base = Block()
+    base_state = {
+        k.replace(".base_layer", ""): v
+        for k, v in peft_model.base_model.model.state_dict().items()
+        if "lora_" not in k
+    }
+    base.load_state_dict(base_state, strict = True)
+    config = register_grouped_linear_lora_for_adapter(base, str(tmp_path))
+    assert config is not None
+    reloaded = PeftModel.from_pretrained(base, str(tmp_path), config = config)
+    assert type(reloaded.base_model.model.o_a_proj).__name__ == "GroupedLinearLoRA"
+    with torch.no_grad():
+        got = reloaded(x)
+    torch.testing.assert_close(got, want)
+    # A model with no grouped linear reloads exactly as before.
+    assert register_grouped_linear_lora_for_adapter(torch.nn.Linear(4, 4), str(tmp_path)) is None

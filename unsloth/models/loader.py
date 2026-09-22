@@ -32,6 +32,7 @@ from .cohere import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
+from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -1152,6 +1153,14 @@ class FastLanguageModel(FastLlamaModel):
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
+            # A grouped linear (DeepSeek-V4's o_a_proj) needs its LoRA mapping registered again:
+            # the mapping holds class objects and is not part of the saved adapter config.
+            _grouped_config = register_grouped_linear_lora_for_adapter(
+                model, old_model_name, token = token, revision = revision,
+                local_files_only = local_files_only, **peft_load_kwargs,
+            )
+            if _grouped_config is not None:
+                peft_load_kwargs["config"] = _grouped_config
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -2153,6 +2162,12 @@ class FastModel(FastBaseModel):
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
+            _grouped_config = register_grouped_linear_lora_for_adapter(
+                model, old_model_name, token = token, revision = revision,
+                local_files_only = local_files_only, **peft_load_kwargs,
+            )
+            if _grouped_config is not None:
+                peft_load_kwargs["config"] = _grouped_config
             try:
                 model = PeftModel.from_pretrained(
                     model,
