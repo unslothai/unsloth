@@ -234,11 +234,11 @@ def test_the_inside_predicate_reads_the_path():
         # (home, persisted, inside)
         ("hf-cache", "hf-cache", True),
         ("${{ github.workspace }}/hf-cache", "hf-cache", True),
-        ("hf-cache/hub", "hf-cache", True),          # credential home below the cached dir
+        ("hf-cache/hub", "hf-cache", True),  # credential home below the cached dir
         ("./hf-cache", "hf-cache", True),
-        ("hf-cache-vision", "hf-cache", False),      # prefix, not a child
+        ("hf-cache-vision", "hf-cache", False),  # prefix, not a child
         ("other", "hf-cache", False),
-        ("hf-cache", "hf-cache/hub", False),         # cached dir below the home, not covered
+        ("hf-cache", "hf-cache/hub", False),  # cached dir below the home, not covered
         ("", "hf-cache", False),
         ("hf-cache", "", False),
         (r"${{ github.workspace }}\hf-cache", "hf-cache", True),  # Windows separators
