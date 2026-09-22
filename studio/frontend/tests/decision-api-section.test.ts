@@ -102,3 +102,7 @@ test("the client talks to the settings routes and maps the schema", () => {
     assert.match(API, new RegExp(`${camel}: \\w+\\.${snake}`));
   }
 });
+
+test("reports a resident model as loaded only when it is the selected one", () => {
+  assert.match(SECTION, /settings\.loadedModel === settings\.model/);
+});

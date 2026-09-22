@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import os
+import sys
 import threading
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ from utils import systemone_settings
 _REAL_LOAD = laya_runtime._load_checkpoint
 _REAL_TRUNCATED = laya_runtime._state_truncated
 _REAL_OWNER_SETTING = systemone_settings._owner_setting
+_REAL_UNAVAILABLE_REASON = systemone_settings.runtime_unavailable_reason
 QUESTIONS = {
     "urgent": {"type": "noul", "instructions": "Does the customer need a reply within the hour?"},
     "team": {
@@ -111,6 +113,7 @@ def runtime(monkeypatch):
 
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", load)
     monkeypatch.setattr(laya_runtime, "_state_truncated", lambda *args: False)
+    monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: None)
     monkeypatch.setattr(laya_runtime, "package_available", lambda: True)
     yield loads
     if laya_runtime._loader is not None:
@@ -705,12 +708,24 @@ def test_decision_api_cannot_be_enabled_where_laya_is_not_installed(client, monk
     import storage.studio_db as studio_db
 
     monkeypatch.setattr(studio_db, "upsert_app_settings", settings.update)
-    monkeypatch.setattr(systemone_settings, "runtime_supported", lambda: False)
+    reason = "The Decision API needs PyTorch, which this Studio install does not include."
+    monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: reason)
     response = client.put("/api/settings/systemone", json = {"enabled": True})
     assert response.status_code == 400
-    assert "Python 3.10" in response.json()["detail"]
+    assert response.json()["detail"] == reason
     assert client.get("/api/settings/systemone").json()["enabled"] is False
     assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 200
+
+
+def test_runtime_reason_names_what_the_install_lacks(monkeypatch):
+    import importlib.util
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name, *a: None if name == "torch" else real(name, *a)
+    )
+    expected = "Python 3.10" if sys.version_info < (3, 10) else "PyTorch"
+    assert expected in _REAL_UNAVAILABLE_REASON()
 
 
 def test_oversized_question_text_is_refused_before_the_model(client, runtime):

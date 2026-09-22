@@ -206,7 +206,7 @@ export function DecisionApiSection(): ReactElement | null {
   } else if (settings.loadingModel) {
     tone = "pending";
     status = t("settings.apiKeys.decisionApi.loading");
-  } else if (settings.loadedModel) {
+  } else if (settings.loadedModel === settings.model) {
     tone = "ready";
     status = t("settings.apiKeys.decisionApi.loadedOn", {
       device: deviceLabel(settings.loadedDevice),

@@ -50,9 +50,18 @@ def device_locked() -> bool:
     return bool(_env(ENV_DEVICE))
 
 
-def runtime_supported() -> bool:
-    # extras-no-deps.txt installs laya only on Python 3.10+, its own floor.
-    return sys.version_info >= (3, 10)
+def runtime_unavailable_reason() -> str | None:
+    # extras-no-deps.txt installs laya only on Python 3.10+, its own floor, and laya runs on torch,
+    # which a --no-torch install leaves out.
+    if sys.version_info < (3, 10):
+        return "The Decision API needs Python 3.10 or newer."
+    try:
+        from importlib.util import find_spec
+        if find_spec("torch") is None:
+            return "The Decision API needs PyTorch, which this Studio install does not include."
+    except Exception:
+        pass
+    return None
 
 
 def get_enabled() -> bool:
@@ -89,8 +98,8 @@ def validate(
     if enabled is not None:
         if enabled_locked():
             raise ValueError(f"The Decision API is turned off by {ENV_DISABLE}.")
-        if enabled and not runtime_supported():
-            raise ValueError("The Decision API needs Python 3.10 or newer.")
+        if enabled and (reason := runtime_unavailable_reason()):
+            raise ValueError(reason)
         values[ENABLED_KEY] = bool(enabled)
     if model is not None:
         if model_locked():
