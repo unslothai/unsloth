@@ -14,6 +14,7 @@ from .._version import __version__
 __all__ = [
     "SUPPORTS_BFLOAT16",
     "is_bfloat16_supported",
+    "force_float32_dtype",
     "_requested_float32",
     "_mark_requested_float32",
     "_mark_forced_float32",
@@ -3274,6 +3275,34 @@ def offload_output_embeddings(model, temporary_location: str = "_unsloth_tempora
 
 def is_bfloat16_supported():
     return SUPPORTS_BFLOAT16
+
+
+def force_float32_dtype(supports_bfloat16 = None):
+    """The dtype a FORCE_FLOAT32 family must load in.
+
+    These architectures (gemma3, gemma3n, gemma4, glm4_moe, gpt_oss, qwen3_5, qwen3_moe)
+    have activations outside float16's finite range, so loading them float16 silently
+    NaNs at training time. bfloat16 is the deliberate answer wherever it exists, because
+    it reduces outliers.
+
+    Where it does NOT exist, bfloat16 is the worst of the three rather than the best:
+
+      * RDNA 1/2 (gfx101x, gfx103x) -- Triton cannot lower bf16 there, so a bf16 tensor
+        reaching a Triton kernel aborts the whole process inside LLVM with no Python
+        exception at all: "Cannot select: intrinsic %llvm.amdgcn.fdot2.bf16.bf16"
+        (unslothai/unsloth#7922).
+      * Pre-Ampere NVIDIA (T4, V100) -- raises "expected mat1 and mat2 to have the same
+        dtype, but got: BFloat16 != Half" (unslothai/unsloth#7506).
+
+    float32 is then the only remaining dtype that still honours "must not run in
+    float16", so it is what these families fall back to.
+
+    `supports_bfloat16` defaults to the process-wide probe, which already answers False
+    for gfx10 via `device_type.arch_lacks_bf16()`; no separate arch check is needed here.
+    """
+    if supports_bfloat16 is None:
+        supports_bfloat16 = SUPPORTS_BFLOAT16
+    return torch.bfloat16 if supports_bfloat16 else torch.float32
 
 
 def _requested_float32(dtype):

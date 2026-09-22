@@ -103,6 +103,7 @@ from ._utils import (
     unsloth_compile_transformers,
     fast_inference_setup,
     _requested_float32,
+    force_float32_dtype,
     _mark_requested_float32,
     _mark_forced_float32,
     _mark_full_finetuning,
@@ -1764,7 +1765,20 @@ class FastModel(FastBaseModel):
             ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 do_forced_float32 = True
-                dtype = torch.bfloat16  # Change to bfloat16 loading
+                # bfloat16 is the deliberate choice for these families: it reduces
+                # outliers, which is why float16 is refused here in the first place.
+                # But this branch is also taken when the device has NO bfloat16, and
+                # selecting it there picks the one dtype the card cannot run. RDNA 1/2
+                # (gfx101x, gfx103x) is the case that bites hardest: Triton cannot
+                # lower bf16 on gfx10, so instead of a Python error LLVM aborts the
+                # whole training process ("Cannot select: intrinsic
+                # %llvm.amdgcn.fdot2.bf16.bf16", unslothai/unsloth#7922). A pre-Ampere
+                # NVIDIA card (T4, V100) reaches the same branch and raises
+                # "BFloat16 != Half" instead (#7506). float32 is the remaining dtype
+                # that satisfies "must not run in float16", so fall back to it.
+                # SUPPORTS_BFLOAT16 already accounts for gfx10 via
+                # device_type.arch_lacks_bf16(), so no new detection is needed here.
+                dtype = force_float32_dtype(SUPPORTS_BFLOAT16)
                 break
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
             use_gradient_checkpointing, max_seq_length, dtype

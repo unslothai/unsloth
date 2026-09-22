@@ -1341,8 +1341,16 @@ class FastBaseModel:
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
         elif os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-            if dtype == torch.float16:
-                dtype = torch.bfloat16
+            # This branch is an `elif`, so it SKIPS the bfloat16-is-unsupported downgrade
+            # below it. Promoting float16 to bfloat16 here on a device without bfloat16
+            # therefore left the dtype at bf16 with nothing left to correct it: on RDNA 1/2
+            # (gfx101x, gfx103x) Triton cannot lower bf16 and LLVM aborts the process
+            # (unslothai/unsloth#7922), and on a pre-Ampere NVIDIA card it raises
+            # "BFloat16 != Half" (#7506). bfloat16 stays the choice wherever it is usable,
+            # because it is what reduces outliers for these families; float32 is the
+            # fallback that still honours "must not run in float16".
+            if dtype == torch.float16 or (dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16):
+                dtype = force_float32_dtype(SUPPORTS_BFLOAT16)
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
