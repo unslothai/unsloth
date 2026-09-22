@@ -2949,6 +2949,7 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
             "token": False,
             "repo_type": "dataset",
             "max_workers": 1,
+            "tqdm_class": None,
         }
     ]
     assert verified == [("dataset", "Org/Data", None, str(tmp_path))]
@@ -6146,6 +6147,7 @@ def test_download_dataset_writes_manifest_for_xet(monkeypatch, tmp_path):
             "token": False,
             "repo_type": "dataset",
             "max_workers": 1,
+            "tqdm_class": None,
             "revision": "dataset-commit",
         }
     ]
