@@ -413,3 +413,33 @@ def test_the_registry_does_not_grow_with_every_short_lived_thread():
     with runs_db._pool_lock:
         depth = len(runs_db._pool_registry)
     assert depth <= 2, f"registry grew to {depth} entries across 25 short-lived threads"
+
+
+def test_a_handle_whose_rollback_failed_is_discarded_rather_than_parked():
+    """If rollback raises, the transaction is still open. Parking that handle would hand the next
+    borrower a connection whose BEGIN IMMEDIATE fails, or let its commit carry the previous
+    caller's uncommitted work."""
+    runs_db.reset_connection_pool_for_tests()
+    borrowed = runs_db._connect()
+    underlying = borrowed._conn
+
+    class _StuckInTransaction:
+        def __getattr__(self, name):
+            return getattr(underlying, name)
+
+        @property
+        def in_transaction(self):
+            return True
+
+        def rollback(self):
+            raise sqlite3.OperationalError("disk I/O error")
+
+    object.__setattr__(borrowed, "_conn", _StuckInTransaction())
+    runs_db._pool.entry.conn = borrowed._conn
+    borrowed.close()
+
+    with runs_db._pool_lock:
+        alive = [ref for ref in runs_db._pool_registry if ref() is not None]
+    assert alive == [], "a handle whose rollback failed must not stay in the pool"
+    assert getattr(runs_db._pool, "entry", None) is None
+    runs_db.reset_connection_pool_for_tests()

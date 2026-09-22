@@ -79,20 +79,24 @@ class _Borrowed:
         object.__setattr__(self, "_released", True)
         # Before the lock: while this borrow is out the handle belongs to this thread alone, and a
         # connection left mid-transaction would hand its caller's work to the next borrower.
+        reusable = True
         try:
             if self._conn.in_transaction:
                 self._conn.rollback()
         except Exception:
-            pass
+            # The transaction is still open. Parking it would give the next borrower a handle whose
+            # BEGIN IMMEDIATE fails, or worse, let its commit carry this caller's uncommitted work.
+            reusable = False
         park = False
         with _pool_lock:
             entry = getattr(_pool, "entry", None)
             if entry is not None and entry.conn is self._conn:
-                if entry.generation == _pool_generation:
+                if reusable and entry.generation == _pool_generation:
                     entry.busy = False
                     park = True
                 else:
-                    # Invalidated while this borrow was out: releasing the file is what matters now.
+                    # Invalidated while this borrow was out, or unusable after a failed rollback:
+                    # either way releasing the file is what matters now.
                     _pool.entry = None
                     _unregister_locked(entry)
         if not park:
