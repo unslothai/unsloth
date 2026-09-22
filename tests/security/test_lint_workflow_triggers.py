@@ -942,3 +942,167 @@ def test_lint_rejects_shared_cache_key_between_pr_and_publish(tmp_path):
     assert proc.returncode == 1
     assert "cache-key" in proc.stderr.lower() or "cache key" in proc.stderr.lower()
     assert "shared-cache-v1" in proc.stderr
+
+
+def test_lint_rejects_a_publish_restore_keys_prefix_over_a_pr_namespace(tmp_path):
+    """A prefix restore reaches the same cache an equal key would, and was invisible.
+
+    `restore-keys` restores the newest entry whose key merely STARTS WITH the prefix, so
+    a publish workflow can adopt an entry a pull request wrote without the two keys ever
+    being equal. The exact-key check next to this one compares whole strings, so it never
+    saw this route.
+    """
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n"
+        "          path: node_modules\n"
+        "          key: pip-v2-${{ runner.os }}-abc\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  publish:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n"
+        "          path: node_modules\n"
+        "          key: pip-v2-exact-${{ runner.os }}\n"
+        "          restore-keys: |\n"
+        "            pip-\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, f"prefix restore accepted:\n{proc.stdout}\n{proc.stderr}"
+    assert "restore-keys" in proc.stderr
+    assert "'pip-'" in proc.stderr
+
+
+def test_a_partitioned_publish_prefix_is_accepted(tmp_path):
+    """The fix must actually pass, or the rule above is just a ban on restore-keys."""
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n"
+        "          path: node_modules\n"
+        "          key: pip-v2-${{ runner.os }}-abc\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  publish:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n"
+        "          path: node_modules\n"
+        "          key: pip-publish-only-${{ runner.os }}\n"
+        "          restore-keys: |\n"
+        "            pip-publish-only-\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, f"partitioned prefix rejected:\n{proc.stderr}"
+
+
+def test_lint_sees_cache_keys_declared_in_composite_actions(tmp_path):
+    """The keys that matter mostly live in .github/actions, which the lint used to skip.
+
+    A PR-triggered workflow here delegates its key to a composite action, so the workflow
+    text carries only `${{ steps.x.outputs.key }}`. Before composite actions were read,
+    the PR-side namespace was effectively empty and a publish prefix could not be
+    compared against anything.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "pip-cache-restore"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: pip cache restore\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: actions/cache/restore@v4\n"
+        "      with:\n"
+        "        path: wheels\n"
+        "        key: pip-v2-${{ runner.os }}-abc\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/pip-cache-restore\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n"
+        "          path: wheels\n"
+        "          key: ${{ steps.pip-cache.outputs.key }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  publish:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n"
+        "          path: wheels\n"
+        "          key: pip-v2-publish-${{ runner.os }}\n"
+        "          restore-keys: |\n"
+        "            pip-v2-\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the composite action's pip-v2- key was not seen, so the publish prefix matched "
+        f"nothing:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "pip-v2-" in proc.stderr
+
+
+def test_a_restore_keys_entry_that_opens_with_an_expression_is_refused(tmp_path):
+    """If the prefix starts with an expression, what it can restore is not decidable."""
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  publish:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n"
+        "          path: wheels\n"
+        "          key: k-${{ runner.os }}\n"
+        "          restore-keys: |\n"
+        "            ${{ runner.os }}-\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1
+    assert "not decidable" in proc.stderr
