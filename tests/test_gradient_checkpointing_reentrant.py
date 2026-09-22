@@ -34,6 +34,7 @@ default, so knowledge distillation on TRL 0.25.1 reached the non-reentrant path
 without ever asking for gradient checkpointing, and died on a Kaggle 2x T4
 with 81 tensors saved in the forward against 79 in the recomputation.
 """
+
 import re
 import textwrap
 
@@ -54,7 +55,11 @@ def _config_post_snippet() -> str:
 
 
 class _Config:
-    def __init__(self, gradient_checkpointing = True, kwargs = None):
+    def __init__(
+        self,
+        gradient_checkpointing = True,
+        kwargs = None,
+    ):
         self.gradient_checkpointing = gradient_checkpointing
         self.gradient_checkpointing_kwargs = kwargs
 
@@ -82,7 +87,8 @@ def test_an_explicit_false_is_overridden():
 def test_other_checkpoint_kwargs_are_preserved():
     config = _run_post(_Config(kwargs = {"determinism_check": "none"}))
     assert config.gradient_checkpointing_kwargs == {
-        "determinism_check": "none", "use_reentrant": True,
+        "determinism_check": "none",
+        "use_reentrant": True,
     }
 
 
@@ -110,8 +116,7 @@ def test_the_pin_is_not_gated_on_a_trl_version():
 
 def test_the_snippet_pins_true_rather_than_deleting_the_key():
     snippet = _config_post_snippet()
-    assert "use_reentrant'] = True" in snippet or \
-           '"use_reentrant"] = True' in snippet, snippet
+    assert "use_reentrant'] = True" in snippet or '"use_reentrant"] = True' in snippet, snippet
     assert "del " not in snippet, (
         "deleting the key is not enough: a config that never set it leaves "
         "None, and transformers substitutes False"
