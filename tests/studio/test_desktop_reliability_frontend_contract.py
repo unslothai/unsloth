@@ -2533,6 +2533,16 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (APP_SIDEBAR, "", "h", "30px", 5),
     (APP_SIDEBAR, "", "gap", "8.5px", 6),
     (APP_SIDEBAR, "", "pl", "39px", 2),
+    # The 34px pill controls in the media headers, in all three spellings the pages use. The
+    # band around them scales and so does their own text, so a control left fixed is the one
+    # thing in that row that does not move, and it crowds out its label.
+    (IMAGES_PAGE, "!", "h", "34px", 2),
+    (IMAGES_PAGE, "", "h", "34px", 1),
+    (IMAGES_PAGE, "[&>button]:", "h", "34px", 1),
+    (AUDIO_PAGE, "!", "h", "34px", 1),
+    (AUDIO_PAGE, "", "h", "34px", 1),
+    (AUDIO_PAGE, "[&>button]:", "h", "34px", 1),
+    (VIDEO_PAGE, "!", "h", "34px", 2),
 )
 
 # Where a class may begin: the start of the string it is written in, or the space after the
