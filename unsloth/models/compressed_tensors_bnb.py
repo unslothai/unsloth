@@ -355,6 +355,45 @@ def _scheme_for_sources(ct_config, weight_sources):
     return chosen[0] if chosen else _experts_scheme(ct_config)
 
 
+def _layer_expert_scheme(ct_config, full_layer_name, packed_key, n_experts, default):
+    """The config group of one concrete expert bucket. The converter is shared by every
+    layer, so with several groups the scheme is resolved from this layer's module names
+    (``model.layers.5.mlp.experts.{i}.gate_proj``); experts of one bucket must agree."""
+    if len(ct_config.config_groups) < 2:
+        return default
+    parent = full_layer_name.rsplit(".", 1)[0]
+    pattern = packed_key.rstrip("$")
+    for suffix in (".weight_packed", "_packed"):
+        if pattern.endswith(suffix):
+            pattern = pattern[: -len(suffix)]
+            break
+    if pattern.endswith(".weight"):
+        pattern = pattern[: -len(".weight")]
+    pattern = pattern.lstrip("^")
+    # The pattern starts somewhere inside the layer path (``mlp.experts.*.gate_proj``).
+    parts = parent.split(".")
+    tail = None
+    for start in range(len(parts)):
+        head = ".".join(parts[start:])
+        if pattern.startswith(head + "."):
+            tail = pattern[len(head) :]
+            break
+    if tail is None or "*" not in tail:
+        return default
+    schemes = []
+    for i in range(n_experts):
+        scheme = _scheme_for_module(ct_config, parent + tail.replace("*", str(i), 1), None)
+        if all(scheme is not s for s in schemes):
+            schemes.append(scheme)
+    if len(schemes) > 1:
+        raise RuntimeError(
+            f"Unsloth: the compressed-tensors checkpoint quantizes the experts of {parent} under "
+            "different config groups; re-quantizing it on the fly is not supported. Load it as "
+            "published without `load_in_4bit = True`."
+        )
+    return schemes[0] if schemes else default
+
+
 def drop_load_only_conversions(model) -> int:
     """Remove this module's converters from ``model._weight_conversions`` so save_pretrained
     does not reverse them. Returns how many were dropped."""
@@ -454,6 +493,7 @@ class _DecompressPackedWeights:
         if not packed_keys:
             return input_dict
         out = {}
+        as_list = lambda v: v if isinstance(v, list) else [v]  # noqa: E731
         for packed_key in packed_keys:
             packed = input_dict[packed_key]
             get = lambda suffix: input_dict.get(packed_key.replace("weight_packed", suffix))  # noqa: E731
@@ -462,6 +502,10 @@ class _DecompressPackedWeights:
                 for s in ("weight_scale", "weight_shape", "weight_zero_point", "weight_g_idx")
             )
             scheme = self.scheme
+            if self.stacked and full_layer_name:
+                scheme = _layer_expert_scheme(
+                    self.ct_config, full_layer_name, packed_key, len(as_list(packed)), scheme
+                )
             if scheme is None:
                 module = None
                 if model is not None and full_layer_name is not None and not self.stacked:
@@ -476,7 +520,6 @@ class _DecompressPackedWeights:
             compressor = self._compressor(scheme)
             # The loader hands every collected source over as a list of tensors: one entry for a
             # plain Linear, one per expert for a bucket collected by a `*` pattern (in bucket order).
-            as_list = lambda v: v if isinstance(v, list) else [v]  # noqa: E731
             packed_list = as_list(packed)
             n = len(packed_list)
             scales, shapes, zps, gidxs = (
