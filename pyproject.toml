@@ -215,22 +215,16 @@ huggingfacenotorch = [
     # release to export `grpo_vision_chunks`, which both vision GRPO logprob paths in
     # unsloth/models/rl_replacements.py refuse to run without.
     #
-    # This branch widens both the transformers and the trl ranges below, and unsloth_zoo
-    # publishes its own window for each. pip intersects the two, so a widened range only
-    # reaches users once a zoo release carries the same ceiling. The two halves are not in
-    # the same state:
-    #
-    # trl: SATISFIED. 2026.9.5 shipped unslothai/unsloth-zoo#1260 and says `trl<=1.13.0`,
-    #   so the floor covers it and the gate in tests/test_trl_cap_sites.py is live.
-    # transformers: NOT SATISFIED. 2026.9.6 still says `transformers<=5.5.0` because
-    #   unslothai/unsloth-zoo#1227 has not shipped, so pip keeps intersecting the wider
-    #   window below back down to 5.5.0 and that lift is advertised rather than delivered.
-    #   The gate in tests/test_transformers_cap_sites.py stays deferred for that reason,
-    #   and expires by itself once PyPI shows a zoo carrying the lift.
-    #
-    # The floor therefore stops at 2026.9.6: a floor no published release satisfies would
-    # make unsloth uninstallable, which is worse than under-delivering.
-    "unsloth_zoo>=2026.9.6",
+    # This branch widens the transformers, trl and datasets ranges below, and unsloth_zoo
+    # publishes its own window for each. pip intersects the two, so a widened range reaches
+    # users only once a zoo release carries the same ceiling. The three are not in one state:
+    #   trl          SATISFIED: 2026.9.5 shipped unslothai/unsloth-zoo#1260, `trl<=1.13.0`.
+    #   transformers SATISFIED: 2026.9.7 says `transformers<=5.17.0` off Apple Silicon.
+    #   datasets     NOT SATISFIED: 2026.9.7 still says `datasets<4.4.0`, so that widen is
+    #                advertised rather than delivered until a zoo release carries it.
+    # A floor no published release satisfies makes unsloth uninstallable, so the floor never
+    # leads the release.
+    "unsloth_zoo>=2026.9.7",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -303,7 +297,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.9.6",
+    "unsloth_zoo>=2026.9.7",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -922,7 +916,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.6",
+    "unsloth_zoo>=2026.9.7",
     "packaging",
     "tyro",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",

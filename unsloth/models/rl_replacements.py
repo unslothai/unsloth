@@ -46,7 +46,6 @@ import importlib.util
 from ..device_type import (
     is_hip,
     get_device_type,
-    DEVICE_TYPE,
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
@@ -909,7 +908,7 @@ def _unsloth_grpo_autocast(self):
     return self._autocast_enabled, self._autocast_dtype
 
 
-def _unsloth_grpo_autocast_kwargs(self, device_type = "cuda"):
+def _unsloth_grpo_autocast_kwargs(self, device_type = DEVICE_TYPE_TORCH):
     """torch.amp.autocast kwargs for GRPO generation."""
     enabled, dtype = _unsloth_grpo_autocast(self)
     if not getattr(self, "_autocast_force_float32", False) and torch.is_autocast_enabled(
@@ -1162,7 +1161,8 @@ def grpo_trainer__prepare_inputs(function_name, function):
     function = function.replace(
         "with torch.inference_mode():",
         "with torch.inference_mode(), "
-        "torch.amp.autocast(device_type = 'cuda', **_unsloth_grpo_autocast_kwargs(self)):",
+        "torch.amp.autocast(device_type = DEVICE_TYPE_TORCH, "
+        "**_unsloth_grpo_autocast_kwargs(self)):",
     )
     function = function.replace(
         "self.accelerator.unwrap_model(self.model)",
@@ -1858,7 +1858,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
 
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
         with torch.amp.autocast(
-            device_type = DEVICE_TYPE,
+            device_type = DEVICE_TYPE_TORCH,
             dtype = self._autocast_dtype,
             enabled = getattr(self, "_autocast_enabled", True),
         ):
@@ -2101,7 +2101,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         def _pg_run_forward(_pg_layout = _pg_layout, _pg_chunks = _pg_chunks):
                             with _get_inference_mode_context_manager(model):
                                 with torch.amp.autocast(
-                                    device_type = "cuda",
+                                    device_type = DEVICE_TYPE_TORCH,
                                     dtype = self._autocast_dtype,
                                     enabled = getattr(self, "_autocast_enabled", True),
                                 ):
@@ -2222,7 +2222,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
                         with _get_inference_mode_context_manager(model):
                             with torch.amp.autocast(
-                                device_type = "cuda",
+                                device_type = DEVICE_TYPE_TORCH,
                                 dtype = self._autocast_dtype,
                                 enabled = getattr(self, "_autocast_enabled", True),
                             ):
@@ -2287,7 +2287,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             _pk_ref = torch.zeros_like(_pk_result)
                             with _get_inference_mode_context_manager(model):
                                 with torch.amp.autocast(
-                                    device_type = "cuda",
+                                    device_type = DEVICE_TYPE_TORCH,
                                     dtype = self._autocast_dtype,
                                     enabled = getattr(self, "_autocast_enabled", True),
                                 ):
@@ -2462,7 +2462,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     vision_chunk,
                 ) in zipped_inputs:
                     with torch.amp.autocast(
-                        device_type = "cuda",
+                        device_type = DEVICE_TYPE_TORCH,
                         dtype = self._autocast_dtype,
                         enabled = getattr(self, "_autocast_enabled", True),
                     ):

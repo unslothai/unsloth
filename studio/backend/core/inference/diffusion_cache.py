@@ -55,6 +55,64 @@ def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
+# Block classes diffusers ships without first-block-cache metadata, and the metadata they want.
+# The pair is (index of hidden_states in the block's return, index of encoder_hidden_states or None).
+#
+# Qwen-Image-2.1 is single stream: its block takes ``hidden_states, modulation, rotary_emb, ...``
+# and returns the hidden states alone, so 0 / None. Without the entry ``enable_cache`` raises
+# "Model class QwenImage21TransformerBlock not registered." and every load of the family renders
+# uncached, which is the whole step-cache saving gone on a 20+ step model, silently.
+_UNREGISTERED_BLOCK_METADATA: dict = {
+    (
+        "diffusers.models.transformers.transformer_qwenimage21",
+        "QwenImage21TransformerBlock",
+    ): (0, None),
+}
+
+
+def register_unregistered_transformer_blocks(logger: Any = None) -> tuple:
+    """Add our own first-block-cache metadata for block classes diffusers has not registered.
+
+    Idempotent, best-effort, and never overwrites: a class diffusers registers later wins, since
+    upstream's own metadata is authoritative and ours exists only to fill the gap until it lands.
+    An import failure means that diffusers does not have the class at all, which is not an error
+    here; the family simply is not installed.
+    """
+    added: list = []
+    try:
+        from diffusers.hooks._helpers import TransformerBlockMetadata, TransformerBlockRegistry
+    except Exception:  # noqa: BLE001 - an older diffusers has no registry to fill
+        return ()
+    for (module_name, class_name), (hidden_index, encoder_index) in (
+        _UNREGISTERED_BLOCK_METADATA.items()
+    ):
+        try:
+            import importlib
+            block_cls = getattr(importlib.import_module(module_name), class_name, None)
+        except Exception:  # noqa: BLE001 - this diffusers does not ship the family
+            continue
+        if block_cls is None:
+            continue
+        try:
+            TransformerBlockRegistry.get(block_cls)
+            continue  # already known, ours would be a downgrade
+        except Exception:  # noqa: BLE001 - "not registered" is the case we are here for
+            pass
+        try:
+            TransformerBlockRegistry.register(
+                model_class = block_cls,
+                metadata = TransformerBlockMetadata(
+                    return_hidden_states_index = hidden_index,
+                    return_encoder_hidden_states_index = encoder_index,
+                ),
+            )
+            added.append(class_name)
+        except Exception as exc:  # noqa: BLE001 - registration is an optimisation, never a gate
+            if logger is not None:
+                logger.debug("could not register %s for step caching: %s", class_name, exc)
+    return tuple(added)
+
+
 def _invalidate_child_registry_cache(transformer: Any) -> None:
     """Drop the HookRegistry's cached child-registry list after (un)installing hooks.
 
@@ -229,6 +287,52 @@ def _pipeline_opens_cache_context(pipe: Any) -> bool:
     return "cache_context(" in src
 
 
+def _reuses_prefix_kv(pipe: Any, transformer: Any) -> bool:
+    """Whether the denoise loop feeds the blocks a SHORTER sequence after the first step.
+
+    A transformer that caches the prompt/condition prefix K and V runs its first step over the
+    whole joint sequence and every later step over the target tokens alone, so the per-block
+    sequence length changes between step 0 and step 1. FBCache compares the first block's residual
+    against the previous step's and reuses the remaining blocks' cached residual, and both are
+    plain elementwise ops on a stored tensor, so the length change makes them raise:
+
+        RuntimeError: The size of tensor a (4096) must match the size of tensor b (4297)
+                      at non-singleton dimension 1
+
+    (Qwen-Image-2.1 at 1024px: 4096 image tokens against 4096 + 201 prompt tokens.) The cache is
+    not merely unsupported here, it takes the generation down at the second step, so refuse it.
+
+    Read structurally rather than by family name, because the shape is shared: the transformer's
+    forward accepts a ``kv_cache_mode`` and the pipeline passes one. Qwen-Image-2.1, FLUX.2 klein
+    KV and Wan-Animate-2 all match today, and a family that adopts prefix reuse later is covered
+    without touching this file.
+
+    Conservative on purpose. A checkpoint that carries the parameter but never populates the cache
+    (the pipeline gates on its own config) keeps a constant length and would have been safe, and it
+    loses the cache anyway. That costs speed on a model we have not seen; guessing the other way
+    costs a failed render on one we have."""
+    import inspect
+
+    forward = getattr(transformer, "forward", None)
+    if forward is None:
+        return False
+    try:
+        if "kv_cache_mode" not in inspect.signature(forward).parameters:
+            return False
+    except (TypeError, ValueError):  # not introspectable: assume no prefix reuse
+        return False
+    call = getattr(pipe, "__call__", None)
+    if call is None:
+        return False
+    try:
+        src = inspect.getsource(call)
+    except (OSError, TypeError):
+        # The transformer takes the parameter and the loop cannot be read, so whether it is driven
+        # is unknown. Unknown is the crashing side here, so treat it as driven.
+        return True
+    return "kv_cache_mode" in src
+
+
 def apply_step_cache(
     pipe: Any,
     *,
@@ -247,6 +351,8 @@ def apply_step_cache(
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return None
+    # Before enable_cache, which is what raises on a block class the registry has never seen.
+    register_unregistered_transformer_blocks(logger)
     thr = (
         threshold
         if threshold is not None
@@ -263,6 +369,19 @@ def apply_step_cache(
     if not _pipeline_opens_cache_context(pipe):
         _warn(
             logger, mode, RuntimeError("pipeline __call__ opens no cache_context; running uncached")
+        )
+        return None
+    # Prefix KV reuse shortens the block sequence after the first step, which the cache's stored
+    # residuals cannot be subtracted from. Checked before enable_cache: engaging here does not fail
+    # at load, it fails at step 2 of the user's generation.
+    if _reuses_prefix_kv(pipe, transformer):
+        _warn(
+            logger,
+            mode,
+            RuntimeError(
+                "transformer reuses a prefix KV cache, so the block sequence length changes "
+                "after the first step; running uncached"
+            ),
         )
         return None
     # enable_cache RAISES when is_cache_enabled, so without this a redundant call lands in the

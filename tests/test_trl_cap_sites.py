@@ -48,6 +48,16 @@ ZOO_TRL_CEILING_BEFORE_THE_LIFT = Version("0.24.0")
 # live. The transformers half stays deferred; one floor serves both.
 ZOO_FLOOR_WITH_LIFTED_TRL_CAP = Version("2026.9.5")
 
+# The datasets ceiling every unsloth_zoo up to and including 2026.9.7 publishes, and the reason
+# the widened datasets window below is advertised rather than delivered: pip intersects, so users
+# keep resolving under 4.4.0 whatever this file says.
+ZOO_DATASETS_CEILING_BEFORE_THE_LIFT = SpecifierSet("<4.4.0")
+
+# DEFERRED, unlike the trl half: no published zoo carries the widened datasets window yet. A floor
+# no release satisfies makes unsloth uninstallable, so this stays None and the gate below skips
+# until test_the_zoo_datasets_deferral_expires_when_the_zoo_release_ships goes red on its own.
+ZOO_FLOOR_WITH_LIFTED_DATASETS_CAP = None
+
 # Lanes deliberately off the cap; without a reason "lower" reads as "forgotten". Keyed
 # on (workflow, exact requirement), never filename: that would exempt the whole file.
 PINNED_BY_DESIGN = {
@@ -876,3 +886,125 @@ def test_the_recorded_trl_datasets_floors_still_match_pypi() -> None:
             f"trl {first} now declares datasets{floors[0]}, not >={declared}. Update "
             f"TRL_DATASETS_FLOORS, then re-check the declared datasets window against it."
         )
+
+
+def _newest_published_zoo_datasets_windows(timeout: float = 10.0):
+    """(zoo version, datasets windows) for the newest unsloth_zoo on PyPI, else None.
+
+    Never raises: the caller treats "could not ask" as "keep deferring".
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(
+            "https://pypi.org/pypi/unsloth_zoo/json", timeout = timeout
+        ) as handle:
+            payload = json.load(handle)
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
+
+    info = payload.get("info") or {}
+    released = info.get("version")
+    if not released:
+        return None
+
+    windows = []
+    for raw in info.get("requires_dist") or []:
+        try:
+            req = Requirement(raw)
+        except InvalidRequirement:
+            continue
+        if req.name.lower() != "datasets" or not req.specifier:
+            continue
+        windows.append(req.specifier)
+    if not windows:
+        return None
+    return Version(released), windows
+
+
+def test_the_declared_zoo_floor_can_supply_the_declared_datasets_window() -> None:
+    """The datasets twin of the trl gate: pip hands the user the LOWER of the two ceilings.
+
+    Deferred while ZOO_FLOOR_WITH_LIFTED_DATASETS_CAP is None; the body is kept so naming the
+    release later is one edit.
+    """
+    if ZOO_FLOOR_WITH_LIFTED_DATASETS_CAP is None:
+        pytest.skip(
+            "deferred: no published unsloth_zoo carries the widened datasets window, so pip "
+            "keeps intersecting it back to the zoo's own cap. Re-enable by setting "
+            "ZOO_FLOOR_WITH_LIFTED_DATASETS_CAP to the release that carries it."
+        )
+    reqs = _pyproject_zoo()
+    assert reqs, "pyproject.toml names no versioned unsloth_zoo requirement at all"
+    floors = {}
+    for req in reqs:
+        lower = [
+            Version(str(spec.version))
+            for spec in req.specifier
+            if spec.operator in (">=", "==", "~=")
+        ]
+        assert lower, f"unsloth_zoo requirement {req} has no lower bound"
+        floors[str(req)] = max(lower)
+    stale = {
+        raw: str(floor)
+        for raw, floor in floors.items()
+        if floor < ZOO_FLOOR_WITH_LIFTED_DATASETS_CAP
+    }
+    assert not stale, (
+        f"pyproject.toml widens datasets while still accepting unsloth_zoo {stale}, whose own "
+        f"cap is {ZOO_DATASETS_CEILING_BEFORE_THE_LIFT}. Raise the floor to "
+        f"{ZOO_FLOOR_WITH_LIFTED_DATASETS_CAP} in the same commit as the window."
+    )
+
+
+def test_the_zoo_datasets_deferral_expires_when_the_zoo_release_ships() -> None:
+    """Self-expiring, like the transformers one: a deferral nothing can end is the defect.
+
+    Asks PyPI what the newest zoo admits and fails only on POSITIVE evidence the deferral is
+    obsolete, so no network, a timeout or an unreadable answer all leave it skipped.
+    """
+    if ZOO_FLOOR_WITH_LIFTED_DATASETS_CAP is not None:
+        pytest.skip("the floor already names a zoo carrying the lift, so the gate above is live")
+
+    published = _newest_published_zoo_datasets_windows()
+    if published is None:
+        pytest.skip("PyPI could not be asked for unsloth_zoo, so the deferral stands")
+
+    zoo_version, zoo_windows = published
+    # The newest datasets our own window admits that the zoo's does not. Membership, not a number
+    # comparison, for the reason the transformers twin gives: `<4.4.0` and `<=4.4.0` differ.
+    declared = _pyproject_requirement("datasets")
+    probe = [v for v in _datasets_releases() if str(v) in declared]
+    assert probe, "the declared datasets window admits no recorded release at all"
+    newest = max(probe)
+    covering = [str(w) for w in zoo_windows if w.contains(str(newest))]
+    assert not covering, (
+        f"unsloth_zoo {zoo_version} is published and admits datasets {newest} "
+        f"({', '.join(covering)}), so the deferral is over. Set "
+        f"ZOO_FLOOR_WITH_LIFTED_DATASETS_CAP to {zoo_version} and raise the unsloth_zoo floor "
+        f"in pyproject.toml to it in the same commit; that re-enables "
+        f"test_the_declared_zoo_floor_can_supply_the_declared_datasets_window."
+    )
+
+
+def test_the_zoo_datasets_expiry_can_fail(monkeypatch) -> None:
+    """NEGATIVE CONTROL: the expiry is a "nothing found" shape, which is also what a check that
+    has stopped checking reports. It must fire on a zoo that covers the window, and stay silent
+    when PyPI cannot be asked, or an offline three-OS runner turns red for the wrong reason.
+    """
+    module = sys.modules[__name__]
+
+    monkeypatch.setattr(
+        module,
+        "_newest_published_zoo_datasets_windows",
+        lambda timeout = 10.0: (Version("2026.9.9"), [SpecifierSet(">=3.4.1,<5.0.0")]),
+    )
+    with pytest.raises(AssertionError) as raised:
+        test_the_zoo_datasets_deferral_expires_when_the_zoo_release_ships()
+    assert "2026.9.9" in str(raised.value)
+
+    monkeypatch.setattr(module, "_newest_published_zoo_datasets_windows", lambda timeout = 10.0: None)
+    with pytest.raises(pytest.skip.Exception):
+        test_the_zoo_datasets_deferral_expires_when_the_zoo_release_ships()

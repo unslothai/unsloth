@@ -64,10 +64,9 @@ PINNED_BY_DESIGN: dict[tuple[str, str], str] = {}
 # pip intersects our window with the zoo's, so the zoo's ceiling decides what resolves.
 ZOO_TRANSFORMERS_CEILING_BEFORE_THE_LIFT = Version("5.5.0")
 
-# DEFERRED: unslothai/unsloth-zoo#1227 is unpublished, and naming an unpublished floor makes
-# unsloth uninstallable. Set to the release shipping it and raise the pyproject floor together.
-# The trl half is NOT deferred: 2026.9.5 ships zoo#1260, so ZOO_FLOOR_WITH_LIFTED_TRL_CAP runs.
-ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP = None
+# No longer deferred: 2026.9.7 is published and declares `transformers<=5.17.0` off Apple
+# Silicon, so the gate below runs and the lift is delivered rather than advertised.
+ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP = Version("2026.9.7")
 
 # CPU lanes must admit what the zoo's torch bound admits, or they test a torch nobody gets.
 TESTED_TORCH = Version("2.14.0")
