@@ -1174,6 +1174,33 @@ def _cast_unquantized_floats(model, dtype):
     return model
 
 
+def _inherit_gradient_checkpointing_support(model):
+    """Let a wrapper model advertise the gradient checkpointing its submodels support.
+
+    Multimodal remote-code models (nvidia/Nemotron-3-Nano-Omni-30B-A3B) wrap a
+    complete CausalLM inside a PreTrainedModel that keeps transformers' default
+    `supports_gradient_checkpointing = False`, so Trainer's
+    `gradient_checkpointing_enable` raised "does not support gradient
+    checkpointing" although every layer underneath supports it. transformers
+    enables checkpointing by walking `model.modules()`, so the wrapper only needs
+    to say yes when a nested model does. Returns True when the flag was set.
+    """
+    if getattr(model, "supports_gradient_checkpointing", False):
+        return False
+    if not hasattr(model, "gradient_checkpointing_enable"):
+        return False
+    for name, module in model.named_modules():
+        if module is model or not name: continue
+        if getattr(module, "supports_gradient_checkpointing", False) and \
+            hasattr(module, "gradient_checkpointing_enable"):
+            model.supports_gradient_checkpointing = True
+            logger.info(
+                f"Unsloth: {type(model).__name__} inherits gradient checkpointing support from {name}."
+            )
+            return True
+    return False
+
+
 @contextlib.contextmanager
 def _tolerate_dtype_cast_on_quantized_model(enabled):
     """Let a remote-code from_pretrained finish its own model.to(dtype) on a
@@ -1761,6 +1788,7 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         **kwargs,
                     )
+                _inherit_gradient_checkpointing_support(model)
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
                 offload_embedding = _resolve_offload_embedding(
                     model,

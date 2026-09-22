@@ -109,6 +109,39 @@ def _should_pack(config) -> bool:
     return not getattr(config, "_unsloth_disable_auto_packing", False)
 
 
+def _forward_accepts_packed_seq_lengths(model) -> bool:
+    """Whether the model's forward can take the `packed_seq_lengths` batch key.
+
+    Packing and padding-free batching add `packed_seq_lengths` to every batch and
+    the forward is expected to read or ignore it. Unsloth's own forwards and the
+    transformers models that take `**kwargs` do; a remote-code forward with a
+    fixed signature (microsoft/Phi-4-reasoning-vision-15B) raises
+    "got an unexpected keyword argument 'packed_seq_lengths'" on the first step.
+    Unknown shapes (a string model, no forward, an unreadable signature) answer
+    True so nothing else changes.
+    """
+    if model is None or isinstance(model, str):
+        return True
+    unwrapped = model
+    # PEFT forwards every keyword to the model it wraps, so ask that model.
+    get_base_model = getattr(model, "get_base_model", None)
+    if callable(get_base_model) and hasattr(model, "peft_config"):
+        try:
+            unwrapped = get_base_model()
+        except Exception:
+            unwrapped = model
+    forward = getattr(type(unwrapped), "forward", None) or getattr(unwrapped, "forward", None)
+    if forward is None:
+        return True
+    try:
+        parameters = inspect.signature(forward).parameters
+    except (TypeError, ValueError):
+        return True
+    if "packed_seq_lengths" in parameters:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+
+
 def _should_auto_padding_free(config) -> bool:
     if config is None or _AUTO_PADDING_FREE_ENV_DISABLED or getattr(config, "packing", False):
         return False
@@ -979,6 +1012,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
         )
 
+        forward_takes_packed_seq_lengths = _forward_accepts_packed_seq_lengths(model)
+
         # Disable padding-free for VLMs / custom collators / blocklisted models
         blocked = (
             (data_collator is not None)
@@ -988,6 +1023,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or is_unsupported_model
             or is_encoder_decoder
             or (is_hybrid and not hybrid_varlen_active)
+            or not forward_takes_packed_seq_lengths
             or (os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1")
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
@@ -1011,6 +1047,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
+            elif not forward_takes_packed_seq_lengths:
+                reason = f"{type(model).__name__}.forward does not accept packed_seq_lengths"
             elif data_collator is None:
                 # compute_metrics, preprocess_logits_for_metrics, for_inference() and the user can all set it, so
                 # name the flag and not a setter.
