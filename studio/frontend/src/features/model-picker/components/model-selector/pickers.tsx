@@ -4522,8 +4522,10 @@ export function HubModelPicker({
           return normalizeGgufVariantsResponse(response)
             .variants.filter((variant) => variant.downloaded === true)
             .map(
-              (variant) =>
-                [pinKey(repoId, variant.quant), variant.cache_ref ?? variant.cache_path ?? null] as const,
+              (variant): [string, string | null] => [
+                pinKey(repoId, variant.quant),
+                variant.cache_ref ?? variant.cache_path ?? null,
+              ],
             );
         } catch {
           // If the backend cannot verify a quant, hiding the direct-load row is safer than claiming a
@@ -4535,7 +4537,7 @@ export function HubModelPicker({
       if (!cancelled) {
         setPinnedQuantValidation({
           validated: true,
-          downloaded: new Map(groups),
+          downloaded: new Map(groups.flat()),
         });
       }
     });

@@ -1988,9 +1988,8 @@ async def get_gguf_variants_answer(
             for key, source in sources.items():
                 v = source.variant
                 previous = variants.get(key)
-                if previous is not None and source.cache_path == str(
-                    _repo_cache_dir_for_request(repo_id, None)
-                ):
+                active_repo_dir = _repo_cache_dir_for_request(repo_id, None)
+                if previous is not None and source.cache_path == str(active_repo_dir):
                     if previous.downloaded:
                         previous.cache_path = source.cache_path
                         variant_context_sources[key] = str(source.snapshot / v.filename)
@@ -2038,19 +2037,28 @@ async def get_gguf_variants_answer(
                     detail.downloaded = False
                     detail.partial = True
                 if detail.partial:
-                    # Resume metadata comes from THIS copy's folder: a remembered partial keeps
-                    # its marker and manifest beside its own snapshot, not in the active root.
-                    source_cache_dir = Path(source.cache_path)
+                    # Resume metadata has to describe the copy a resume will actually touch: a
+                    # download always lands in the ACTIVE cache, so a remembered partial keeps
+                    # ITS OWN marker, manifest and verdict only while that copy is the active
+                    # one. Otherwise the row would promise a byte-for-byte restart inside a
+                    # folder the transfer never writes to. The row still names the copy on disk
+                    # -- that is what delete and load resolve -- while the resume affordance
+                    # speaks for the root the continuation will really run in.
+                    resume_cache_dir = (
+                        Path(source.cache_path)
+                        if source.cache_path == str(active_repo_dir)
+                        else active_repo_dir
+                    )
                     detail = detail.model_copy(
                         update = {
                             "download_remaining_bytes": variant_remaining_bytes_from_state(
-                                repo_id, v.quant, source_cache_dir
+                                repo_id, v.quant, resume_cache_dir
                             ),
                             "partial_transport": _partial_transport_for_variant(
-                                repo_id, v.quant, source_cache_dir
+                                repo_id, v.quant, resume_cache_dir
                             ),
                             "partial_resumable": _partial_resumable_for_variant(
-                                repo_id, v.quant, source_cache_dir
+                                repo_id, v.quant, resume_cache_dir
                             ),
                         }
                     )

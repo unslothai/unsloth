@@ -840,6 +840,7 @@ export function GgufDownloadCard({
     deleteTarget,
     deleteTargetVariant?.cache_ref ?? deleteTargetVariant?.cache_path ?? cachePath ?? undefined,
   );
+  const { deleting, runDelete } = useDeleteConfirmAction({
     action: async () => {
       if (!deleteTarget) return;
       await deleteCachedModel(

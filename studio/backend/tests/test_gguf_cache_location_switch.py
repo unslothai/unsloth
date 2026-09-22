@@ -780,8 +780,9 @@ def test_the_merged_default_prefers_a_ready_row(cache_locations):
 
 
 def test_a_remembered_partial_keeps_its_resume_metadata(cache_locations, monkeypatch):
-    """A direct listing of the same snapshot reports how the transfer can be continued, so the
-    merge must not flatten a byte-resumable partial into a bare retry."""
+    """A remembered partial's resume affordance has to describe the root a resume will really
+    continue in. A download lands in the ACTIVE cache, so judging the row against the folder it
+    happens to sit in would promise a byte-for-byte restart the continuation cannot honour."""
     from hub.utils import download_manifest
 
     repo_id, expected = cache_locations
@@ -795,9 +796,14 @@ def test_a_remembered_partial_keeps_its_resume_metadata(cache_locations, monkeyp
         "model", repo_id, quant, "http", hub_cache = repo.parent
     )
     inventory_scan.invalidate_hf_cache_scans()
-    monkeypatch.setattr(
-        gguf_variants, "_partial_resumable_for_variant", lambda *a, **k: True
-    )
+    roots = []
+
+    def _resumable(_repo_id, _quant, repo_cache_dir = None):
+        roots.append(repo_cache_dir)
+        # Only the remembered folder holds a resumable partial; the active root has none.
+        return repo_cache_dir is not None and repo_cache_dir.parent == repo.parent
+
+    monkeypatch.setattr(gguf_variants, "_partial_resumable_for_variant", _resumable)
     monkeypatch.setattr(
         gguf_variants, "variant_remaining_bytes_from_state", lambda *a, **k: 4096
     )
@@ -809,9 +815,37 @@ def test_a_remembered_partial_keeps_its_resume_metadata(cache_locations, monkeyp
     )
     variant = next(v for v in response.variants if v.quant == quant)
     assert variant.partial and not variant.downloaded
-    assert variant.partial_transport == "http"
-    assert variant.partial_resumable is True
+    # The row still names the copy it was listed from, which is what delete and load resolve.
+    assert variant.cache_path == str(repo)
+    # The active root holds no marker or manifest for this quant, so there is no transport to
+    # name and nothing a resume could reuse: the neutral label, not a promise of "http".
+    assert variant.partial_transport is None
+    # Judged against the ACTIVE root's repo dir: this partial's own folder is where the resume
+    # will NOT go.
+    assert roots and all(root.parent == active for root in roots), roots
+    assert variant.partial_resumable is False
     assert variant.download_remaining_bytes == 4096
+
+    # The other way round: a partial in the ACTIVE cache is judged by the copy a resume continues.
+    quant, (repo, _path) = next(
+        (q, value) for q, value in expected.items() if value[0].parent == active
+    )
+    snap = repo / "snapshots" / ("d" * 40)
+    (snap / f"Model-{quant}-00001-of-00002.gguf").write_bytes(b"0" * 256)
+    assert download_manifest.write_cancel_marker(
+        "model", repo_id, quant, "http", hub_cache = repo.parent
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    roots.clear()
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(
+            repo_id, prefer_local_cache = True, offline = True, include_cache_locations = True
+        )
+    )
+    variant = next(v for v in response.variants if v.quant == quant)
+    assert variant.partial and not variant.downloaded
+    assert roots and all(root == repo for root in roots), roots
+    assert variant.partial_transport == "http"
 
 
 def test_a_cached_only_quant_is_judged_by_its_own_partial_state(cache_locations, monkeypatch):

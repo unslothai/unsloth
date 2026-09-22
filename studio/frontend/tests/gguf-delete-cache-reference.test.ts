@@ -33,7 +33,7 @@ test("the delete action forwards the redacted cache reference first", () => {
 
 test("the variant model declares cache_ref, so the reference survives parsing", () => {
   const declaration = inventoryApi.source.statements.find(
-    (node) =>
+    (node): node is ts.InterfaceDeclaration =>
       ts.isInterfaceDeclaration(node) && node.name.text === "GgufVariantDetail",
   );
   assert.ok(declaration, "GgufVariantDetail must exist");
@@ -107,7 +107,8 @@ test("a redacted listing keeps the copy on the picker rows and their previews", 
   // readiness the listing ranked them by.
   const chatTypes = readSource("../src/features/chat/types/api.ts");
   const declaration = chatTypes.source.statements.find(
-    (node) => ts.isInterfaceDeclaration(node) && node.name.text === "GgufVariantDetail",
+    (node): node is ts.InterfaceDeclaration =>
+      ts.isInterfaceDeclaration(node) && node.name.text === "GgufVariantDetail",
   );
   assert.ok(declaration, "the chat GgufVariantDetail must exist");
   const fields = declaration.members
@@ -131,7 +132,7 @@ test("a redacted listing keeps the copy on the picker rows and their previews", 
   );
   assert.match(
     pickers.text,
-    /\[pinKey\(repoId, variant\.quant\), variant\.cache_ref \?\? variant\.cache_path \?\? null\] as const,/,
+    /pinKey\(repoId, variant\.quant\),\s*\n\s*variant\.cache_ref \?\? variant\.cache_path \?\? null,/,
     "the pinned copy lookup must prefer the reference",
   );
   assert.match(
