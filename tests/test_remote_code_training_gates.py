@@ -220,3 +220,31 @@ def test_opt_out_env_keeps_the_wrapper(monkeypatch):
     model = _OmniWrapper(_Cfg())
     assert _text_trainable_core(model) is model
     assert hasattr(model, "vision_model")
+
+
+# A model whose class forgot to advertise it, built on transformers' own checkpointing layer.
+def test_model_built_on_gradient_checkpointing_layer_is_recognised():
+    from transformers.modeling_layers import GradientCheckpointingLayer
+
+    class _Block(GradientCheckpointingLayer):
+        def __init__(self):
+            super().__init__()
+            self.linear = nn.Linear(4, 4)
+        def forward(self, x):
+            return self.linear(x)
+
+    class _RemoteCausalLM(PreTrainedModel):
+        """The NemotronHForCausalLM shape: blocks checkpoint, the class says False."""
+        config_class = _Cfg
+        def __init__(self, config):
+            super().__init__(config)
+            self.embed_tokens = nn.Embedding(8, 4)
+            self.layers = nn.ModuleList([_Block(), _Block()])
+        def get_input_embeddings(self):
+            return self.embed_tokens
+
+    model = _RemoteCausalLM(_Cfg())
+    assert model.supports_gradient_checkpointing is False
+    assert _inherit_gradient_checkpointing_support(model) is True
+    model.gradient_checkpointing_enable()
+    assert all(layer.gradient_checkpointing for layer in model.layers)

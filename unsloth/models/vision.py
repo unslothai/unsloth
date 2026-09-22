@@ -1190,10 +1190,17 @@ def _inherit_gradient_checkpointing_support(model):
         return False
     if not hasattr(model, "gradient_checkpointing_enable"):
         return False
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except Exception:
+        GradientCheckpointingLayer = ()
     for name, module in model.named_modules():
         if module is model or not name: continue
-        if getattr(module, "supports_gradient_checkpointing", False) and \
-            hasattr(module, "gradient_checkpointing_enable"):
+        # A nested model that says yes, or a layer built on transformers' own
+        # checkpointing layer (a remote NemotronHBlock is one) that the wrapper
+        # class simply forgot to advertise.
+        if (getattr(module, "supports_gradient_checkpointing", False) and hasattr(module, "gradient_checkpointing_enable")) \
+            or (GradientCheckpointingLayer and isinstance(module, GradientCheckpointingLayer)):
             model.supports_gradient_checkpointing = True
             logger.info(
                 f"Unsloth: {type(model).__name__} inherits gradient checkpointing support from {name}."
