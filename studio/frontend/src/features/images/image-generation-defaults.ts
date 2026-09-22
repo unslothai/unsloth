@@ -62,15 +62,3 @@ export function resolutionFor(build: {
   return { width: px, height: px };
 }
 
-// The size a load's recommendation should seed, or null when the fields no longer hold the page's
-// own last seed: a size the user chose, before the pick or while its download ran, stands.
-export function canvasSeedFor(
-  current: { width: number; height: number },
-  seeded: { width: number; height: number },
-  recommendedCanvas: number | null | undefined,
-): { width: number; height: number } | null {
-  if (current.width !== seeded.width || current.height !== seeded.height) {
-    return null;
-  }
-  return resolutionFor({ recommendedCanvas });
-}

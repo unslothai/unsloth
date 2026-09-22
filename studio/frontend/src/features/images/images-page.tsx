@@ -138,13 +138,7 @@ import {
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
-import {
-  DEFAULT_GEN,
-  DEFAULT_RESOLUTION,
-  canvasSeedFor,
-  defaultsFor,
-  resolutionFor,
-} from "./image-generation-defaults";
+import { DEFAULT_GEN, defaultsFor, resolutionFor } from "./image-generation-defaults";
 import { MAX_DIM, MIN_DIM, restorableSize, snapDim } from "./image-size";
 
 import {
@@ -1210,19 +1204,26 @@ export function ImagesPage({
   } = useScrollFades();
   // width/height are the source of truth; `aspect` locks their proportion and `portrait` tracks
   // orientation, so Flip keeps the lock.
-  const [width, setWidth] = useState(1024);
-  const [height, setHeight] = useState(1024);
+  const [width, setWidthState] = useState(1024);
+  const [height, setHeightState] = useState(1024);
   const [aspect, setAspect] = useState("1:1");
   const [portrait, setPortrait] = useState(false);
-  // The size the page last applied on its own, so a later seed can tell it from one the user chose.
-  // `canvasNow` mirrors the fields for the load poll, whose closure is fixed when the load starts.
-  const seededCanvas = useRef<{ width: number; height: number }>(DEFAULT_RESOLUTION);
-  const canvasNow = useRef({ width, height });
-  canvasNow.current = { width, height };
+  // Every size write except the page's own seed counts, so a later seed replaces only a canvas
+  // nobody has written since the last one. Equal dimensions cannot tell a restore from a seed.
+  const canvasWrites = useRef(0);
+  const seededCanvasWrites = useRef(0);
+  const setWidth = useCallback((v: number) => {
+    canvasWrites.current += 1;
+    setWidthState(v);
+  }, []);
+  const setHeight = useCallback((v: number) => {
+    canvasWrites.current += 1;
+    setHeightState(v);
+  }, []);
   const seedCanvas = useCallback((size: { width: number; height: number }) => {
-    seededCanvas.current = size;
-    setWidth(size.width);
-    setHeight(size.height);
+    seededCanvasWrites.current = canvasWrites.current;
+    setWidthState(size.width);
+    setHeightState(size.height);
     const matched = matchAspect(size.width, size.height);
     setAspect(matched.key);
     setPortrait(matched.portrait);
@@ -1464,7 +1465,7 @@ export function ImagesPage({
     setBatchSize(params.batchSize);
     setCount(params.runs);
     return params;
-  }, []);
+  }, [setWidth, setHeight]);
   const imagePresets = useMediaGenerationPresets({
     kind: "image",
     defaultParams: imageDefaultRecipe,
@@ -2059,7 +2060,7 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [setWorkflow]);
+  }, [setWorkflow, setWidth, setHeight]);
 
   // A locked ratio keeps the paired dimension in step; "custom" frees both, Flip swaps W/H. ratioHW is h/w for [a,b].
   const ratioHW = (a: number, b: number) => (portrait ? a / b : b / a);
@@ -2200,13 +2201,12 @@ export function ImagesPage({
         }
         // A pick's canvas lands here, not at pick time: only the load knows how much of the card
         // its weights hold. The resident seed effect skips a page-initiated load.
-        if (quantRevert.current && !pickRecipeSuperseded.current?.()) {
-          const size = canvasSeedFor(
-            canvasNow.current,
-            seededCanvas.current,
-            loaded.recommended_canvas,
-          );
-          if (size) seedCanvas(size);
+        if (
+          quantRevert.current &&
+          !pickRecipeSuperseded.current?.() &&
+          canvasWrites.current === seededCanvasWrites.current
+        ) {
+          seedCanvas(resolutionFor({ recommendedCanvas: loaded.recommended_canvas }));
         }
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
