@@ -3255,6 +3255,14 @@ class SdCppDiffusionBackend:
                     # (unreachable) online case rather than relabelled, so nothing changes when the flag is off.
                     if not local_files_only:
                         raise
+                    if kind == "llm_vision":
+                        # Only editing reads the projector, and edit is offered only when it is loaded. A
+                        # Qwen-Image-2.1 GGUF cached before the projector was listed still loads for
+                        # text-to-image; opening it from the Images page fetches the projector.
+                        logger.info(
+                            "sd_cpp.llm_vision_not_cached: %s/%s, editing unavailable", repo, fn
+                        )
+                        continue
                     raise RuntimeError(
                         f"'{fn}' is not in the local cache for '{repo}', and this load may not "
                         f"download (it was not user-initiated). Open the model from the Images "
