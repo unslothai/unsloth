@@ -69,6 +69,8 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter(dependencies = [Depends(get_current_subject)])
 
+_MAX_RESPONSES_CONNECTIVITY_MODELS = 5
+
 
 def _provider_response(row: dict) -> ProviderResponse:
     return ProviderResponse(
@@ -621,13 +623,18 @@ async def _test_custom_provider_connectivity(
             models_count = len(models),
         )
 
-    if not model_id and api_type == "responses" and models is not None:
+    responses_model_ids: list[str] = []
+    if model_id and api_type == "responses":
+        responses_model_ids = [model_id]
+    elif api_type == "responses" and models is not None:
         for model in models:
             candidate = model.get("id") if isinstance(model, dict) else None
-            if isinstance(candidate, str) and candidate.strip():
-                model_id = candidate.strip()
+            candidate = candidate.strip() if isinstance(candidate, str) else ""
+            if candidate and candidate not in responses_model_ids:
+                responses_model_ids.append(candidate)
+            if len(responses_model_ids) >= _MAX_RESPONSES_CONNECTIVITY_MODELS:
                 break
-        if not model_id:
+        if not responses_model_ids:
             return ProviderTestResult(
                 success = False,
                 message = (
@@ -636,6 +643,7 @@ async def _test_custom_provider_connectivity(
                 ),
                 models_count = len(models),
             )
+        model_id = responses_model_ids[0]
 
     if not model_id:
         if models is not None:
@@ -654,36 +662,41 @@ async def _test_custom_provider_connectivity(
         )
 
     if api_type == "responses":
-        try:
-            received_response = False
-            async for line in client.stream_chat_completion(
-                messages = [{"role": "user", "content": "ping"}],
-                model = model_id,
-                temperature = None,
-                top_p = None,
-                max_tokens = 16,
-            ):
-                if line.startswith("data: ") and line[6:].strip() != "[DONE]":
-                    event = json.loads(line[6:])
-                    received_response = received_response or bool(event.get("choices"))
-                    if event.get("error"):
-                        return ProviderTestResult(
-                            success = False,
-                            message = f"Connection failed: {event['error'].get('message', 'Responses request failed')}",
-                        )
-            return ProviderTestResult(
-                success = received_response,
-                message = (
-                    "Connected successfully. Responses endpoint responded."
-                    if received_response
-                    else "Connection failed: Responses endpoint returned no completion."
-                ),
-            )
-        except Exception as exc:
-            return ProviderTestResult(
-                success = False,
-                message = f"Connection failed: {safe_curated_detail(exc)}",
-            )
+        last_failure = "Responses endpoint returned no completion."
+        for response_model_id in responses_model_ids:
+            try:
+                received_response = False
+                model_failure: str | None = None
+                response_stream = client.stream_chat_completion(
+                    messages = [{"role": "user", "content": "ping"}],
+                    model = response_model_id,
+                    temperature = None,
+                    top_p = None,
+                    max_tokens = 16,
+                )
+                try:
+                    async for line in response_stream:
+                        if line.startswith("data: ") and line[6:].strip() != "[DONE]":
+                            event = json.loads(line[6:])
+                            received_response = received_response or bool(event.get("choices"))
+                            if event.get("error"):
+                                model_failure = event["error"].get(
+                                    "message", "Responses request failed"
+                                )
+                finally:
+                    await response_stream.aclose()
+                if received_response and model_failure is None:
+                    return ProviderTestResult(
+                        success = True,
+                        message = "Connected successfully. Responses endpoint responded.",
+                    )
+                last_failure = model_failure or "Responses endpoint returned no completion."
+            except Exception as exc:
+                last_failure = safe_curated_detail(exc)
+        return ProviderTestResult(
+            success = False,
+            message = f"Connection failed: {last_failure}",
+        )
 
     try:
         await client.create_speech(

@@ -144,6 +144,7 @@ import {
   codexLocalToolRoundId,
   codexReasoningForToolCalls,
   readCodexReasoning,
+  readOpenAIResponsesReasoning,
   shouldReplayAssistantReasoning,
   startsNewCodexToolRound,
   type CodexReasoningLedger,
@@ -1188,6 +1189,20 @@ function setAssistantCodexReasoning(
   message.extra_content = { ...extra, openai_codex_reasoning: reasoning };
 }
 
+function setAssistantOpenAIResponsesReasoning(
+  message: SerializedMessage,
+  reasoning: unknown[] | undefined,
+): void {
+  if (!reasoning) return;
+  const extra =
+    message.extra_content &&
+    typeof message.extra_content === "object" &&
+    !Array.isArray(message.extra_content)
+      ? (message.extra_content as Record<string, unknown>)
+      : {};
+  message.extra_content = { ...extra, openai_responses_reasoning: reasoning };
+}
+
 function attachAssistantThoughtSignature(
   messages: SerializedMessage[],
   thoughtSignature: string | undefined,
@@ -1228,6 +1243,9 @@ function serializeAssistantReplayMessages(
   const imageParts = collectImageParts(message);
 
   const codexReasoning = readCodexReasoning(
+    (message as { metadata?: unknown }).metadata,
+  );
+  const openAIResponsesReasoning = readOpenAIResponsesReasoning(
     (message as { metadata?: unknown }).metadata,
   );
   const messages: SerializedMessage[] = [];
@@ -1284,6 +1302,13 @@ function serializeAssistantReplayMessages(
         assistantMessage,
         codexReasoningForToolCalls(
           codexReasoning,
+          pendingToolCalls.map((call) => call.id),
+        ),
+      );
+      setAssistantOpenAIResponsesReasoning(
+        assistantMessage,
+        codexReasoningForToolCalls(
+          openAIResponsesReasoning,
           pendingToolCalls.map((call) => call.id),
         ),
       );
@@ -5387,6 +5412,9 @@ export function createOpenAIStreamAdapter(
       // Every streamed yield carries the repaired text: assistant-ui drops whatever is yielded after
       // an abort, so on Stop the last STREAMED yield is what gets saved.
       let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
+      let openAIResponsesReasoningLedger: CodexReasoningLedger = {
+        byToolCall: {},
+      };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
 
@@ -5399,6 +5427,7 @@ export function createOpenAIStreamAdapter(
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
+        openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
         incomplete: {
           reason: resolveIncompleteReason("cancelled" as const, contextWindowExceeded),
@@ -7220,6 +7249,19 @@ export function createOpenAIStreamAdapter(
                   );
                   replayStateChanged = true;
                 }
+                const openAIResponsesReasoning =
+                  extraRecord.openai_responses_reasoning;
+                if (
+                  Array.isArray(openAIResponsesReasoning) &&
+                  openAIResponsesReasoning.length > 0
+                ) {
+                  openAIResponsesReasoningLedger = addCodexReasoning(
+                    openAIResponsesReasoningLedger,
+                    openAIResponsesReasoning,
+                    codexRoundToolCallIds,
+                  );
+                  replayStateChanged = true;
+                }
               }
 
               if (chunk.choices?.[0]?.finish_reason) {
@@ -8006,6 +8048,7 @@ export function createOpenAIStreamAdapter(
               // Persisted so Continue survives a reload; cleared on a normal end.
 
               openaiCodexReasoning: codexReasoningLedger,
+              openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }

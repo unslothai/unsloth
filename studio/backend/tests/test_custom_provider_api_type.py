@@ -609,3 +609,80 @@ def test_responses_connectivity_uses_catalog_model_when_model_is_omitted(monkeyp
     result = asyncio.run(run())
     assert result.success is True
     assert paths == ["/v1/models", "/v1/responses"]
+
+
+def test_responses_connectivity_tries_later_catalog_model(monkeypatch):
+    probed_models = []
+
+    def handle(request):
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                json = {"data": [{"id": "chat-only"}, {"id": "responses-capable"}]},
+            )
+        assert request.url.path == "/v1/responses"
+        model = json.loads(request.content)["model"]
+        probed_models.append(model)
+        if model == "chat-only":
+            return httpx.Response(
+                200,
+                text = 'data: {"type":"response.output_text.delta","delta":"partial"}\n\ndata: {"type":"response.failed","response":{"error":{"message":"unsupported model"}}}\n\n',
+            )
+        return httpx.Response(
+            200,
+            text = 'data: {"type":"response.output_text.delta","delta":"Hello"}\n\ndata: {"type":"response.completed","response":{"id":"resp_probe"}}\n\n',
+        )
+
+    async def run():
+        from models.providers import ProviderTestRequest
+        from routes.providers import test_provider
+
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            return await test_provider(
+                ProviderTestRequest(
+                    provider_type = "custom",
+                    base_url = "https://gateway.example/v1",
+                    api_type = "responses",
+                ),
+                _current_subject = "unsloth",
+                via_api_key = False,
+            )
+
+    result = asyncio.run(run())
+    assert result.success is True
+    assert probed_models == ["chat-only", "responses-capable"]
+
+
+def test_responses_connectivity_caps_catalog_probes(monkeypatch):
+    probed_models = []
+
+    def handle(request):
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                json = {"data": [{"id": f"model-{i}"} for i in range(20)]},
+            )
+        probed_models.append(json.loads(request.content)["model"])
+        return httpx.Response(400, json = {"error": {"message": "unsupported model"}})
+
+    async def run():
+        from models.providers import ProviderTestRequest
+        from routes.providers import _MAX_RESPONSES_CONNECTIVITY_MODELS, test_provider
+
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            result = await test_provider(
+                ProviderTestRequest(
+                    provider_type = "custom",
+                    base_url = "https://gateway.example/v1",
+                    api_type = "responses",
+                ),
+                _current_subject = "unsloth",
+                via_api_key = False,
+            )
+            return result, _MAX_RESPONSES_CONNECTIVITY_MODELS
+
+    result, probe_limit = asyncio.run(run())
+    assert result.success is False
+    assert probed_models == [f"model-{i}" for i in range(probe_limit)]
