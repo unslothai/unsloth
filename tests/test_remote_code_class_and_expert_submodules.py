@@ -178,8 +178,13 @@ def _text_only_regex():
     """The regex FastModel.get_peft_model builds with its defaults (every family on): the
     tagged branch needs a `language` / `text` component in the name and the untagged branch
     stops one level under the block, so a standalone text model's nested experts miss both."""
-    from unsloth_zoo.peft_utils import get_peft_regex
-    return get_peft_regex(_Model())
+    import importlib
+    stub = sys.modules.get("unsloth_zoo.peft_utils")
+    if stub is not None and getattr(stub, "__file__", None) is None:
+        # Another test file leaves a stub in sys.modules; the real module is wanted here.
+        del sys.modules["unsloth_zoo.peft_utils"]
+    peft_utils = importlib.import_module("unsloth_zoo.peft_utils")
+    return peft_utils.get_peft_regex(_Model())
 
 
 def test_text_only_regex_misses_nested_experts_on_its_own():
