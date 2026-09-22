@@ -689,10 +689,18 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
     assert "2.1" in fam.sd_cpp_vae[1]
 
     encoders = sd_cpp_text_encoders_for(fam, "unsloth/Qwen-Image-2.1-GGUF", None)
-    assert len(encoders) == 1
+    # The encoder, then the vision projector native editing reads through --llm_vision.
+    assert len(encoders) == 2
+    assert encoders[1] == ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision")
     repo, filename, kind = encoders[0]
     assert repo == "unsloth/Qwen3-VL-8B-Instruct-GGUF"
-    assert filename == "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
+    # Which rung is the family's call, pinned by exact name in
+    # test_diffusion_compat_preflight.py::test_qwen_image_2_1_takes_the_dynamic_4bit_text_encoder.
+    # Restating it here broke when #11542 moved it to UD-Q4_K_XL. What this route needs is that
+    # the declared file is what reaches sd.cpp, and that it stays a 4-bit GGUF: the CPU RAM win
+    # is the reason the no-GPU route exists (bf16 is 16.4 GB).
+    assert filename == fam.sd_cpp_text_encoders[0][1]
+    assert filename.endswith(".gguf") and "Q4_K" in filename, filename
     assert kind == "llm"
     assert text_encoder_flags_for_family(fam.name) == ("--llm",)
 
@@ -755,16 +763,11 @@ def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade
     assert "has not been released yet" in message
     assert "git --version" in message, "the likely cause has to be checkable by the reader"
 
-    pin = (
-        pathlib.Path(__file__).resolve().parents[1]
-        / "requirements"
-        / "diffusers-main.txt"
-    )
+    pin = pathlib.Path(__file__).resolve().parents[1] / "requirements" / "diffusers-main.txt"
     commit = _re.search(r"@([0-9a-fA-F]{40})\b", pin.read_text(encoding = "utf-8"))
     assert commit is not None, "the main pin must carry a full commit for the zip route to exist"
     assert (
-        f"https://github.com/huggingface/diffusers/archive/{commit.group(1).lower()}.zip"
-        in message
+        f"https://github.com/huggingface/diffusers/archive/{commit.group(1).lower()}.zip" in message
     ), message
 
     # A released minimum keeps the ordinary remedy.

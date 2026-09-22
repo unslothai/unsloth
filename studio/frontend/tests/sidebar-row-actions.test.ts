@@ -7,9 +7,49 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import vm from "node:vm";
+import ts from "typescript";
+import * as liveThreadHead from "../src/features/chat/utils/live-thread-head.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const APP_SIDEBAR = await readSrcAsync("components/app-sidebar.tsx");
+
+test("row forks retain the visible branch across settings settlement", async () => {
+  const source = await readSrcAsync("features/chat/components/chat-row-menu.ts");
+  const javascript = ts.transpileModule(
+    source.slice(source.indexOf("export async function forkChatRow("), source.indexOf("/** The sandbox sessions")),
+    { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  for (const open of [true, false]) {
+    let visible = open;
+    const unregister = liveThreadHead.registerLiveThreadView({
+      threadListItem: () => ({ getState: () => ({ remoteId: visible ? "source" : "other" }) }),
+      thread: () => ({ getState: () => ({ messages: [{ id: "root" }, { id: "older-reply" }] }) }),
+    });
+    const calls: string[] = [];
+    const context = {
+      exports: {} as { forkChatRow: (item: { id: string }) => Promise<unknown> },
+      crypto,
+      ...liveThreadHead,
+      forkChatThread: async (id: string, args: { messageId?: string }) => {
+        calls.push("fork");
+        assert.equal(id, "source");
+        assert.equal(args.messageId, open ? "older-reply" : undefined);
+      },
+      settleThreadScopedSettingsForCopy: async () => {
+        calls.push("settings");
+        visible = false;
+      },
+    };
+    try {
+      vm.runInNewContext(javascript, context);
+      await context.exports.forkChatRow({ id: "source" });
+      assert.deepEqual(calls, ["settings", "fork"]);
+    } finally {
+      unregister();
+    }
+  }
+});
 
 // The pin used to appear on a Recents row only once it was pinned, so the only way to pin one was
 // through the menu, while the project rows beside it had the one-click affordance all along.
@@ -191,4 +231,77 @@ test("the chat-folder hint names what to click instead", async () => {
     2,
     "the hint is no longer stated for both the pointer and the screen reader",
   );
+});
+
+// Forking was reachable only from a message in the open thread, so copying a chat meant opening
+// it first. The row menu does it from wherever the row is drawn.
+test("a chat row forks from its own menu", async () => {
+  const ROW_MENU = await readSrcAsync(
+    "features/chat/components/chat-row-menu.ts",
+  );
+  // Below Mark as unread, and before the rule that sets off the rest.
+  assert.match(
+    APP_SIDEBAR,
+    /t\("shell\.selection\.markUnread"\)\}\n\s*<\/span>\n\s*<\/DropdownMenuItem>\n\s*<DropdownMenuItem\n\s*disabled=\{!canForkChatRow\(item\)/,
+  );
+  assert.match(APP_SIDEBAR, /<span>Fork<\/span>\n\s*<\/DropdownMenuItem>\n\s*\{\/\*[^]*?\*\/\}\n\s*<DropdownMenuSeparator \/>/);
+  // A comparison has two threads and no single tip to fork from.
+  assert.match(ROW_MENU, /export function canForkChatRow[^]*?return item\.type === "single";/);
+  // The fork carries the settings on screen, not the ones the row was last written with.
+  assert.match(
+    ROW_MENU,
+    /await settleThreadScopedSettingsForCopy\(item\.id\);\n\s*try \{/,
+  );
+  // the visible branch is optional; closed chats use the server-selected tip.
+  assert.ok(!ROW_MENU.includes("messages[messages.length - 1]"));
+  assert.match(
+    ROW_MENU,
+    /return await forkChatThread\(item\.id, \{\n\s*messageId,\n\s*newThreadId: crypto\.randomUUID\(\),/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /setActiveThreadId\(result\.thread\.id\);\n\s*navigate\(\{ to: "\/chat", search: \{ thread: result\.thread\.id \} \}\);/,
+  );
+});
+
+// A streaming chat has no settled tip: its last stored message is the prompt, or a reply still
+// being written, so the fork would end mid-answer. The message-level Fork disables on isRunning
+// for the same reason.
+test("a row being generated into cannot be forked", async () => {
+  const THREAD = await readSrcAsync("components/assistant-ui/thread.tsx");
+  assert.match(
+    APP_SIDEBAR,
+    /disabled=\{!canForkChatRow\(item\) \|\| isGenerating \|\| forkInFlight\}/,
+  );
+  // One fork at a time, and the row menu shares the guard with the thread's own Fork rather
+  // than keeping a second one: two surfaces with a flag each would still post two.
+  assert.match(APP_SIDEBAR, /const inFlight = useForkInFlight\.getState\(\);\n\s*if \(inFlight\.forking\) return;\n\s*inFlight\.setForking\(true\);/);
+  assert.match(APP_SIDEBAR, /\} finally \{\n\s*inFlight\.setForking\(false\);/);
+  assert.match(APP_SIDEBAR, /const forkInFlight = useForkInFlight\(\(s\) => s\.forking\);/);
+  // The store moved out of thread.tsx so both callers read the one flag.
+  assert.ok(!/const useForkInFlight = create</.test(THREAD));
+  assert.match(THREAD, /^\s*useForkInFlight,$/m);
+  const STORE = await readSrcAsync("features/chat/utils/fork-in-flight.ts");
+  assert.match(STORE, /export const useForkInFlight = create</);
+});
+
+// closed chats resolve their tip under the server generation guard.
+test("closed-chat forks leave tip selection to the server", async () => {
+  const ROW_MENU = await readSrcAsync(
+    "features/chat/components/chat-row-menu.ts",
+  );
+  const ROUTE = await readSrcAsync(
+    "../../backend/routes/chat_history.py",
+  );
+  // selecting the tip does not require a client-side storage snapshot.
+  assert.ok(!ROW_MENU.includes("getActiveGenerations"));
+  assert.ok(!ROW_MENU.includes("listStoredChatMessages(item.id)"));
+  // the transaction resolves the tip after checking durable runs.
+  const fork = ROUTE.slice(ROUTE.indexOf("def fork_thread("));
+  assert.match(fork, /branch_message_id = payload\.messageId/);
+  assert.match(fork, /except ChatForkActiveGenerationError/);
+  // Its 409 is a refusal, not a failure.
+  assert.match(ROW_MENU, /if \(message\.includes\("still generating"\)\) throw forkRefused\(\);/);
+  assert.match(ROW_MENU, /\{ unslothForkRefused: true \}/);
+  assert.match(APP_SIDEBAR, /\?\.unslothForkRefused\) \{\n\s*toast\.info\(/);
 });

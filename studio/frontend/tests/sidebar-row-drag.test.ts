@@ -14,6 +14,7 @@ import {
   planSidebarDrop,
   rowKey,
   sectionRingKey,
+  SIDEBAR_TAIL_SCOPE,
   STAY,
   type SidebarDragItem,
   type SidebarDropOutcome,
@@ -231,7 +232,19 @@ test("a chat dropped on a folder, its chats or its empty line is filed there", (
       planSidebarDrop(drag, zone, zone.edge ?? "top", context()),
     );
     assert.deepEqual(plan.action, { kind: "move", projectId: zone.folderId });
-    assert.deepEqual(plan.cue, { ring: folderRingKey(zone.folderId!) });
+    // A row to land against gives a slot, whatever the list is sorted by. Only a folder row or
+    // an empty line, with nothing to aim at, lights the folder whole.
+    assert.deepEqual(
+      plan.cue,
+      zone.row?.kind === "chat"
+        ? {
+            line: {
+              rowKey: rowKey(zone.row.scope, zone.row.id),
+              edge: zone.edge ?? "top",
+            },
+          }
+        : { ring: folderRingKey(zone.folderId!) },
+    );
     assert.deepEqual(plan.effects.moveChat, {
       chatId: "r1",
       projectId: zone.folderId,
@@ -287,8 +300,33 @@ test("a chat dropped on Recents leaves its folder and its pin", () => {
     ),
   );
   assert.deepEqual(unfiled.action, { kind: "move", projectId: null });
-  assert.deepEqual(unfiled.cue, { ring: sectionRingKey("recents") });
   assert.deepEqual(unfiled.effects.moveChat, { chatId: "c3", projectId: null });
+  // The section's own space lands last, the slot Pinned already gives it, so the line says where
+  // the chat is going instead of the whole section saying only that it is going in there.
+  assert.deepEqual(unfiled.cue, {
+    line: { rowKey: rowKey(RECENTS_ORDER_SCOPE, "r2"), edge: "bottom" },
+  });
+  assert.deepEqual(unfiled.effects.orders, [
+    {
+      scope: RECENTS_ORDER_SCOPE,
+      ids: ["r1", "r2", "c3"],
+      place: { id: "c3", targetId: "r2", edge: "bottom" },
+    },
+  ]);
+  // And the slot sticks: a sorted list would put the chat back where the sort wants it.
+  assert.equal(unfiled.effects.switchSort, "chats");
+  // Empty Recents has no row to land against, so the section is the target.
+  assert.deepEqual(
+    plannedDrop(
+      planSidebarDrop(
+        chat("c3", "projects", projectOrderScope("home"), "home"),
+        { section: "recents" },
+        "top",
+        context({ orders: { ...context().orders, recents: [] } }),
+      ),
+    ).cue,
+    { ring: sectionRingKey("recents") },
+  );
   // Out of Pinned: the pin goes, and so does the folder that would keep it out of Recents.
   const unpinned = plannedDrop(
     planSidebarDrop(
@@ -611,6 +649,36 @@ test("a folder dragged into Pinned is pinned where it lands, and back out is unp
   assert.deepEqual(unpinOnHeader.cue, { ring: sectionRingKey("projects") });
 });
 
+// Pinning the last project leaves the section drawn but empty, and that is exactly when a folder
+// is dragged back into it.
+test("an empty Projects section still shows where a folder would land", () => {
+  const ctx = context({
+    pinnedProjectIds: new Set(["work", "home", "misc"]),
+    orders: { ...context().orders, projects: [] },
+  });
+  const onBody = plannedDrop(
+    planSidebarDrop(
+      folder("work", "pinned", PINNED_ORDER_SCOPE),
+      { section: "projects" },
+      "bottom",
+      ctx,
+    ),
+  );
+  // No folder to land against, so the whole section is the target.
+  assert.deepEqual(onBody.action, { kind: "unpin" });
+  assert.deepEqual(onBody.cue, { ring: sectionRingKey("projects") });
+  assert.deepEqual(onBody.effects.orders, [
+    { scope: PROJECT_ORDER_SCOPE, ids: ["work"] },
+  ]);
+  // The ring is painted on the section body, which is only there to be painted and hit if the
+  // empty section draws a row. A zero-height box is skipped by elementsFromPoint.
+  assert.match(
+    APP_SIDEBAR,
+    /\{visibleProjectRecords\.length === 0 && \(\n\s*<SidebarMenuItem>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\("shell\.navigation\.allProjectsPinned"\)\}/,
+  );
+  assert.match(EN, /allProjectsPinned: "All projects pinned",/);
+});
+
 // The gap between a header and its first row is where "above the first row" is aimed, so the
 // header stands for that edge for a drag of the same kind, and for the bare section otherwise.
 test("a section header stands for the top of its first row", () => {
@@ -807,7 +875,12 @@ test("a chat dropped again before its move lands keeps only the latest drop", ()
   );
   assert.match(
     APP_SIDEBAR,
-    /const generation = \(previous\?\.generation \?\? 0\) \+ 1;\n\s*const chain = \(previous\?\.chain \?\? Promise\.resolve\(\)\)\n\s*\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)/,
+    /const generation = \(previous\?\.generation \?\? 0\) \+ 1;/,
+  );
+  // This drop's work is queued behind the one before it, never alongside.
+  assert.match(
+    APP_SIDEBAR,
+    /const chain = \(previous\?\.chain \?\? Promise\.resolve\(\)\)\n\s*\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)/,
   );
   assert.match(APP_SIDEBAR, /moves\.set\(item\.id, \{ generation, chain \}\);/);
 });
@@ -931,6 +1004,12 @@ test("a closed folder or section opens under a resting pointer", () => {
     /if \(!closed\) \{\n\s*if \(spring\.current\?\.key !== springKey\) cancelSpring\(\);\n\s*return;\n\s*\}/,
   );
   assert.match(HOOK, /zoneOptions\?\.closed \? \{ zone, closed: true \} : \{ zone \}/);
+  // The timer is keyed and left alone while the pointer stays on the same zone. track runs every
+  // frame now, so re-arming on each one would reset the delay forever and nothing would open.
+  assert.match(
+    HOOK,
+    /if \(spring\.current\?\.key === springKey\) return;\n\s*cancelSpring\(\);\n\s*spring\.current = \{/,
+  );
 });
 
 // A chat dropped into a folder or Recents is moved, and the move can fail. Its slot in the new
@@ -943,11 +1022,11 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
   );
   assert.match(
     APP_SIDEBAR,
-    /const move = effects\.moveChat;\n\s*if \(!move\) \{\n\s*applyOrders\(\);\n\s*return;\n\s*\}/,
+    /const move = effects\.moveChat;\n\s*if \(!move\) \{\n(?:\s*\/\/[^\n]*\n)*\s*applyOrders\(\);\n\s*return;\n\s*\}/,
   );
   assert.match(
     APP_SIDEBAR,
-    /\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)\n\s*\.then\(\(moved\) => \{\n\s*if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;\n\s*applyOrders\(ordersBefore\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
+    /\.then\(\(\) => moveChatToProject\(item, move\.projectId\)\)\n\s*\.then\(\(moved\) => \{\n\s*if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;\n(?:\s*\/\/[^\n]*\n)*\s*applyOrders\(ordersBefore, sortPicked\);\n\s*if \(unpinAfter\) usePinnedChatsStore\.getState\(\)\.unpin\(unpinAfter\);/,
   );
   // And nothing else in commitDrop writes an order on its own.
   const commit = APP_SIDEBAR.slice(
@@ -975,12 +1054,151 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
   );
 });
 
+// applyOrders runs after the move on that path, and it is a closure: a sort read from the render
+// it was made in is the drop-time one for good, so a sort the user picked while the move was in
+// flight would be overwritten with Manual.
+test("a sort picked while a move is in flight is not overwritten", () => {
+  const commit = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("function commitDrop("),
+    APP_SIDEBAR.indexOf("function dropCueClass("),
+  );
+  // The change itself is watched. A value read at the drop and again at the end cannot tell a
+  // sort picked and picked back from one never touched, and that is a newer intent either way.
+  // And only the list this drop switches: the other sort governs another list, so standing down
+  // for it would leave the slot written into a list still sorted, undoing the drop.
+  assert.match(
+    commit,
+    /const stopWatchingSort = switching\n\s*\? useSidebarOrganizationStore\.subscribe\(\(now, before\) => \{\n\s*sortPicked \|\|=\n\s*switching === "pinned"\n\s*\? now\.pinnedSort !== before\.pinnedSort\n\s*: now\.chatSort !== before\.chatSort;\n\s*\}\)\n\s*: \(\) => \{\};/,
+  );
+  assert.match(commit, /const switching = effects\.switchSort;/);
+  // Only the path that waits. Nothing can come between a drop and a switch applied in the turn.
+  assert.match(
+    commit,
+    /if \(!move\) \{\n(?:\s*\/\/[^\n]*\n)*\s*applyOrders\(\);\n\s*return;\n\s*\}/,
+  );
+  // Read before applyOrders, whose own setChatSort would otherwise trip the watch it reads.
+  assert.match(commit, /applyOrders\(ordersBefore, sortPicked\);/);
+  // Released on every ending, including a move that failed or was superseded.
+  assert.match(commit, /\.finally\(stopWatchingSort\);/);
+  // And the switch no longer second-guesses the plan by re-testing the sort's value.
+  assert.ok(
+    !/chatSort !== "manual"|pinnedSort !== "manual"|=== sortAtDrop\./.test(commit),
+    "the switch still tests a sort value",
+  );
+});
+
+// A folder last in Pinned runs its block to the bottom of the section, so every pixel below its
+// title is inside it and a chat aimed past the folder was filed into it. There was no "after".
+test("a chat can be dropped after a folder that ends the Pinned list", () => {
+  const workScope = projectOrderScope("work");
+  const ctx = context({
+    pinnedChatIds: new Set(),
+    orders: {
+      ...context().orders,
+      pinned: ["work"],
+      projectChats: () => ["w1", "w2"],
+    },
+  });
+  const drag = chat("r1", "recents", RECENTS_ORDER_SCOPE, null);
+  // As the folder's chat rows are drawn: the block's last row names itself as its end.
+  const lastInBlock: SidebarDropZone = {
+    ...chatRow("pinned", workScope, "w2", "work", { index: 1, count: 2 }),
+    blockEnd: { scope: workScope, id: "w2" },
+  };
+  // The lowest row of the block still means "into the folder, last", which is the other fix.
+  const intoFolder = plannedDrop(
+    planSidebarDrop(drag, lastInBlock, "bottom", ctx),
+  );
+  assert.deepEqual(intoFolder.action, { kind: "move", projectId: "work" });
+  // The section's tail is a row of its own, so "after the folder" has somewhere to aim.
+  const afterFolder = plannedDrop(
+    planSidebarDrop(
+      drag,
+      {
+        section: "pinned",
+        blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "pinned" },
+      },
+      "bottom",
+      ctx,
+    ),
+  );
+  assert.deepEqual(afterFolder.action, { kind: "pin" });
+  assert.deepEqual(afterFolder.effects.orders, [
+    { scope: PINNED_ORDER_SCOPE, ids: ["work", "r1"] },
+  ]);
+  // Its own line, not the one under the folder's last chat: same pixels would be two drops.
+  assert.deepEqual(afterFolder.cue, {
+    line: { rowKey: rowKey(SIDEBAR_TAIL_SCOPE, "pinned"), edge: "bottom" },
+  });
+  assert.notDeepEqual(afterFolder.cue, intoFolder.cue);
+  // A row's id is not ours: a restored backup keeps the id in the file and the backend takes any
+  // string, so reserving an id and asserting its shape proves nothing about what a project can be
+  // called. A scope is ours. Every one is a constant here or `project:<id>`, so no row key can be
+  // the tail's however hostile the id, and the tail cannot paint a line on somebody's folder.
+  const tailKey = rowKey(SIDEBAR_TAIL_SCOPE, "pinned");
+  for (const hostile of [
+    "pinned",
+    "sidebar-tail",
+    SIDEBAR_TAIL_SCOPE,
+    `${SIDEBAR_TAIL_SCOPE}:pinned`,
+  ]) {
+    for (const scope of [
+      PINNED_ORDER_SCOPE,
+      PROJECT_ORDER_SCOPE,
+      RECENTS_ORDER_SCOPE,
+      projectOrderScope(hostile),
+    ]) {
+      assert.notEqual(rowKey(scope, hostile), tailKey);
+      assert.notEqual(scope, SIDEBAR_TAIL_SCOPE);
+    }
+  }
+  // Printable too: a control character reads the same on screen and turns the whole planner
+  // binary to Git, hiding it from every diff.
+  assert.ok(
+    [...SIDEBAR_TAIL_SCOPE].every((ch) => {
+      const code = ch.codePointAt(0) ?? 0;
+      return code > 0x1f && code !== 0x7f;
+    }),
+    `the tail scope holds a control character: ${JSON.stringify(SIDEBAR_TAIL_SCOPE)}`,
+  );
+  // Part of the layout, not summoned by the drag: a row mounting at drag start shifts every
+  // section below it after the pointer was sampled, and the cue and the drop then disagree.
+  const pinnedMenu = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf('{/* Pinned: folders and chats in one list'),
+    APP_SIDEBAR.indexOf("{/* One folder per unpinned project."),
+  );
+  assert.ok(pinnedMenu.length > 0, "the Pinned section moved");
+  assert.match(
+    pinnedMenu,
+    /<SidebarMenuItem\n\s*aria-hidden\n\s*className=\{cn\(\n\s*"relative h-\[calc\(8px\*var\(--ui-space-scale,1\)\)\]",\n\s*dropCueClass\(SIDEBAR_TAIL_SCOPE, "pinned"\),/,
+  );
+  assert.ok(
+    !/draggingRow && /.test(pinnedMenu),
+    "the tail is conditional on a drag again",
+  );
+  // A folder over another folder's block still lands below that block, as it always did.
+  assert.deepEqual(
+    plannedDrop(
+      planSidebarDrop(
+        folder("home", "projects", PROJECT_ORDER_SCOPE),
+        lastInBlock,
+        "bottom",
+        ctx,
+      ),
+    ).cue,
+    { line: { rowKey: rowKey(workScope, "w2"), edge: "bottom" } },
+  );
+});
+
 // A pointer resting on the edge of a long list sends no more moves, so scrolling driven off
-// pointermove alone took one step and stalled. The frame loop keeps it going, and re-aims: the
-// rows slide under a pointer that has not moved, so the cue would otherwise stay on the row that
-// left.
+// pointermove alone took one step and stalled. The frame loop keeps it going, and re-aims every
+// frame: rows slide under a pointer that has not moved when the list scrolls, when a folder
+// springs open under it, and when the sidebar re-renders, and only the frame loop is there to
+// see it. The release hit-tests the layout as it is, so the cue has to as well.
 test("the edge keeps scrolling while the pointer rests on it", () => {
-  assert.match(HOOK, /const onFrame = \(\) => \{[^]*?frame = requestAnimationFrame\(onFrame\);\n\s*if \(edgeScroll\(at\.y\)\) track\(at\.x, at\.y\);/);
+  assert.match(HOOK, /const onFrame = \(\) => \{[^]*?frame = requestAnimationFrame\(onFrame\);\n\s*edgeScroll\(at\.y\);\n\s*track\(at\.x, at\.y\);/);
+  // Unconditionally: a re-aim only on the frames that scrolled leaves every other cause stale.
+  assert.ok(!/if \(edgeScroll\(/.test(HOOK));
   // Started with the drag and cancelled with it, and it stops itself if the drag is gone.
   assert.match(HOOK, /setDrag\(item\);\n\s*frame = requestAnimationFrame\(onFrame\);/);
   assert.match(HOOK, /if \(frame\) cancelAnimationFrame\(frame\);/);
@@ -993,9 +1211,9 @@ test("the edge keeps scrolling while the pointer rests on it", () => {
 // could drive, and drop, a drag the mouse started, which is exactly what touch is kept out of.
 test("only the pointer that started the drag drives it", () => {
   for (const handler of [
-    /function onMove\(moved: PointerEvent\) \{\n\s*if \(moved\.pointerId !== pointerId\) return;/,
+    /function onMove\(moved: PointerEvent\) \{\n\s*if \(moved\.pointerId !== pointerId \|\| escaped\) return;/,
     /function onUp\(released: PointerEvent\) \{\n\s*if \(released\.pointerId !== pointerId\) return;/,
-    /function onCancel\(cancelled: PointerEvent\) \{\n\s*if \(cancelled\.pointerId !== pointerId\) return;/,
+    /function onCancel\(aborted: PointerEvent\) \{\n\s*if \(aborted\.pointerId !== pointerId\) return;/,
   ]) {
     assert.match(HOOK, handler);
   }
@@ -1005,4 +1223,91 @@ test("only the pointer that started the drag drives it", () => {
   assert.match(HOOK, /press\.current\?\.end\(\);/);
   assert.match(HOOK, /end: \(\) => \{\n\s*detach\(\);\n\s*if \(started\) clear\(\);/);
   assert.match(HOOK, /if \(press\.current === self\) press\.current = null;/);
+});
+
+// Escape cancels while the button is still down, and the release comes later. A click guard
+// armed at the keypress is torn down on the next tick, long before that release, so the row
+// under the pointer would open the chat the drag was cancelled out of.
+test("escape keeps the click guard until the button is released", () => {
+  assert.match(
+    HOOK,
+    /if \(pressed\.key !== "Escape" \|\| escaped\) return;\n\s*if \(!started\) \{[^]*?detach\(\);\n\s*return;\n\s*\}/,
+  );
+  // The gesture keeps its listeners: only the release detaches and swallows.
+  const onKey = HOOK.slice(
+    HOOK.indexOf("function onKey(pressed: KeyboardEvent)"),
+    HOOK.indexOf("window.addEventListener(\"pointermove\", onMove);"),
+  );
+  assert.ok(
+    !/escaped = true;[^]*?detach\(\);/.test(onKey),
+    "escape must not detach while the button is still down",
+  );
+  assert.match(onKey, /escaped = true;\n\s*clear\(\);/);
+  assert.match(
+    HOOK,
+    /swallowClick\(\);\n\s*if \(escaped\) return;/,
+  );
+  // And a cancelled drag does not come back to life on the next move.
+  assert.match(HOOK, /if \(moved\.pointerId !== pointerId \|\| escaped\) return;/);
+});
+
+// Two ways the bottom of a pinned project was unreachable.
+test("a chat can be dropped at the bottom of a pinned project", () => {
+  const workScope = projectOrderScope("work");
+  const lastRow = chatRow("pinned", workScope, "p2", "work", {
+    index: 1,
+    count: 2,
+  });
+  // The default chat sort is Priority, and a chat arriving from another list used to lose its
+  // slot to it: the folder lit whole and the chat landed wherever the sort put it. It keeps the
+  // slot now and the list switches to Manual, the same as a reorder within one.
+  const arriving = plannedDrop(
+    planSidebarDrop(
+      chat("r1", "recents", RECENTS_ORDER_SCOPE, null),
+      lastRow,
+      "bottom",
+      context({ orders: { ...context().orders, projectChats: () => ["p1", "p2"] } }),
+    ),
+  );
+  assert.deepEqual(arriving.cue, {
+    line: { rowKey: rowKey(workScope, "p2"), edge: "bottom" },
+  });
+  assert.equal(arriving.effects.switchSort, "chats");
+  assert.deepEqual(arriving.effects.orders[0]?.ids, ["p1", "p2", "r1"]);
+
+  // A folder of more than PROJECT_CHAT_LIMIT chats draws Show more directly under its last
+  // visible one, and that row is a drop zone with no row of its own. A chat already in the
+  // folder answered nothing there, so there was no way down past the last chat.
+  const tail = plannedDrop(
+    planSidebarDrop(
+      chat("p1", "pinned", workScope, "work"),
+      {
+        section: "pinned",
+        folderId: "work",
+        blockEnd: { scope: workScope, id: "p2" },
+      },
+      "bottom",
+      context({
+        chatSort: "manual",
+        orders: { ...context().orders, projectChats: () => ["p1", "p2", "p3"] },
+      }),
+    ),
+    "the folder's block tail answered nothing",
+  );
+  assert.deepEqual(tail.action, { kind: "reorder" });
+  assert.deepEqual(tail.cue, {
+    line: { rowKey: rowKey(workScope, "p2"), edge: "bottom" },
+  });
+  assert.deepEqual(tail.effects.orders[0]?.ids, ["p2", "p1", "p3"]);
+
+  // The folder's own row is its head, not its tail: the chat is already there.
+  assert.equal(
+    planSidebarDrop(
+      chat("p1", "pinned", workScope, "work"),
+      folderRow("pinned", PINNED_ORDER_SCOPE, "work"),
+      "bottom",
+      context({ chatSort: "manual" }),
+    ),
+    STAY,
+  );
 });

@@ -162,6 +162,8 @@ export const zhCN = {
       noChatsYet: "暂无对话",
       // Shown under an empty project folder in the sidebar.
       noChats: "无对话",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "所有项目均已置顶",
       showMore: "显示更多",
       showLess: "显示更少",
       settings: "设置",

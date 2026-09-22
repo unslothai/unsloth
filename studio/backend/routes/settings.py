@@ -218,8 +218,8 @@ class ImageGenerationPresetParams(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     negativePrompt: str = ""
-    width: int = Field(default = 1024, ge = 256, le = 2048, multiple_of = 16)
-    height: int = Field(default = 1024, ge = 256, le = 2048, multiple_of = 16)
+    width: int = Field(default = 1024, ge = 256, le = 2752, multiple_of = 16)
+    height: int = Field(default = 1024, ge = 256, le = 2752, multiple_of = 16)
     steps: int = Field(default = 9, ge = 1, le = 100)
     guidance: float = Field(default = 0, ge = 0, le = 20)
     batchSize: int = Field(default = 1, ge = 1, le = 32)
