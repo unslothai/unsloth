@@ -7,6 +7,7 @@ import {
   seededMeasuredTransfer,
 } from "./adopt-rules";
 import { invalidateGgufVariantsCache } from "../inventory/api";
+import { checkDiskSpace } from "@/features/settings/low-disk-check";
 import { getHfToken } from "../stores/hf-token-store";
 import { bumpInventoryVersion } from "../stores/inventory-events";
 import { toast } from "@/lib/toast";
@@ -102,6 +103,10 @@ import {
   resolveProgressUpdate,
 } from "./progress-reconcile";
 import {
+  presentationForExpectedBytesUpdate,
+  presentationForJobStart,
+} from "./download-presentation";
+import {
   clearWatchdog,
   runtimeRegistry,
   teardownRuntime,
@@ -184,6 +189,11 @@ export function applyProgressUpdate(
   const resolved = resolveProgressUpdate(job, progressResp);
   patchJob(key, {
     expectedBytes: resolved.expected,
+    presentation: presentationForExpectedBytesUpdate(
+      job.presentation,
+      job.expectedBytes,
+      resolved.expected,
+    ),
     downloadedBytes: resolved.downloadedBytes,
     measuredTransfer: resolved.measuredTransfer,
     completedBytes: resolved.completedBytes,
@@ -236,6 +246,16 @@ export function finalize(
   dismissStartToast(key);
   if (!job) return;
   if (TERMINAL_DISPLAY_STATES.has(job.state)) return;
+  // The operation that used the space is the one that should surface the pressure. requestStart
+  // reads the disk before a download, which is the right moment to refuse one, but a download
+  // that STARTS with room and then eats it crosses the threshold with nobody looking: there is
+  // no interval, so without this the warning waits for the next download attempt.
+  //
+  // force, so the reading is taken AFTER the write. Unforced it would be swallowed by the
+  // interval for any download shorter than 30 s, or handed the in-flight pre-download figure
+  // this call exists to correct. Still bounded to one reading in flight and one waiting, so a
+  // queue finishing together costs two rather than one per file.
+  void checkDiskSpace({ force: true });
   if (job.kind === DOWNLOAD_KIND.MODEL) {
     invalidateGgufVariantsCache(job.repoId);
   }
@@ -647,7 +667,15 @@ export async function startJob(
   runtimeRegistry.runtimes.set(key, rt);
   const epoch = rt.epoch;
 
-  const expected = Math.max(existing?.expectedBytes ?? 0, req.expectedBytes);
+  const carryOverSeed = carriesOverSeed(
+    opts.adopt === true,
+    existing?.serverGeneration,
+    opts.generation,
+  );
+  const expected = Math.max(
+    carryOverSeed ? (existing?.expectedBytes ?? 0) : 0,
+    req.expectedBytes,
+  );
   const hfToken = getHfToken() || null;
   // Carry the stored preference UNRESOLVED so "auto" survives to effectiveTransportMode(); collapsing it to a boolean sends every download over HTTP.
   // Never awaited for an adopted job: suspending here let a concurrent adoptJob replace this runtime, leaving duplicate timers and a leaked listener.
@@ -667,11 +695,6 @@ export async function startJob(
     teardownRuntime(key);
     throw error;
   }
-  const carryOverSeed = carriesOverSeed(
-    opts.adopt === true,
-    existing?.serverGeneration,
-    opts.generation,
-  );
   const seedDownloaded = carryOverSeed ? (existing?.downloadedBytes ?? 0) : 0;
   const seedCompleted = carryOverSeed ? (existing?.completedBytes ?? 0) : 0;
   const seedFraction = carryOverSeed ? (existing?.fraction ?? 0) : 0;
@@ -694,6 +717,12 @@ export async function startJob(
     : { transport: mode, cancelTransport: undefined };
   const activeTransport = adopted.transport;
   const inventoryKind = downloadRequestInventoryKind(req);
+  const presentation = presentationForJobStart(
+    req.presentation,
+    existing?.presentation,
+    expected,
+    carryOverSeed,
+  );
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
     teardownRuntime(key);
     return;
@@ -709,6 +738,7 @@ export async function startJob(
     completedBytes: seedCompleted,
     completeOnDisk: false,
     expectedBytes: expected,
+    ...(presentation ? { presentation } : {}),
     fraction: seedFraction,
     bytesPerSec: 0,
     error: null,

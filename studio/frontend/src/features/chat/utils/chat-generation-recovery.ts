@@ -356,8 +356,9 @@ function pastThinkTag(raw: string, at: number): number {
 export function restoreCarriedPartsFromRaw(
   raw: string,
   carried: readonly CarriedPart[],
+  { parseThink = true }: { parseThink?: boolean } = {},
 ): ReturnType<typeof parseAssistantContent> {
-  if (carried.length === 0) return parseAssistantContent(raw);
+  if (carried.length === 0) return parseAssistantContent(raw, { parseThink });
   const out: ReturnType<typeof parseAssistantContent> = [];
   const tracker = createThinkTagTracker();
   let cursor = 0;
@@ -365,7 +366,8 @@ export function restoreCarriedPartsFromRaw(
     const text = raw.slice(cursor, end);
     out.push(
       ...parseAssistantContent(
-        tracker.endsInsideThink() ? `${THINK_OPEN}${text}` : text,
+        parseThink && tracker.endsInsideThink() ? `${THINK_OPEN}${text}` : text,
+        { parseThink },
       ),
     );
     tracker.append(text);
@@ -379,6 +381,20 @@ export function restoreCarriedPartsFromRaw(
   }
   appendUntil(raw.length);
   return out;
+}
+
+// Whether a reply to this request can carry real <think> reasoning. Recovery reads it from the
+// stored request because the server-created placeholder has no parseThinkTags until the first save.
+export function requestParsesThinkTags(payload: {
+  enable_thinking?: boolean | null;
+  reasoning_effort?: string | null;
+  thinking?: { type?: string } | null;
+}): boolean {
+  return !(
+    payload.thinking?.type === "disabled" ||
+    payload.enable_thinking === false ||
+    payload.reasoning_effort === "none"
+  );
 }
 
 function carriedPartKey({ at, part }: CarriedPart): string {

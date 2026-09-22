@@ -10,6 +10,7 @@ import type { SettingsTab } from "./stores/settings-dialog-store";
  * (profile, connections) are still reachable from search.
  */
 export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
+  accounts: ["settings.accounts.title", "settings.accounts.create"],
   general: [
     "settings.general.account",
     "settings.general.password",
@@ -18,9 +19,12 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.language.label",
     "settings.general.notifications.sectionTitle",
     "settings.general.notifications.showLlamaUpdates",
+    "settings.general.notifications.showWhisperUpdates",
     "settings.general.previewSharing.sectionTitle",
     "settings.general.previewSharing.enableLabel",
     "settings.general.previewSharing.revokeLabel",
+    "settings.general.managedProviderUrls.sectionTitle",
+    "settings.general.managedProviderUrls.enableLabel",
     "settings.general.rag.sectionTitle",
     "settings.general.rag.embeddingModel",
     "settings.general.helperLlm.sectionTitle",
@@ -59,6 +63,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.uiFont.label",
     "settings.appearance.custom.headingFont.label",
     "settings.appearance.custom.chatFont.label",
+    "settings.appearance.custom.chatWidth.label",
     "settings.appearance.custom.codeFont.label",
     "settings.appearance.custom.contrast.label",
     "settings.appearance.custom.pointerCursors.label",
@@ -85,6 +90,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.storage.modelsFolder",
     "settings.resources.storage.futureDownloads",
     "settings.resources.storage.systemDisk",
+    "settings.resources.storage.caches.label",
     "settings.resources.environment.title",
     "settings.resources.environment.backend",
     "settings.resources.environment.python",
@@ -94,22 +100,30 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
   chat: [
     "settings.general.chatDefaults",
+    "composerSettings.sendShortcut",
+    "composerSettings.followUp",
+    "composerSettings.plainText",
+    "composerSettings.showContext",
+    "settings.chat.pastedTextThreshold",
+    "settings.chat.groups.conversations.title",
+    "settings.chat.groups.display.title",
+    "settings.chat.modelSelection.title",
     "settings.chat.currentDate.label",
     "settings.general.autoTitleNewChats",
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
     "settings.chat.autoCompact",
-    "settings.chat.compactionStyle",
     "settings.profile.greetingSloth",
-    "settings.chat.thinking.collapseByDefault",
-    "settings.chat.tools.collapseByDefault",
+    "settings.chat.thinking.visibility",
+    "settings.chat.tools.visibility",
+    "settings.chat.tools.foldIntoThinking",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
-    "settings.chat.webSearch.title",
     "settings.chat.webSearch.images",
     "settings.chat.modelDisclaimer",
     "settings.chat.projectsSection",
+    "settings.chat.groups.menu.title",
   ],
   // Chat data management moved to the Data tab; keep these rows findable there.
   data: [
@@ -117,7 +131,12 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.data.archivedChats",
     "settings.data.archiveAllChats",
     "settings.data.confirmBeforeDeleting",
-    "settings.data.alwaysDeleteFiles",
+    "settings.data.sandboxFiles",
+    "settings.data.deletionSection",
+    "settings.data.archives",
+    "settings.data.archivedImages",
+    "settings.data.archivedVideos",
+    "settings.data.archivedAudio",
     "settings.data.uploadedFiles",
     "settings.chat.exportHistory",
     "settings.chat.exportConversations",
@@ -213,6 +232,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.openProjectPicker.label",
     "settings.keyboardShortcuts.actions.startDictation.label",
     "settings.keyboardShortcuts.actions.sendMessage.label",
+    "settings.keyboardShortcuts.actions.queueMessage.label",
+    "settings.keyboardShortcuts.actions.steerMessage.label",
     "settings.keyboardShortcuts.actions.toggleFastMode.label",
     "settings.keyboardShortcuts.actions.copyChatAsMarkdown.label",
     "settings.keyboardShortcuts.actions.copySessionId.label",
@@ -225,7 +246,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.debugging.logSection",
     "settings.debugging.source",
     "settings.debugging.path",
-    "settings.debugging.refreshSection",
     "settings.debugging.mode",
     "settings.debugging.keywords",
   ],
@@ -267,6 +287,10 @@ export function createSettingsSearchIndex({
       // and searching Settings for "repair" answered "No settings found."
       "settings.general.repairInstall.label",
     ],
+    appearance: [
+      ...SETTINGS_SEARCH_INDEX.appearance,
+      "settings.appearance.custom.interfaceScale.label",
+    ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
     ),
@@ -283,6 +307,10 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  // "purge", "prune" and the tool names are in none of the labels, so the row
+  // the feature is named after was unreachable by search.
+  "settings.resources.storage.caches.label":
+    "settings.resources.storage.caches.keywords",
   // mlock, vram, ulimit and pin are in none of these labels, so search
   // missed the rows the feature is named after.
   "settings.resources.modelMemory.title":
@@ -292,5 +320,8 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.resources.modelMemory.noRamReserve":
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
-  "settings.chat.compactionStyle": "settings.chat.autoCompactKeywords",
+  // These rows are labelled with what they are, so the verbs people search for live here.
+  "settings.chat.thinking.visibility": "settings.chat.visibilityKeywords",
+  "settings.chat.tools.visibility": "settings.chat.visibilityKeywords",
+  "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
 };

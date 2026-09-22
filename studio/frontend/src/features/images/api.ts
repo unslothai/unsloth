@@ -16,6 +16,8 @@ export interface DiffusionResolvedControl {
   // "applied" (honored, or nothing was asked) | "fell_back" | "unsupported". Absent on older backends.
   status?: "applied" | "fell_back" | "unsupported";
   reason: string;
+  // "prequant:<repo>/<file>" when a hosted checkpoint was seeded; absent on a runtime quantise.
+  artifact?: string | null;
 }
 
 export interface DiffusionStatus {
@@ -27,6 +29,7 @@ export interface DiffusionStatus {
   dtype: string | null;
   // Resolved load kind: "gguf" | "single_file" | "pipeline". Gates GGUF-only controls. Null when not loaded.
   model_kind?: string | null;
+  gguf_filename?: string | null;
   // Selected GGUF quant. Newer backends report this separately from the compute dtype.
   gguf_variant?: string | null;
   cpu_offload: boolean;
@@ -90,7 +93,16 @@ export interface DiffusionLoadRequest {
   transformer_quant?: "auto" | "none" | "off" | "int8" | "fp8" | "nvfp4" | "mxfp8";
   // Text-encoder precision (omit to keep the dense bf16 encoder). Refused with a 409 when the host
   // cannot run it, rather than loading dense and reporting nothing.
-  text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
+  // "none"/"off" pin the released bf16 encoder; omitting the field (or "auto") lets the family
+  // choose, which is no longer the same thing.
+  text_encoder_quant?:
+    | "auto"
+    | "none"
+    | "off"
+    | "fp8"
+    | "fp8_dynamic"
+    | "int8"
+    | "nvfp4";
   attention_backend?:
     | "auto"
     | "native"
@@ -287,6 +299,8 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
 }
 
 export interface DiffusionDownloadPlan {
+  /** Metadata discovery failed, so the file list may be incomplete. */
+  plan_failed?: boolean;
   entries: {
     repo_id: string;
     files: string[];
@@ -441,7 +455,8 @@ export async function setGalleryImageFlags(
 
 export async function deleteGalleryImage(id: string): Promise<void> {
   const res = await authFetch(`/api/inference/images/gallery/${id}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(await readFastApiError(res));
+  // Already absent: let the caller remove the cached entry.
+  if (!res.ok && res.status !== 404) throw new Error(await readFastApiError(res));
 }
 
 export async function clearGallery(): Promise<void> {

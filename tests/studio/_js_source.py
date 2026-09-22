@@ -19,6 +19,7 @@ that appear in the files these tests actually read, and fails loudly rather than
 when it meets something it cannot represent.
 """
 
+import itertools
 import re
 
 
@@ -171,20 +172,142 @@ def assert_guard_holds(
     )
 
 
-def binding_joining(source: str, operator: str, required: set[str]) -> str | None:
-    """Name of the first `const NAME = ...` whose operands cover `required`, else None.
+# A line ending in one of these is a declaration still in progress, not one that ended
+# where the newline is. Prettier breaks a long `a &&\n  b` exactly there.
+_CONTINUES = ("&&", "||", "??", "?", ":", ",", "+", "-", "*", "/", "=", "(", "[", "{", ".")
+
+
+def _declaration_bodies(source: str):
+    """Each `const NAME = <body>` in `source`, as `(name, body)` read from the original.
 
     Declarations are LOCATED in the blanked source, so a commented-out or quoted copy
     cannot answer, and then READ from the original at the same offsets, because blanking
     is length-preserving. Reading the blanked text instead would be self-defeating here:
     it empties string literals, and `status === "running"` is a required operand.
+
+    The terminator is a `;` at bracket depth zero OR an end of line that closes the
+    expression, because this codebase does not write semicolons everywhere: `sidebar.tsx`
+    has exactly one in 500 lines, so a semicolon-only scan found no declarations at all in
+    it and answered None for a binding that was plainly there. A newline alone is not
+    enough either, since a wrapped expression has newlines inside it, so a line only ends a
+    declaration when its brackets are balanced and it does not trail an operator.
     """
     blanked = blank_literals_and_comments(source)
-    for match in re.finditer(r"const (\w+) =([^;]*);", blanked):
-        operand_text = source[match.start(2) : match.end(2)]
-        if required <= set(split_operands(re.sub(r"\s+", " ", operand_text), operator)):
-            return match.group(1)
+    for match in re.finditer(r"\bconst (\w+)\s*=(?!=)", blanked):
+        i, depth, n = match.end(), 0, len(blanked)
+        while i < n:
+            char = blanked[i]
+            if char in "([{":
+                depth += 1
+            elif char in ")]}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif depth == 0 and char == ";":
+                break
+            elif depth == 0 and char == "\n":
+                so_far = blanked[match.end() : i].rstrip()
+                if so_far and not so_far.endswith(_CONTINUES):
+                    break
+            i += 1
+        yield match.group(1), source[match.end() : i]
+
+
+def binding_joining(source: str, operator: str, required: set[str]) -> str | None:
+    """Name of the first `const NAME = ...` whose operands cover `required`, else None."""
+    for name, body in _declaration_bodies(source):
+        if required <= set(split_operands(re.sub(r"\s+", " ", body), operator)):
+            return name
     return None
+
+
+def expand_bindings(
+    source: str,
+    expression: str,
+    *,
+    stop = (),
+    limit: int = 8,
+) -> str:
+    """`expression` with every local `const NAME = ...` it names inlined, transitively.
+
+    Operand presence answers "is this condition still consulted". It cannot answer "does
+    this condition still mean the same thing", because a named binding can be given a new
+    exception without the name at the call site changing at all. Inlining gets back to the
+    primitives so the caller can ask about the resulting behaviour instead.
+
+    `stop` names the primitives to inline DOWN TO. Without it the walk keeps going past
+    them: `hasPinMode` is itself a const somewhere up the file, and expanding it too drags
+    in the prop plumbing that decides whether pin mode exists, which is a different
+    contract belonging to a different component.
+    """
+    bodies = {
+        name: re.sub(r"\s+", " ", body).strip()
+        for name, body in _declaration_bodies(source)
+        if name not in stop
+    }
+    for _ in range(limit):
+        grown = re.sub(
+            r"\b\w+\b",
+            lambda match: f"({bodies[match.group(0)]})"
+            if match.group(0) in bodies
+            else match.group(0),
+            expression,
+        )
+        if grown == expression:
+            return expression
+        expression = grown
+    raise AssertionError(f"{expression!r} never stopped expanding; a binding cycle?")
+
+
+def boolean_table(expression: str, names) -> dict:
+    """Every value a purely boolean JS expression takes over `names`, keyed by assignment.
+
+    For contracts about WHEN something happens rather than how it is written. Two spellings
+    that admit exactly the same states have the same table, so a rename, a rewrap or a
+    hoisted const is invisible here, while an exception that is dropped or inverted is not.
+
+    Only `&& || ! ( )`, names and `undefined` are accepted. Anything else (a comparison, a
+    ternary, a call) raises rather than being silently mistranslated: `!==` would otherwise
+    become `not ==` and read as valid Python for a moment.
+    """
+    python = re.sub(r"\bundefined\b", "False", expression)
+    python = python.replace("&&", " and ").replace("||", " or ").replace("!", " not ")
+    leftover = re.sub(r"\b(?:and|or|not|False)\b|[()\s]|\b[A-Za-z_]\w*\b", "", python)
+    assert not leftover, f"{expression!r} is not a plain boolean expression: {leftover!r} left"
+    reads = set(re.findall(r"\b[A-Za-z_]\w*\b", python)) - {"and", "or", "not", "False"}
+    assert reads <= set(
+        names
+    ), f"{expression!r} reads names this contract does not cover: {sorted(reads - set(names))}"
+    table = {}
+    for combination in itertools.product((False, True), repeat = len(names)):
+        table[combination] = bool(
+            eval(python, {"__builtins__": {}}, dict(zip(names, combination)))  # noqa: S307
+        )
+    return table
+
+
+def attribute_expressions(source: str, attribute: str) -> list[str]:
+    """Each `attribute={...}` expression in `source`, braces balanced, whitespace collapsed.
+
+    For contracts about what an attribute is WIRED TO rather than how it is spelled. Located
+    in the blanked source so a mention in a comment or a string cannot answer, and read back
+    from the original so a literal inside the expression survives.
+    """
+    blanked = blank_literals_and_comments(source)
+    found = []
+    for match in re.finditer(rf"(?<![\w-]){re.escape(attribute)}\s*=\s*{{", blanked):
+        depth, i = 0, match.end() - 1
+        while i < len(blanked):
+            char = blanked[i]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    found.append(re.sub(r"\s+", " ", source[match.end() : i]).strip())
+                    break
+            i += 1
+    return found
 
 
 def gates_the_markup(source: str, name: str) -> bool:

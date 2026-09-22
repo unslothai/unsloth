@@ -5,6 +5,7 @@
 
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
+from utils.paths.storage_roots import own_entry, within_account
 from utils.paths import (
     normalize_path,
     is_local_path,
@@ -16,7 +17,10 @@ from utils.paths import (
     resolve_output_dir,
     resolve_export_dir,
 )
+from contextlib import nullcontext
+
 from hub.utils.hf_tokens import (
+    recording_a_request_token_fetch,
     ANONYMOUS_CACHE_IDENTITY,
     cached_read_refused,
     qualify_cache_identity,
@@ -562,9 +566,20 @@ def load_model_config(
         # `False` is falsy: without this it falls past both branches to the ambient call.
         # Passed as the sentinel rather than via without_hf_auth(), which mutates HF_TOKEN
         # process-wide and would strip a concurrent download's credential.
-        # token=False denies auth, not the cache, so offline it would read a cached private
-        # config.json anyway; with no network this caller gets nothing instead.
-        if local_files_only or _env_offline():
+        # token=False denies auth, not the cache: AutoConfig serves a cached config.json without
+        # consulting the credential, so the read is gated here. One condition, not two: an
+        # "online, so only an ANSWERED refusal refuses" clause used to sit beside it, and it
+        # discarded the unaskable verdict this gate exists for -- a Hub that cannot be asked
+        # fails the metadata request too, and transformers then serves the private config.json
+        # off disk. Public repos are not the cost: `cached_read_refused` refuses only where a
+        # credential could have filled that cache in the first place.
+        if not is_local_path(model_name) and cached_read_refused(
+            token,
+            repo_id = model_name,
+            is_cached = lambda: _config_json_already_cached(model_name, revision),
+            # The caller's own cache-only contract, as in the explicit-token gate below.
+            offline = bool(local_files_only),
+        ):
             raise OSError(
                 f"config.json for {model_name} is not available to an unauthorized caller"
             )
@@ -594,14 +609,26 @@ def load_model_config(
         raise OSError(f"config.json for {model_name} is not available to an unauthorized caller")
 
     if token:
-        return AutoConfig.from_pretrained(
-            model_name,
-            trust_remote_code = trust_remote_code,
-            token = token,
-            local_files_only = local_files_only,
-            cache_dir = active_hf_hub_cache(),
-            **revision_kwargs,
+        # config.json lands in the hub cache under what may be a one-off token; unrecorded it
+        # reads later as "nothing here needed one". Only when this call can actually fetch:
+        # recording an already-cached resolve would mark a repo the cache may have held
+        # anonymously, withholding it from the tokenless offline caller this path exists for.
+        # Written BEFORE the call, since a fetch that dies half way has still filled the cache,
+        # and taken back by the context manager when the call raised leaving nothing on disk.
+        recording = (
+            recording_a_request_token_fetch(token, model_name, "model")
+            if not local_files_only and not _config_json_already_cached(model_name, revision)
+            else nullcontext()
         )
+        with recording:
+            return AutoConfig.from_pretrained(
+                model_name,
+                trust_remote_code = trust_remote_code,
+                token = token,
+                local_files_only = local_files_only,
+                cache_dir = active_hf_hub_cache(),
+                **revision_kwargs,
+            )
 
     if not use_auth:
         # No auth, for public model checks
@@ -1423,7 +1450,7 @@ def _local_audio_metadata_fingerprint(model_name: str) -> tuple:
             identities.append((relative, identity))
         return tuple(identities)
     except Exception:
-        # Keep cache-key construction from turning an unreadable path into a request failure.
+        # An unreadable path must not turn cache-key construction into a request failure.
         return (("unreadable", None),)
 
 
@@ -1723,8 +1750,11 @@ def _detect_audio_from_tokenizer(
     from urllib.parse import quote
 
     revision_path = "main" if revision is None else quote(revision, safe = "")
+    from utils.hf_endpoint import get_hf_endpoint
+
+    hf_endpoint = get_hf_endpoint()
     for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
-        url = f"https://huggingface.co/{model_name}/resolve/{revision_path}/{tok_path}"
+        url = f"{hf_endpoint}/{model_name}/resolve/{revision_path}/{tok_path}"
         try:
             resp = requests.get(url, headers = headers, timeout = 15)
         except Exception as e:
@@ -1776,14 +1806,15 @@ def _is_imatrix_path(path: str) -> bool:
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS. dflash/ holds real weights, so it is a drafter by prefix only.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
 def _is_mtp_drafter(path: str) -> bool:
     """True for a separate-file drafter, a companion to the main model rather
     than a selectable quant: the repo-root ``mtp-*.gguf``, the ``MTP/`` subdir
-    copies (Gemma 4) or the ``dspark/`` drafters (DeepSeek V4 Flash).
+    copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash) or the
+    ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss).
 
     Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub). Must be
     excluded everywhere mmproj is, or the drafter leaks into variant menus (a
@@ -2074,7 +2105,11 @@ def detect_mmproj_file(
                         break
             elif allow_disjoint_search_root:
                 _add(root_resolved)
-            if allow_disjoint_search_root:
+            # Only a root that does NOT hold the weights: for the one that does, the
+            # ancestor walk above IS this function's guard and rglob defeats it, so a
+            # sibling QUANT's projector becomes a candidate and wins the shorter-stem
+            # tiebreak. A disjoint revision still recurses, which #10210 needs.
+            if allow_disjoint_search_root and not root_contains_start:
                 recursive_root = root_resolved
         except OSError:
             pass
@@ -2165,6 +2200,7 @@ from utils.models.drafters import (  # noqa: E402
     _drafter_total_size,
     detect_dflash_file,
     dspark_precision_rank,
+    is_published_drafter_filename,
 )
 from utils.models.drafters import (  # noqa: E402
     dspark_preference_key as _drafters_dspark_preference_key,
@@ -2261,8 +2297,7 @@ def detect_mtp_file(
             except OSError:
                 continue
             for f in entries:
-                name = f.name.lower()
-                if not (name.startswith("mtp-") and name.endswith(".gguf")):
+                if not is_published_drafter_filename(f.name, kind = "mtp", allow_legacy_suffix = False):
                     continue
                 if not _matches_weight(f):
                     continue
@@ -2302,13 +2337,7 @@ def detect_mtp_file(
                 # _is_mtp_drafter accepts everything under MTP/ by design (it excludes them from variant
                 # menus). Too broad to include here: a weight copy would launch as --model-draft. Require
                 # a published drafter name: mtp-<model> or <model>-MTP.
-                lower = f.name.lower()
-                if not lower.endswith(".gguf"):
-                    continue
-                # Drop the shard suffix first: an old-scheme split copy is named
-                # <model>-Q8_0-MTP-00001-of-00002.gguf, whose stem does not end in -mtp.
-                stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", Path(lower).stem)
-                if not (lower.startswith("mtp-") or stem.endswith("-mtp")):
+                if not is_published_drafter_filename(f.name, kind = "mtp"):
                     continue
                 if not _matches_weight(f):
                     continue
@@ -2548,7 +2577,7 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
             is_dir = False  # stat() unavailable in the lock window
         if not is_dir:
             return str(_local_gguf_load_path(p))
-        # Directory named "*.gguf": fall through to the dir scan below.
+    # Directory named "*.gguf": fall through to the dir scan below.
 
     # Case 2: directory containing .gguf files (skip mmproj / MTP drafter)
     if p.is_dir():
@@ -3523,13 +3552,15 @@ def _looks_like_lora_adapter(model_dir: Path) -> bool:
     )
 
 
-def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[str, str, str]]:
+def scan_trained_models(outputs_dir: Optional[str] = None) -> List[Tuple[str, str, str]]:
     """Scan outputs folder for trained Unsloth models.
 
     Returns:
         List of (display_name, model_path, model_type), where model_type is
         "lora" for adapter runs or "merged" for full finetunes.
     """
+    if outputs_dir is None:
+        outputs_dir = str(outputs_root())
     trained_models = []
     outputs_path = resolve_output_dir(outputs_dir)
 
@@ -3539,7 +3570,7 @@ def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[st
 
     try:
         for item in outputs_path.iterdir():
-            if item.is_dir():
+            if item.is_dir() and within_account(item):
                 model_type = _detect_training_output_type(item)
                 if model_type is None:
                     continue
@@ -3564,7 +3595,7 @@ def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[st
 
 
 def scan_exported_models(
-    exports_dir: str = str(exports_root()),
+    exports_dir: Optional[str] = None,
 ) -> List[Tuple[str, str, str, Optional[str]]]:
     """Scan exports folder for exported models (merged, LoRA, GGUF).
 
@@ -3575,6 +3606,8 @@ def scan_exported_models(
         List of (display_name, model_path, export_type, base_model), where
         export_type is "lora" | "merged" | "gguf".
     """
+    if exports_dir is None:
+        exports_dir = str(exports_root())
 
     results = []
     exports_path = resolve_export_dir(exports_dir)
@@ -3584,7 +3617,7 @@ def scan_exported_models(
 
     try:
         for run_dir in exports_path.iterdir():
-            if not run_dir.is_dir():
+            if not run_dir.is_dir() or not within_account(run_dir):
                 continue
 
             # Flat GGUF export (exports/...-gguf/); neither mmproj files nor the imatrix an
@@ -3612,7 +3645,7 @@ def scan_exported_models(
 
             # Two-level: {run}/{checkpoint}/
             for checkpoint_dir in run_dir.iterdir():
-                if not checkpoint_dir.is_dir():
+                if not checkpoint_dir.is_dir() or not within_account(checkpoint_dir):
                     continue
 
                 adapter_config = checkpoint_dir / "adapter_config.json"
@@ -3626,18 +3659,18 @@ def scan_exported_models(
                 base_model = None
                 export_type = None
 
-                if adapter_config.exists():
+                if own_entry(adapter_config):
                     export_type = "lora"
                     try:
                         cfg = json.loads(adapter_config.read_text(encoding = "utf-8-sig"))
                         base_model = cfg.get("base_model_name_or_path")
                     except Exception:
                         pass
-                elif config_file.exists() and has_weights:
+                elif own_entry(config_file) and has_weights:
                     export_type = "merged"
                     export_meta = checkpoint_dir / "export_metadata.json"
                     try:
-                        if export_meta.exists():
+                        if own_entry(export_meta):
                             meta = json.loads(export_meta.read_text(encoding = "utf-8-sig"))
                             base_model = meta.get("base_model")
                     except Exception:
@@ -3649,7 +3682,7 @@ def scan_exported_models(
                     for meta_dir in (checkpoint_dir, run_dir):
                         export_meta = meta_dir / "export_metadata.json"
                         try:
-                            if export_meta.exists():
+                            if own_entry(export_meta):
                                 meta = json.loads(export_meta.read_text(encoding = "utf-8-sig"))
                                 base_model = meta.get("base_model")
                                 if base_model:
@@ -3669,7 +3702,7 @@ def scan_exported_models(
                 if not base_model:
                     outputs_adapter_cfg = resolve_output_dir(run_dir.name) / "adapter_config.json"
                     try:
-                        if outputs_adapter_cfg.exists():
+                        if own_entry(outputs_adapter_cfg):
                             cfg = json.loads(outputs_adapter_cfg.read_text(encoding = "utf-8-sig"))
                             base_model = cfg.get("base_model_name_or_path")
                     except Exception:
@@ -4201,7 +4234,6 @@ class ModelConfig:
                         None,
                     )
 
-                # Separate speculative-decoding companions, mirroring mmproj.
                 mtp_file = _find_drafter(detect_mtp_file, "mtp")
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")

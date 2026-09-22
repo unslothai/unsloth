@@ -103,6 +103,7 @@ __all__ = [
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
     "_patch_transformers_trainer_data_parallel",
+    "patch_flex_attention_kernel_options",
 ]
 
 import torch
@@ -433,6 +434,367 @@ def _flex_attention_gpu_is_supported():
         return True
 
 
+# head_dim > 128 with an explicit mask drops torch <= 2.13 SDPA to an sm80 CUTLASS kernel (8.82x
+# the unmasked cost at head_dim 256, T=8192, B200). Flex's BlockMask carries causal, padding and
+# packed-sequence masks exactly as sdpa_mask does. Not FA2 (padding needs varlen), FA3 (no sm100
+# cubin) or FA4 (Hub build broken against nvidia-cutlass-dsl 4.6.0).
+_SDPA_FLASH_MAX_HEAD_DIM = 128
+_FLEX_LARGE_HEAD_DIM_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM"
+# gemma2 measured slower under flex. gemma4 shares one _attn_implementation across all layers, so
+# flex would also pull its 25 sliding layers off unsloth_zoo's faster gemma4_flash_sliding router,
+# which is registered under "sdpa".
+_FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS = ("gemma2", "gemma4", "gemma4_text")
+# Interface dispatch, and a BlockMask from create_causal_mask rather than a hand-built 4D mask.
+_FLEX_INTERFACE_MARKERS = ("ALL_ATTENTION_FUNCTIONS", "create_causal_mask")
+_FLEX_SUPPORT_FORCED = set()
+_ATTN_IMPL_MAPPING_SUPPORTED = []
+
+
+def _text_attention_configs(config):
+    """The decoder's attention sub-configs. A VLM vision tower is excluded: small head dim, and
+    per-image lengths would recompile flex per shape."""
+    text_config = None
+    getter = getattr(config, "get_text_config", None)
+    if callable(getter):
+        try:
+            text_config = getter()
+        except Exception:
+            text_config = None
+    if text_config is None:
+        text_config = _config_get(config, "text_config", None)
+    if text_config is None:
+        text_config = config
+    return list(_iter_attention_configs(text_config))
+
+
+def _text_attention_head_dim(config):
+    head_dims = []
+    for attention_config in _text_attention_configs(config):
+        head_dims.extend(_collect_attention_head_dims(attention_config))
+    return max(head_dims) if len(head_dims) != 0 else None
+
+
+# torch 2.14 lets cuDNN take a masked head_dim 256 on sm100, matching flex with no compile. Measured
+# on Blackwell only, so other cards keep flex.
+_CUDNN_LARGE_HEAD_DIM_TORCH_VERSION = "2.14"
+_CUDNN_LARGE_HEAD_DIM_MIN_CAPABILITY = (10, 0)
+
+
+def _sdpa_reaches_cudnn_at_head_dim_256():
+    """True when plain SDPA already dispatches cuDNN for a MASKED head_dim 256 on this box."""
+    try:
+        if Version(torch.__version__.split("+")[0]) < Version(_CUDNN_LARGE_HEAD_DIM_TORCH_VERSION):
+            return False
+        if getattr(torch.version, "hip", None):
+            return False
+        if not torch.cuda.is_available():
+            return False
+        return all(
+            torch.cuda.get_device_capability(index) >= _CUDNN_LARGE_HEAD_DIM_MIN_CAPABILITY
+            for index in range(torch.cuda.device_count())
+        )
+    except Exception:
+        return False
+
+
+# Inductor's default flex template needs 151552 bytes of shared memory at head_dim 256 (172032 at
+# 192), more than sm86/sm89/sm120 cards (101376) or an A100 (166912) have. There the compile
+# fails, unsloth_zoo's suppress_errors falls back to unfused eager flex, and training runs slower
+# and in more memory than on SDPA. Offer flex only on the 227 KiB class it was measured on.
+_FLEX_LARGE_HEAD_DIM_MIN_SHARED_MEMORY = 232448
+
+
+def _flex_kernels_fit_large_head_dim():
+    """True when every CUDA device has the shared memory Inductor's default flex template needs."""
+    try:
+        if getattr(torch.version, "hip", None):
+            return False
+        if not torch.cuda.is_available():
+            return False
+        return all(
+            torch.cuda.get_device_properties(index).shared_memory_per_block_optin
+            >= _FLEX_LARGE_HEAD_DIM_MIN_SHARED_MEMORY
+            for index in range(torch.cuda.device_count())
+        )
+    except Exception:
+        return False
+
+
+def _flex_large_head_dim_override():
+    """True / False when UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM forces flex on / off, else None."""
+    override = os.environ.get(_FLEX_LARGE_HEAD_DIM_ENV_VAR)
+    if override is None or override.strip() == "":
+        return None
+    return override.strip() != "0"
+
+
+def _prefers_flex_for_head_dim(config):
+    """True when the decoder's head dim leaves masked SDPA without a flash kernel.
+
+    Unsloth's compiled create_causal_mask always passes a mask (see
+    test_our_compiled_wrapper_is_what_defeats_the_skip), so the masked case is the training case.
+    Flex costs a 4-12 s compile per (shape, length) that a 60-step run does not repay;
+    UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM="0" keeps SDPA and "1" forces flex. head_dim 256
+    routes only until SDPA reaches cuDNN; above 256 always, with patch_flex_attention_kernel_options.
+    """
+    _override = _flex_large_head_dim_override()
+    if _override is not None:
+        return _override
+    for attention_config in _text_attention_configs(config):
+        if (
+            _config_get(attention_config, "model_type", "").lower()
+            in _FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS
+        ):
+            return False
+    if _config_get(config, "model_type", "").lower() in _FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS:
+        return False
+    head_dim = _text_attention_head_dim(config)
+    if head_dim is None or head_dim <= _SDPA_FLASH_MAX_HEAD_DIM:
+        return False
+    if not _flex_kernels_fit_large_head_dim():
+        return False
+    # No cuDNN build takes head_dim > 256, so the version gate does not apply.
+    if head_dim > _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM:
+        return True
+    return not _sdpa_reaches_cudnn_at_head_dim_256()
+
+
+# Above head_dim 256 Inductor's default flex template overflows shared memory and the launch
+# faults with `misaligned address` (torch 2.13, 2.14). Measured: 64x64 still faults, 32x32 passes.
+_FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM = 256
+# BLOCK_M/N drive the forward template, BLOCK_M1/N1/M2/N2 the two backward passes.
+_FLEX_LARGE_HEAD_DIM_KERNEL_OPTIONS = {
+    "BLOCK_M": 32,
+    "BLOCK_N": 32,
+    "BLOCK_M1": 16,
+    "BLOCK_N1": 32,
+    "BLOCK_M2": 32,
+    "BLOCK_N2": 16,
+}
+
+
+def _flex_kernel_options_for_head_dim(head_dim):
+    """The kernel_options flex needs at this head dim, or None when the default config is fine."""
+    if not isinstance(head_dim, int) or head_dim <= _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM:
+        return None
+    return dict(_FLEX_LARGE_HEAD_DIM_KERNEL_OPTIONS)
+
+
+def _wrap_flex_attention_forward(flex_attention_forward):
+    """Add kernel_options to a registered `flex_attention` function, for large head dims only."""
+    if getattr(flex_attention_forward, "_unsloth_flex_kernel_options", False):
+        return flex_attention_forward
+
+    @functools.wraps(flex_attention_forward)
+    def unsloth_flex_attention_forward(module, query, key, value, *args, **kwargs):
+        try:
+            # Some vision callers reuse the interface with a non-4D query.
+            kernel_options = (
+                _flex_kernel_options_for_head_dim(query.shape[-1])
+                if hasattr(query, "dim") and query.dim() == 4
+                else None
+            )
+        except Exception:
+            kernel_options = None
+        if kernel_options is not None:
+            # A caller that already asked for something keeps it: only fill the gaps.
+            requested = kwargs.get("kernel_options") or {}
+            kernel_options.update(requested)
+            kwargs["kernel_options"] = kernel_options
+        return flex_attention_forward(module, query, key, value, *args, **kwargs)
+
+    unsloth_flex_attention_forward._unsloth_flex_kernel_options = True
+    unsloth_flex_attention_forward._unsloth_original_forward = flex_attention_forward
+    return unsloth_flex_attention_forward
+
+
+def patch_flex_attention_kernel_options():
+    """Wrap the registered flex_attention to pass kernel_options above head_dim 256.
+
+    Unconditional, since explicit requests and _FLEX_PREFERRED_MODELS reach flex too. Returns True
+    when the registered function is wrapped.
+    """
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+    except Exception:
+        return False
+
+    # The interface holds the function captured at import, so wrap what is registered.
+    try:
+        registered = ALL_ATTENTION_FUNCTIONS["flex_attention"]
+    except Exception:
+        return False
+    if registered is None:
+        return False
+
+    wrapped = _wrap_flex_attention_forward(registered)
+    if wrapped is registered:
+        return True  # Already ours.
+
+    # __setitem__ covers the shared instance; register() covers the class mapping that models
+    # building their own AttentionInterface (doge) read.
+    try:
+        ALL_ATTENTION_FUNCTIONS["flex_attention"] = wrapped
+    except Exception:
+        return False
+    try:
+        register = getattr(type(ALL_ATTENTION_FUNCTIONS), "register", None)
+        if register is not None:
+            register("flex_attention", wrapped)
+    except Exception:
+        pass
+
+    try:
+        import transformers.integrations.flex_attention as _flex_module
+        if getattr(_flex_module, "flex_attention_forward", None) is registered:
+            _flex_module.flex_attention_forward = wrapped
+    except Exception:
+        pass
+
+    return True
+
+
+def _transformers_supports_attn_impl_mapping():
+    """True when Transformers accepts a per-sub-config `attn_implementation` mapping."""
+    if _ATTN_IMPL_MAPPING_SUPPORTED:
+        return _ATTN_IMPL_MAPPING_SUPPORTED[0]
+    supported = False
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+        source = inspect.getsource(PreTrainedModel.set_attn_implementation)
+        supported = "isinstance(attn_implementation, dict)" in source
+    except Exception:
+        supported = False
+    _ATTN_IMPL_MAPPING_SUPPORTED.append(supported)
+    return supported
+
+
+def _text_sub_config(config):
+    """The separate text sub-config, or None when the config is text-only."""
+    getter = getattr(config, "get_text_config", None)
+    if callable(getter):
+        try:
+            text_config = getter()
+        except Exception:
+            text_config = None
+    else:
+        text_config = None
+    if text_config is None:
+        text_config = _config_get(config, "text_config", None)
+    if text_config is config:
+        return None
+    return text_config
+
+
+def _is_same_config(config, other_config):
+    """Identity, also through a forwarding proxy (unsloth_zoo wraps Gemma 4's text config), whose
+    vars() is the wrapped config's."""
+    if config is other_config:
+        return True
+    if config is None or other_config is None:
+        return False
+    try:
+        return vars(config) is vars(other_config)
+    except TypeError:
+        return False
+
+
+def _flex_attn_impl_for(config, other_attn_implementation):
+    """`flex_attention` for the decoder, `other_attn_implementation` for every other sub-config.
+
+    None when that cannot be scoped: without the Transformers 4.57+ mapping form, a plain string
+    would also move a VLM's vision tower.
+    """
+    text_config = _text_sub_config(config)
+    if not _transformers_supports_attn_impl_mapping():
+        return "flex_attention" if text_config is None else None
+    if text_config is None:
+        return "flex_attention"
+    for field_name, child_config in _config_items(config):
+        if (
+            isinstance(field_name, str)
+            and field_name.endswith("_config")
+            and _is_same_config(child_config, text_config)
+        ):
+            return {"": other_attn_implementation, field_name: "flex_attention"}
+    # An unnamed text sub-config: a plain string would move every sibling, so decline.
+    return None
+
+
+def _flex_support_anchor_class(model_class):
+    """The architecture's own PreTrainedModel base, so `_supports_flex_attn` also covers the inner
+    text model Transformers validates separately under a mapping."""
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        return model_class
+    module_name = getattr(model_class, "__module__", "")
+    anchor = model_class
+    for klass in getattr(model_class, "__mro__", ()):
+        if klass is PreTrainedModel:
+            break
+        if not isinstance(klass, type) or not issubclass(klass, PreTrainedModel):
+            continue
+        if getattr(klass, "__module__", "") == module_name:
+            anchor = klass
+    return anchor
+
+
+def _modeling_module_is_interface_based(model_class):
+    import sys
+
+    module = sys.modules.get(getattr(model_class, "__module__", "") or "", None)
+    if module is None:
+        return False
+    try:
+        source = inspect.getsource(module)
+    except Exception:
+        return False
+    return all(marker in source for marker in _FLEX_INTERFACE_MARKERS)
+
+
+def _declares_flex_support(model_class):
+    """The architecture's own `_supports_flex_attn`, or None when inherited. Not getattr:
+    PreTrainedModel sets False for every model, which hides a deliberate opt-out."""
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        return None
+    for klass in getattr(model_class, "__mro__", ()):
+        if klass is PreTrainedModel:
+            break
+        if not isinstance(klass, type):
+            continue
+        if "_supports_flex_attn" in vars(klass):
+            return vars(klass)["_supports_flex_attn"]
+    return None
+
+
+def _enable_flex_attention_support(model_class, model_type = ""):
+    """Set `_supports_flex_attn` on an interface-based architecture that leaves it unset (qwen3_5,
+    qwen3_5_moe). Returns True when flex is now permitted."""
+    if model_class is None:
+        return False
+    if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
+        return False
+    if _is_flex_excluded(str(model_type).lower()):
+        return False
+    if not _modeling_module_is_interface_based(model_class):
+        return False
+    if _declares_flex_support(model_class) is False:
+        # A deliberate opt-out, e.g. T5Gemma2, whose custom masks cannot merge under flex.
+        return False
+    anchor = _flex_support_anchor_class(model_class)
+    key = f"{getattr(anchor, '__module__', '')}.{getattr(anchor, '__name__', '')}"
+    if key not in _FLEX_SUPPORT_FORCED:
+        try:
+            anchor._supports_flex_attn = True
+        except Exception:
+            return False
+        _FLEX_SUPPORT_FORCED.add(key)
+    return True
+
+
 def _supports_flex_attention(model_class, config, model_type):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
@@ -654,16 +1016,26 @@ def _disable_flash_attention_if_needed(
         fallback_attn_implementation = "flex_attention"
     else:
         fallback_attn_implementation = "eager"
+    # Only replaces an sdpa fallback; flex and eager fallbacks are left alone.
+    if (
+        fallback_attn_implementation == "sdpa"
+        and supports_flex_attention
+        and _prefers_flex_for_head_dim(config)
+    ):
+        _flex_fallback = _flex_attn_impl_for(config, "sdpa")
+        if _flex_fallback is not None:
+            fallback_attn_implementation = _flex_fallback
     if _is_flash_attention_requested(requested_attn_implementation) or would_use_flash_attention:
         logged_attn_implementation = (
             requested_attn_implementation
             if _is_flash_attention_requested(requested_attn_implementation)
             else "flash_attention_2"
         )
+        fallback_label = _attn_impl_label(fallback_attn_implementation)
         warning_key = (
             model_type,
             logged_attn_implementation,
-            fallback_attn_implementation,
+            fallback_label,
             disable_reason,
         )
         if warning_key not in _FLASH_ATTENTION_DISABLED_WARNED:
@@ -671,17 +1043,44 @@ def _disable_flash_attention_if_needed(
             print(
                 f"Unsloth: `{logged_attn_implementation}` is not supported "
                 f"for `{model_type}` because {disable_reason} - "
-                f"defaulting to `{fallback_attn_implementation}`."
+                f"defaulting to `{fallback_label}`."
             )
 
     return _set_attn_impl(config, fallback_attn_implementation)
 
 
+def _attn_impl_label(impl):
+    """A printable, hashable name for an attention implementation, which may be a mapping."""
+    if isinstance(impl, dict):
+        named = [v for k, v in impl.items() if k != ""]
+        if len(set(named)) == 1:
+            return named[0]
+        return ", ".join(f"{k or 'default'}={v}" for k, v in impl.items())
+    return impl
+
+
+def _write_attn_impl(config, impl):
+    _config_set(config, "_attn_implementation", impl)
+    if isinstance(config, dict) or hasattr(config, "attn_implementation"):
+        _config_set(config, "attn_implementation", impl)
+
+
 def _set_attn_impl(config, impl):
-    if config is not None:
-        _config_set(config, "_attn_implementation", impl)
-        if isinstance(config, dict) or hasattr(config, "attn_implementation"):
-            _config_set(config, "attn_implementation", impl)
+    if config is None:
+        return impl
+    if isinstance(impl, dict):
+        # `""` is Transformers' key for the top level and every unnamed sub-config.
+        default_impl = impl.get("")
+        if default_impl is not None:
+            _write_attn_impl(config, default_impl)
+        for field_name, sub_impl in impl.items():
+            if field_name == "":
+                continue
+            sub_config = _config_get(config, field_name, None)
+            if sub_config is not None:
+                _write_attn_impl(sub_config, sub_impl)
+        return impl
+    _write_attn_impl(config, impl)
     return impl
 
 
@@ -822,6 +1221,18 @@ def resolve_attention_implementation(
         and not _is_flash_excluded(model_type)
     )
     supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
+    # Before the ladder, since every branch below reads supports_flex_attention.
+    prefers_flex_for_head_dim = _prefers_flex_for_head_dim(config)
+    if prefers_flex_for_head_dim and not supports_flex_attention:
+        if _enable_flex_attention_support(model_class, model_type):
+            supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
+    # The automatic routing only replaces the sdpa fallback, but an explicit "1" forces flex
+    # over flash_attention_2 as well, when flex can be scoped to the decoder.
+    flex_forced_for_head_dim = (
+        _flex_large_head_dim_override() is True
+        and supports_flex_attention
+        and _flex_attn_impl_for(config, "sdpa") is not None
+    )
     disable_reason = _get_flash_attention_disable_reason(config)
     float32_is_only_disable_reason = disable_reason is None and dtype is torch.float32
     if float32_is_only_disable_reason:
@@ -838,7 +1249,12 @@ def resolve_attention_implementation(
         elif prefers_flex_attention and supports_flex_attention:
             # _FLEX_PREFERRED_MODELS (the gemma3 family) prefer flex_attention over flash; a caller can still override with requested_attn_implementation="sdpa".
             attn_impl = _set_attn_impl(config, "flex_attention")
-        elif not flash_attention_disabled and HAS_FLASH_ATTENTION and supports_flash_attention:
+        elif (
+            not flash_attention_disabled
+            and HAS_FLASH_ATTENTION
+            and supports_flash_attention
+            and not flex_forced_for_head_dim
+        ):
             attn_impl = _set_attn_impl(config, "flash_attention_2")
         elif flash_attention_disabled:
             attn_impl = _disable_flash_attention_if_needed(
@@ -855,6 +1271,12 @@ def resolve_attention_implementation(
                 disable_reason = disable_reason,
                 honor_config_attn_implementation = not float32_is_only_disable_reason,
             )
+        elif prefers_flex_for_head_dim and supports_flex_attention:
+            _flex_impl = _flex_attn_impl_for(config, "sdpa" if supports_sdpa else "eager")
+            if _flex_impl is None:
+                attn_impl = _set_attn_impl(config, "sdpa" if supports_sdpa else "eager")
+            else:
+                attn_impl = _set_attn_impl(config, _flex_impl)
         elif supports_sdpa:
             attn_impl = _set_attn_impl(config, "sdpa")
         elif supports_flex_attention:
@@ -911,17 +1333,76 @@ def resolve_encoder_attention_implementation(
     return None
 
 
+# Outcome of the most recent `_run_temporary_patches` pass, keyed by phase, as
+# {"completed": [patch, ...], "raised": [(patch, exception), ...]}. A temporary
+# patch that raises is warned about rather than propagated, so without this a
+# whole patch silently dropping out leaves CI green; the regression gate in
+# tests/test_temporary_patch_coverage.py reads it and fails on a non-empty
+# "raised" bucket. Which patches legitimately decline depends on the installed
+# transformers/TRL/PEFT, so only "raised" is a defect, never the membership of
+# "completed".
+TEMPORARY_PATCH_OUTCOMES = {}
+
+
 def _run_temporary_patches(phase):
     import inspect
+
+    # Bookkeeping is one list append per patch, storing the callables as they
+    # are so nothing is formatted on the success path, and the per-phase entry
+    # is replaced rather than extended so repeated model loads cannot grow it.
+    # Nothing here can raise, which matters because this loop runs inside
+    # `import unsloth`.
+    completed = []
+    raised = []
+    TEMPORARY_PATCH_OUTCOMES[phase] = {"completed": completed, "raised": raised}
     for temporary_patch in TEMPORARY_PATCHES:
+        # Two separate questions, kept separate. inspect.signature raises
+        # ValueError or TypeError for a callable whose signature it cannot read,
+        # which only tells us we cannot see a `phase` parameter; catching those
+        # around the CALL as well re-ran a patch that had already half applied,
+        # and let every other exception out of an optional patch step and
+        # straight through `import unsloth` (#3130 ended the import
+        # on a SyntaxError from one of them). A temporary patch is an
+        # optimisation that reports its own failures through raise_error, so a
+        # patch that raises anyway is logged, not fatal.
         try:
-            sig = inspect.signature(temporary_patch)
-            if "phase" in sig.parameters:
+            accepts_phase = "phase" in inspect.signature(temporary_patch).parameters
+        except (ValueError, TypeError):
+            accepts_phase = False
+        try:
+            if accepts_phase:
                 temporary_patch(phase = phase)
             else:
                 temporary_patch()
-        except (ValueError, TypeError):
-            temporary_patch()
+        except Exception as exception:
+            # Keep the exception, drop what it drags along. An exception holds
+            # its __traceback__, and a traceback holds every frame in it and
+            # every local in those frames; __context__ and __cause__ chain to
+            # more of the same. The "init" entry is written once per process and
+            # never replaced, so recording a failure as-is would pin the failed
+            # patch's frames for the lifetime of the process. Nothing reads them
+            # (the gate and the warning below both use only the type and the
+            # message), so this loses no diagnosis and bounds the record to the
+            # exception objects themselves.
+            # Guarded because these three are ordinary settable attributes and a
+            # subclass can shadow them with a property that refuses the write
+            # (measured: a ValueError out of a __traceback__ setter). Losing the
+            # trim is fine; losing the import over bookkeeping is not.
+            try:
+                exception.__traceback__ = None
+                exception.__context__ = None
+                exception.__cause__ = None
+            except Exception:
+                pass
+            raised.append((temporary_patch, exception))
+            logger.warning(
+                f"Unsloth: temporary patch "
+                f"{getattr(temporary_patch, '__name__', temporary_patch)} failed in "
+                f"phase {phase} and was skipped. "
+                f"({type(exception).__name__}: {exception})"
+            )
+        else:
+            completed.append(temporary_patch)
 
 
 _run_temporary_patches("init")
@@ -1907,6 +2388,13 @@ elif DEVICE_TYPE == "xpu":
     else:
         torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
         torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
+elif DEVICE_TYPE == "npu":
+    # Named, not left to the else: same 2.4-only API, but this says why it failed.
+    if Version(torch_version) < Version("2.4.0"):
+        raise RuntimeError("torch.npu currently only supports torch.version >= 2.4.0")
+    else:
+        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "npu")
+        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "npu")
 else:
     # Exhaustive because both names are in __all__: an unbound branch (mlx) breaks `import *`.
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = DEVICE_TYPE_TORCH)
@@ -2032,6 +2520,9 @@ elif DEVICE_TYPE == "hip":
             HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
+elif DEVICE_TYPE == "npu":
+    # Ask torch_npu: the module-level False silently rewrote an explicit bfloat16 to float16.
+    SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
 
 try:
     _xformers_logger = logging.getLogger("xformers")
@@ -2448,11 +2939,13 @@ def get_statistics(local_files_only = False):
         disabled = True
     _get_statistics(None)
     _get_statistics("repeat", force_download = False)
-    total_memory = (
-        torch.xpu.get_device_properties(0).total_memory
-        if DEVICE_TYPE == "xpu"
-        else torch.cuda.get_device_properties(0).total_memory
-    )
+    if DEVICE_TYPE == "xpu":
+        total_memory = torch.xpu.get_device_properties(0).total_memory
+    elif DEVICE_TYPE == "npu":
+        # from_pretrained always calls this; a NPU build cannot answer the else arm.
+        total_memory = torch.npu.get_device_properties(0).total_memory
+    else:
+        total_memory = torch.cuda.get_device_properties(0).total_memory
     vram = total_memory / 1024 / 1024 / 1024
     if vram <= 8:
         vram = 8
@@ -2525,6 +3018,183 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     accelerate.state.PartialState._prepare_backend = _prepare_backend
     # Must be a property: a bare function binds as a method, inverting every `!= DistributedType.NO` guard in accelerate (#10016).
     accelerate.accelerator.Accelerator.distributed_type = property(lambda self: DistributedType.NO)
+
+
+_PER_LAYER_DEVICE_MISSING = object()
+
+# A single object, because the checks below test it by identity to mean "no instance dict".
+_NO_INSTANCE_DICT = {}
+
+# Not spelled `_per_layer_device*`: that prefix is what unsloth_zoo publishes and the readers
+# grep for. The fast path spells this one out, so a rename must change both (asserted).
+_PER_LAYER_DEVICE_MEMO = "_unsloth_resolved_layer_device"
+
+# Memo slot 3: what the answer came from, hence what the fast path re-checks by identity.
+_MEMO_FROM_DEVICE = 0
+_MEMO_FROM_INDEX = 1
+_MEMO_FROM_DEFAULT = 2
+
+
+@functools.lru_cache(maxsize = None)
+def _device_type_is_usable(device_type: str) -> bool:
+    """No `torch.<type>.is_available` (`meta` included) means taken at its word."""
+    if device_type == "cpu":
+        return True
+    is_available = getattr(getattr(torch, device_type, None), "is_available", None)
+    if is_available is None:
+        return True
+    try:
+        return bool(is_available())
+    except Exception:
+        return False
+
+
+def _as_torch_device(value):
+    """A bare `torch.device(0)` is WRONG: with no accelerator torch 2.6 raises and torch 2.11
+    returns `cuda:0`. Probing the backend makes both return None here."""
+    try:
+        device = torch.device(value)
+    except (RuntimeError, TypeError, ValueError):
+        return None
+    if not _device_type_is_usable(device.type):
+        return None
+    return device
+
+
+@functools.lru_cache(maxsize = None)
+def _resolved_published_index(index, default):
+    """None means "needs the module": the caller falls through to the unmemoised routes."""
+    if index.__class__ is bool or not isinstance(index, (int, str)):
+        return None
+    device = _as_torch_device(index)
+    if device is None:
+        return None
+    buffer_index = device.index
+    if buffer_index is None:
+        if device.type == "meta":
+            return None
+        # Unindexed device: keep the callers' per-device tuple subscript in range.
+        buffer_index = index if index.__class__ is int else default
+    return device, buffer_index
+
+
+def _device_of_parameters(module):
+    for parameter in module.parameters():
+        return parameter.device
+    return None
+
+
+def _non_meta_device_of_parameters(module):
+    device = _device_of_parameters(module)
+    if device is not None and device.type == "meta":
+        return None
+    return device
+
+
+def _accelerate_execution_device(module):
+    """`AlignDevicesHook.pre_forward` sends args to `execution_device`, so for an offloaded or
+    meta layer that field, not its parameters, says where it runs."""
+    execution_device = getattr(getattr(module, "_hf_hook", None), "execution_device", None)
+    if execution_device is None:
+        return None
+    device = _as_torch_device(execution_device)
+    if device is None or device.type == "meta":
+        return None
+    return device
+
+
+def per_layer_device(module, default = 0):
+    """Where this decoder layer lives, as (device, buffer_index); gemma, gemma2 and cohere
+    still need the index, to subscript a per-device tuple. Probed, not version-gated: an older
+    unsloth_zoo publishes only the index and leaves it None on an accelerator layer, the
+    "Invalid target device: None" of unslothai/unsloth#3538. meta is excluded everywhere,
+    since moving an activation there destroys it silently. A layer genuinely on CPU with
+    accelerator-resident buffers is NOT fixed here and still raises."""
+    try:
+        source, resolved, derived_from = module._unsloth_resolved_layer_device
+        if default == 0:
+            if derived_from == _MEMO_FROM_INDEX:
+                if source is module._per_layer_device_index:
+                    return resolved
+            elif derived_from == _MEMO_FROM_DEVICE:
+                if source is module._per_layer_device:
+                    return resolved
+            # _MEMO_FROM_DEFAULT: derived from `default` alone, so only publishing one of the
+            # two names can stale it.
+            elif (
+                "_per_layer_device_index" not in module.__dict__
+                and "_per_layer_device" not in module.__dict__
+            ):
+                return resolved
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+    # Instance dictionary, not getattr: `nn.Module.__getattr__` scans _parameters, _buffers
+    # and _modules before raising. The getattr fallback keeps class attributes working.
+    published = getattr(module, "__dict__", _NO_INSTANCE_DICT)
+    device = published.get("_per_layer_device")
+    index = published.get("_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
+    if device is None and index is _PER_LAYER_DEVICE_MISSING:
+        device = getattr(module, "_per_layer_device", None)
+        index = getattr(module, "_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
+
+    if device is None and (index.__class__ is int or index.__class__ is str):
+        # Exact class, not isinstance: bool must not key the memo (False hashes equal to 0),
+        # and an unhashable value must fall through rather than raise.
+        resolved = _resolved_published_index(index, default)
+        if resolved is not None:
+            if default == 0 and published is not _NO_INSTANCE_DICT:
+                # Memoisable because it depends on the published value alone, so the fast
+                # path's identity check is a complete invalidation.
+                published[_PER_LAYER_DEVICE_MEMO] = (index, resolved, _MEMO_FROM_INDEX)
+            return resolved
+
+    # Recorded before the fallbacks below overwrite what it is asking about.
+    published_nothing = device is None and index is _PER_LAYER_DEVICE_MISSING
+    if not isinstance(device, torch.device):
+        device = None
+    if device is None:
+        if index is None:
+            device = _device_of_parameters(module)
+        elif isinstance(index, (int, str)) and not isinstance(index, bool):
+            device = _as_torch_device(index)
+    from_default = False
+    if device is None:
+        # `torch.device(default)` may not be constructible, and a device is still owed.
+        device = _as_torch_device(default)
+        if device is None:
+            device = _non_meta_device_of_parameters(module) or torch.device("cpu")
+        else:
+            from_default = True
+
+    buffer_index = device.index
+    if buffer_index is None and device.type == "meta":
+        device = (
+            _accelerate_execution_device(module) or _as_torch_device(default) or torch.device("cpu")
+        )
+        # Module-derived however it was spelled, so it must not be memoised.
+        from_default = False
+        buffer_index = device.index
+    if buffer_index is None:
+        buffer_index = index if isinstance(index, int) and not isinstance(index, bool) else default
+    if default == 0 and published is not _NO_INSTANCE_DICT:
+        # Only when the answer IS the published object: a parameter- or hook-derived device
+        # moves without it changing, and memoising that sends activations to a dead device.
+        published_device = published.get("_per_layer_device")
+        if published_device is not None and published_device is device:
+            published[_PER_LAYER_DEVICE_MEMO] = (
+                published_device,
+                (device, buffer_index),
+                _MEMO_FROM_DEVICE,
+            )
+        elif published_nothing and from_default:
+            # `from_default` is the whole condition, for the same reason.
+            published[_PER_LAYER_DEVICE_MEMO] = (
+                None,
+                (device, buffer_index),
+                _MEMO_FROM_DEFAULT,
+            )
+    return device, buffer_index
 
 
 def move_to_device(target_device, *tensors):
@@ -2921,9 +3591,127 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     return outputs
 
 
+# The attributes a training wrapper keeps its wrappee under. DDP, FSDP1 and DataParallel use
+# `module`; `torch.compile` uses `_orig_mod`; FSDP's own wrapper policy uses `_fsdp_wrapped_module`.
+_UNSLOTH_WRAPPED_MODULE_ATTRS = ("module", "_orig_mod", "_fsdp_wrapped_module")
+
+
+def _unsloth_wrappees_are_in_train_mode(model):
+    """Whether every module `model` merely wraps also reports training mode.
+
+    `training_step` is handed `self.model_wrapped`, but `Trainer.evaluation_loop` calls `.eval()`
+    on `self._wrap_model(self.model, training=False)`, which under DDP is the module INSIDE the
+    wrapper. That leaves the wrapper's own `.training` True while the whole model sits in eval,
+    so the root flag alone cannot tell the two apart and training would silently continue with
+    every dropout disabled. This is a handful of attribute reads, not the module walk being
+    skipped, and on an unwrapped model it stops at the first miss.
+    """
+    inner = model
+    for _ in range(4):
+        for attr in _UNSLOTH_WRAPPED_MODULE_ATTRS:
+            wrappee = getattr(inner, attr, None)
+            if isinstance(wrappee, torch.nn.Module):
+                break
+        else:
+            return True
+        if not wrappee.training:
+            return False
+        inner = wrappee
+    return True
+
+
+def _unsloth_train_if_needed(model):
+    """`Trainer.training_step` calls `model.train()` on every micro-step. On a PEFT-wrapped 9B
+    model that is a recursive walk over ~2k modules with a `__setattr__` each, several ms of
+    pure Python per micro-step while the GPU waits. The mode only has to be asserted once: skip
+    the walk when the root already reports training mode and we were the ones who set it. A root
+    `.eval()` (evaluation, `for_inference`) flips `model.training`, so the next call walks again.
+    """
+    if (
+        model.training
+        and getattr(model, "_unsloth_train_mode_asserted", False)
+        and _unsloth_wrappees_are_in_train_mode(model)
+    ):
+        return model
+    model.train()
+    try:
+        model._unsloth_train_mode_asserted = True
+    except Exception:
+        pass
+    return model
+
+
+def _unsloth_cache_reuses_one_config(cache):
+    """Whether this autotuner cache answers every key with its one stored config.
+
+    That is what unsloth_zoo's `compile_fla_no_autotune` installs, but its `_ReuseBestCache` is
+    defined inside that function, so there is no symbol to import and no class to isinstance
+    against. Probe the behaviour instead of the class name: `dict.keys()` membership always uses
+    dict's own lookup, so a key absent from the raw mapping yet reported present by `in` is
+    exactly the reuse behaviour, under any name a future rewrite gives it.
+    """
+    try:
+        if len(cache) == 0:
+            return False
+        probe = ("__unsloth_probe__",) * 2
+        return probe not in cache.keys() and probe in cache
+    except Exception:
+        return False
+
+
+def patch_fla_autotuner_fast_path():
+    """unsloth_zoo's `compile_fla_no_autotune` makes every fla Triton autotuner reuse its first
+    tuned config for every key (`_ReuseBestCache`). After that, fla's `CachedAutotuner.run` still
+    builds its own `AutotuneKey` (dict zips, dtype strings, JSON-able normalisation) and then
+    Triton's `Autotuner.run` builds a key a second time, on every launch, for a lookup whose answer
+    is always the same config. Linear-attention layers make thousands of such launches per optimizer
+    step. Once the config is settled, launch the kernel with it directly: same config, same kernel,
+    same numerics.
+    """
+    try:
+        import fla.ops.utils.cache as fla_cache
+    except Exception:
+        return
+    CachedAutotuner = getattr(fla_cache, "CachedAutotuner", None)
+    if CachedAutotuner is None or getattr(CachedAutotuner.run, "_unsloth_fast_path", False):
+        return
+    # FLA_CACHE_MODE=always re-reads the config files on every launch on purpose (a debug mode).
+    cache_mode = getattr(fla_cache, "FLA_CACHE_MODE", None)
+    if getattr(cache_mode, "value", None) == "always":
+        return
+    original_run = CachedAutotuner.run
+
+    @functools.wraps(original_run)
+    def run(self, *args, **kwargs):
+        cfg = getattr(self, "_unsloth_fixed_config", None)
+        if cfg is None:
+            cache = self.cache
+            if len(self.configs) == 1:
+                cfg = self.configs[0]
+            elif _unsloth_cache_reuses_one_config(cache):
+                cfg = next(iter(cache.values()))
+            else:
+                return original_run(self, *args, **kwargs)
+            if cfg.pre_hook is not None:
+                return original_run(self, *args, **kwargs)
+            self._unsloth_fixed_config = cfg
+            self._unsloth_fixed_kwargs = cfg.all_kwargs()
+        self.best_config = cfg
+        return self.fn.run(*args, **kwargs, **self._unsloth_fixed_kwargs)
+
+    run._unsloth_fast_path = True
+    CachedAutotuner.run = run
+
+
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace" and gradient accumulation.
     import inspect
+
+    # Before the early returns below: the fla patch is unrelated to gradient accumulation, and it
+    # can only install once fla has been imported. Loading a non-fla model first (llama.py's
+    # FastLlamaModel.from_pretrained never imports fla) and a gated-deltanet model second would
+    # otherwise leave it permanently uninstalled, since the second call returns here.
+    patch_fla_autotuner_fast_path()
 
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples":
@@ -3005,6 +3793,9 @@ def patch_gradient_accumulation_fix(Trainer):
             "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
         )
         function = function.replace("def training_step", "def _unsloth_training_step", 1)
+
+        # Skip the per-micro-step recursive `model.train()` walk once train mode is set.
+        function = function.replace("model.train()", "_unsloth_train_if_needed(model)", 1)
 
         # Fix 4.47.0 removing num_items_in_batch (huggingface/transformers#35121) and the case where it is nothing (huggingface/transformers#35207).
         function = function.replace(
@@ -3313,7 +4104,13 @@ class EmptyLogits:
         return
 
     def raise_getattr_error(self, attr):
-        return return_none if attr == "to" else raise_logits_error
+        if attr == "to":
+            return return_none
+        # unsloth#409: a catch-all __getattr__ answers hasattr() for every name, so FSDP2's
+        # output cast saw __dataclass_fields__ and called dataclasses.replace() on the sentinel.
+        if len(attr) > 4 and attr.startswith("__") and attr.endswith("__"):
+            raise AttributeError(f"{type(self).__name__!r} object has no attribute {attr!r}")
+        return raise_logits_error
 
     __getitem__ = raise_logits_error
     __getattr__ = raise_getattr_error
@@ -3831,17 +4628,34 @@ def is_moe_model(model) -> bool:
     return num_experts is not None and num_experts > 0
 
 
-def _resolve_moe_parameter_name(model, default_name: str, alternate_name: str) -> str:
+def _moe_parameter_names(model) -> Optional[List[str]]:
+    """Every parameter path on the model, collected ONCE. get_moe_target_parameters asks
+    about up to five candidate paths and used to walk named_parameters for each; on a large
+    MoE checkpoint that walk is the expensive part. None means the model cannot be walked,
+    which the callers treat exactly as they treated a raised exception before."""
+    if not hasattr(model, "named_parameters"):
+        return None
+    try:
+        return [name for name, _ in model.named_parameters()]
+    except Exception:
+        return None
+
+
+def _resolve_moe_parameter_name(
+    model,
+    default_name: str,
+    alternate_name: str,
+    parameter_names: Optional[List[str]] = None,
+) -> str:
     """Resolve the actual parameter path for MoE expert weights. Most Unsloth MoE models expose them under ``mlp.experts.*``; Gemma4 stores them directly under ``experts.*``. Prefers the path that exists on the loaded module."""
-    if hasattr(model, "named_parameters"):
-        try:
-            for name, _ in model.named_parameters():
-                if name == default_name or name.endswith("." + default_name):
-                    return default_name
-                if name == alternate_name or name.endswith("." + alternate_name):
-                    return alternate_name
-        except Exception:
-            pass
+    if parameter_names is None:
+        parameter_names = _moe_parameter_names(model)
+    if parameter_names is not None:
+        for name in parameter_names:
+            if name == default_name or name.endswith("." + default_name):
+                return default_name
+            if name == alternate_name or name.endswith("." + alternate_name):
+                return alternate_name
 
     config = getattr(model, "config", model)
     model_types = {getattr(config, "model_type", None)}
@@ -3885,8 +4699,17 @@ def _moe_target_set_from_string(target_modules: str) -> set[str]:
     return set()
 
 
-def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str]]:
-    """target_parameters for MoE expert layers, or None for a non-MoE model. Returns the expert weight parameter paths (gate_up_proj, down_proj) for PEFT's ``target_parameters``, under whichever layout the model uses (``mlp.experts.*`` or ``experts.*``). Only MoE parameters matching *target_modules* are included: "down_proj" gives "mlp.experts.down_proj", and "gate_proj" or "up_proj" gives "mlp.experts.gate_up_proj"."""
+def get_moe_target_parameters(
+    model,
+    target_modules = None,
+    moe_module_targets = None,
+) -> Optional[List[str]]:
+    """target_parameters for MoE expert layers, or None for a non-MoE model. Returns the expert weight parameter paths (gate_up_proj, down_proj) for PEFT's ``target_parameters``, under whichever layout the model uses (``mlp.experts.*`` or ``experts.*``, fused or unfused). Only MoE parameters matching *target_modules* are included: "down_proj" gives "mlp.experts.down_proj", and "gate_proj" or "up_proj" gives "mlp.experts.gate_up_proj", or the unfused "mlp.experts.gate_proj" / "mlp.experts.up_proj" pair when the model has no fused Parameter.
+
+    *moe_module_targets* is get_moe_target_modules(model, target_modules) when the caller has
+    already computed it. It is only read to decide whether the no-experts-resolved warning
+    applies, and passing it in is what keeps this function from walking named_modules a
+    second time right before the caller does."""
     if not is_moe_model(model):
         return None
 
@@ -3917,24 +4740,48 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
 
     moe_params = []
 
+    # One walk of named_parameters for every path this function asks about.
+    parameter_names = _moe_parameter_names(model)
+
     gate_up_name = _resolve_moe_parameter_name(
         model,
         default_name = "mlp.experts.gate_up_proj",
         alternate_name = "experts.gate_up_proj",
+        parameter_names = parameter_names,
     )
     down_name = _resolve_moe_parameter_name(
         model,
         default_name = "mlp.experts.down_proj",
         alternate_name = "experts.down_proj",
+        parameter_names = parameter_names,
     )
 
     # gate_up_proj combines gate_proj and up_proj. Target only a fused expert Parameter that exists: per-expert Linear layouts (gpt-oss bnb-4bit) have none and go through get_moe_target_modules, so skip them rather than hand PEFT a dead path.
     if "gate_proj" in target_set or "up_proj" in target_set or "gate_up_proj" in target_set:
-        if _moe_parameter_exists(model, gate_up_name):
+        if _moe_parameter_exists(model, gate_up_name, parameter_names = parameter_names):
             moe_params.append(gate_up_name)
+        else:
+            # NemotronH keeps the expert projections unfused, as separate 3D Parameters.
+            # Without this fallback every gate and up expert weight is silently dropped
+            # while down_proj still resolves, so the model trains with two thirds of each
+            # expert frozen and no error anywhere (unsloth#4476).
+            wanted_leaves = []
+            if "gate_proj" in target_set or "gate_up_proj" in target_set:
+                wanted_leaves.append("gate_proj")
+            if "up_proj" in target_set or "gate_up_proj" in target_set:
+                wanted_leaves.append("up_proj")
+            for leaf in wanted_leaves:
+                unfused_name = _resolve_moe_parameter_name(
+                    model,
+                    default_name = f"mlp.experts.{leaf}",
+                    alternate_name = f"experts.{leaf}",
+                    parameter_names = parameter_names,
+                )
+                if _moe_parameter_exists(model, unfused_name, parameter_names = parameter_names):
+                    moe_params.append(unfused_name)
 
     if "down_proj" in target_set:
-        if _moe_parameter_exists(model, down_name):
+        if _moe_parameter_exists(model, down_name, parameter_names = parameter_names):
             moe_params.append(down_name)
 
     if moe_params:
@@ -3943,16 +4790,81 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         )
         return moe_params
 
+    # Nothing resolved as a Parameter. That is only a problem if no other route reaches the
+    # experts either: get_moe_target_modules covers the per-expert Linear ModuleList layout
+    # (gpt-oss bnb-4bit) and an ordinary suffix match covers the per-expert submodule layout
+    # transformers 4.x uses for Qwen3-MoE and Mixtral. Warn only when all three miss, which
+    # is the silent no-experts-trained case.
+    if target_set & _MOE_BROAD_MLP_TARGETS:
+        if moe_module_targets is None:
+            moe_module_targets = get_moe_target_modules(model, target_modules)
+        if not moe_module_targets and not _moe_experts_reachable_by_module_name(
+            model,
+            target_set,
+            target_modules,
+        ):
+            logger.warning(
+                f"Unsloth: MoE model with {num_experts = } resolved no expert parameters for "
+                f"{target_modules = }. The expert weights will NOT be trained."
+            )
     return None
 
 
-def _moe_parameter_exists(model, name: str) -> bool:
+def _moe_parameter_exists(
+    model,
+    name: str,
+    parameter_names: Optional[List[str]] = None,
+) -> bool:
     """True if ``name`` is an exact suffix of some parameter path on the model."""
-    if not hasattr(model, "named_parameters"):
+    if parameter_names is None:
+        parameter_names = _moe_parameter_names(model)
+    if parameter_names is None:
+        return False
+    for parameter_name in parameter_names:
+        if parameter_name == name or parameter_name.endswith("." + name):
+            return True
+    return False
+
+
+def _moe_experts_reachable_by_module_name(
+    model,
+    target_set,
+    target_modules = None,
+) -> bool:
+    """True if an ordinary target_modules match already reaches the experts.
+
+    transformers 4.x builds Qwen3-MoE and Mixtral experts as per-expert submodules
+    (``mlp.experts.<i>.gate_proj``), so PEFT attaches LoRA to them by leaf name with no
+    help from us, while transformers 5.x fuses the same weights into 3D Parameters. The
+    unresolved-experts warning must stay quiet in the first case or it fires on a model
+    whose experts are being trained perfectly well.
+
+    PEFT's own two matching rules are mirrored, because the leaf name alone answers only
+    one of them. A str ``target_modules`` is a regex PEFT applies with ``re.fullmatch``
+    against the WHOLE module path (``peft.utils.other.match_target_against_key``), so
+    ``.*mlp.*down_proj`` reaches no expert on a ``mixer.experts.0.down_proj`` layout even
+    though the derived leaf set contains ``down_proj``; answering from the leaf there
+    would silence the warning on exactly the untrained-experts case it exists for. A list
+    is matched by whole key or dotted suffix, which is what the leaf test already does."""
+    if not hasattr(model, "named_modules"):
+        return False
+    pattern = None
+    if isinstance(target_modules, str):
+        try:
+            pattern = re.compile(target_modules)
+        except re.error:
+            # PEFT would raise on this pattern anyway; do not claim reachability for it.
+            return False
+    elif not target_set:
         return False
     try:
-        for parameter_name, _ in model.named_parameters():
-            if parameter_name == name or parameter_name.endswith("." + name):
+        for name, _ in model.named_modules():
+            if "experts" not in name:
+                continue
+            if pattern is not None:
+                if pattern.fullmatch(name):
+                    return True
+            elif name.rpartition(".")[2] in target_set:
                 return True
     except Exception:
         return False
@@ -4301,3 +5213,9 @@ if (
         transformers.integrations.bitsandbytes.should_convert_module = patched_should_convert_module
     except Exception:
         pass
+
+
+try:
+    patch_flex_attention_kernel_options()
+except Exception:
+    pass

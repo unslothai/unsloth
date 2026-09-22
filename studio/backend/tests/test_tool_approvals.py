@@ -16,8 +16,9 @@ import time
 
 import pytest
 
-from state import tool_approvals
+from state import run_subscribers, tool_approvals
 from state.tool_approvals import (
+    TOOL_APPROVAL_EXPIRED_MESSAGE,
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
     begin_tool_decision,
@@ -143,6 +144,9 @@ def test_resolve_before_wait_is_not_lost():
     assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
     # wait() is only entered now, after the decision already landed.
     assert wait_tool_decision(slot, aid) == "allow"
+    # A stubbed waiter says nothing about why, and that reads as the pre-reason behaviour.
+    assert tool_approvals.decision_reason({"event": None}) is None
+    assert tool_approvals.decision_reason(None) is None
     assert not _has_pending(aid)
 
 
@@ -293,20 +297,484 @@ def test_durable_cancel_still_denies():
 
 
 def test_an_unanswered_park_is_released_by_the_settles_cancel_not_a_ceiling():
-    """What releases an approval nobody answers is the lease sweeper, not a timeout.
+    """The sweeper's settle-cancel releases a park that the park timeout has not yet reached.
 
-    The sweeper settles a run whose progress lease expired (parking does not renew it) and
-    ``supervisor.cancel()`` sets this very event; the parked gate must then deny and pop its own
-    slot, so the reservation unwinds. Pinned past the ceiling on purpose: the timeout elapsing
-    alone must release nothing — only the settle's cancel does.
+    At 0.6s the default park timeout (300s) has not elapsed, so the only thing that can release
+    the gate is an external cancel — exactly what ``supervisor.cancel()`` does after
+    ``reconcile_runs`` settles a lease-expired run. The parked gate must deny and pop its own
+    slot, so the reservation unwinds.
     """
     cancel = threading.Event()
     cancel.durable = True
     aid = new_approval_id()
     w = _Waiter("sess", aid, cancel_event = cancel, timeout = 0.2).start()
-    # The short ceiling has long passed; only what comes next releases anything.
+    # Well within the park timeout (300s default); only an external cancel can release now.
     time.sleep(0.6)
-    assert _has_pending(aid), "the elapsed ceiling must not release the park"
+    assert _has_pending(aid), "the park has not timed out yet; only cancel releases it"
     cancel.set()  # what reconcile_runs' settle does to a lease-expired run
     assert w.join(timeout = 3.0) == "deny", "the settle's cancel must read as deny"
     assert _wait_until(lambda: not _has_pending(aid)), "the slot must be popped on release"
+
+
+def test_durable_park_denies_at_park_timeout(monkeypatch):
+    """A durable park denies at the park timeout so an unattended agent adapts and continues.
+
+    This is the release path for agentic work where the user has left: the approval times out,
+    the model receives TOOL_REJECTED_MESSAGE, and the loop proceeds to the next step. The sweeper
+    remains a backstop for producers wedged before they reach wait_tool_decision.
+    """
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    cancel = threading.Event()
+    cancel.durable = True
+    aid = new_approval_id()
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    # Park timeout (0.2s) has elapsed; the gate must deny on its own, no cancel needed.
+    time.sleep(0.6)
+    assert w.join(timeout = 3.0) == "deny", "the park timeout must release an unanswered approval"
+    assert _wait_until(lambda: not _has_pending(aid)), "the slot must be popped on timeout"
+
+
+# ── The park ceiling is configuration, and configuration must not be able to kill the backend ──
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("30", 30.0),
+        ("0", 0.0),
+        ("0.5", 0.5),
+        ("  45  ", 45.0),
+        # Anything unparseable, out of range, or nonsensical falls back rather than raising: this
+        # module is imported on the chat path, so a typo here would otherwise take the backend down
+        # at startup, and a stuck approval is the lesser failure.
+        ("5m", 300.0),
+        ("", 300.0),
+        ("   ", 300.0),
+        ("none", 300.0),
+        ("-1", 300.0),
+        ("nan", 300.0),
+        ("inf", 300.0),
+    ],
+)
+def test_the_park_ceiling_reads_the_env_without_ever_raising(monkeypatch, value, expected):
+    monkeypatch.setenv("UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S", value)
+    assert tool_approvals._park_timeout_from_env() == expected
+
+
+def test_an_unset_park_ceiling_is_the_documented_default(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S", raising = False)
+    assert tool_approvals._park_timeout_from_env() == 300.0
+    assert tool_approvals._PARK_TIMEOUT_DEFAULT_S == 300.0
+
+
+def test_a_zero_ceiling_denies_at_the_first_poll_not_before_it(monkeypatch):
+    """The loop waits before it checks, so 0 is "autonomous", not "instant": a decision landing
+    inside the first 500ms still wins. The comment on _PARK_TIMEOUT_DEFAULT_S says so; this pins it,
+    because a reader who takes "denies immediately" literally would call the opposite a bug."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.0)
+    cancel = threading.Event()
+    cancel.durable = True
+    aid = new_approval_id()
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    time.sleep(0.05)
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert w.join(timeout = 3.0) == "allow"
+
+
+def test_a_returning_session_past_the_ceiling_cannot_resolve_its_own_approval(monkeypatch):
+    """What the user actually experiences at the ceiling: the call is already refused, and the
+    Approve they press on return has nothing left to resolve (the route turns this into a 404)."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    cancel = threading.Event()
+    cancel.durable = True
+    aid = new_approval_id()
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    assert w.join(timeout = 3.0) == "deny"
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is False
+
+
+def test_a_pending_approval_reports_pending_and_a_decided_one_does_not():
+    """A reopened tab cannot tell a parked call from one the user already answered: both are saved
+    as a card with no result and an approval id, because the result only lands with tool_end. This
+    is the durable signal that separates them."""
+    approval_id = tool_approvals.new_approval_id()
+    slot = tool_approvals.begin_tool_decision("sess-a", approval_id)
+    assert tool_approvals.tool_decision_is_pending(approval_id, "sess-a") is True
+
+    assert tool_approvals.resolve_tool_decision(approval_id, "allow", session_id = "sess-a") is True
+    # Decided but not yet collected by the waiter: the window that would otherwise read as parked.
+    assert tool_approvals.tool_decision_is_pending(approval_id, "sess-a") is False
+
+    assert tool_approvals.wait_tool_decision(slot, approval_id, timeout = 30) == "allow"
+    # And gone once the waiter has popped its own slot.
+    assert tool_approvals.tool_decision_is_pending(approval_id, "sess-a") is False
+
+
+def test_the_pending_check_is_session_scoped_and_unguessable():
+    approval_id = tool_approvals.new_approval_id()
+    tool_approvals.begin_tool_decision("sess-a", approval_id)
+    assert tool_approvals.tool_decision_is_pending(approval_id, "sess-b") is False
+    assert tool_approvals.tool_decision_is_pending(approval_id, "sess-a") is True
+    # No id, no answer: this must never be a way to ask "is anything pending".
+    assert tool_approvals.tool_decision_is_pending("", "sess-a") is False
+    assert tool_approvals.tool_decision_is_pending(None, "sess-a") is False
+    assert tool_approvals.tool_decision_is_pending("not-a-real-id", "sess-a") is False
+
+
+# ── The park ceiling counts time with NOBODY WATCHING, not time since the call parked ──
+# "Durable" means cancel_on_disconnect is off, not that the tab is gone. Since every
+# tool-enabled turn is durable by default, keying the 300s ceiling off the durable marker
+# alone put a five-minute deadline on a user who is sitting there reading what the tool
+# wants to do, where a browser-owned run gave them the full hour. The gate asks
+# state.run_subscribers whether a follower is attached, and re-arms while one is.
+
+
+@pytest.fixture(autouse = True)
+def _clear_subscribers():
+    run_subscribers.reset_for_tests()
+    yield
+    run_subscribers.reset_for_tests()
+
+
+def test_an_attended_park_does_not_expire_at_the_park_ceiling(monkeypatch):
+    """A user watching the run keeps their decision past the park ceiling.
+
+    The regression this pins: with the ceiling keyed on the durable marker alone, an Approve/Deny
+    card the user was reading auto-denied at 300s and the model was told they had declined it.
+    """
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "run-attended"
+    aid = new_approval_id()
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+
+    # A follower heartbeat, exactly as the SSE loop in routes/chat_generation_runs.py stamps it.
+    for _ in range(6):
+        run_subscribers.mark_subscriber_seen("run-attended", "tab-1")
+        time.sleep(0.1)
+    assert _has_pending(aid), "an attended park must not expire at the park ceiling"
+
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert w.join(timeout = 3.0) == "allow"
+
+
+def test_a_park_expires_once_its_followers_go(monkeypatch):
+    """The ceiling still releases an abandoned approval: presence is what re-arms it, and it ages out."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(run_subscribers, "_ATTENDED_FOR_S", 0.1)
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "run-leaving"
+    aid = new_approval_id()
+    run_subscribers.mark_subscriber_seen("run-leaving", "tab-1")
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    # Nobody stamps again: the entry ages out and the ceiling runs.
+    assert w.join(timeout = 5.0) == "deny"
+    assert _wait_until(lambda: not _has_pending(aid))
+
+
+def test_an_unattended_park_is_unchanged_without_a_run_id(monkeypatch):
+    """A durable event carrying no run id keeps the plain park behaviour, so nothing regresses
+    for a producer that never registered one."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    cancel = threading.Event()
+    cancel.durable = True
+    aid = new_approval_id()
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    assert w.join(timeout = 3.0) == "deny"
+
+
+def test_attendance_cannot_hold_an_approval_past_the_absolute_ceiling(monkeypatch):
+    """Presence re-arms the park ceiling, never the hour a browser-owned run has always had."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 10.0)
+    monkeypatch.setattr(tool_approvals, "_DECISION_TIMEOUT", 0.2)
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "run-forever"
+    aid = new_approval_id()
+    slot = begin_tool_decision("sess", aid)
+
+    stop = threading.Event()
+
+    def _stamp():
+        while not stop.is_set():
+            run_subscribers.mark_subscriber_seen("run-forever", "tab-1")
+            time.sleep(0.02)
+
+    stamper = threading.Thread(target = _stamp, daemon = True)
+    stamper.start()
+    try:
+        verdict = tool_approvals.wait_tool_decision(slot, aid, cancel_event = cancel)
+        reason = tool_approvals.decision_reason(slot)
+    finally:
+        stop.set()
+        stamper.join(timeout = 2.0)
+    assert (verdict, reason) == ("deny", tool_approvals.DECISION_EXPIRED)
+
+
+# ── An expiry is not the user's decision, and must not be reported as one ──
+
+
+def test_the_reason_separates_an_expiry_from_a_deny_from_a_cancel(monkeypatch):
+    """The three outcomes used to arrive as one bare "deny", so the loops had no way to tell a
+    returning user that nobody answered rather than that they refused."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+
+    # Expired: nobody watching, nobody answering.
+    cancel = threading.Event()
+    cancel.durable = True
+    aid = new_approval_id()
+    slot = begin_tool_decision("sess", aid)
+    assert tool_approvals.wait_tool_decision(slot, aid, cancel_event = cancel) == "deny"
+    assert tool_approvals.decision_reason(slot) == tool_approvals.DECISION_EXPIRED
+
+    # Cancelled: an explicit Stop, or the sweeper settling a lease-expired run.
+    cancel2 = threading.Event()
+    cancel2.durable = True
+    aid2 = new_approval_id()
+    slot2 = begin_tool_decision("sess", aid2)
+    cancel2.set()
+    assert tool_approvals.wait_tool_decision(slot2, aid2, cancel_event = cancel2) == "deny"
+    assert tool_approvals.decision_reason(slot2) == tool_approvals.DECISION_CANCELLED
+
+    # Answered: the user actually pressed Deny.
+    aid3 = new_approval_id()
+    slot3 = begin_tool_decision("sess", aid3)
+    resolve_tool_decision(aid3, "deny", session_id = "sess")
+    assert tool_approvals.wait_tool_decision(slot3, aid3) == "deny"
+    assert tool_approvals.decision_reason(slot3) == tool_approvals.DECISION_ANSWERED
+
+
+def test_the_expiry_message_does_not_claim_the_user_decided():
+    assert TOOL_APPROVAL_EXPIRED_MESSAGE != TOOL_REJECTED_MESSAGE
+    assert TOOL_APPROVAL_EXPIRED_MESSAGE.strip()
+    lowered = TOOL_APPROVAL_EXPIRED_MESSAGE.lower()
+    assert "declin" not in lowered, "an expiry must not be reported as the user declining"
+    assert "the user" not in lowered, "an expiry is not a statement about the user"
+
+
+def test_the_waiter_keeps_its_name_signature_and_bare_verdict(monkeypatch):
+    """The reason rides on the slot precisely so this stays true: the three tool loops are
+    monkeypatched by name (core.inference.llama_cpp.wait_tool_decision and friends), and a fake
+    that returns a bare string and never touches slot["reason"] must keep working."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    aid = new_approval_id()
+    slot = begin_tool_decision("sess", aid)
+    resolve_tool_decision(aid, "allow", session_id = "sess")
+    assert wait_tool_decision(slot, aid) == "allow"
+
+
+# ── The presence registry itself ──
+
+
+def test_presence_expires_by_age_so_a_leaked_stamp_cannot_park_forever(monkeypatch):
+    monkeypatch.setattr(run_subscribers, "_ATTENDED_FOR_S", 0.1)
+    run_subscribers.mark_subscriber_seen("run-x", "tab-1")
+    assert run_subscribers.is_attended("run-x") is True
+    time.sleep(0.2)
+    assert run_subscribers.is_attended("run-x") is False
+
+
+def test_presence_is_per_run_and_an_empty_id_is_never_attended():
+    run_subscribers.mark_subscriber_seen("run-a", "tab-1")
+    assert run_subscribers.is_attended("run-a") is True
+    assert run_subscribers.is_attended("run-b") is False
+    run_subscribers.mark_subscriber_seen("", "tab-1")
+    assert run_subscribers.is_attended("") is False
+
+
+def test_a_departing_follower_drops_its_stamp_promptly():
+    run_subscribers.mark_subscriber_seen("run-c", "tab-1")
+    assert run_subscribers.is_attended("run-c") is True
+    run_subscribers.subscriber_departed("run-c", "tab-1")
+    assert run_subscribers.is_attended("run-c") is False
+
+
+# ── One run, several followers: a tab closing must not clear another tab's stamp ──
+# Two tabs on the same thread, or a reconnect whose replacement stream attaches before the old
+# one finishes unwinding, both put two followers on one run. With a single stamp per run, either
+# one's cleanup deleted the other's heartbeat, and the survivor does not stamp again until its
+# event wait turns over (15s). Under a park ceiling shorter than that -- 0 is supported and
+# tested above -- a call a second tab was watching could be denied.
+
+
+def test_one_tab_closing_leaves_another_tabs_attendance_intact():
+    run_subscribers.mark_subscriber_seen("run-two-tabs", "tab-a")
+    run_subscribers.mark_subscriber_seen("run-two-tabs", "tab-b")
+    assert run_subscribers.attendance_for_tests("run-two-tabs") == 2
+
+    run_subscribers.subscriber_departed("run-two-tabs", "tab-a")
+    assert (
+        run_subscribers.is_attended("run-two-tabs") is True
+    ), "tab-b is still watching; its heartbeat must survive tab-a's cleanup"
+    assert run_subscribers.attendance_for_tests("run-two-tabs") == 1
+
+    run_subscribers.subscriber_departed("run-two-tabs", "tab-b")
+    assert run_subscribers.is_attended("run-two-tabs") is False
+    assert run_subscribers.attendance_for_tests("run-two-tabs") == 0
+
+
+def test_an_attended_park_survives_a_second_tab_closing(monkeypatch):
+    """The reachable consequence, end to end: a short ceiling plus two tabs.
+
+    At 0.2s the ceiling is well under the 15s a surviving follower may take to stamp again, which
+    is exactly the window the single-stamp version left open.
+    """
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "run-two-tabs-park"
+    aid = new_approval_id()
+
+    run_subscribers.mark_subscriber_seen("run-two-tabs-park", "tab-a")
+    run_subscribers.mark_subscriber_seen("run-two-tabs-park", "tab-b")
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+
+    # tab-a goes away; tab-b keeps watching but does not stamp again for a while.
+    run_subscribers.subscriber_departed("run-two-tabs-park", "tab-a")
+    time.sleep(0.8)
+    assert _has_pending(aid), "the park expired while a second tab was still attended"
+
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert w.join(timeout = 3.0) == "allow"
+
+
+def test_a_follower_only_clears_its_own_stamp_not_the_run():
+    run_subscribers.mark_subscriber_seen("run-solo", "tab-a")
+    # A departure naming a follower that was never stamped must not wipe the run.
+    run_subscribers.subscriber_departed("run-solo", "tab-ghost")
+    assert run_subscribers.is_attended("run-solo") is True
+    run_subscribers.subscriber_departed("run-solo", "tab-a")
+    assert run_subscribers.is_attended("run-solo") is False
+
+
+# ── An attended park must renew the RUN's lease, not only its own counter ──
+# Parking makes no progress, so the sweeper settles the run at its lease timeout
+# (core.inference.chat_generation_runs._LEASE_TIMEOUT_SECONDS, 1200s by default) and cancels the
+# wait. Re-arming `waited` alone therefore capped an attended deliberation at ~20 minutes and
+# ended it as a cancel, while the docstring promised the full _DECISION_TIMEOUT.
+
+
+def test_an_attended_park_renews_the_runs_lease(monkeypatch):
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(tool_approvals, "_LEASE_RENEW_EVERY_S", 0.0)
+    renewals = []
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "run-lease"
+    cancel.renew_lease = lambda: renewals.append(time.monotonic())
+    aid = new_approval_id()
+
+    run_subscribers.mark_subscriber_seen("run-lease", "tab-1")
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    for _ in range(6):
+        run_subscribers.mark_subscriber_seen("run-lease", "tab-1")
+        time.sleep(0.1)
+
+    assert renewals, (
+        "an attended park renewed its own counter but never the run's lease, so the sweeper "
+        "settles the run at the lease timeout and cancels the decision"
+    )
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert w.join(timeout = 3.0) == "allow"
+
+
+def test_an_unattended_park_does_not_renew_the_lease(monkeypatch):
+    """The sweeper is the backstop for an abandoned run: holding its lease open would remove it."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(tool_approvals, "_LEASE_RENEW_EVERY_S", 0.0)
+    renewals = []
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "run-abandoned"
+    cancel.renew_lease = lambda: renewals.append(1)
+    aid = new_approval_id()
+
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    assert w.join(timeout = 3.0) == "deny"
+    assert renewals == [], "nobody was watching; the lease must be allowed to lapse"
+
+
+def test_lease_renewal_is_throttled_not_once_per_poll(monkeypatch):
+    """The poll is twice a second and this is a database write, so it is rate limited."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(tool_approvals, "_LEASE_RENEW_EVERY_S", 30.0)
+    renewals = []
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "run-throttle"
+    cancel.renew_lease = lambda: renewals.append(1)
+    aid = new_approval_id()
+
+    run_subscribers.mark_subscriber_seen("run-throttle", "tab-1")
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    for _ in range(8):
+        run_subscribers.mark_subscriber_seen("run-throttle", "tab-1")
+        time.sleep(0.1)
+    # Well inside one 30s window: the first poll renews, the rest must not.
+    assert len(renewals) == 1, f"expected a single renewal in the first window, got {len(renewals)}"
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert w.join(timeout = 3.0) == "allow"
+
+
+def test_a_waiter_with_no_renew_hook_still_works(monkeypatch):
+    """Backwards compatible: a cancel_event from any other producer carries no renew_lease."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "run-no-hook"
+    aid = new_approval_id()
+    run_subscribers.mark_subscriber_seen("run-no-hook", "tab-1")
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    time.sleep(0.6)
+    assert _has_pending(aid), "attendance must still hold the park open without a renew hook"
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert w.join(timeout = 3.0) == "allow"
+
+
+# ── Attendance is per ACCOUNT as well as per run ──
+# studio.db is per-account (utils.paths.storage_roots.studio_db_path -> account_path) and the run id
+# comes from the client (CreateChatGenerationRun.runId), so two accounts on one managed install can
+# hold the same id. Keyed on the bare id, one tenant's follower answered for another's run: it would
+# hold a stranger's approval open past its ceiling and keep renewing that run's lease.
+
+
+def test_attendance_does_not_cross_accounts():
+    run_subscribers.mark_subscriber_seen("shared-id", "tab-a", "account-a")
+    assert run_subscribers.is_attended("shared-id", "account-a") is True
+    assert (
+        run_subscribers.is_attended("shared-id", "account-b") is False
+    ), "another account's follower must not report this run as attended"
+    # And the no-account scope is its own, not a wildcard that matches everyone.
+    assert run_subscribers.is_attended("shared-id") is False
+
+
+def test_a_departure_only_clears_its_own_accounts_stamp():
+    run_subscribers.mark_subscriber_seen("shared-id", "tab-a", "account-a")
+    run_subscribers.mark_subscriber_seen("shared-id", "tab-b", "account-b")
+    run_subscribers.subscriber_departed("shared-id", "tab-a", "account-a")
+    assert run_subscribers.is_attended("shared-id", "account-a") is False
+    assert run_subscribers.is_attended("shared-id", "account-b") is True
+
+
+def test_another_accounts_follower_cannot_hold_this_park_open(monkeypatch):
+    """The reachable consequence: account B watching its own run must not keep account A's
+    approval alive, nor keep renewing A's lease."""
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(tool_approvals, "_LEASE_RENEW_EVERY_S", 0.0)
+    renewals = []
+    cancel = threading.Event()
+    cancel.durable = True
+    cancel.durable_run_id = "shared-id"
+    cancel.durable_account_id = "account-a"
+    cancel.renew_lease = lambda: renewals.append(1)
+    aid = new_approval_id()
+
+    # Only account B is watching, on ITS run that happens to share the id.
+    run_subscribers.mark_subscriber_seen("shared-id", "tab-b", "account-b")
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    assert (
+        w.join(timeout = 3.0) == "deny"
+    ), "account A's approval was held open by account B's follower"
+    assert renewals == [], "account A's lease was renewed on the strength of account B's follower"

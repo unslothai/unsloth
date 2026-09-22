@@ -17,6 +17,8 @@ from typing import Any, AsyncIterator
 from starlette.requests import Request
 
 from core.inference.llama_keepwarm import InferenceActivityReservation
+from core.training.account_jobs import sweepable_job_accounts
+from utils.account_context import current_account_id, run_as
 from loggers import get_logger
 from models.inference import ChatCompletionRequest
 from state import active_generations
@@ -187,6 +189,16 @@ async def _sweep_in_daemon_thread(fn, /, *args, **kwargs):
     return await future
 
 
+def _run_id_held_by_another_account(account: Any, run_id: str) -> bool:
+    """Client-chosen ids are per account but the supervisor keys by bare id, so a live
+    registration under another account is theirs. No registration still cancels."""
+    account_id = getattr(account, "account_id", None)
+    return any(
+        entry.get("run_id") == run_id and entry.get("account_id") != account_id
+        for entry in active_generations.snapshot()
+    )
+
+
 class ChatGenerationLeaseSweeper:
     """Periodically settle durable runs whose progress lease has expired.
 
@@ -261,15 +273,23 @@ class ChatGenerationLeaseSweeper:
     async def sweep_once(self) -> list[str]:
         if not self.enabled:
             return []
-        settled = await _sweep_in_daemon_thread(
-            db.reconcile_runs,
-            error = _LEASE_ERROR,
-            stale_after_ms = int(self._timeout * 1000),
-        )
+        settled: list[tuple[Any, str]] = []
+        # Deactivated accounts too: their wedged producer never sees the cancel event.
+        for account in sweepable_job_accounts():
+            settled.extend(
+                (account, run_id)
+                for run_id in await _sweep_in_daemon_thread(
+                    run_as,
+                    account,
+                    db.reconcile_runs,
+                    error = _LEASE_ERROR,
+                    stale_after_ms = int(self._timeout * 1000),
+                )
+            )
         if not settled:
             return []
         supervisor = getattr(getattr(self.app, "state", None), "chat_generation_supervisor", None)
-        for run_id in settled:
+        for account, run_id in settled:
             logger.warning(
                 "chat_generation_run_lease_expired",
                 run_id = run_id,
@@ -277,22 +297,35 @@ class ChatGenerationLeaseSweeper:
             )
             if supervisor is None:
                 continue
+            if _run_id_held_by_another_account(account, run_id):
+                # Another account started a live run under this id; the slot is theirs.
+                logger.warning(
+                    "chat_generation_lease_cancel_skipped",
+                    run_id = run_id,
+                    reason = "another account holds the live registration for this id",
+                )
+                continue
             # The row is settled, but a producer wedged inside the engine is still holding its slot and activity
-            # reservation; cancel unwinds it.
+            # reservation; cancel unwinds it, bound to the owning account's namespace.
             try:
-                supervisor.cancel(run_id)
+                run_as(account, supervisor.cancel, run_id)
             except Exception as exc:
                 logger.warning(
                     "chat_generation_lease_cancel_failed", run_id = run_id, error = repr(exc)
                 )
                 continue
             asyncio.create_task(
-                self._force_cancel_after_grace(supervisor, run_id),
+                self._force_cancel_after_grace(supervisor, run_id, account),
                 name = f"chat-generation-lease-force-cancel:{run_id}",
             )
-        return settled
+        return [run_id for _account, run_id in settled]
 
-    async def _force_cancel_after_grace(self, supervisor: Any, run_id: str) -> None:
+    async def _force_cancel_after_grace(
+        self,
+        supervisor: Any,
+        run_id: str,
+        account: Any = None,
+    ) -> None:
         """Escalate from the cooperative cancel to cancelling the producer task.
 
         supervisor.cancel() only sets a threading.Event, which a producer blocked inside
@@ -303,6 +336,9 @@ class ChatGenerationLeaseSweeper:
         await asyncio.sleep(self._FORCE_CANCEL_GRACE_S)
         task = getattr(supervisor, "_tasks", {}).get(run_id)
         if task is None or task.done():
+            return
+        if account is not None and _run_id_held_by_another_account(account, run_id):
+            # The slot changed hands during the grace period.
             return
         logger.warning(
             "chat_generation_run_force_cancelled",
@@ -458,16 +494,34 @@ class ChatGenerationSupervisor:
             return True
         cancel_event = threading.Event()
         # Durable marker read by state.tool_approvals.wait_tool_decision: a confirm-mode ("ask") call
-        # parked mid-run must wait for the returning session (resolved by approval_id) rather than auto-
-        # deny on the 3600s ceiling. In-memory only — a backend restart still loses the slot. Parking
-        # does not renew the progress lease, so an approval nobody answers is released by the lease
-        # sweeper, not by a ceiling: once the run's progress has aged past the lease timeout,
-        # reconcile_runs settles it as interrupted and supervisor.cancel() sets THIS event — which
-        # wait_tool_decision polls at 500ms, so it returns deny, pops its own _pending slot, and the
-        # producer unwinding balances the InferenceActivityReservation below. An abandoned park
-        # therefore holds its reservation for one lease window (default 1200s), exactly as a
-        # non-durable run already does.
+        # parked mid-run waits for the returning session (resolved by approval_id) instead of the
+        # 3600s ceiling a browser-owned run uses. In-memory only, so a backend restart still loses
+        # the slot. Two things end an abandoned park, whichever comes first:
+        #   1. the park ceiling itself, UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S, default 300s. The gate
+        #      denies, the model is told the call timed out unanswered and adapts, and the run carries
+        #      on. A user who returns after that finds the call already refused, not still waiting.
+        #      The ceiling counts time with NOBODY WATCHING: durable means cancel_on_disconnect is
+        #      off, not that the tab is gone, so a user reading the card keeps the full
+        #      _DECISION_TIMEOUT. durable_run_id is how the gate asks (state/run_subscribers.py).
+        #   2. the lease sweeper, for a producer wedged before it ever reaches the gate. Parking does
+        #      not renew the progress lease, so once progress has aged past the lease timeout
+        #      reconcile_runs settles the run as interrupted and supervisor.cancel() sets THIS event,
+        #      which wait_tool_decision polls at 500ms.
+        # Either way the waiter returns deny and pops its own _pending slot. Note what the ceiling
+        # does NOT bound: it ends one approval WAIT, not the run. The loop appends the denial as a
+        # tool message and keeps generating, so the InferenceActivityReservation below is released by
+        # the producer unwinding and by nothing else. A turn that parks on several calls in a row can
+        # therefore hold it for several ceilings, and the progress between them renews the lease. The
+        # sweeper is the only bound on a producer that stops making progress at all.
         cancel_event.durable = True
+        cancel_event.durable_run_id = run_id
+        # Same scope ActiveGeneration captures below: the id alone is not unique across accounts.
+        cancel_event.durable_account_id = current_account_id() or ""
+        # Re-arming the approval counter alone is not enough: parking makes no progress, so the
+        # sweeper settles the run at the lease timeout (1200s) and cancels the wait, capping an
+        # ATTENDED deliberation near 20 minutes. A watching user is not the wedged producer the
+        # lease exists to reap.
+        cancel_event.renew_lease = lambda: db.touch_progress(run_id)
         activity = InferenceActivityReservation()
         activity.reserve()
         registration = active_generations.ActiveGeneration(
@@ -650,7 +704,7 @@ class ChatGenerationSupervisor:
                     worker_token = worker_token,
                     status = "failed" if shutting_down else "cancelled",
                     finish_reason = "interrupted" if shutting_down else "cancelled",
-                    error = "Studio shut down during generation" if shutting_down else None,
+                    error = "Unsloth shut down during generation" if shutting_down else None,
                 )
                 return
             # Spans the lifecycle gate as well as preparation: a run waiting on the gate is still queued, so its lease
@@ -665,7 +719,7 @@ class ChatGenerationSupervisor:
                         worker_token = worker_token,
                         status = "failed" if shutting_down else "cancelled",
                         finish_reason = "interrupted" if shutting_down else "cancelled",
-                        error = "Studio shut down during generation" if shutting_down else None,
+                        error = "Unsloth shut down during generation" if shutting_down else None,
                     )
                     return
                 if not await asyncio.to_thread(db.mark_running, run_id, worker_token):
@@ -787,7 +841,7 @@ class ChatGenerationSupervisor:
             if run_id in self._shutdown_runs:
                 status = "failed"
                 finish_reason = "interrupted"
-                error = "Studio shut down during generation"
+                error = "Unsloth shut down during generation"
             elif current["cancelRequested"] or (cancel_event.is_set() and error is None):
                 # A bare event is not proof of a user stop: the streaming paths set this same event from their cleanup
                 # after emitting an in-band error, so a parsed failure outranks it. An explicit cancelRequested still
@@ -842,7 +896,7 @@ class ChatGenerationSupervisor:
                     error = (
                         None
                         if cancelled
-                        else "Studio shut down during generation"
+                        else "Unsloth shut down during generation"
                         if shutting_down
                         else str(exc)[:1000]
                     ),

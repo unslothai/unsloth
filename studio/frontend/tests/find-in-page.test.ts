@@ -1456,16 +1456,29 @@ test("dark mode sits above the cards it floats over", async () => {
     assert.ok(hit, `${selector} has no ${property}`);
     return hit[1].trim();
   };
-  const grey = (hex: string) => Number.parseInt(hex.slice(1, 3), 16);
+  const grey = (declaration: string) => {
+    // The bar is authored inside a color-mix now, so read the colour it mixes.
+    const hex = /#[0-9a-f]{6}/i.exec(declaration);
+    assert.ok(hex, `no colour in ${declaration}`);
+    return Number.parseInt(hex[0].slice(1, 3), 16);
+  };
   // A bar at `--card` dissolves into what scrolls under it; past `--border` it reads as an edge.
-  const bar = grey(value(".dark .find-bar-surface", "background-color"));
-  const card = grey(value(".dark", "--card"));
-  const border = grey(value(".dark", "--border"));
+  const barDeclaration = value(".dark .find-bar-surface", "background-color");
+  const bar = grey(barDeclaration);
+  const card = grey(value(".dark", "--card-base"));
+  const border = grey(value(".dark", "--border-base"));
   assert.ok(bar > card, `bar ${bar} is not lighter than --card ${card}`);
   assert.ok(bar < border, `bar ${bar} is not darker than --border ${border}`);
   assert.match(
     value(".dark .find-bar-surface", "box-shadow"),
     /var\(--background\)/,
+  );
+  // Both take the same step at the same time, so the order above survives the
+  // contrast slider instead of holding only at the default.
+  assert.match(barDeclaration, /var\(--contrast-surface-mix, 0%\)/);
+  assert.match(
+    value("html[data-contrast-adjust]", "--card"),
+    /var\(--contrast-surface-mix\)/,
   );
 });
 
@@ -1488,7 +1501,9 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
   // 22.25/28.25rem is exactly the previous short-counter width: fixed input + 12rem chrome.
   assert.match(surface[1], /(?:^|\s)w-\[22\.25rem\](?:\s|$)/);
   assert.match(surface[1], /(?:^|\s)sm:w-\[28\.25rem\](?:\s|$)/);
-  const input = /<input[\s\S]*?className=\{cn\([\s\S]*?"([^"]*)"/.exec(
+  // Either form: the field's classes are the point, not whether they go
+  // through cn().
+  const input = /<input[\s\S]*?className=\{?(?:cn\()?\s*"([^"]*)"/.exec(
     FIND_BAR,
   );
   assert.ok(input);
@@ -2203,19 +2218,20 @@ test("a capped search does not segment the whole index to answer its first pass"
 });
 
 test("a query that matches everywhere stops seeking the segmenter per candidate", () => {
-  // `containing` seeks, which is why it replaced segmenting whole blocks, and a seek per candidate
-  // undoes that: a capped search anchored near the end walks the candidates up to three times, so a
-  // page of one repeated syllable asked for millions. Counted, so the assertion is not the clock.
+  // Fixed seek costs make the budget check independent of host speed.
   const probe = `
     let seeks = 0;
+    let scans = 0;
+    let clock = 1;
+    Object.defineProperty(performance, "now", { value: () => clock });
     const Real = Intl.Segmenter;
     Intl.Segmenter = class {
       constructor(...args) { this.inner = new Real(...args); }
       segment(input) {
         const segments = this.inner.segment(input);
         return {
-          containing: (at) => { seeks += 1; return segments.containing(at); },
-          [Symbol.iterator]: () => segments[Symbol.iterator](),
+          containing: (at) => { seeks += 1; clock += 0.01; return segments.containing(at); },
+          [Symbol.iterator]: () => { scans += 1; return segments[Symbol.iterator](); },
         };
       }
     };
@@ -2236,10 +2252,8 @@ test("a query that matches everywhere stops seeking the segmenter per candidate"
     const index = buildTextIndex(el("DIV", [el("P", nodes)]));
     const found = findMatches(index, "\uac00", MAX_MATCHES, index.text.length);
     if (found.length !== MAX_MATCHES) throw new Error("expected a capped search, got " + found.length);
-    // One pass over the boundaries replaces the seeks, so what is left is what the budget bought
-    // before it. The number is not fixed: the cap is time, and a seek into Hangul is cheap, so
-    // this shape gets tens of thousands where a page of flags would get tens. 1.6M without it.
-    if (seeks > 200000) throw new Error("seeks per candidate: " + seeks);
+    if (scans !== 1) throw new Error("expected one boundary scan, got " + scans);
+    if (seeks > 10000) throw new Error("seeks per candidate: " + seeks);
   `;
   const run = spawnSync(
     process.execPath,
@@ -2440,7 +2454,12 @@ test("the bar has no border, and its buttons have a hover that shows", async () 
     "the bar took a border back",
   );
   // The ghost variant's own `--muted/50` hover lands within a shade of this surface.
-  assert.match(FIND_BAR, /hover:bg-black\/\[0\.06\] dark:hover:bg-white\/10/);
+  // The hover washes carry their authored alpha times the contrast gain, so the
+  // slider can fade or strengthen them (appearance-custom-store.ts).
+  assert.match(
+    FIND_BAR,
+    /hover:bg-\[rgb\(0_0_0_\/_calc\(0\.06\*var\(--contrast-wash-gain,1\)\)\)\] dark:hover:bg-\[rgb\(255_255_255_\/_calc\(0\.1\*var\(--contrast-wash-gain,1\)\)\)\]/,
+  );
   assert.equal(
     (FIND_BAR.match(/className=\{FIND_BUTTON_CLASS\}/g) ?? []).length,
     3,

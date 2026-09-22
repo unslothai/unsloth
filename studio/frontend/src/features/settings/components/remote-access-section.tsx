@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useLoginMode } from "@/features/auth/account-session";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -194,8 +195,7 @@ function RemoteUrlPanel({ url }: { url: string | null }) {
   );
 }
 
-// Desktop signs in with a local secret, so the account password exists only for
-// remote browsers and is managed here rather than in the General tab.
+// The desktop owner signs in with a local secret, so this password is for remote browsers only.
 function RemotePasswordRow({
   status,
   onDone,
@@ -203,13 +203,18 @@ function RemotePasswordRow({
   status: RemoteAccessStatus | null;
   onDone: () => void;
 }) {
+  const multi = useLoginMode() === "multi";
   if (!(isTauri && status)) {
     return null;
   }
   return (
     <SettingsRow
       label="Remote password"
-      description="Remote browsers sign in as unsloth. The Unsloth Desktop App keeps signing in automatically."
+      description={
+        multi
+          ? "This changes the installation owner's password. Every other account signs in with its own."
+          : "Remote browsers sign in as unsloth. The Unsloth Desktop App keeps signing in automatically."
+      }
     >
       <ChangePasswordDialog initial={status.passwordPending} onDone={onDone} />
     </SettingsRow>

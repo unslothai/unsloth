@@ -10,6 +10,7 @@ import { create } from "zustand";
 export const SETTINGS_TABS = [
   "general",
   "profile",
+  "accounts",
   "appearance",
   "resources",
   "chat",
@@ -29,7 +30,9 @@ export type SettingsTab = (typeof SETTINGS_TABS)[number];
 export type SettingsScrollTarget =
   | "about-updates"
   | "appearance-sidebar-nav"
-  | "chat-canvas-network";
+  | "chat-composer"
+  | "chat-canvas-network"
+  | "resources-caches";
 
 /** Which archive the Data tab should open straight into. */
 export type ArchivedShelf = "chats" | "images" | "videos" | "audio";
@@ -52,10 +55,16 @@ interface SettingsDialogState {
   // toast). DataTab uses it as its initial subpage, then clears it. See requestsFor
   // for how long it lives unconsumed.
   archivedRequested: ArchivedShelf | null;
+  // Set when something asks for one connection's settings (the picker's Connected group gear).
+  // ConnectionsTab hands it to the form, then clears it. Same lifetime as archivedRequested.
+  connectionRequested: string | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
   openArchivedMedia: (shelf: Exclude<ArchivedShelf, "chats">) => void;
+  /** Open Connections with `providerId`'s edit form already up. */
+  openConnectionSettings: (providerId: string) => void;
   consumeArchivedChatsRequest: () => void;
+  consumeConnectionRequest: () => void;
   consumeScrollTarget: (target: SettingsScrollTarget) => void;
   closeDialog: () => void;
   setActiveTab: (tab: SettingsTab) => void;
@@ -106,9 +115,11 @@ function loadInitialTab(): SettingsTab {
 
 /** The panel that delivers each scroll target, so a navigation elsewhere abandons it. */
 const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
+  "chat-composer": "chat",
   "about-updates": "about",
   "appearance-sidebar-nav": "appearance",
   "chat-canvas-network": "chat",
+  "resources-caches": "resources",
 };
 
 /**
@@ -127,6 +138,8 @@ function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
         ? state.scrollTarget
         : null,
     archivedRequested: tab === "data" ? state.archivedRequested : null,
+    connectionRequested:
+      tab === "connections" ? state.connectionRequested : null,
   };
 }
 
@@ -137,6 +150,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   opener: null,
   openerFallback: null,
   archivedRequested: null,
+  connectionRequested: null,
   openDialog: (tab, options) =>
     set((state) => {
       const next = tab ?? state.activeTab;
@@ -147,6 +161,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
         // A caller that names a target replaces whatever was still pending.
         scrollTarget: options?.scrollTarget ?? pending.scrollTarget,
         archivedRequested: pending.archivedRequested,
+        connectionRequested: pending.connectionRequested,
         ...focusForOpen(state, options?.focusFallback),
       };
     }),
@@ -156,6 +171,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       activeTab: "data",
       scrollTarget: null,
       archivedRequested: "chats",
+      connectionRequested: null,
       ...focusForOpen(state),
     })),
   openArchivedMedia: (shelf) =>
@@ -164,9 +180,20 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       activeTab: "data",
       scrollTarget: null,
       archivedRequested: shelf,
+      connectionRequested: null,
+      ...focusForOpen(state),
+    })),
+  openConnectionSettings: (providerId) =>
+    set((state) => ({
+      open: true,
+      activeTab: "connections",
+      scrollTarget: null,
+      archivedRequested: null,
+      connectionRequested: providerId,
       ...focusForOpen(state),
     })),
   consumeArchivedChatsRequest: () => set({ archivedRequested: null }),
+  consumeConnectionRequest: () => set({ connectionRequested: null }),
   consumeScrollTarget: (target) =>
     set((state) => ({
       scrollTarget: state.scrollTarget === target ? null : state.scrollTarget,
@@ -175,7 +202,12 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   // pass after `open: false` lands, so the opener must still be readable
   // from the store at that point. The next openDialog() overwrites it.
   closeDialog: () =>
-    set({ open: false, scrollTarget: null, archivedRequested: null }),
+    set({
+      open: false,
+      scrollTarget: null,
+      archivedRequested: null,
+      connectionRequested: null,
+    }),
   setActiveTab: (tab) => {
     try {
       window.localStorage.setItem(ACTIVE_TAB_KEY, tab);

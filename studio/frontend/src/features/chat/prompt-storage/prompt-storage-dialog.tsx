@@ -23,11 +23,10 @@ import {
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 import { cn } from "@/lib/utils";
-import { Search01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   BookmarkIcon,
-  DownloadIcon,
   EyeIcon,
   LayoutListIcon,
   PencilIcon,
@@ -94,6 +93,7 @@ import {
   type ConversationJsonlLayout,
 } from "../utils/ndjson";
 import { orderByParentChain } from "../utils/message-order";
+import { liveThreadBranch } from "../utils/live-thread-head";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
   buildConversationMarkdown,
@@ -237,6 +237,8 @@ async function loadConversationMessages(
     emptyMessage = "No messages in this conversation to export.",
     includeSiblings = true,
   } = options;
+  // Read before the storage await: switching chats meanwhile would point the lookup at another thread.
+  const liveBranch = liveThreadBranch(threadId);
   const raw = await listStoredChatMessages(threadId);
   if (raw.length === 0) {
     toast.info(emptyMessage);
@@ -245,7 +247,13 @@ async function loadConversationMessages(
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return raw;
-  return orderByParentChain(raw, { includeSiblings }) as typeof raw;
+  // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
+  const storedIds = new Set(raw.map((m) => m.id));
+  // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
+  const headId = liveBranch?.length
+    ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null)
+    : undefined;
+  return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
 }
 
 function exportTs(): string {
@@ -390,7 +398,9 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
 
 // ShareGPT training JSONL (human/system/gpt turns).
 export async function exportConversationShareGPT(threadId: string): Promise<void> {
-  const messages = await loadConversationMessages(threadId);
+  const messages = await loadConversationMessages(threadId, {
+    includeSiblings: exportFormatIncludesSiblings("sharegpt"),
+  });
   if (!messages) return;
 
   const conversations: Array<{ from: string; value: string }> = [];
@@ -457,15 +467,21 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   );
 }
 
+// One place decides that markdown carries the branch on screen; callers keep their own empty-state wording.
+const loadDisplayedBranchMessages = (
+  threadId: string,
+  options: { emptyMessage?: string } = {},
+) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
+
 /** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
 export const buildConversationMarkdownForThread =
   createConversationMarkdownBuilder({
-    loadMessages: loadConversationMessages,
+    loadMessages: loadDisplayedBranchMessages,
     renderMessage: messageToMarkdown,
   });
 
 export const exportConversationMarkdown = createConversationMarkdownExporter({
-  loadMessages: loadConversationMessages,
+  loadMessages: loadDisplayedBranchMessages,
   renderMessage: messageToMarkdown,
   download: downloadBlob,
   exportTimestamp: exportTs,
@@ -480,7 +496,7 @@ async function saveConversationAsProjectSource(
   projectId: string,
   title: string,
 ): Promise<SaveSourceOutcome> {
-  const messages = await loadConversationMessages(threadId, {
+  const messages = await loadDisplayedBranchMessages(threadId, {
     emptyMessage: "No messages in this conversation to save.",
   });
   if (!messages) return "skipped";
@@ -1302,7 +1318,7 @@ function ExportModal({
             Cancel
           </Button>
           <Button size="sm" onClick={handleExport}>
-            <DownloadIcon className="mr-1.5 size-3.5" />
+            <HugeiconsIcon icon={Download01Icon} className="mr-1.5 size-3.5" />
             Download
           </Button>
         </div>
@@ -1594,7 +1610,7 @@ function PromptDetail({
           className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
-          <DownloadIcon className="size-4" />
+          <HugeiconsIcon icon={Download01Icon} className="size-4" />
         </button>
         <button
           type="button"
@@ -1922,7 +1938,7 @@ function PromptListDetail({
           className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
-          <DownloadIcon className="size-4" />
+          <HugeiconsIcon icon={Download01Icon} className="size-4" />
         </button>
         <button
           type="button"
@@ -2429,7 +2445,7 @@ export function PromptStorageDialog({
                   onClick={openBulkExport}
                   className="h-8 gap-1.5 text-xs"
                 >
-                  <DownloadIcon className="size-3.5" />
+                  <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
                   Export
                 </Button>
                 <div className="ml-1 h-5 w-px bg-border/60 shrink-0" />

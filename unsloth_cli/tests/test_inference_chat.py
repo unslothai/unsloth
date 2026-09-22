@@ -318,6 +318,49 @@ def test_chatbackend_gguf_leaves_max_tokens_unset_for_llama_server():
     assert [call["max_tokens"] for call in fake.calls] == [None, 8]
 
 
+_UNSET_SAMPLING = dict(temperature = None, top_p = None, top_k = None, repetition_penalty = None)
+_GEMMA3_SAMPLING = dict(temperature = 1.0, top_p = 0.95, top_k = 64, repetition_penalty = 1.0)
+
+
+def _clear_sampling_pins(monkeypatch):
+    for field in _GEMMA3_SAMPLING:
+        monkeypatch.delenv(f"UNSLOTH_SAMPLING_{field.upper()}", raising = False)
+
+
+def test_chatbackend_resolves_unset_sampling_to_the_model_recommendation(monkeypatch):
+    _clear_sampling_pins(monkeypatch)
+    fake = _FakeBackend()
+    fake.active_model_name = "unsloth/gemma-3-270m-it"
+    backend = ChatBackend("unsloth", fake)
+
+    list(
+        backend.stream([{"role": "user", "content": "x"}], **{**_STREAM_KWARGS, **_UNSET_SAMPLING})
+    )
+
+    kwargs = fake.calls[0][2]
+    assert {field: kwargs[field] for field in _GEMMA3_SAMPLING} == _GEMMA3_SAMPLING
+
+
+def test_chatbackend_gguf_resolves_unset_sampling_but_keeps_explicit_values(monkeypatch):
+    _clear_sampling_pins(monkeypatch)
+    fake = _FakeGgufBackend()
+    fake.model_identifier = "unsloth/gemma-3-4b-it-GGUF"
+    backend = ChatBackend("gguf", fake)
+
+    list(
+        backend.stream(
+            [{"role": "user", "content": "x"}],
+            **{**_STREAM_KWARGS, **_UNSET_SAMPLING, "temperature": 0.3},
+        )
+    )
+
+    call = fake.calls[0]
+    assert {field: call[field] for field in _GEMMA3_SAMPLING} == {
+        **_GEMMA3_SAMPLING,
+        "temperature": 0.3,
+    }
+
+
 class _FakeStatsBackend:
     def __init__(self, stats):
         self._stats = stats
@@ -942,6 +985,20 @@ def test_chat_no_arg_chats_with_picked_trained_model(monkeypatch):
     assert resolved == ["outputs/run-42"]
 
 
+class _HealthResponse:
+    def __init__(self, body = b'{"status": "healthy", "service": "Unsloth UI Backend"}'):
+        self._body = body
+
+    def read(self, _limit = None):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
 def test_find_studio_server_none_when_not_running(monkeypatch):
     import urllib.request
 
@@ -952,6 +1009,125 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
     assert _inference.find_studio_server() is None
+
+
+def test_find_studio_server_falls_back_to_a_recorded_studio_port(monkeypatch, tmp_path):
+    import importlib
+    import os
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: pid == os.getpid())
+    # Legacy records: a bare PID, no start time and no bind-address line.
+    (tmp_path / "studio-8887-424242.pid").write_text("424242", encoding = "utf-8")
+    (tmp_path / f"studio-8889-{os.getpid()}.pid").write_text(str(os.getpid()), encoding = "utf-8")
+    probed = []
+
+    def default_port_taken(request, *a, **k):
+        probed.append(request.full_url)
+        if ":8888/" in request.full_url:
+            raise OSError("HTTP Error 404: File not found")
+        return _HealthResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", default_port_taken)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8889"
+    assert probed == ["http://127.0.0.1:8888/api/health", "http://127.0.0.1:8889/api/health"]
+
+    probed.clear()
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    assert _inference.find_studio_server() is None
+    assert probed == ["http://127.0.0.1:8888/api/health"]
+
+
+def test_find_studio_server_skips_a_recorded_pid_reused_by_another_process(monkeypatch, tmp_path):
+    import importlib
+    import sys
+    import types
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
+    process = types.SimpleNamespace(create_time = lambda: 1000.0)
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(Process = lambda pid: process))
+    # A crashed Studio's record whose PID now belongs to another process, next to a live one.
+    (tmp_path / "studio-8887-4242.pid").write_text("4242\n500.0\n127.0.0.1", encoding = "utf-8")
+    (tmp_path / "studio-8889-4343.pid").write_text("4343\n1000.0\n127.0.0.1", encoding = "utf-8")
+    probed = []
+
+    def urlopen(request, *a, **k):
+        probed.append(request.full_url)
+        if ":8888/" in request.full_url:
+            raise OSError("connection refused")
+        return _HealthResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8889"
+    assert probed == ["http://127.0.0.1:8888/api/health", "http://127.0.0.1:8889/api/health"]
+
+
+def test_find_studio_server_probes_a_recorded_port_on_the_family_it_bound(monkeypatch, tmp_path):
+    # An IPv6-only Studio shares its port number with whoever holds 127.0.0.1.
+    import importlib
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
+    (tmp_path / "studio-8889-4343.pid").write_text("4343\n\n::1", encoding = "utf-8")
+    # `::` is v6only on macOS; a LAN-only bind is not reachable from this flow at all.
+    (tmp_path / "studio-8890-4344.pid").write_text("4344\n\n0.0.0.0,::", encoding = "utf-8")
+    (tmp_path / "studio-8891-4345.pid").write_text("4345\n\n::", encoding = "utf-8")
+    (tmp_path / "studio-8892-4346.pid").write_text("4346\n\n192.168.1.5", encoding = "utf-8")
+    probed = []
+
+    def nothing_answers(request, *a, **k):
+        probed.append(request.full_url)
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", nothing_answers)
+    assert _inference.find_studio_server() is None
+    assert probed == [
+        "http://127.0.0.1:8888/api/health",
+        "http://[::1]:8889/api/health",
+        "http://127.0.0.1:8890/api/health",
+        "http://[::1]:8890/api/health",
+        "http://[::1]:8891/api/health",
+    ]
+
+
+def test_find_studio_server_keeps_looking_past_a_stranger_on_the_default_port(
+    monkeypatch, tmp_path
+):
+    # Whatever took 8888 answers a health payload of its own for every path.
+    import importlib
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
+    (tmp_path / "studio-8889-4343.pid").write_text("4343\n\n127.0.0.1", encoding = "utf-8")
+
+    def stranger_on_8888(request, *a, **k):
+        if ":8888/" in request.full_url:
+            return _HealthResponse(b'{"status": "healthy", "service": "some-other-app"}')
+        return _HealthResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", stranger_on_8888)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8889"
 
 
 def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
@@ -972,17 +1148,10 @@ def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
         ],
     )
 
-    class _OK:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
     def only_ipv4(request, *a, **k):
         if "127.0.0.1" not in request.full_url:
             raise OSError("connection refused")
-        return _OK()
+        return _HealthResponse()
 
     monkeypatch.setattr(urllib.request, "urlopen", only_ipv4)
     assert _inference.find_studio_server() == "http://127.0.0.1:8888"
@@ -1049,6 +1218,44 @@ def test_http_backend_omits_max_tokens_when_unset(monkeypatch):
 
 def test_http_backend_sends_an_explicit_max_tokens(monkeypatch):
     assert _http_stream_body(monkeypatch, 128)["max_tokens"] == 128
+
+
+@pytest.mark.parametrize("command", ["chat", "inference"])
+def test_cli_leaves_unset_sampling_to_the_server(monkeypatch, command):
+    from unsloth_cli.commands import inference as infermod
+
+    module, app, argv = {
+        "chat": (chatmod, _chat_app(), ["fake-model"]),
+        "inference": (infermod, _inference_app(), ["fake-model", "hello"]),
+    }[command]
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    bodies = []
+
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        bodies.append(payload)
+        return _FakeSSEResponse([b"data: [DONE]\n"])
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+    monkeypatch.setattr(backend, "close", lambda: None)
+    monkeypatch.setattr(module, "connect_studio_server", lambda *a, **k: backend)
+    if command == "chat":
+        monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+        monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    for extra in ([], ["--temperature", "0.3"]):
+        result = CliRunner().invoke(app, [*argv, *extra], input = "hi\n/exit\n")
+        assert result.exit_code == 0, result.output
+
+    sampling = ("temperature", "top_p", "top_k", "repetition_penalty")
+    assert [{k: body[k] for k in sampling if k in body} for body in bodies] == [
+        {},
+        {"temperature": 0.3},
+    ]
 
 
 def _http_finish(monkeypatch, finish_reason):
@@ -1651,7 +1858,7 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
             {
                 "hf_token": None,
                 "max_seq_length": 0,
-                "load_in_4bit": True,
+                "load_in_4bit": None,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
                 "spec_draft_n_max": 3,
@@ -1704,7 +1911,7 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
             {
                 "hf_token": None,
                 "max_seq_length": 0,
-                "load_in_4bit": True,
+                "load_in_4bit": None,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
                 "spec_draft_n_max": 3,
@@ -1714,6 +1921,83 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
     ]
     assert streams[0][0] == [{"role": "user", "content": "hello"}]
     assert closed == [True]
+
+
+def _command_and_argv(command):
+    from unsloth_cli.commands import inference as infermod
+    return {
+        "chat": (chatmod, _chat_app(), ["fake-model"]),
+        "inference": (infermod, _inference_app(), ["fake-model", "hello"]),
+    }[command]
+
+
+@pytest.mark.parametrize("command", ["chat", "inference"])
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [([], "omitted"), (["--load-in-4bit"], True), (["--no-load-in-4bit"], False)],
+)
+def test_server_load_sends_load_in_4bit_only_when_typed(monkeypatch, command, flags, expected):
+    """An untyped default must not make the server reload a 16-bit model in 4-bit."""
+    from unsloth_cli import _inference
+
+    module, app, argv = _command_and_argv(command)
+    payloads = []
+
+    def fake_request(
+        self,
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        payloads.append(payload)
+        return _FakeLoadResponse()
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(_inference, "find_studio_server", lambda: "http://127.0.0.1:8888")
+    monkeypatch.setattr(_inference, "verify_studio_identity", lambda base: True)
+    monkeypatch.setattr(_inference, "_studio_token", lambda: "token")
+    monkeypatch.setattr(HttpChatBackend, "_request", fake_request)
+    monkeypatch.setattr(HttpChatBackend, "stream", lambda self, *a, **k: iter(["answer"]))
+    monkeypatch.setattr(module, "load_chat_backend", lambda *a, **k: pytest.fail("loaded locally"))
+    if command == "chat":
+        monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+        monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(app, [*argv, *flags], input = "/exit\n")
+
+    assert result.exit_code == 0, result.output
+    assert len(payloads) == 1
+    assert payloads[0].get("load_in_4bit", "omitted") == expected
+
+
+@pytest.mark.parametrize("command", ["chat", "inference"])
+def test_local_load_still_gets_a_load_in_4bit_bool(monkeypatch, command):
+    module, app, argv = _command_and_argv(command)
+    loads = []
+
+    class _FakeBackend:
+        def stream(self, *a, **k):
+            return iter(["answer"])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module, "connect_studio_server", lambda *a, **k: None)
+    monkeypatch.setattr(
+        module,
+        "load_chat_backend",
+        lambda model, **kwargs: (loads.append(kwargs["load_in_4bit"]), _FakeBackend())[1],
+    )
+    if command == "chat":
+        monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+        monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    for flags in ([], ["--no-load-in-4bit"]):
+        result = CliRunner().invoke(app, [*argv, *flags], input = "/exit\n")
+        assert result.exit_code == 0, result.output
+
+    assert loads == [True, False]
 
 
 @pytest.mark.parametrize("command", ["chat", "inference"])

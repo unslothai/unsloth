@@ -303,7 +303,7 @@ class TestTorchIndexOverrideParity:
         # A pinned cu* index skips ALL host-GPU probing, so the CUDA repair must clear the
         # CUDA_VISIBLE_DEVICES hide gate too (else the GPU-less CI case bails).
         text = STACK_PY.read_text(encoding = "utf-8")
-        m = re.search(r"def _ensure_cuda_torch\(\).*?(?=\ndef )", text, re.DOTALL)
+        m = re.search(r"def _ensure_cuda_torch\(.*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cuda_torch"
         body = m.group(0)
         assert "_cuda_pinned" in body, (
@@ -830,6 +830,12 @@ class TestPinnedIndexClearsUvEnvParity:
             "_install_env_for_cmd must point PIP_CONFIG_FILE at os.devnull for "
             "pinned installs (pip fallback isolation)"
         )
+        # devnull is all or nothing, so the transport and only-binary it removes are put
+        # back key by key.
+        assert "_pinned_pip_config_overrides()" in stack, (
+            "the pinned scrub must re-assert the operator's transport and binary policy "
+            "that PIP_CONFIG_FILE=devnull removes"
+        )
         setup = SETUP_PS1.read_text(encoding = "utf-8")
         assert "$env:PIP_CONFIG_FILE = 'nul'" in setup, (
             "setup.ps1 Fast-Install pinned scrub must point PIP_CONFIG_FILE at nul "
@@ -998,8 +1004,13 @@ class TestNoTorchPersistenceParity:
         # Written after the manifest is dropped and before the dependency pass, so
         # a pass killed part-way still leaves the mode recorded somewhere.
         assert text.index("install_manifest.set_no_torch_marker(NO_TORCH)") > text.index(
-            "if not install_manifest.remove_manifest():"
+            "if install_manifest.remove_manifest():"
         )
+        # And the parked copy goes with it before the pass starts, so a pass killed part-way leaves
+        # no evidence of a finished one.
+        removed_at = text.index("if install_manifest.remove_manifest():")
+        consumed_at = text.index("install_manifest.consume_previous_manifest()", removed_at)
+        assert consumed_at < text.index("install_manifest.set_no_torch_marker(NO_TORCH)")
 
     def test_both_sides_use_the_same_marker_filename(self):
         manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
@@ -1128,7 +1139,7 @@ class TestInstallUvCacheRootParity:
                 "preserving custom UV_CACHE_DIR",
                 "reusing existing shared cache",
                 "avoid duplicate Torch/CUDA downloads",
-                "using new Studio-owned cache",
+                "using new Unsloth Studio-owned cache",
                 "already-cached packages may download again",
                 "so cached packages may download again",
             ):
@@ -1152,10 +1163,16 @@ class TestInstallUvCacheRootParity:
 
         # Written after the choice is made.
         assert "_record_uv_cache_choice() {" in sh
-        # Every mode records, custom included, or a previous install's marker survives.
+        # Every mode records, custom included, or a previous install's marker survives. The
+        # no-cache guard may precede the call, since uv fills nothing under it, but a branch
+        # that stops calling it at all is the bug this counts.
         call_sites = [
             match.start()
-            for match in re.finditer(r"^[ \t]+_record_uv_cache_choice[ \t]*$", sh, re.MULTILINE)
+            for match in re.finditer(
+                r"^[ \t]+(?:_uv_no_cache_requested \|\| )?_record_uv_cache_choice[ \t]*$",
+                sh,
+                re.MULTILINE,
+            )
         ]
         assert len(call_sites) == 3, f"one call site per mode branch, found {len(call_sites)}"
         assert (
@@ -1163,11 +1180,18 @@ class TestInstallUvCacheRootParity:
             < min(call_sites)
             < sh.index("_UV_CACHE_MODE=isolated")
         ), "the custom branch records before it returns"
-        assert ps1.count("Write-StudioUvCacheMarker -StudioRoot") == 2
+        # Three on the ps1 side too, one per recording mode: custom, isolated, and the
+        # selection. UV_NO_CACHE is the deliberate fourth that records NOTHING on both sides,
+        # since a marker there would name a cache the install never filled.
+        assert ps1.count("Write-StudioUvCacheMarker -StudioRoot") == 3, ps1.count(
+            "Write-StudioUvCacheMarker -StudioRoot"
+        )
         # A marker is a preference, not a requirement, so neither installer may fail on it.
+        # Sliced at the first selection helper, not at the selector: the helpers between them
+        # do use -ErrorAction Stop, and on purpose.
         marker_write = ps1[
             ps1.index("function Write-StudioUvCacheMarker") : ps1.index(
-                "function Set-StudioUvCacheEnvironment"
+                "function Test-StudioUvNoCache"
             )
         ]
         # Covers both marker functions, which sit together above the selector.
@@ -1178,8 +1202,133 @@ class TestInstallUvCacheRootParity:
         assert "utf-8-sig" in cli
 
         # Absolute on both sides: the update resolves it against its own directory.
-        assert 'case "$UV_CACHE_DIR" in' in sh
+        assert "_absolutize_uv_cache_dir() {" in sh
+        assert "UV_CACHE_DIR=$(_absolutize_uv_cache_dir)" in sh
         assert "IsPathRooted" in ps1
+
+        # The selection rules, on both installers. install.sh gained them first, which left
+        # Windows abandoning a warm Studio cache on every rerun and selecting caches uv aborts
+        # on. The behaviour is asserted by running each installer; the PAIRING is asserted
+        # here, so a rule added to one side alone fails even where neither shell can run.
+        #   1. the marker outranks uv's default while it is still warm
+        assert "cache/uv-cache-dir" in sh
+        assert "function Read-StudioUvCacheMarker" in ps1
+        #   2. UV_NO_CACHE stands the selection down, in every spelling uv honours
+        for source in (sh, ps1):
+            assert "UV_NO_CACHE" in source
+        # clap's literals, which is what uv binds UV_NO_CACHE to. All three copies, or one of
+        # them probes and records a cache uv is not using.
+        assert "1|y|yes|t|true|on)" in sh
+        assert '@("1", "y", "yes", "t", "true", "on")' in ps1
+        assert '_UV_TRUE = ("1", "y", "yes", "t", "true", "on")' in cli
+        # and it is honoured BEFORE a caller's cache is recorded, on both sides: uv leaves
+        # UV_CACHE_DIR completely empty under --no-cache, so a marker naming it would send the
+        # next repair to a cache this install never filled. The CLI already checked first.
+        assert "_uv_no_cache_requested() {" in sh
+        assert "function Test-StudioUvNoCache" in ps1
+        sh_custom = sh[sh.index("_UV_CACHE_MODE=custom") :].split("return 0", 1)[0]
+        assert "_uv_no_cache_requested" in sh_custom, sh_custom
+        sh_iso = sh[sh.index("_UV_CACHE_MODE=isolated") :].split("return 0", 1)[0]
+        assert "_uv_no_cache_requested" in sh_iso, sh_iso
+        ps1_custom = ps1[ps1.index('$script:StudioUvCacheMode = "custom"') :].split(
+            "if ($Isolated)", 1
+        )[0]
+        assert "Test-StudioUvNoCache" in ps1_custom, ps1_custom
+        ps1_iso = ps1[ps1.index('$script:StudioUvCacheMode = "isolated"') :].split(
+            "Test-StudioUvNoCache)", 1
+        )
+        assert len(ps1_iso) == 2, "the isolated branch no longer guards its marker write"
+        #   3. only <kind>-v<N> is uv's to write, so a lookalike is neither probed nor warmth
+        assert "_uv_is_bucket_name() {" in sh
+        assert "function Test-StudioUvBucketName" in ps1
+        # and the version cannot be EMPTY on either side: `##*-v` strips through the last
+        # `-v`, so `archive-v1-v` leaves "" behind, which no `*[!0-9]*` matches. PowerShell
+        # rejected it from the start, so this was a real split.
+        bucket_sh = sh.split("_uv_is_bucket_name() {", 1)[1].split("\n}", 1)[0]
+        assert "''|*[!0-9]*) return 1 ;;" in bucket_sh, bucket_sh
+        # To the NEXT function: the body is indented, so splitting on "\n}" ran two
+        # functions on and every assertion below it read the wrong code.
+        bucket_ps1 = ps1.split("function Test-StudioUvBucketName", 1)[1].split(
+            "function Test-StudioUvCacheWritable", 1
+        )[0]
+        assert "IsNullOrEmpty($suffix)" in bucket_ps1, bucket_ps1
+        # Both sides MEASURE whether to fold: default APFS folds and ext4 does not, NTFS
+        # folds unless fsutil setCaseSensitiveInfo says otherwise. Blind folding condemns.
+        assert "ToLowerInvariant()" in bucket_ps1, bucket_ps1
+        assert "-cin" not in bucket_ps1, bucket_ps1
+        assert "[switch]$Fold" in bucket_ps1, bucket_ps1
+        writable_ps1 = ps1.split("function Test-StudioUvCacheWritable", 1)[1].split(
+            "function Test-StudioUvCachePopulated", 1
+        )[0]
+        assert ".unsloth-case-probe." in writable_ps1, writable_ps1
+        assert "-Fold:$fold" in writable_ps1, writable_ps1
+        writable_sh = sh.split("_uv_cache_is_writable() {", 1)[1].split("\n}", 1)[0]
+        assert "tr '[:upper:]' '[:lower:]'" in writable_sh, writable_sh
+        # By a directory the probe MAKES: an existing pair cannot say whether it is one.
+        assert ".unsloth-case-probe." in writable_sh, writable_sh
+        assert "_uv_w_fold=1" in writable_sh, writable_sh
+        # and it decides only the NAME: a colliding file must reach the rejection below.
+        assert writable_sh.index("_uv_w_fold") < writable_sh.index('[ ! -d "$_uv_w_dir" ]')
+        probe_kinds = {
+            "archive",
+            "binaries",
+            "builds",
+            "built-wheels",
+            "environments",
+            "flat-index",
+            "git",
+            "interpreter",
+            "osv",
+            "python",
+            "sdists",
+            "simple",
+            "wheels",
+        }
+        assert 'UV_PINNED_VERSION="0.12.1"' in sh, "re-read uv-cache/src/lib.rs for the new pin"
+        case_body = re.search(
+            r'case "\$\{1%-v\*\}" in\n(.*?)\n\s*\*\) return 1', bucket_sh, re.S
+        ).group(1)
+        kinds_sh = set(re.findall(r"[a-z\-]+", case_body))
+        assert kinds_sh == probe_kinds, sorted(kinds_sh ^ probe_kinds)
+        kinds_ps1 = set(
+            re.findall(r'"([a-z\-]+)"', bucket_ps1.split("-in @(", 1)[1].split("))", 1)[0])
+        )
+        assert kinds_ps1 == probe_kinds, sorted(kinds_ps1 ^ probe_kinds)
+        # and the CLI validates the whole suffix too, or `unsloth studio update` prefers a
+        # cache the installers just rejected. Its docstring claimed the same rule long before
+        # it had it.
+        assert "def _uv_is_bucket_name(name: str) -> bool:" in cli
+        assert (
+            '_UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")' in cli
+        )
+        #   4. readable is not usable: a real create-and-delete, root and every bucket
+        assert ".unsloth-write-probe." in sh
+        assert ".unsloth-write-probe." in ps1
+        assert "function Test-StudioUvCacheWritable" in ps1
+        #   5. and a fallback we cannot write is not a fallback, on both sides
+        assert "_uv_cache_root_is_writable() {" in sh
+        assert "function Test-StudioUvCacheRootWritable" in ps1
+        # Root AND buckets there, and at the launch repoint: the root can be writable while a
+        # bucket uv renames into is not, which is what the candidate probe rejects a cache for.
+        # A root-only question at either site hands back the cache the probe just refused.
+        assert "_uv_cache_is_writable() {" in sh
+        assert "function Test-StudioUvCacheUsable" in ps1
+        sh_launch = sh.split("_prepare_studio_uv_cache_for_launch() {", 1)[1].split("\n}", 1)[0]
+        assert "_uv_cache_is_writable" in sh_launch, sh_launch
+        ps1_launch = ps1.split("function Set-StudioUvCacheForLaunch", 1)[1].split("\n    }", 1)[0]
+        assert "Test-StudioUvCacheUsable" in ps1_launch, ps1_launch
+        #   6. creating the probe is not enough: uv RENAMES into these directories, and NTFS
+        # carries DELETE as its own ACE while an append-only directory does the same on ext4,
+        # so a root can grant create and deny unlink.
+        root_sh = sh.split("_uv_cache_root_is_writable() {", 1)[1].split("\n}", 1)[0]
+        # Judged by whether the probe is GONE, not by rm's exit status, and retried: a scanner
+        # holding the handle makes one delete fail and the next succeed, and Remove-Item throws
+        # for a probe something else already removed where rm -f exits 0.
+        assert '[ -e "$_uv_root_probe" ] || break' in root_sh, root_sh
+        assert "_uv_root_tries" in root_sh, root_sh
+        root_ps1 = ps1.split("function Test-StudioUvCacheRootWritable", 1)[1].split("\n    }", 1)[0]
+        assert "[System.IO.File]::Exists($probe)" in root_ps1, root_ps1
+        assert "$attempt -lt 3" in root_ps1, root_ps1
 
         # The reset must precede both consumers, the selector that writes the marker and
         # every Exit-InstallFailure that restores it. Under `irm | iex` the script scope is
@@ -1238,11 +1387,13 @@ class TestInstallUvCacheRootParity:
             assert '[ -L "$_uv_marker_file" ]' in body[unlink:write], body[unlink:write]
         ps1_marker = ps1[
             ps1.index("function Write-StudioUvCacheMarker") : ps1.index(
-                "function Set-StudioUvCacheEnvironment"
+                "function Test-StudioUvNoCache"
             )
         ]
-        # One helper for both, or they disagree the moment UV_WORKING_DIR is set.
-        assert ps1.count("Resolve-StudioUvCachePath -Cache") == 2, ps1.count(
+        # One helper for every path that must end up absolute, or they disagree the moment
+        # UV_WORKING_DIR is set: the caller's value, the marker write, the marker READ, and
+        # uv's own answer, which comes back verbatim and may be relative.
+        assert ps1.count("Resolve-StudioUvCachePath -Cache") == 4, ps1.count(
             "Resolve-StudioUvCachePath -Cache"
         )
         assert "$env:UV_CACHE_DIR = Resolve-StudioUvCachePath -Cache $env:UV_CACHE_DIR" in ps1
@@ -1291,14 +1442,25 @@ class TestInstallUvCacheRootParity:
         assert "${XDG_CACHE_HOME}/uv" in sh
         assert "${HOME}/.cache/uv" in sh
         assert 'Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"' in ps1
-        selector = ps1.split("function Set-StudioUvCacheEnvironment", 1)[1].split(
+        # The warmth scan lives in Test-StudioUvCachePopulated now, so slicing at
+        # Set-StudioUvCacheEnvironment alone would assert on a body that no longer holds the
+        # scan and pass for the wrong reason.
+        selector = ps1.split("function Test-StudioUvBucketName", 1)[1].split(
             "function Set-StudioUvCacheForLaunch", 1
         )[0]
-        assert "Get-ChildItem -LiteralPath $sharedCache -Directory -Force" in selector
+        assert "Get-ChildItem -LiteralPath $Cache -Directory -Force" in selector
         assert "Get-ChildItem -LiteralPath $bucket.FullName -File -Recurse -Force" in selector
         # Must not fail closed: one denied subdirectory would read as an empty cache.
         assert "-ErrorAction SilentlyContinue -ErrorVariable scanErrors" in selector
-        assert "-ErrorAction Stop" not in selector.split("foreach ($bucket in $buckets)", 1)[1]
+        # The scan only. The helpers after it DO use Stop, and have to: a marker or a write
+        # probe that fails is an answer, where a bucket that cannot be read is not.
+        # Ends at the next function, not two on: Test-StudioUvCacheRootWritable sits between
+        # this scan and the marker reader, and it uses Stop deliberately, so a slice reaching
+        # past it asserts the opposite of what this test says it is asserting.
+        bucket_loop = selector.split("foreach ($bucket in $buckets)", 1)[1].split(
+            "function Test-StudioUvCacheRootWritable", 1
+        )[0]
+        assert "-ErrorAction Stop" not in bucket_loop, bucket_loop
         # -L on the sh side for the same reason Get-ChildItem -Recurse follows links.
         assert "find -L " in sh
 
@@ -1354,3 +1516,392 @@ class TestInstallUvCacheRootParity:
         assert "Set-StudioUvCacheForLaunch" in source
         assert "Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $PreviousValue" in source
         assert "Remove-Item -LiteralPath Env:UV_CACHE_DIR" in source
+
+
+class TestWindowsMountPointVolumes:
+    """A Windows volume can be mounted at a DIRECTORY rather than a drive letter. GetPathRoot
+    reduces C:\\studio to C:\\, so DriveInfo answers for the host drive and two paths on
+    different mounted volumes compare equal on their root: the rollback-space warning is then
+    suppressed or falsely emitted, and the cross-volume cache notice never fires. Win32_Volume
+    lists mount points by the path they are mounted at. Pinned by text because no host in CI
+    has a directory mount point to exercise (#11313)."""
+
+    def test_free_space_asks_the_mounted_volume_first(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "Win32_Volume" in text, "install.ps1 does not consult the mount-point view"
+        helper = text.split("function Get-StudioFreeSpaceBytes", 1)[1].split(
+            "function Get-StudioTreeSizeBytes", 1
+        )[0]
+        assert (
+            "Get-StudioMountedVolume" in helper
+        ), "Get-StudioFreeSpaceBytes falls straight through to the drive root"
+        assert "DriveInfo" in helper, "the drive-root fallback was dropped"
+
+    def test_the_probe_is_gated_on_windows(self):
+        # CimCmdlets ships only on Windows, and this helper is reached on every platform.
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Get-StudioMountedVolume", 1)[1].split("\n    }", 1)[0]
+        assert (
+            "$IsWindows" in helper and "Windows_NT" in helper
+        ), "Get-StudioMountedVolume would call Get-CimInstance off Windows"
+
+
+class TestDiskFullDiagnosisReachesTauri:
+    """The desktop installer and its Repair flow run with --tauri, and there the only thing the
+    UI and its logs ever see is the message handed to the ERROR_DEFAULT marker. A disk-full
+    diagnosis printed beside that message is one the desktop user never reads, which is the
+    scenario #11313 was reported from."""
+
+    def test_shell_folds_the_diagnosis_into_the_marker(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        assert (
+            'tauri_log "ERROR_DEFAULT" "studio setup failed (exit code $_SETUP_EXIT)$_DISK_FULL_SUFFIX"'
+            in text
+        ), "install.sh keeps the disk-full diagnosis out of the Tauri message"
+
+    def test_windows_folds_the_diagnosis_into_the_failure_message(self):
+        """Appended inside Exit-InstallFailure, so every caller carries it rather than the one
+        site that remembered to build a suffix."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
+        append = body.index('$Message = "$Message$_diskSuffix"')
+        marker = body.index('Write-TauriLog "ERROR_DEFAULT" $Message')
+        assert append < marker, "the diagnosis is appended after the Tauri marker is written"
+
+    def test_windows_measures_in_both_modes(self):
+        # The probe must sit OUTSIDE the non-Tauri console branch, or --tauri never measures.
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
+        probe = body.index("Get-StudioFreeSpaceBytes")
+        guard = body.index("if (-not $TauriMode) {")
+        assert (
+            probe < guard
+        ), "the free-space probe runs only in the non-Tauri branch, so --tauri never measures"
+
+
+class TestDiskFullDiagnosisCoversTheBiggestWrites:
+    """The venv and the torch install are the largest writes an install makes, and both fail long
+    before studio setup is reached. A diagnosis attached only to the studio-setup branch therefore
+    misses the most likely moment for the disk to fill, and those exits report a bare exit code.
+    Both installers attach it to the one funnel every failure passes through instead."""
+
+    def test_windows_attaches_it_to_the_shared_exit(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
+        assert "Get-StudioFreeSpaceBytes" in body, "only the studio-setup branch is diagnosed"
+        # Probed rather than called outright: the early exits happen before it is defined.
+        assert (
+            "Get-Command Get-StudioFreeSpaceBytes" in body
+        ), "an exit before the helper is defined would report command-not-found instead"
+
+    def test_the_shell_attaches_it_to_the_exit_trap(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        body = text.split("_on_install_exit() {", 1)[1].split("\n}", 1)[0]
+        assert "_set_disk_full_suffix" in body, "earlier failures exit without a diagnosis"
+        assert (
+            "command -v _set_disk_full_suffix" in body
+        ), "argument parsing exits before the helper exists"
+
+    def test_the_shell_does_not_report_it_twice(self):
+        """The studio-setup branch reports with its own wording, and the trap runs afterwards."""
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        assert "_DISK_FULL_REPORTED=true" in text
+        assert '"${_DISK_FULL_REPORTED:-false}" != true' in text
+
+
+class TestDiagnosticsNeverCostTheRollback:
+    """The diagnosis is the least important thing either installer does on a failure, and the
+    restore is the most important. A closed --tauri stdout or a redirected stderr fails the write,
+    and under `set -e` that used to abort the exit trap before the restore ran, leaving the
+    previous environment moved aside and the install gone (#11313)."""
+
+    def test_the_shell_restores_before_it_reports(self):
+        """Measure first, restore, then report. Reporting before the restore lets a failed write
+        abort the trap; measuring after it reads a disk the restore has just emptied."""
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        body = text.split("_on_install_exit() {", 1)[1].split("\n}", 1)[0]
+        measure = body.index("_set_disk_full_suffix || true")
+        restore = body.index("_restore_studio_venv_replacement")
+        report = body.index("tauri_log")
+        assert measure < restore, "the restore frees space before the disk is measured"
+        assert restore < report, "a failed diagnostic write can abort the trap before the restore"
+
+    def test_the_windows_probe_precedes_its_restore_too(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
+        assert body.index("Get-StudioFreeSpaceBytes") < body.index(
+            "Restore-StudioVenvRollback"
+        ), "the rollback restore frees space before the disk is measured"
+
+    def test_the_shell_diagnostics_are_best_effort(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        body = text.split("_on_install_exit() {", 1)[1].split("\n}", 1)[0]
+        writes = [
+            line.strip()
+            for line in body.splitlines()
+            if ("echo " in line or "tauri_log " in line) and not line.strip().startswith("#")
+        ]
+        assert writes, "the trap no longer writes anything, so this test pins nothing"
+        for line in writes:
+            assert line.endswith("|| true"), f"under set -e this write can abort the trap: {line}"
+
+    def test_the_windows_diagnosis_cannot_escape(self):
+        """PowerShell has no `set -e`, but the installer body runs under $ErrorActionPreference
+        Stop, so a write to a closed handle throws. Containing it is the same requirement."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
+        probe = body.index("Get-StudioFreeSpaceBytes")
+        opened = body.rindex("try {", 0, probe)
+        closed = body.index("} catch", probe)
+        assert opened < probe < closed, "the disk probe is not inside a try/catch"
+
+
+class TestDiskFullRemedyDescribesWhatHappened:
+    """A run that ran out of space must be told what would actually help, and that depends on what
+    became of the old environment rather than on which flag was passed. The case that matters is a
+    discard that FAILED: the tree is still on disk, deleting it is very likely what makes the retry
+    fit, and "there is nothing further to reclaim" points the user away from it."""
+
+    @pytest.mark.parametrize(
+        "path, leftover",
+        [
+            (INSTALL_SH, "_VENV_DISCARD_LEFTOVER"),
+            (INSTALL_PS1, "$script:StudioVenvDiscardLeftover"),
+        ],
+        ids = ["install.sh", "install.ps1"],
+    )
+    def test_a_failed_discard_names_the_tree_it_left(self, path, leftover):
+        text = path.read_text(encoding = "utf-8")
+        block = text.split("is very likely the cause", 1)[0][-2200:]
+        assert leftover in block, f"{path.name} does not consult what the discard actually left"
+        assert (
+            "deleting it will reclaim that space" in text
+        ), f"{path.name} never points at the tree the user can delete"
+
+    @pytest.mark.parametrize(
+        "path, succeeded",
+        [
+            (INSTALL_SH, "_VENV_DISCARDED"),
+            (INSTALL_PS1, "$script:StudioVenvDiscardSucceeded"),
+        ],
+        ids = ["install.sh", "install.ps1"],
+    )
+    def test_the_already_discarded_case_reads_the_outcome_not_the_flag(self, path, succeeded):
+        """Inferring it from the flag also claims a fresh install discarded something."""
+        text = path.read_text(encoding = "utf-8")
+        block = text.split("is very likely the cause", 1)[0][-2200:]
+        assert succeeded in block, f"{path.name} infers the discard from the request"
+        assert "already discarded by --no-rollback" in text
+
+    @pytest.mark.parametrize(
+        "path",
+        [INSTALL_SH, INSTALL_PS1],
+        ids = ["install.sh", "install.ps1"],
+    )
+    def test_the_flag_is_not_advised_to_a_run_that_used_it(self, path):
+        """The remedy's payload is the opt-out's name, so offering it to someone who already
+        passed it describes a re-run that fails the same way."""
+        text = path.read_text(encoding = "utf-8")
+        block = text.split("is very likely the cause", 1)[0][-2200:]
+        assert (
+            "UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment" in block
+        ), f"{path.name} lost the remedy for a run that never opted out"
+        flag = "_NO_ROLLBACK" if path is INSTALL_SH else "StudioNoRollback"
+        assert flag in block, f"{path.name} offers the flag unconditionally"
+
+
+class TestVolumeLookupsResolveLinks:
+    """Test-StudioSameVolume canonicalises because junctions and symlinks lie about which volume
+    a path is on. The free-space side has to as well, or a studio home behind a junction (or
+    under a junctioned profile) is measured on the link's host drive rather than the volume that
+    will hold the environment, suppressing or falsely emitting both disk warnings (#11313)."""
+
+    def test_both_volume_lookups_go_through_the_resolver(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "function Resolve-StudioVolumeQueryPath" in text
+        for name, end in (
+            ("function Get-StudioMountedVolume", "function Get-StudioFreeSpaceBytes"),
+            ("function Get-StudioFreeSpaceBytes", "function Remove-StudioVenvTreeWithRetry"),
+        ):
+            helper = text.split(name, 1)[1].split(end, 1)[0]
+            assert (
+                "Resolve-StudioVolumeQueryPath" in helper
+            ), f"{name} asks the lexical path, which a junction answers for the wrong volume"
+
+    def test_the_driveinfo_fallback_uses_the_resolved_path(self):
+        # The fallback is the path that runs off Windows and wherever CIM cannot answer.
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Get-StudioFreeSpaceBytes", 1)[1].split(
+            "function Get-StudioTreeSizeBytes", 1
+        )[0]
+        assert (
+            "GetFullPath($queryPath)" in helper
+        ), "the DriveInfo fallback still measures the unresolved path"
+
+
+class TestNoRollbackDoesNotNarrowDeviceDetection:
+    """Opting out of the rollback copy must cost disk, never hardware. The Intel scan rescues an
+    adapter WMI cannot classify by asking the PREVIOUS environment's torch whether XPU works,
+    because the replacement venv has no torch yet; discarding that tree without taking the
+    verdict first routes an Arc machine to CPU wheels (#11313)."""
+
+    def test_the_verdict_is_taken_before_the_tree_is_deleted(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        discard = text.split("if ($script:StudioNoRollback) {", 1)[1].split(
+            'substep "previous environment discarded', 1
+        )[0]
+        probe = discard.index("Invoke-BoundedPythonProbe")
+        removal = discard.index("Remove-StudioVenvTreeWithRetry")
+        assert probe < removal, "the tree is deleted before its XPU verdict is taken"
+
+    def test_the_scan_reads_the_preserved_verdict(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "$script:StudioPreservedXpuVerdict" in text
+        scan = text.split("$_xpuProbePy = $VenvPython", 1)[0][-900:]
+        assert (
+            "$script:StudioPreservedXpuVerdict" in scan
+        ), "the Intel scan never consults the verdict taken before the discard"
+
+    def test_the_probe_is_defined_before_the_rollback_that_calls_it(self):
+        # PowerShell binds a function when the statement defining it runs, so a helper defined
+        # after its caller is CommandNotFoundException at the call.
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert text.index("function Invoke-BoundedPythonProbe") < text.index(
+            "function Start-StudioVenvRollback"
+        ), "Invoke-BoundedPythonProbe is defined after the function that calls it"
+
+
+class TestTheVolumeQueryIsBounded:
+    """install.ps1 documents, in Invoke-BoundedVideoControllerScan, that a CIM query can block
+    forever on a degraded WMI repository and that -ErrorAction and try/catch do not bound it.
+    The Win32_Volume lookup runs on every Windows install before the venv exists and only decides
+    the wording of a disk warning, so it takes the same treatment (#11313)."""
+
+    def test_it_runs_out_of_process_with_a_deadline(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Get-StudioVolumeList", 1)[1].split(
+            "function Get-StudioMountedVolume", 1
+        )[0]
+        assert (
+            "Start-Job" in helper and "Wait-Job" in helper and "-Timeout" in helper
+        ), "the Win32_Volume query is not bounded by a wall-clock deadline"
+        assert "Stop-Job" in helper, "a query past its deadline is never killed"
+
+    def test_nothing_queries_win32_volume_unbounded(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Get-StudioVolumeList", 1)[1].split(
+            "function Get-StudioMountedVolume", 1
+        )[0]
+        # Exactly one call site, and it is the bounded one.
+        assert (
+            text.count("Win32_Volume") == helper.count("Win32_Volume") + 1
+        ), "Win32_Volume is queried somewhere other than the bounded helper"
+
+    def test_the_answer_is_taken_once(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert (
+            "$script:StudioVolumeList = $null" in text
+        ), "the cached volume list is never reset, so `irm | iex` reuses a previous run's answer"
+
+
+class TestFreeSpaceIsNeverServedFromTheCache:
+    """The volume list is cached so a degraded WMI repository is paid for once, but FreeSpace in
+    a cached row is a snapshot. The failure handler asks after setup has consumed the disk, so a
+    number taken before the environment was built reports room that is gone and misses the
+    disk-full diagnosis this change exists to add (#11313)."""
+
+    def test_the_free_space_caller_asks_for_a_fresh_answer(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Get-StudioFreeSpaceBytes", 1)[1].split(
+            "function Get-StudioTreeSizeBytes", 1
+        )[0]
+        assert "-Fresh" in helper, "free space is served from a snapshot taken earlier in the run"
+
+
+class TestVolumeLookupRefusesToGuess:
+    """Get-StudioFinalPath strips the \\\\?\\ prefix unconditionally and deliberately, so a volume
+    with no drive letter comes back as Volume{GUID}\\..., which is not rooted. GetFullPath would
+    anchor that to the current directory and match a volume that has nothing to do with the
+    install, which is worse than answering nothing (#11313)."""
+
+    def test_the_matcher_rejects_an_unrooted_path(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Select-StudioVolumeForPath", 1)[1].split(
+            "function Get-StudioVolumeList", 1
+        )[0]
+        assert "IsPathRooted" in helper, "the matcher anchors an unrooted path to the CWD"
+
+    def test_the_resolver_keeps_the_caller_path_when_resolution_is_unrooted(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Resolve-StudioVolumeQueryPath", 1)[1].split("\n    }", 1)[0]
+        assert (
+            "IsPathRooted" in helper
+        ), "the resolver hands on an unrooted result instead of the caller's own path"
+
+
+class TestRemovalIsConfirmedWithLinkAwareSemantics:
+    """Test-Path follows a Windows directory reparse point, so a dangling one that could not be
+    unlinked reads as absent and the retry helper reports a removal that did not happen. Its
+    callers act on that: the --no-rollback discard clears the rollback state and says the
+    environment is gone (#11313)."""
+
+    def test_the_retry_helper_uses_the_link_aware_check(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        helper = text.split("function Remove-StudioVenvTreeWithRetry", 1)[1].split(
+            "\n    function ", 1
+        )[0]
+        assert (
+            "Test-StudioPathPresent" in helper
+        ), "the retry helper confirms removal with Test-Path, which a dangling link fools"
+        assert "if (-not (Test-Path -LiteralPath $Path))" not in helper
+
+
+class TestArm64MigrationDoesNotPromiseWhatTheFlagDeletes:
+    """The Windows-on-ARM rebuild tells the user the ARM64 environment is kept as
+    unsloth_studio.arm64.* so extra packages can be recovered. When no rollback has started yet
+    the migration calls Start-StudioVenvRollback itself, and under --no-rollback that call
+    discards, so the promise has to be gated on the flag and not only on an earlier discard."""
+
+    def test_the_promise_is_gated_on_the_flag_too(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        gate = text.split("the ARM64 environment is kept under", 1)[0][-400:]
+        assert (
+            "$script:StudioNoRollback" in gate
+        ), "the retention promise is printed on a run whose next call deletes the tree"
+
+    def test_a_discard_inside_the_migration_is_reported(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        arm = text.split("Start-StudioVenvRollback -ExistingDir $VenvDir\n                if (", 1)
+        assert len(arm) == 2, "the migration does not check what its own rollback call did"
+        assert "discarded by --no-rollback rather than kept" in arm[1][:900]
+
+
+class TestNoRollbackNeverPromisesAKeptCopy:
+    """Every message printed before a call that may discard has to vary on the flag. Three sites
+    promised a recoverable copy and then deleted it: the ordinary reinstall, the ARM64 mismatch
+    rebuild, and the Windows-on-ARM native-CUDA migration rebuild (#11313)."""
+
+    @pytest.mark.parametrize(
+        "path, flag",
+        [
+            (INSTALL_SH, '[ "${_NO_ROLLBACK:-false}" = true ]'),
+            (INSTALL_PS1, "if ($script:StudioNoRollback)"),
+        ],
+        ids = ["install.sh", "install.ps1"],
+    )
+    def test_the_reinstall_message_varies(self, path, flag):
+        text = path.read_text(encoding = "utf-8")
+        before = text.split("preserving existing environment for rollback", 1)[0][-500:]
+        assert flag in before, f"{path.name} promises a rollback copy it may be about to discard"
+
+    def test_the_woa_migration_message_varies(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        before = text.split("the previous one is kept for rollback", 1)[0][-600:]
+        assert (
+            "$script:StudioNoRollback" in before
+        ), "the Windows-on-ARM migration rebuild promises a copy --no-rollback deletes"
+
+    def test_every_rollback_call_site_was_audited(self):
+        # If a fourth call site appears, this fails and the promise above it has to be checked.
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert text.count("Start-StudioVenvRollback -ExistingDir") == 3

@@ -22,6 +22,49 @@ try:
     AutoModelForVision2Seq = AutoModelForImageTextToText
 except:
     from transformers import AutoModelForVision2Seq
+
+
+def _embeddings_or_none(model, getter):
+    """Call `model.<getter>()`, or None when the model cannot answer.
+
+    `hasattr` is not the question: transformers 5 defines the method on every
+    PreTrainedModel with a base impl that raises, so a composite checkpoint
+    passes the hasattr check and then raises. Ask by calling.
+    """
+    fn = getattr(model, getter, None)
+    if fn is None:
+        return None
+    try:
+        return fn()
+    except Exception:
+        return None
+
+
+def _multimodal_auto_classes():
+    """Auto classes whose models need a processor rather than a tokenizer.
+
+    Processor SELECTION only, never `is_vlm`: `is_vlm` also arms the
+    image-processor repair path, and a Whisper processor legitimately has no
+    `image_processor`, so widening `is_vlm` made loading Whisper try to build an
+    image processor for an audio model.
+    """
+    import transformers
+
+    # Looked up, not referenced: which names exist varies (4.51.3 has both, 5.5.0
+    # dropped AutoModelForVision2Seq), so only the alias above is always bound.
+    classes = [AutoModelForVision2Seq]
+    # AutoModelForSpeechSeq2Seq is deliberately absent: Whisper already reaches
+    # AutoProcessor through is_whisper, so adding it would move a cell for nothing.
+    for name in (
+        "AutoModelForImageTextToText",
+        "AutoModelForTextToWaveform",
+    ):
+        extra = getattr(transformers, name, None)
+        if extra is not None and extra not in classes:
+            classes.append(extra)
+    return classes
+
+
 from ..kernels import (
     post_patch_loss_function,
 )
@@ -56,7 +99,23 @@ from .loader_utils import (
     requested_device_map,
     resolve_unsloth_device_map,
 )
-from ..save import patch_saving_functions
+# `unsloth.save` imports `.models.loader_utils`, so binding a name out of it here at module
+# scope closes a cycle and a cold `import unsloth.save` fails on the half-built module.
+# `_gpu_init` hid that by importing `.models` first; the MLX branch never reaches it. So the
+# hand-off is deferred to first call, and save.py replaces this shim with the real function on
+# the last line of its own body. Pinned by tests/test_cold_import_order.py.
+
+
+def patch_saving_functions(*args, **kwargs):
+    """Hand off to ``unsloth.save.patch_saving_functions``, imported on first call."""
+    from ..save import patch_saving_functions as _impl
+    return _impl(*args, **kwargs)
+
+
+# How unsloth/save.py tells its own shim from a function someone else put here.
+patch_saving_functions._unsloth_deferred_shim = True
+
+
 from ..models.loader_utils import is_distributed
 from unsloth_zoo.gradient_checkpointing import (
     unpatch_unsloth_gradient_checkpointing,
@@ -111,6 +170,13 @@ from ..device_type import (
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
+)
+
+# torch.nn.RMSNorm only exists on torch >= 2.4.
+_NORM_MODULE_TYPES = tuple(
+    t
+    for t in (getattr(torch.nn, "LayerNorm", None), getattr(torch.nn, "RMSNorm", None))
+    if t is not None
 )
 
 __all__ = [
@@ -531,8 +597,10 @@ def _resolve_offload_embedding(model, offload_embedding):
             model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
         )
     except Exception:
-        # Cannot inspect it, so leave an explicit request alone and decline the default.
-        return False if automatic else offload_embedding
+        # Honouring an explicit request here is WRONG: the caller goes straight on
+        # to call get_input_embeddings() unguarded, turning an inapplicable VRAM
+        # optimisation into a failed load.
+        return _decline("its embeddings cannot be inspected.")
     if _embeddings_are_tied(in_embed, out_embed):
         return _decline("this model ties embed_tokens to lm_head, so offloading saves no VRAM.")
     if _embedding_dispatch_device(in_embed) is not None:
@@ -549,6 +617,9 @@ VLLM_SUPPORTED_VLM = [
     "mistral3",
     "qwen3_vl",
     "qwen3_vl_moe",
+    # Qwen3.5 ships as Qwen3_5ForConditionalGeneration with a vision_config, so it
+    # reaches this gate even for the text-only checkpoints.
+    "qwen3_5",
 ]
 VLLM_NON_LORA_VLM = [
     "mllama",
@@ -578,6 +649,95 @@ try:
     torch_compiler_set_stance = torch.compiler.set_stance
 except:
     torch_compiler_set_stance = None
+
+
+# Image and video only: get_block_sequence_ids_for_mask blocks token types 1 and 2.
+_MEDIA_GENERATE_KWARGS = ("pixel_values", "pixel_values_videos")
+_MEDIA_TOKEN_TYPES = (1, 2)
+# Either name marks the overlay: the first from transformers 5.10, the second 5.17.
+_BIDIRECTIONAL_MASK_BUILDERS = (
+    "get_block_sequence_ids_for_mask",
+    "create_masks_for_vision_model",
+)
+# Gemma 3 names it token_type_ids, Gemma 4 mm_token_type_ids.
+_TOKEN_TYPE_KWARGS = ("mm_token_type_ids", "token_type_ids")
+# Only these preallocate; offloaded and quantized caches still grow per step.
+try:
+    from transformers.generation.configuration_utils import (
+        ALL_STATIC_CACHE_IMPLEMENTATIONS as _STATIC_CACHE_IMPLEMENTATIONS,
+    )
+except ImportError:
+    _STATIC_CACHE_IMPLEMENTATIONS = (
+        "static",
+        "offloaded_static",
+        "sliding_window",
+        "hybrid",
+        "hybrid_chunked",
+        "offloaded_hybrid",
+        "offloaded_hybrid_chunked",
+    )
+
+
+def _overlay_is_configured(model):
+    """Mirror upstream: Gemma 4 overlays only when the text config says "vision"
+    (E2B and E4B leave it None), while Gemma 3 sets it False and overlays anyway.
+    The token-type argument of create_masks_for_generate tells them apart.
+    """
+    builder = getattr(type(model), "create_masks_for_generate", None)
+    if builder is None:
+        return True
+    try:
+        params = inspect.signature(builder).parameters
+    except (TypeError, ValueError):
+        return True
+    if "mm_token_type_ids" not in params:
+        return True
+    config = getattr(model, "config", None)
+    text_config = config.get_text_config() if hasattr(config, "get_text_config") else config
+    return getattr(text_config, "use_bidirectional_attention", None) == "vision"
+
+
+def _has_media_token_types(kwargs):
+    """Media markers in the token-type ids: the signal upstream keys on, and the
+    only one an `inputs_embeds` request carries. Text-only prompts emit the ids
+    too, so the values decide, not the presence."""
+    for name in _TOKEN_TYPE_KWARGS:
+        ids = kwargs.get(name)
+        if ids is None:
+            continue
+        try:
+            if bool(sum((ids == v).any() for v in _MEDIA_TOKEN_TYPES)):
+                return True
+        except (AttributeError, TypeError, RuntimeError):
+            continue
+    return False
+
+
+def _needs_bidirectional_multimodal_mask(model, kwargs):
+    """True when the request carries media and the model overlays a bidirectional
+    block on the causal mask (Gemma 3 / 4), which a static cache drops. Qwen2-VL,
+    Llava and PaliGemma have no overlay and stay on the static path."""
+    module = sys.modules.get(type(model).__module__, None)
+    if module is None:
+        return False
+    if not any(hasattr(module, name) for name in _BIDIRECTIONAL_MASK_BUILDERS):
+        return False
+    if not _overlay_is_configured(model):
+        return False
+    if any(kwargs.get(name) is not None for name in _MEDIA_GENERATE_KWARGS):
+        return True
+    return _has_media_token_types(kwargs)
+
+
+def _dynamic_cache_choice(kwargs):
+    """Cache to force for a media request. Only a static one drops the mask, so a
+    growing cache the caller named, like offloaded, is kept along with its budget."""
+    requested = kwargs.get("cache_implementation")
+    if requested is None and "generation_config" in kwargs:
+        requested = getattr(kwargs["generation_config"], "cache_implementation", None)
+    if requested is None or requested in _STATIC_CACHE_IMPLEMENTATIONS:
+        return "dynamic"
+    return requested
 
 
 def _uses_flash_attention_for_generation(config):
@@ -843,13 +1003,28 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                 cache_implementation = "static"
     if do_bfloat16_mixed_precision:
         cache_implementation = None
+    # A static cache drops the media block mask at prefill (#6028). Name the cache
+    # rather than None, which _prepare_generation_config refills from the default.
+    force_dynamic_cache = kwargs.get(
+        "past_key_values"
+    ) is None and _needs_bidirectional_multimodal_mask(self, kwargs)
+    if force_dynamic_cache:
+        cache_implementation = None
+        dynamic_implementation = _dynamic_cache_choice(kwargs)
 
     if "generation_config" in kwargs:
-        kwargs["generation_config"].cache_implementation = cache_implementation
+        kwargs["generation_config"].cache_implementation = (
+            dynamic_implementation if force_dynamic_cache else cache_implementation
+        )
+        # kwargs are applied after the config merge, so an explicit value survives.
+        if force_dynamic_cache:
+            kwargs["cache_implementation"] = dynamic_implementation
         if cache_implementation is not None:
             kwargs["generation_config"].compile_config = _compile_config
     else:
-        kwargs["cache_implementation"] = cache_implementation
+        kwargs["cache_implementation"] = (
+            dynamic_implementation if force_dynamic_cache else cache_implementation
+        )
         if cache_implementation is not None:
             kwargs["compile_config"] = _compile_config
 
@@ -1132,10 +1307,20 @@ class FastBaseModel:
         ]:
             auto_model = AutoModelForCausalLM
         is_vlm = auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText]
-        # A repo-code VLM may register only AutoModel / AutoModelForCausalLM (DeepSeek-OCR, Nemotron-VL), so auto_model is not a VLM class though the config is a vision model. Keep is_vlm for processor selection, but treat it as a VLM on the vLLM path so a vision_config model is never silently loaded as text-only.
-        is_vlm_config = is_vlm or (not text_only and hasattr(auto_config, "vision_config"))
         is_whisper = whisper_language is not None and whisper_task is not None
-        auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
+        # Audio and omni classes need a processor but are NOT image models, so they
+        # must not widen is_vlm, which arms the image-processor repair path below.
+        needs_processor = is_vlm or auto_model in _multimodal_auto_classes()
+        # A repo-code VLM may register only AutoModel / AutoModelForCausalLM (DeepSeek-OCR, Nemotron-VL), so auto_model is not a VLM class though the config is a vision model. Keep is_vlm for processor selection, but treat it as a VLM on the vLLM path so a vision_config model is never silently loaded as text-only.
+        is_vlm_config = (
+            is_vlm
+            # An omni checkpoint hides its vision config under thinker_config, so the
+            # hasattr below misses it and fast_inference would enter the vLLM
+            # language-model path with is_vision_model=False.
+            or needs_processor
+            or (not text_only and hasattr(auto_config, "vision_config"))
+        )
+        auto_processor = AutoProcessor if (needs_processor or is_whisper) else AutoTokenizer
 
         model_type_arch = model_types[0]
         if model_type_arch == "siglip":
@@ -1698,6 +1883,8 @@ class FastBaseModel:
                     name.endswith(("norm", "norm1", "norm2", "norm3", "norm4"))
                     or "layernorm" in name
                     or "layer_norm" in name
+                    # Name alone splits a block: pos_norm matches, patch_ln1 does not.
+                    or isinstance(module, _NORM_MODULE_TYPES)
                 ) and hasattr(module, "weight"):
                     module._pre_set_compute_dtype = torch.float32
         if custom_datatype is not None:
@@ -2187,24 +2374,25 @@ class FastBaseModel:
             loftq_config, lora_dropout, bias, init_lora_weights, model
         )
 
-        # Auto-detect MoE models and populate target_parameters for expert layers. Prefer the caller's ORIGINAL explicit leaf list over the scoped regex so an attention-only request does not train experts, but only while MLP and language families are both in scope: with finetune_mlp_modules or finetune_language_layers False the scoped regex already dropped the experts.
-        if target_parameters is None:
-            _moe_targets = _select_moe_detection_targets(
-                _moe_detect_target,
-                target_modules,
-                finetune_mlp_modules = finetune_mlp_modules,
-                finetune_language_layers = finetune_language_layers,
-            )
-            target_parameters = get_moe_target_parameters(model, _moe_targets)
-
-        # Per-expert Linear layouts (gpt-oss bnb-4bit) target experts via target_modules, not fused Parameters. Extend either form PEFT accepts: a leaf list, or a regex string.
+        # Prefer the caller's ORIGINAL explicit leaf list over the scoped regex so an attention-only request does not train experts, but only while MLP and language families are both in scope: with finetune_mlp_modules or finetune_language_layers False the scoped regex already dropped the experts.
         _moe_module_detect = _select_moe_detection_targets(
             _moe_detect_target,
             target_modules,
             finetune_mlp_modules = finetune_mlp_modules,
             finetune_language_layers = finetune_language_layers,
         )
+
+        # Per-expert Linear layouts (gpt-oss bnb-4bit) target experts via target_modules, not fused Parameters. Extend either form PEFT accepts: a leaf list, or a regex string.
         _moe_module_targets = get_moe_target_modules(model, _moe_module_detect)
+
+        # Auto-detect MoE models and populate target_parameters for expert layers.
+        if target_parameters is None:
+            target_parameters = get_moe_target_parameters(
+                model,
+                _moe_module_detect,
+                moe_module_targets = _moe_module_targets,
+            )
+
         if _moe_module_targets:
             if isinstance(target_modules, (list, tuple)):
                 target_modules = list(target_modules) + [
@@ -2479,12 +2667,8 @@ class FastBaseModel:
             if hasattr(module, "gradient_checkpointing"):
                 module.gradient_checkpointing = False
 
-        if hasattr(model, "get_input_embeddings"):
-            embeddings = model.get_input_embeddings()
-            if hasattr(embeddings, "training"):
-                embeddings.training = False
-        if hasattr(model, "get_output_embeddings"):
-            embeddings = model.get_output_embeddings()
+        for _getter in ("get_input_embeddings", "get_output_embeddings"):
+            embeddings = _embeddings_or_none(model, _getter)
             if hasattr(embeddings, "training"):
                 embeddings.training = False
         # Restore use_cache values that prepare_model_for_training disabled for gradient checkpointing (older unsloth_zoo has no restore helper).
@@ -2538,12 +2722,8 @@ class FastBaseModel:
             if hasattr(module, "gradient_checkpointing"):
                 module.gradient_checkpointing = use_gradient_checkpointing
 
-        if hasattr(model, "get_input_embeddings"):
-            embeddings = model.get_input_embeddings()
-            if hasattr(embeddings, "training"):
-                embeddings.training = True
-        if hasattr(model, "get_output_embeddings"):
-            embeddings = model.get_output_embeddings()
+        for _getter in ("get_input_embeddings", "get_output_embeddings"):
+            embeddings = _embeddings_or_none(model, _getter)
             if hasattr(embeddings, "training"):
                 embeddings.training = True
         # Re-disable use_cache if prepare_model_for_training had disabled it and for_inference restored it; the record only exists after a disable.

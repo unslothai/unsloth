@@ -3,112 +3,53 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  DEFAULT_CONTEXT_POLICY,
-  compactionStyleValue,
-  ggufCompactionRequestFields,
-  parseCompactionStyle,
-  sanitizeCompactionHeadroomRatio,
-} from "../src/features/chat/utils/auto-compaction.ts";
+import { ggufCompactionRequestFields } from "../src/features/chat/utils/auto-compaction.ts";
 
 import { readSrc } from "./helpers/kit.ts";
 
-test("the default preserves the server context policy", () => {
-  assert.equal(DEFAULT_CONTEXT_POLICY, "inherit");
-  assert.equal(compactionStyleValue("inherit", 0.25), "inherit");
-  assert.deepEqual(parseCompactionStyle("inherit"), {
-    contextPolicy: "inherit",
-    compactionHeadroomRatio: 0.25,
-  });
+test("auto-compact on sends truncate_oldest and no policy of its own", () => {
+  // No context_policy: the server applies UNSLOTH_CONTEXT_POLICY. Studio used to offer that
+  // choice as a setting and no longer does, so this is the only shape an enabled request takes.
   assert.deepEqual(
-    ggufCompactionRequestFields({
-      isGguf: true,
-      autoCompactEnabled: true,
-      contextPolicy: "inherit",
-      compactionHeadroomRatio: 0.25,
-    }),
+    ggufCompactionRequestFields({ isGguf: true, autoCompactEnabled: true }),
     { context_overflow: "truncate_oldest" },
   );
 });
 
 test("auto-compact off sends an explicit error overflow policy", () => {
   assert.deepEqual(
-    ggufCompactionRequestFields({
-      isGguf: true,
-      autoCompactEnabled: false,
-      contextPolicy: "checkpoint",
-      compactionHeadroomRatio: 0.25,
-    }),
+    ggufCompactionRequestFields({ isGguf: true, autoCompactEnabled: false }),
     { context_overflow: "error" },
-  );
-});
-
-test("checkpoint compaction sends truncate_oldest and the checkpoint policy", () => {
-  assert.deepEqual(
-    ggufCompactionRequestFields({
-      isGguf: true,
-      autoCompactEnabled: true,
-      contextPolicy: "checkpoint",
-      compactionHeadroomRatio: 0.25,
-    }),
-    { context_overflow: "truncate_oldest", context_policy: "checkpoint" },
-  );
-});
-
-test("a sliding window sends rolling policy and the extra-trim ratio", () => {
-  assert.deepEqual(
-    ggufCompactionRequestFields({
-      isGguf: true,
-      autoCompactEnabled: true,
-      contextPolicy: "rolling",
-      compactionHeadroomRatio: 0.05,
-    }),
-    {
-      context_overflow: "truncate_oldest",
-      context_policy: "rolling",
-      compaction_headroom_ratio: 0.05,
-    },
   );
 });
 
 test("external models never opt into GGUF compaction", () => {
   assert.deepEqual(
-    ggufCompactionRequestFields({
-      isGguf: false,
-      autoCompactEnabled: true,
-      contextPolicy: "rolling",
-      compactionHeadroomRatio: 0,
-    }),
+    ggufCompactionRequestFields({ isGguf: false, autoCompactEnabled: true }),
     {},
   );
 });
 
-test("the settings select round-trips style values", () => {
-  assert.equal(compactionStyleValue("checkpoint", 0.25), "checkpoint");
-  assert.equal(compactionStyleValue("rolling", 0), "rolling:0");
-  assert.deepEqual(parseCompactionStyle("rolling:0.1"), {
-    contextPolicy: "rolling",
-    compactionHeadroomRatio: 0.1,
-  });
-});
-
-test("unsupported headroom ratios snap to an exposed choice", () => {
-  assert.equal(sanitizeCompactionHeadroomRatio(0.9), 0.25);
-  assert.equal(sanitizeCompactionHeadroomRatio(0.07), 0.05);
-  assert.equal(compactionStyleValue("rolling", 0.9), "rolling:0.25");
-  assert.deepEqual(
-    ggufCompactionRequestFields({
-      isGguf: true,
-      autoCompactEnabled: true,
-      contextPolicy: "rolling",
-      compactionHeadroomRatio: 0.9,
-    }),
-    {
-      context_overflow: "truncate_oldest",
-      context_policy: "rolling",
-      compaction_headroom_ratio: 0.25,
-    },
-  );
+test("nothing still offers the removed compaction style", () => {
+  // The row is gone, so its state, its request fields and its strings should be too: a leftover
+  // setter or key is a setting the user cannot reach but the code still carries.
+  for (const file of [
+    "features/settings/tabs/chat-tab.tsx",
+    "features/chat/stores/chat-runtime-store.ts",
+    "features/chat/utils/chat-settings-storage.ts",
+    "features/chat/utils/queued-chat-run-settings.ts",
+    "features/chat/api/chat-settings-api.ts",
+    "features/chat/api/chat-adapter.ts",
+    "features/chat/utils/auto-compaction.ts",
+    "features/settings/settings-search.ts",
+    "i18n/locales/en.ts",
+  ]) {
+    assert.doesNotMatch(
+      readSrc(file),
+      /contextPolicy|compactionHeadroomRatio|compactionStyle|compactionDescription/,
+      `${file} still carries the removed compaction style`,
+    );
+  }
 });
 
 test("the chat adapter sends compaction fields through the shared helper", () => {
@@ -147,8 +88,6 @@ test("a queued run keeps its own model's llama.cpp verdict after the picker move
     loadedIsGguf: true,
     loadedContextLength: 8192,
     autoCompactEnabled: true,
-    contextPolicy: "rolling" as const,
-    compactionHeadroomRatio: 0.1,
   };
   const queued = snapshotQueuedChatRunSettings(
     resident as unknown as Parameters<typeof snapshotQueuedChatRunSettings>[0],
@@ -176,13 +115,7 @@ test("a queued run keeps its own model's llama.cpp verdict after the picker move
     ggufCompactionRequestFields({
       isGguf,
       autoCompactEnabled: runtime.autoCompactEnabled,
-      contextPolicy: runtime.contextPolicy,
-      compactionHeadroomRatio: runtime.compactionHeadroomRatio,
     }),
-    {
-      context_overflow: "truncate_oldest",
-      context_policy: "rolling",
-      compaction_headroom_ratio: 0.1,
-    },
+    { context_overflow: "truncate_oldest" },
   );
 });

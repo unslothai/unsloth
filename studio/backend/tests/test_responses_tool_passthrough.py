@@ -89,6 +89,11 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from core.inference.api_monitor import ApiMonitor
+from core.inference.llama_admission import (
+    ADMISSION_QUEUE_TIMEOUT_ENV,
+    LlamaAdmissionConfig,
+    get_llama_admission_queue,
+)
 from models.inference import (
     ChatMessage,
     ResponsesCustomToolCallInputItem,
@@ -527,6 +532,17 @@ class TestBuildChatRequest:
         chat_req = _build_chat_request(payload, messages, stream = False)
 
         assert chat_req.enable_thinking is False
+
+    def test_chat_template_kwargs_enable_thinking_requires_json_boolean(self):
+        payload = ResponsesRequest(
+            input = "hi",
+            chat_template_kwargs = {"enable_thinking": "false"},
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert chat_req.enable_thinking is None
 
     def test_reasoning_effort_high_enables_local_thinking(self):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
@@ -3677,3 +3693,117 @@ def test_a_complete_responses_stream_still_ends_on_response_completed(monkeypatc
     assert completed["response"]["status"] == "completed"
     assert completed["response"]["incomplete_details"] is None
     assert [item["status"] for item in completed["response"]["output"]] == ["completed"]
+
+
+_OVERFLOW_BODY = json.dumps(
+    {
+        "error": {
+            "code": 400,
+            "message": "request (16608 tokens) exceeds the available context size (2048 tokens), try increasing it",
+            "type": "exceed_context_size_error",
+            "n_prompt_tokens": 16608,
+            "n_ctx": 2048,
+        }
+    }
+)
+
+
+def _failed_stream_error(
+    monkeypatch,
+    handler = None,
+    chunks = (),
+):
+    import routes.inference as inf_mod
+
+    real_async_client = httpx.AsyncClient
+    TestResponsesStreamAdapter._install_stream_mock(monkeypatch, list(chunks))
+    if handler is not None:
+        monkeypatch.setattr(
+            inf_mod.httpx,
+            "AsyncClient",
+            lambda *args, **kwargs: real_async_client(transport = httpx.MockTransport(handler)),
+        )
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        response = await _responses_stream(payload, messages, TestResponsesStreamAdapter._Request())
+        return await TestResponsesStreamAdapter._collect(response)
+
+    [failed] = TestResponsesStreamAdapter._payloads(asyncio.run(run()), "response.failed")
+    return failed["response"]["error"]
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "code"),
+    [
+        (400, _OVERFLOW_BODY, "context_length_exceeded"),
+        (500, '{"error":{"code":500,"message":"Context size has been exceeded."}}', "server_error"),
+    ],
+)
+def test_upstream_rejection_fails_the_stream_with_a_string_code(monkeypatch, status, body, code):
+    error = _failed_stream_error(
+        monkeypatch, handler = lambda request: httpx.Response(status, content = body.encode())
+    )
+    assert error["code"] == code
+
+
+@pytest.mark.parametrize(
+    ("message", "code"),
+    [
+        (
+            "request (3868 tokens) exceeds the available context size (2048 tokens), try increasing it",
+            "context_length_exceeded",
+        ),
+        ("Context size has been exceeded.", "server_error"),
+    ],
+)
+def test_in_band_upstream_error_fails_the_stream_with_a_string_code(monkeypatch, message, code):
+    error = _failed_stream_error(monkeypatch, chunks = [{"error": {"code": 500, "message": message}}])
+    assert error["code"] == code
+
+
+def test_unreachable_upstream_fails_the_stream_with_server_error(monkeypatch):
+    def refuse(request):
+        raise httpx.ConnectError("connection refused", request = request)
+
+    assert _failed_stream_error(monkeypatch, handler = refuse)["code"] == "server_error"
+
+
+def test_admission_timeout_fails_the_stream_with_server_is_overloaded(monkeypatch):
+    import routes.inference as inf_mod
+
+    async def fail_send(*_args, **_kwargs):
+        raise AssertionError("a request that never got a slot must not reach llama-server")
+
+    base_url = "http://llama.responses.admission-timeout.test"
+    monkeypatch.setenv(ADMISSION_QUEUE_TIMEOUT_ENV, "0.01")
+    monkeypatch.setattr(
+        inf_mod,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            base_url = base_url,
+            context_length = 4096,
+            effective_parallel_slots = 1,
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+        ),
+    )
+    monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fail_send)
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        queue = get_llama_admission_queue(base_url)
+        blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+        try:
+            response = await _responses_stream(
+                payload, messages, TestResponsesStreamAdapter._Request()
+            )
+            return await TestResponsesStreamAdapter._collect(response)
+        finally:
+            blocker.release()
+
+    [failed] = TestResponsesStreamAdapter._payloads(asyncio.run(run()), "response.failed")
+    assert failed["response"]["error"]["code"] == "server_is_overloaded"

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from hub.services.models import account_access
+
 import asyncio
 import errno
 from pathlib import Path
@@ -647,6 +649,99 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
     for lid in getattr(engine, "loading_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "An Images model load is using this repo; wait for it to finish"
+    # Cancelled but not yet unwound: deleting here yanks blobs from under a live Hub call.
+    for lid in getattr(engine, "draining_repo_ids", tuple)():
+        if _loaded_id_matches_repo(str(lid), repo_id):
+            return "An Images model load is still releasing this repo; wait for it to finish"
+    return None
+
+
+def any_model_load_blocks_cache_clear() -> Optional[str]:
+    """The refusal detail if ANY inference backend is holding a cached model, else None.
+
+    The guards above ask whether one repo is in use. Emptying the whole Hugging Face cache is
+    every repo at once, so there is no repo to match on and anything loaded or loading is enough.
+    sd.cpp in particular re-reads its companion VAE and text-encoder files for every generation,
+    so a clear can break a model that was loaded long before it.
+
+    Fail-open on ACQUIRE, like the guards above: a backend that cannot be reached is not holding
+    anything this process can see. A backend that IS reachable and raises while being asked is a
+    different matter, and the caller fails closed on it rather than unlink weights blindly.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend
+        backend = get_llama_cpp_backend()
+    except Exception as exc:  # noqa: BLE001 - unavailable is not "in use"
+        logger.debug(f"llama.cpp backend unavailable during the cache-clear guard: {exc}")
+    else:
+        if (backend.is_loaded or backend.is_active) and backend.model_identifier:
+            return "Unload the model before clearing the model cache"
+
+    # is_active above only covers a live llama-server process, which an HF-backed chat load does
+    # not have until its GGUF finished downloading: minutes, per chat_load_active's own docstring.
+    # Those files come down through hf_hub_download_with_xet_fallback rather than the download
+    # registry, so the reservation taken later in the purge does not cover them either.
+    try:
+        from core.inference.llama_cpp import chat_load_active
+        loading_chat = chat_load_active()
+    except Exception as exc:  # noqa: BLE001 - unavailable is not "in use", as above
+        logger.debug(f"Chat load state unavailable during the cache-clear guard: {exc}")
+    else:
+        if loading_chat:
+            return "A model load is using the cache; wait for it to finish"
+
+    try:
+        from core.inference.orchestrator import peek_inference_backend
+
+        # Peek, never construct: building one just to learn nothing is loaded imports torch.
+        engine = peek_inference_backend()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"Inference backend unavailable during the cache-clear guard: {exc}")
+    else:
+        if engine is not None and engine.active_model_name:
+            return "Unload the model before clearing the model cache"
+
+    for label, load in (
+        ("Images", "core.inference.diffusion_engine_router:get_active_diffusion_engine"),
+        ("Video", "core.inference.video:get_video_backend"),
+    ):
+        module_name, _, attr = load.partition(":")
+        try:
+            module = __import__(module_name, fromlist = [attr])
+            held = getattr(module, attr)()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"{label} backend unavailable during the cache-clear guard: {exc}")
+            continue
+        if held is None:
+            continue
+        if held.status().get("loaded"):
+            return "Unload the model before clearing the model cache"
+        if any(getattr(held, "loaded_repo_ids", tuple)()):
+            return "Unload the model before clearing the model cache"
+        if any(getattr(held, "loading_repo_ids", tuple)()):
+            return f"An {label} model load is using the cache; wait for it to finish"
+        # A cancelled load leaves loading_repo_ids() at once but keeps its repos in
+        # draining_repo_ids() while the worker thread reads on inside _prefetch_files,
+        # holding no lock. _diffusion_blocks_delete already refuses on that; emptying the
+        # whole cache is every repo at once, so it cannot ask less than the per-repo path.
+        if any(getattr(held, "draining_repo_ids", tuple)()):
+            return f"An {label} model load is still unwinding; wait for it to finish"
+
+    # Dictation is the fifth backend and the one none of the four above reports. Its sidecars are
+    # managed by stt_registry, and stt_sidecar resolves their checkpoints under the SAME hub cache
+    # this clear empties (_find_complete_cached_snapshot -> _repo_cache_dir -> hub_cache), so a
+    # resident Whisper / Parakeet worker re-reading its snapshot is exactly the case the docstring
+    # above says is enough on its own.
+    try:
+        from core.inference import stt_registry
+        dictation = stt_registry.resident()
+    except Exception as exc:  # noqa: BLE001 - unavailable is not "in use", as above
+        logger.debug(f"Dictation unavailable during the cache-clear guard: {exc}")
+    else:
+        if dictation.get("model"):
+            return "Unload the dictation model before clearing the model cache"
+        if dictation.get("loading"):
+            return "A dictation model load is using the cache; wait for it to finish"
     return None
 
 
@@ -726,7 +821,16 @@ async def delete_cached_model_response(
     cache_path: Optional[str] = None,
     only_if_orphan: bool = False,
 ):
-    """Delete a cached model repo (or a specific GGUF variant) from the HF cache. When *variant* is provided, only the GGUF files matching that quant label are removed (e.g. ``UD-Q4_K_XL``); otherwise the entire repo is deleted. Refuses if the model is currently loaded for inference. *only_if_orphan* is Free up space's precondition: 409 rather than delete when the repo has become an installed checkpoint since the list the caller is acting on was built."""
+    """Delete a cached model repo (or a specific GGUF variant) from the HF cache.
+
+    When *variant* is provided, only the GGUF files matching that quant label
+    are removed (e.g. ``UD-Q4_K_XL``).  Otherwise the entire repo is deleted.
+    Refuses if the model is currently loaded for inference.
+
+    *only_if_orphan* is Free up space's precondition: 409 rather than delete when the repo has
+    become an installed checkpoint since the list the caller is acting on was built.
+    """
+    account_access.require_installation_owner()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None

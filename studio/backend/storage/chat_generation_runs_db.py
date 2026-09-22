@@ -11,9 +11,13 @@ import secrets
 import sqlite3
 import threading
 import time
+import weakref
+from pathlib import Path
 from typing import Any, Iterable, Union
 
-from storage.studio_db import get_connection
+from storage.studio_db import get_connection, on_wal_keeper_closed
+from utils.account_context import current_account_id
+from utils.paths import studio_db_path
 
 ACTIVE_STATUSES = frozenset({"queued", "running", "cancelling"})
 TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed"})
@@ -23,9 +27,172 @@ _RUN_TOMBSTONE_PREFIX = "chat-generation-run-tombstone:"
 ChatGenerationEventInput = Union[tuple[str, dict[str, Any]], tuple[str, dict[str, Any], int]]
 
 # Progress lease columns live here rather than in _ensure_schema so the base table stays owned by
-# studio_db; named _schema_ready to match the flag the test harness resets.
-_schema_ready = False
+_schema_ready: set[Path] = set()
 _schema_lock = threading.Lock()
+
+# One reusable connection per (thread, account), because opening one costs far more than the query
+# it carries, and a streaming generation opens one per producer flush and three per SSE delivery
+# turn per attached tab. Keyed by the acting account: that is what selects the database, and unlike
+# resolving the path it costs nothing (see _connect).
+_pool = threading.local()
+
+
+class _PoolEntry:
+    """One thread's cached connection. A real object rather than a dict so it can be weak-referenced
+    and so its finalizer can close the connection when the owning thread goes away."""
+
+    __slots__ = ("key", "conn", "busy", "schema_ready", "generation", "_closer", "__weakref__")
+
+    def __init__(self, key: str, conn: sqlite3.Connection, schema_ready: Any, generation: int):
+        self.key = key
+        self.conn = conn
+        self.busy = True
+        self.schema_ready = schema_ready
+        self.generation = generation
+        # Runs when the last reference goes, which for a short-lived thread is when its thread-local
+        # storage is torn down.
+        self._closer = weakref.finalize(self, _close_quietly, conn)
+
+    def release(self) -> None:
+        """Close now, and disarm the finalizer so it cannot close it a second time."""
+        self._closer()
+
+
+class _Borrowed:
+    """A cached connection whose ``close()`` returns it to the cache instead of closing it.
+
+    Every caller already pairs ``_connect()`` with ``close()`` in a ``finally``, so honouring that
+    contract while keeping the handle open is what keeps reuse local instead of a rewrite of
+    fourteen call sites.
+    """
+
+    __slots__ = ("_conn", "_key", "_released")
+
+    def __init__(self, conn: sqlite3.Connection, key: str) -> None:
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_key", key)
+        object.__setattr__(self, "_released", False)
+
+    def close(self) -> None:
+        if self._released:
+            return
+        object.__setattr__(self, "_released", True)
+        # Before the lock: while this borrow is out the handle belongs to this thread alone, and a
+        # connection left mid-transaction would hand its caller's work to the next borrower.
+        reusable = True
+        try:
+            if self._conn.in_transaction:
+                self._conn.rollback()
+        except Exception:
+            # The transaction is still open. Parking it would give the next borrower a handle whose
+            # BEGIN IMMEDIATE fails, or worse, let its commit carry this caller's uncommitted work.
+            reusable = False
+        park = False
+        with _pool_lock:
+            entry = getattr(_pool, "entry", None)
+            if entry is not None and entry.conn is self._conn:
+                if reusable and entry.generation == _pool_generation:
+                    entry.busy = False
+                    park = True
+                else:
+                    # Invalidated while this borrow was out, or unusable after a failed rollback:
+                    # either way releasing the file is what matters now.
+                    _pool.entry = None
+                    _unregister_locked(entry)
+        if not park:
+            self._conn.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._conn, name, value)
+
+
+#: Pooled entries, held WEAKLY: the sweeper reconciles on a FRESH daemon thread every 60s per
+#: account (_sweep_in_daemon_thread), so a strong registry would retain one open sqlite handle per
+#: sweep forever and exhaust the file descriptor limit.
+#:
+#: A registry at all because a thread retiring an account must close handles it does not own:
+#: retirement renames the account directory, and Windows refuses that while any file under it is
+#: open. Idle entries close here; one in use is left to its borrower.
+_pool_registry: list[weakref.ref[_PoolEntry]] = []
+_pool_generation = 0
+_pool_lock = threading.Lock()
+
+
+def _close_quietly(conn: sqlite3.Connection) -> None:
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def _live_entries_locked() -> list[_PoolEntry]:
+    """Every entry still alive, dropping refs whose thread has gone. Caller holds ``_pool_lock``."""
+    live: list[_PoolEntry] = []
+    surviving: list[weakref.ref[_PoolEntry]] = []
+    for ref in _pool_registry:
+        entry = ref()
+        if entry is not None:
+            live.append(entry)
+            surviving.append(ref)
+    _pool_registry[:] = surviving
+    return live
+
+
+def _unregister_locked(entry: _PoolEntry | None) -> None:
+    """Drop ``entry`` from the registry, and any reference whose thread has gone with it.
+
+    Pruning here and on insert keeps the list bounded. Not a weakref callback: those fire during
+    collection at an arbitrary point, including while this thread holds ``_pool_lock``, which is
+    not reentrant. Caller holds it.
+    """
+    surviving: list[weakref.ref[_PoolEntry]] = []
+    for ref in _pool_registry:
+        alive = ref()
+        if alive is None or alive is entry:
+            continue
+        surviving.append(ref)
+    _pool_registry[:] = surviving
+
+
+def _discard_pooled() -> None:
+    """Drop this thread's cached connection, for when it has errored or its database has gone."""
+    entry = getattr(_pool, "entry", None)
+    if entry is None:
+        return
+    _pool.entry = None
+    with _pool_lock:
+        _unregister_locked(entry)
+    entry.release()
+
+
+def _discard_all_pooled() -> None:
+    """Close every pooled connection on every thread, idle ones immediately.
+
+    The thread retiring an account is never the worker that parked the handle: the SSE loop waits
+    on a 32 thread pool of its own. One in use is left alone and closed by its borrower on return,
+    since yanking it would fail that caller's query.
+    """
+    global _pool_generation
+    with _pool_lock:
+        _pool_generation += 1
+        entries = _live_entries_locked()
+        _pool_registry.clear()
+    for entry in entries:
+        if entry.busy:
+            continue
+        entry.release()
+
+
+def reset_connection_pool_for_tests() -> None:
+    _discard_all_pooled()
+
+
+# Closing the keeper is meant to checkpoint the database and remove its -wal (#9934), and a pooled
+# connection outliving it would silently hold that open.
+on_wal_keeper_closed(_discard_all_pooled)
 
 
 class ChatGenerationConflictError(RuntimeError):
@@ -36,15 +203,107 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def reset_schema_state_for_tests() -> None:
+    # The pool goes with it. The suite gives each test its own UNSLOTH_STUDIO_HOME and deletes the
+    # last one, so a cached handle to a database that has been removed underneath it is the one way
+    # reuse could leak across tests.
+    _discard_all_pooled()
+    with _schema_lock:
+        _schema_ready.clear()
+
+
+def _database_path(conn: sqlite3.Connection) -> Path:
+    """The file this connection opened, so polling paths do not resolve the account root twice."""
+    row = conn.execute("PRAGMA database_list").fetchone()
+    return Path(row[2]) if row and row[2] else studio_db_path()
+
+
 def _connect() -> sqlite3.Connection:
-    """get_connection plus the one-off progress-lease migration for this database."""
-    global _schema_ready
-    conn = get_connection()
-    if _schema_ready:
-        return conn
+    """get_connection plus the one-off progress-lease migration for this database.
+
+    Returns this thread's cached connection when there is one for the database the acting account
+    resolves to right now. Falls back to a fresh connection whenever reuse would be unsafe, so the
+    cache can only ever make things faster, never change what a caller sees.
+    """
+    # NOT the resolved path: test_a_durable_run_poll_resolves_the_account_root_once and
+    # test_warm_owner_connections_do_not_resolve_database_again pin that a warm connect resolves the
+    # account root zero times, and studio_db_path() is exactly that resolution.
+    #
+    # Paired with the identity of _schema_ready, which conftest rebinds per test: an account id
+    # alone cannot see a home that moved beneath it.
+    key = current_account_id() or ""
+    reuse = None
+    superseded = None
+    # Under the lock: read the generation outside it and an invalidator can see this entry as idle
+    # between the check and the busy flip, close it, and leave the borrow holding a dead handle.
+    # Retirement invalidates every account's pool, so that aborts unrelated live generations.
+    with _pool_lock:
+        generation_before = _pool_generation
+        entry = getattr(_pool, "entry", None)
+        if entry is not None and entry.generation != _pool_generation:
+            # Invalidated while this thread was elsewhere; _discard_all_pooled already closed it.
+            _pool.entry = None
+            entry = None
+        if entry is not None and not entry.busy:
+            if entry.key == key and entry.schema_ready is _schema_ready:
+                entry.busy = True
+                reuse = entry.conn
+            else:
+                # A different account, or a home that moved beneath this one. Either way the cached
+                # handle points at a database this caller must not be given.
+                superseded = entry.conn
+                _unregister_locked(entry)
+                _pool.entry = None
+            entry = None if reuse is None else entry
+    if reuse is not None:
+        return _Borrowed(reuse, key)
+    if superseded is not None:
+        try:
+            superseded.close()
+        except Exception:
+            pass
+        entry = None
+
+    conn, migrated = _prepare_connection()
+    # An unmigrated connection is never pooled, so the next call runs _prepare_connection again and
+    # the retry this contention path exists for still happens.
+    #
+    # A nested _connect() on one thread (a borrowed handle is already out) also keeps the old
+    # behaviour of its own connection: sharing one would put two callers in one transaction.
+    if entry is None and migrated:
+        with _pool_lock:
+            # Fenced on the generation read BEFORE preparing: opening a connection takes long
+            # enough for an invalidation to land, and this handle is not in the registry yet to be
+            # caught by it. Registering it under the new generation would hide it from the
+            # invalidator that retirement just ran, and the uncached path always closed.
+            if _pool_generation == generation_before:
+                entry = _PoolEntry(key, conn, _schema_ready, generation_before)
+                _pool.entry = entry
+                # Drops references left by threads that have since exited, so a server that
+                # reconciles on a fresh daemon thread every minute does not grow this list without
+                # bound and make every later scan longer.
+                _unregister_locked(None)
+                _pool_registry.append(weakref.ref(entry))
+                return _Borrowed(conn, key)
+    return conn
+
+
+def _prepare_connection() -> tuple[sqlite3.Connection, bool]:
+    """The original, uncached body, plus whether the lease migration is done for this database.
+
+    The flag keeps a blocked migration retryable: when the ALTER loses to another writer this
+    returns without marking the path ready so the NEXT call retries, and caching such a connection
+    would skip that call forever, leaving the lease columns missing and reconcile_runs reaping
+    nothing.
+    """
+    conn = get_connection(check_same_thread = False)
+    db_path = _database_path(conn)
+    if db_path in _schema_ready:
+        return conn, True
     try:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 columns = {
                     row[1]
                     for row in conn.execute("PRAGMA table_info(chat_generation_runs)").fetchall()
@@ -62,7 +321,7 @@ def _connect() -> sqlite3.Connection:
                         if "duplicate column" not in str(exc).lower():
                             raise
                 conn.commit()
-                _schema_ready = True
+                _schema_ready.add(schema_path)
     except sqlite3.OperationalError:
         # A writer holds the database, and the columns are additive, so let this call through and migrate
         # later rather than turning contention into a failed history read.
@@ -70,7 +329,7 @@ def _connect() -> sqlite3.Connection:
     except Exception:
         conn.close()
         raise
-    return conn
+    return conn, db_path.resolve() in _schema_ready
 
 
 def _loads(value: str | None, fallback: Any) -> Any:
@@ -736,7 +995,7 @@ def wait_for_events(
 
 
 def reconcile_runs(
-    *, error: str = "Studio restarted during generation", stale_after_ms: int | None = None
+    *, error: str = "Unsloth restarted during generation", stale_after_ms: int | None = None
 ) -> list[str]:
     """Settle active runs, returning the ids settled. ``stale_after_ms`` is what makes this safe to run
     while Studio is serving: with it, only runs whose progress lease has not moved for that long are
@@ -803,5 +1062,5 @@ def reconcile_runs(
         conn.close()
 
 
-def reconcile_orphaned_runs(error: str = "Studio restarted during generation") -> int:
+def reconcile_orphaned_runs(error: str = "Unsloth restarted during generation") -> int:
     return len(reconcile_runs(error = error))

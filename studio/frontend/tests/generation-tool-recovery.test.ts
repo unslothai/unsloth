@@ -350,6 +350,9 @@ async function recoverRun(
     registerThreadServerCancel() {},
     setThreadRunning() {},
     clearThreadServerCancel() {},
+    // The real store carries these, and recovery now uses them to put Approve/Deny back in front of
+    // a call that parked while the tab was gone. A stand-in missing them would make a recovery that
+    // touches an approval look broken here and work in the app.
     setToolConfirmation() {},
     clearToolConfirmation() {},
     appendToolLiveOutput() {},

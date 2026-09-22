@@ -18,6 +18,30 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 # from nvidia-smi can resolve to a different card. setdefault so an override wins; see utils/hardware/hardware.py.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
+# Same ROCm AOTriton opt-in as unsloth/__init__.py, for a backend that defers importing torch;
+# spawned workers inherit it. `setdefault` preserves an explicit override, including "0".
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+
+# The desktop app hands this process a GUI environment, and a GUI environment has
+# no ~/.bashrc in it. `fix_path_env::fix()` in src-tauri/src/main.rs spawns the
+# login shell and then takes PATH out of it and nothing else, so an AMD host's
+# HSA_OVERRIDE_GFX_VERSION / ROCM_PATH / USE_CK are dropped on the desktop path
+# and kept on the `unsloth studio` one. #9926 is that difference: identical model
+# and machine, SIGSEGV from the app and a clean run from a terminal.
+#
+# Here because HSA reads HSA_OVERRIDE_GFX_VERSION and USE_CK when torch first
+# touches the GPU, which is far below this. A no-op unless the desktop app owns
+# this process AND the host has an AMD GPU AND the variable is absent, so a
+# terminal launch and every non-AMD host are unchanged.
+_backend_dir = str(_Path(__file__).parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+try:
+    from utils.desktop_shell_env import import_rocm_env_from_login_shell as _import_rocm_env
+    _import_rocm_env()
+except Exception:
+    pass
+
 # Windows terminals default to the active system code page. Reconfigure stdout/stderr
 # before the startup banner so non-ASCII output cannot crash the backend process.
 if sys.platform == "win32":
@@ -206,10 +230,18 @@ try:
     _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
 except (OSError, ValueError):
     _STUDIO_ROOT_RESOLVED = _studio_root()
-if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
+from utils.paths.storage_roots import unsloth_home as _unsloth_home
+
+_MASTER_ROOT = _unsloth_home()
+# A master root pointed at the legacy path still owns runtimes beside it, so the equality alone
+# would skip the export and leave unsloth_zoo on ~/.unsloth/llama.cpp.
+if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT or _MASTER_ROOT is not None:
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
-    _MANAGED_LLAMA_CPP_PATH = _STUDIO_ROOT_RESOLVED / "llama.cpp"
+    # Same derivation as run.py: the runtimes sit at the master root, beside studio/, and marking
+    # the wrong directory managed would make the bundled path look like an immutable override.
+    _MANAGED_ROOT = _MASTER_ROOT or _STUDIO_ROOT_RESOLVED
+    _MANAGED_LLAMA_CPP_PATH = _MANAGED_ROOT / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
     # A CLI/desktop launcher may already have exported Unsloth's own install path.
@@ -217,6 +249,13 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     from utils.llama_cpp_path_settings import mark_managed_llama_cpp_path
 
     mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
+
+# huggingface_hub reads HF_ENDPOINT itself, at import, unnormalised and unvalidated.
+# Rewrite it first, before anything imports the library.
+from utils.hf_endpoint import normalize_hf_endpoint_env as _normalize_hf_endpoint_env
+
+_normalize_hf_endpoint_env()
+del _normalize_hf_endpoint_env
 
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
@@ -296,6 +335,7 @@ from routes import (
     inference_router,
     inference_studio_router,
     mcp_servers_router,
+    skills_router,
     models_router,
     providers_router,
     openai_codex_auth_router,
@@ -327,8 +367,9 @@ from hub.utils.download_registry import (
 from routes.settings import router as settings_router
 from routes.prompts import router as prompts_router
 from routes.profile_stats import router as profile_stats_router
-from auth import storage
-from auth.authentication import get_current_subject
+from auth import policy as auth_policy, storage
+from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.utils.host_paths import redact_inventory_host_paths
 from utils.hardware import (
     start_background_detection,
     get_device,
@@ -340,6 +381,7 @@ import utils.hardware.hardware as _hw_module
 from utils.torch_warmup import (
     DISABLE_ENV_VAR,
     join_background_warm,
+    prewarm_diffusers_if_image_models_exist,
     reset_background_warm,
     start_background_warm,
     warm_status,
@@ -349,6 +391,16 @@ from utils.cache_cleanup import (
 )
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
+
+from utils.client_ip import client_ip
+from utils.hf_endpoint import (
+    DEFAULTS_BY_HEALTH_KEY as _HF_ENDPOINT_DEFAULTS,
+    endpoint_is_reachable_by as _endpoint_is_reachable_by,
+    csp_asset_sources,
+    csp_connect_sources,
+    get_hf_endpoint,
+    get_hf_datasets_server,
+)
 from utils.update_status import (
     get_studio_install_source_status,
     get_studio_update_status,
@@ -589,7 +641,31 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
 
     if _post_warm_retired(generation):
         return
+    # Off the polled path on purpose: /api/system must not import torchao itself (see
+    # _dense_quant_supported). Gated on torch being up rather than assumed, since
+    # UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 exists precisely to keep the ML stack cold.
+    if "torch" in sys.modules:
+        try:
+            _refresh_dense_quant_capability()
+        except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
+            import structlog as _structlog
+            _structlog.get_logger(__name__).debug("dense quant capability skipped: %s", _dq_exc)
+
+    if _post_warm_retired(generation):
+        return
     _start_linked_folder_auto_sync(generation)
+
+    # Last, and deliberately so: it is the only item here that is pure latency work rather than
+    # correctness, so everything above keeps its place in the queue. Roughly 5.3s of diffusers
+    # import that the first image load would otherwise pay, moved onto this thread, and only on
+    # installs that actually have an image or video model. Self-guarded and never fatal.
+    if _post_warm_retired(generation):
+        return
+    try:
+        prewarm_diffusers_if_image_models_exist()
+    except Exception as _prewarm_exc:  # noqa: BLE001 -- latency work must never end the worker
+        import structlog as _structlog
+        _structlog.get_logger(__name__).debug("diffusers prewarm skipped: %s", _prewarm_exc)
 
 
 def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
@@ -597,6 +673,42 @@ def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
     cache_cleanup, next to the paths it clears and the lock that serializes it against a sibling's startup;
     run_server puts the probe on app.state because main.py must not import run.py back."""
     _clear_compiled_cache_unless_shared(getattr(app.state, "live_sibling_backend", None))
+
+
+def banner_autofill_available(app_state, environ) -> bool:
+    """Whether _inject_bootstrap will hand the login page the credential.
+
+    Read from the launch, not the environment: run_server sets UNSLOTH_API_ONLY and never
+    clears it, and an embedded host may call run_server() again in the same process with
+    different flags, so the variable outlives the launch that set it. The environment is
+    only the fallback for a direct uvicorn launch that never went through run_server.
+    """
+    if getattr(app_state, "suppress_bootstrap_injection", False):
+        return False
+    api_only = getattr(app_state, "api_only", None)
+    if api_only is None:
+        api_only = environ.get("UNSLOTH_API_ONLY") == "1"
+    return not api_only
+
+
+def bootstrap_banner_lines(
+    username: str, bootstrap_path, password: Optional[str], *, autofill_available: bool
+) -> "list[str]":
+    """The first-boot banner for a freshly created admin account.
+
+    Printing the password is the exception, not the rule: _inject_bootstrap fills the
+    login form in, so a launch that gets the injection must keep the credential out of
+    a log that ends up in a bug report.
+    """
+    lines = ["=" * 60, "DEFAULT ADMIN ACCOUNT CREATED", f"    username: {username}"]
+    if autofill_available or not password:
+        lines.append(f"    password saved to: {bootstrap_path}")
+    else:
+        lines.append(f"    password: {password}")
+        lines.append(f"    also saved to: {bootstrap_path}")
+    lines.append("    Open the Unsloth UI to sign in and change it.")
+    lines.append("=" * 60)
+    return lines
 
 
 @asynccontextmanager
@@ -650,23 +762,39 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("studio.db WAL keeper failed at startup: %s", exc)
 
-    # Reap workers/runs orphaned by a previous crash before new work starts.
-    try:
-        from storage.studio_db import cleanup_orphaned_runs
-        cleanup_orphaned_runs()
-    except Exception as exc:
-        _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
+    from utils.account_context import OWNER as _owner_account, run_as as _run_as
 
     try:
-        from storage.chat_generation_runs_db import reconcile_orphaned_runs
-        reconciled_chat_runs = reconcile_orphaned_runs()
-        if reconciled_chat_runs:
-            _lifespan_log.warning(
-                "Marked %s interrupted chat generation run(s) failed after restart.",
-                reconciled_chat_runs,
-            )
+        from core.training.account_jobs import startup_reconciliation_accounts
+        _reconcile_accounts = startup_reconciliation_accounts()
     except Exception as exc:
-        _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
+        _lifespan_log.warning("could not enumerate accounts to reconcile: %s", exc)
+        _reconcile_accounts = [_owner_account]
+
+    for _account in _reconcile_accounts:
+        try:
+            from storage.studio_db import cleanup_orphaned_runs
+            _run_as(_account, cleanup_orphaned_runs)
+        except Exception as exc:
+            _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
+
+        try:
+            from storage.chat_generation_runs_db import reconcile_orphaned_runs
+            reconciled_chat_runs = _run_as(_account, reconcile_orphaned_runs)
+            if reconciled_chat_runs:
+                _lifespan_log.warning(
+                    "Marked %s interrupted chat generation run(s) failed after restart.",
+                    reconciled_chat_runs,
+                )
+        except Exception as exc:
+            _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
+
+        # Each account has its own rag.db, so its stuck ingestion jobs are only visible from inside it.
+        try:
+            from storage.rag_db import reconcile_orphaned_ingestion_jobs
+            _run_as(_account, reconcile_orphaned_ingestion_jobs)
+        except Exception as exc:
+            _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     try:
         # The boot pass above only settles runs orphaned by the previous process. A run that wedges while this one
@@ -695,12 +823,6 @@ async def lifespan(app: FastAPI):
     app.state.llama_cpp_capabilities = None
     app.state.llama_cpp_freshness = None
     _start_llama_cpp_probes_if_enabled(app)
-
-    try:
-        from storage.rag_db import reconcile_orphaned_ingestion_jobs
-        reconcile_orphaned_ingestion_jobs()
-    except Exception as exc:
-        _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
@@ -732,20 +854,28 @@ async def lifespan(app: FastAPI):
     # run_server's pre-bind gate sets suppress_bootstrap_injection when a public URL is about
     # to serve with the default credential: never capture the bootstrap password into app.state.
     _suppress_bootstrap = getattr(app.state, "suppress_bootstrap_injection", False)
-    if storage.ensure_default_admin():
-        bootstrap_pw = None if _suppress_bootstrap else storage.get_bootstrap_password()
-        app.state.bootstrap_password = bootstrap_pw
-
+    _created = storage.ensure_default_admin()
+    app.state.bootstrap_password = None if _suppress_bootstrap else storage.get_bootstrap_password()
+    # A tunnel launch runs the pre-bind gate first and that gate seeds the account, so
+    # _created is False there and the whole banner would be skipped on exactly the launch
+    # that needs it. requires_password_change: the gate may also have taken a new password
+    # at its prompt, which retires the bootstrap one.
+    if (_created or storage.admin_created_this_process()) and storage.requires_password_change(
+        storage.DEFAULT_ADMIN_USERNAME
+    ):
         bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
-        print("\n" + "=" * 60)
-        print("DEFAULT ADMIN ACCOUNT CREATED")
-        print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
-        print(f"    password saved to: {bootstrap_path}")
-        print("    Open the Unsloth UI to sign in and change it.")
-        print("=" * 60 + "\n")
-    else:
-        app.state.bootstrap_password = (
-            None if _suppress_bootstrap else storage.get_bootstrap_password()
+        _autofill = banner_autofill_available(app.state, os.environ)
+        print(
+            "\n"
+            + "\n".join(
+                bootstrap_banner_lines(
+                    storage.DEFAULT_ADMIN_USERNAME,
+                    bootstrap_path,
+                    storage.get_bootstrap_password(),
+                    autofill_available = _autofill,
+                )
+            )
+            + "\n"
         )
 
     # Last, so it never contends for the GIL: the socket binds as soon as this returns, so the login
@@ -910,6 +1040,32 @@ _IS_COLAB = os.path.isdir("/content") and (
 )
 
 
+def _reportable_hf_endpoints(request) -> dict:
+    """The endpoints to hand the browser, which are not always the ones we use.
+
+    A loopback endpoint names a proxy on the MACHINE THE BACKEND RUNS ON, and a
+    private-network one an address on the backend's LAN. Handing either to a
+    browser elsewhere makes it fetch its OWN localhost or its OWN 10.0.0.5: the
+    calls either fail, or hit an unrelated service that, if it answers the CORS
+    preflight, is handed the user's Hub bearer token. endpoint_is_reachable_by
+    holds the rule; the backend keeps using its own value either way.
+
+    The client comes from client_ip(), not the socket peer: through the managed
+    Cloudflare tunnel the peer IS loopback, being the local cloudflared process
+    rather than the visitor, and an address it cannot determine reads as remote.
+    """
+    reported = {}
+    for key, value in (
+        ("hf_endpoint", get_hf_endpoint()),
+        ("hf_datasets_server", get_hf_datasets_server()),
+    ):
+        if _endpoint_is_reachable_by(value, client_ip(request)):
+            reported[key] = value
+        else:
+            reported[key] = _HF_ENDPOINT_DEFAULTS[key]
+    return reported
+
+
 def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     script_src = "script-src 'self'"
     style_src = "style-src 'self' 'unsafe-inline'"
@@ -928,23 +1084,38 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     # one level) and null-origin iframes; '*' is safe as Colab is a sandboxed single user.
     frame_ancestors = "*" if _IS_COLAB else "'none'"
 
+    # A mirror has to reach connect-src, or the browser blocks the Hub calls routed
+    # there. img/media carry a bare https:, so only a loopback HTTP one needs those.
+    # Origins only: a host-source with a path is matched exactly unless it ends
+    # in "/", so a path-prefixed mirror would block every request under it.
+    hf_connect_src = " ".join(
+        dict.fromkeys(
+            (
+                "https://huggingface.co",
+                "https://datasets-server.huggingface.co",
+                *csp_connect_sources(),
+            )
+        )
+    )
+    asset_sources = csp_asset_sources()
+    hf_asset_src = (" " + " ".join(asset_sources)) if asset_sources else ""
+
     # In Colab the kernel scaffolding injects scripts and fetch/WS from *.prod.colab.dev and
     # *.googleusercontent.com, so widen script-src/connect-src. Scripts still use a nonce.
     if _IS_COLAB:
         script_src += " https://*.prod.colab.dev https://*.googleusercontent.com"
         connect_src = (
-            "'self' blob: data: "
-            "https://huggingface.co https://datasets-server.huggingface.co "
+            f"'self' blob: data: {hf_connect_src} "
             "https://*.prod.colab.dev wss://*.prod.colab.dev "
             "https://*.googleusercontent.com wss://*.googleusercontent.com"
         )
     else:
-        connect_src = "'self' https://huggingface.co https://datasets-server.huggingface.co"
+        connect_src = f"'self' {hf_connect_src}"
 
     return (
         "default-src 'self'; "
-        "img-src 'self' data: blob: https:; "
-        "media-src 'self' data: blob: https:; "
+        f"img-src 'self' data: blob: https:{hf_asset_src}; "
+        f"media-src 'self' data: blob: https:{hf_asset_src}; "
         f"connect-src {connect_src}; "
         f"{style_src}; "
         f"{script_src}; "
@@ -1369,16 +1540,23 @@ from utils.host_policy import cors_origins_for_mode  # noqa: E402
 
 
 class RemoteAccessCORSMiddleware(CORSMiddleware):
-    """Allow remote browser origins only while a Cloudflare URL is published."""
+    """Admit the published Cloudflare origin, on top of the startup allowlist."""
 
     def __init__(self, cors_app, *, remote_access_state, **kwargs):
         self.remote_access_state = remote_access_state
         super().__init__(cors_app, **kwargs)
 
     def is_allowed_origin(self, origin: str) -> bool:
-        return bool(
-            getattr(self.remote_access_state, "cloudflare_url", None)
-        ) or super().is_allowed_origin(origin)
+        # The tunnel names ONE origin to admit, it is not a switch admitting every origin: api-only is
+        # locked to the Tauri app (run.py) and Settings > Remote access must not hand that lock to any
+        # open page. The tunnel-served UI calls relative URLs and is already same-origin; this is for a
+        # browser that does reach the API cross-origin from the tunnel's own document.
+        published = getattr(self.remote_access_state, "cloudflare_url", None)
+        if published:
+            tunnel_origin = _origin_of(published)
+            if tunnel_origin is not None and tunnel_origin == _origin_of(origin):
+                return True
+        return super().is_allowed_origin(origin)
 
 
 _cors_origins = cors_origins_for_mode(
@@ -1411,6 +1589,11 @@ from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # n
 app.add_middleware(RemoteAccessStopResponseMiddleware)
 
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
+app.include_router(
+    __import__("routes.accounts", fromlist = ["router"]).router,
+    prefix = "/api/accounts",
+    tags = ["accounts"],
+)
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
@@ -1441,6 +1624,7 @@ app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = [
 
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
+app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
@@ -1681,6 +1865,18 @@ async def liveness_check():
     return alive
 
 
+async def _desktop_shell_subject(request: Request) -> Optional[str]:
+    """Owner subject for a request carrying the desktop secret, None without one: on a multi-account install desktop-login mints no session, so the shell proves ownership with the secret itself."""
+    secret = request.headers.get("x-desktop-secret")
+    if secret is None:
+        return None
+    from starlette.concurrency import run_in_threadpool
+
+    if await run_in_threadpool(storage.validate_desktop_secret, secret) is None:
+        raise HTTPException(status_code = 401, detail = "Desktop authentication failed")
+    return storage.DEFAULT_ADMIN_USERNAME
+
+
 @app.get("/api/health")
 async def health_check(request: Request):
     """Liveness plus launcher capability bits; host fingerprint gated on a bearer.
@@ -1716,6 +1912,9 @@ async def health_check(request: Request):
         # Opaque per-install id; launchers reject sibling Unsloth instances on the same port.
         "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
+        # Unauthenticated on purpose: an endpoint URL is not a host fingerprint,
+        # and the frontend needs it before a token exists.
+        **_reportable_hf_endpoints(request),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
     # Lockstep with /api/liveness: the launcher falls back to this route on a backend too old
@@ -1734,22 +1933,23 @@ async def health_check(request: Request):
         if os.environ.get(DISABLE_ENV_VAR) == "1" and not mlx_repairing:
             # Nothing is detecting until a hardware-dependent operation runs; say so instead of making clients poll.
             base["hardware_detection_deferred"] = True
+    subject = await _desktop_shell_subject(request)
     auth = request.headers.get("authorization", "")
     bearer = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else None
-    try:
-        from auth.authentication import credentials_for_token
-        from auth.authentication import get_current_subject as _gcs
+    if subject is None:
+        try:
+            from auth.authentication import credentials_for_token
+            from auth.authentication import get_current_subject as _gcs
 
-        # resolved rather than built, so a scope covering this route answers it in full
-        creds = await credentials_for_token(request, bearer)
-        if creds is None:
+            creds = await credentials_for_token(request, bearer)
+            if creds is None:
+                return base
+            # Must await: a bare coroutine is truthy and would skip the auth check
+            subject = await _gcs(creds)
+        except HTTPException:
             return base
-        # Must await: a bare coroutine is truthy and would skip the auth check
-        subject = await _gcs(creds)
-    except HTTPException:
-        return base
-    except Exception:
-        return base
+        except Exception:
+            return base
     if not subject:
         return base
 
@@ -1838,7 +2038,10 @@ def studio_download_transport_capabilities(
     return asdict(get_download_transport_capabilities(probe = probe))
 
 
-@app.post("/api/shutdown")
+@app.post(
+    "/api/shutdown",
+    dependencies = [Depends(get_current_subject), Depends(auth_policy.require_owner)],
+)
 async def shutdown_server(request: Request, current_subject: str = Depends(get_current_subject)):
     """Gracefully shut down the Unsloth Studio server.
 
@@ -1846,6 +2049,18 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
     without the CLI or killing the process manually.
     """
 
+    return _schedule_shutdown(request)
+
+
+@app.post("/api/desktop/shutdown")
+async def desktop_shutdown_server(request: Request):
+    """The desktop shell's quit path, authenticated by its secret."""
+    if await _desktop_shell_subject(request) is None:
+        raise HTTPException(status_code = 401, detail = "Desktop authentication failed")
+    return _schedule_shutdown(request)
+
+
+def _schedule_shutdown(request: Request) -> dict:
     async def _delayed_shutdown():
         await asyncio.sleep(0.2)  # Let the HTTP response return first
         trigger = getattr(request.app.state, "trigger_shutdown", None)
@@ -1997,6 +2212,103 @@ def _get_cached_system_gpu_info(
         return combined_info
 
 
+def _probe_dense_quant_supported() -> bool:
+    """Whether an ``auto`` request could engage a dense quant on EVERY visible card.
+
+    The picker cannot see which card a load lands on, so a mixed host answers for the least capable.
+
+    IMPORTS the ML stack, so only ``_refresh_dense_quant_capability`` calls it, and only from the
+    post-warm worker or a request that already has both modules. Never memoised: the answer
+    sharpens, since an unprobed scheme counts as usable and a later load can record a kernel
+    failure in ``_SMOKE_CACHE``."""
+    try:
+        from core.inference.diffusion_device import (
+            diffusion_device_scope,
+            resolve_diffusion_device_target,
+        )
+        from core.inference.diffusion_transformer_quant import dense_quant_host_capable
+
+        import torch
+
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if count <= 1:
+            return bool(dense_quant_host_capable(resolve_diffusion_device_target()))
+        for ordinal in range(count):
+            with diffusion_device_scope(ordinal):
+                if not dense_quant_host_capable(resolve_diffusion_device_target(ordinal = ordinal)):
+                    return False
+        return True
+    except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
+        return False
+
+
+def _probe_dense_quant_schemes() -> list[str]:
+    """The auto ladder's schemes for this host, best first, on the same ladder and deny list the
+    loader's ``auto_scheme_candidates`` reads; a mixed host answers with the INTERSECTION. IMPORTS
+    the ML stack.
+
+    The CACHED variant, since a request holding torch reaches this from the polled ``/api/system``:
+    the load-time helper runs ``_scheme_supported``, which spawns the smoke probe or allocates in
+    this process. Like the capability bit, it sharpens as loads record verdicts in ``_SMOKE_CACHE``."""
+    try:
+        from core.inference.diffusion_device import (
+            diffusion_device_scope,
+            resolve_diffusion_device_target,
+        )
+        from core.inference.diffusion_transformer_quant import auto_scheme_candidates_cached
+
+        import torch
+
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if count <= 1:
+            return list(auto_scheme_candidates_cached(resolve_diffusion_device_target()))
+        common: Optional[list[str]] = None
+        for ordinal in range(count):
+            with diffusion_device_scope(ordinal):
+                schemes = list(
+                    auto_scheme_candidates_cached(resolve_diffusion_device_target(ordinal = ordinal))
+                )
+            common = schemes if common is None else [s for s in common if s in schemes]
+        return common or []
+    except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
+        return []
+
+
+# Resolved off the polled path: None until the post-warm worker or a request already holding the
+# ML stack has answered.
+_dense_quant_capability: Optional[bool] = None
+_dense_quant_scheme_ladder: list[str] = []
+
+
+def _refresh_dense_quant_capability() -> bool:
+    """Resolve the dense-quant bit and cache it. Imports torch and torchao; never call from a route
+    that has not already got them."""
+    global _dense_quant_capability, _dense_quant_scheme_ladder
+    _dense_quant_capability = _probe_dense_quant_supported()
+    _dense_quant_scheme_ladder = _probe_dense_quant_schemes() if _dense_quant_capability else []
+    return _dense_quant_capability
+
+
+def _dense_quant_supported() -> bool:
+    """The dense-quant bit for ``/api/system``, from already-loaded state only.
+
+    This route is polled throughout startup, and ``import torch`` and ``import torchao.quantization``
+    cost ~0.8s each and hold the GIL, the stall ``_await_hardware_detection`` already keeps off this
+    path. So never import here. The post-warm worker resolves it once the warm has the stack up, and
+    a request finding both modules loaded refreshes it, so a load's kernel verdict reaches the picker
+    on the next poll. False before that is honest: the picker renders no fast label, as it does for
+    an unknown VRAM budget."""
+    if "torch" in sys.modules and "torchao" in sys.modules:
+        return _refresh_dense_quant_capability()
+    return bool(_dense_quant_capability)
+
+
+def _dense_quant_schemes() -> list[str]:
+    """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
+    must never import torch, and the entry beside it refreshed both in one pass."""
+    return list(_dense_quant_scheme_ladder)
+
+
 @app.get("/api/system")
 def get_system_info(
     current_subject: str = Depends(get_current_subject), refresh_memory: bool = False
@@ -2092,7 +2404,166 @@ def get_system_info(
         **export_capability(),
         # Video capability + reason, same shape. Additive: older clients ignore the extra keys.
         **video_capability(),
+        # One bit cannot tell an Ampere host (int8 only) from an Ada one, nor spot an unsupported
+        # CUDA card, so the picker gets the scheme list too. The bit resolves first; the list is a
+        # pure read of that same pass.
+        "dense_quant_supported": _dense_quant_supported(),
+        "dense_quant_schemes": _dense_quant_schemes(),
     }
+
+
+@app.get("/api/system/disk")
+def get_disk_space(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Free space where downloads land. One syscall, and nothing else.
+
+    Separate from /api/system because that route enumerates GPUs, reads package metadata and
+    samples CPU: fine for a screen the user is looking at, far too much to run on the chance
+    that a disk is filling. The low-disk notice asks for THIS instead, and only when a download
+    is about to start.
+
+    shutil.disk_usage is statvfs on Linux and macOS and GetDiskFreeSpaceExW on Windows, so this
+    is microseconds on every platform Studio runs on and needs no directory walk. Note that on
+    Windows it reports the quota available to the CALLING user, which is the number that decides
+    whether the download fits, so that difference is the correct one.
+
+    Measured at the models root rather than the filesystem root: those are different volumes
+    whenever HF_HUB_CACHE, or the Studio root, sits on another disk, and the free space that
+    matters is the one the bytes are going to.
+
+    Both roots that receive bytes are measured, not just the hub one. HF_XET_CACHE is resolved
+    independently of HF_HUB_CACHE and holds the Xet chunks every download now streams through,
+    so the two can sit on different volumes and the wrong one has ample room. The TIGHTEST
+    reading wins, because the volume that runs out first is the one that stops the download.
+    Deduplicated by device, so the ordinary install where both live on one disk still costs a
+    single syscall.
+    """
+    from utils.paths.storage_roots import hf_default_cache_dir, studio_root
+
+    # The ACTIVE caches, not the default ones. hf_default_cache_dir() is documented to ignore
+    # HF_HUB_CACHE and the Models Folder setting, so on a machine that moved its downloads to
+    # another volume it would answer about ~/.cache/huggingface, which has nothing to do with
+    # where the next model lands. One SQLite setting read, no walk.
+    roots = []
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        paths = get_hf_cache_paths()
+        roots.extend((paths.hub_cache, paths.xet_cache))
+    except Exception as exc:  # noqa: BLE001 - a settings read must not cost the reading
+        logger.debug(f"Could not resolve the active caches for the disk reading: {exc}")
+
+    def _locate(probe):
+        """(first existing ancestor, its device), or None when this root is unreadable.
+
+        Two failures that look alike and must not be treated alike. A MISSING directory is
+        ordinary, since the cache legitimately does not exist yet on a fresh install, and the
+        volume it would live on is its nearest existing parent. A permission error, an I/O
+        error or a network mount that is not answering is not missing: climbing past it would
+        report the parent filesystem's free space for a disk nothing could read, which is the
+        confidently wrong answer this route exists to avoid. Those leave the root unreadable.
+        """
+        try:
+            chain = [probe, *probe.parents]
+        except (OSError, ValueError, RuntimeError):
+            return None
+        for candidate in chain:
+            try:
+                return candidate, os.stat(candidate).st_dev
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError as exc:
+                logger.debug(f"Cache root {candidate} could not be read: {exc}")
+                return None
+        return None
+
+    def _read(candidate):
+        """The reading for one already-located directory, or None if it cannot be taken."""
+        try:
+            usage = shutil.disk_usage(candidate)
+        except (OSError, ValueError):
+            return None
+        return {
+            "path": str(candidate),
+            # Decimal GB, matching /api/system, so the two agree on screen.
+            "total_gb": round(usage.total / 1e9, 2),
+            "free_gb": round(usage.free / 1e9, 2),
+            "percent_used": (
+                round((usage.total - usage.free) / usage.total * 100, 1) if usage.total else 0
+            ),
+        }
+
+    # Locate first, THEN read. Deduplicating after the reading still paid a disk_usage per
+    # root, so the ordinary install with both caches on one disk was doing two probes to
+    # answer about one volume, which is the opposite of what the docstring promises and
+    # costs most on exactly the network mounts this is careful about.
+    located = []
+    seen = set()
+    unreadable = False
+    for root in roots:
+        found = _locate(root)
+        if found is None:
+            # An ACTIVE destination that cannot be read makes the whole answer unknown, rather
+            # than quietly leaving the other one to speak for it. Hub and Xet can sit on
+            # different volumes, so reporting the readable one's free space would be a
+            # confident number about a disk the download is not filling: the same mistake as
+            # climbing past an unreadable root, one level up.
+            unreadable = True
+            continue
+        candidate, device = found
+        if device in seen:
+            continue
+        seen.add(device)
+        located.append(candidate)
+
+    readings = [] if unreadable else [r for r in map(_read, located) if r is not None]
+    if not unreadable and len(readings) != len(located):
+        # A root that located but would not report is the same situation.
+        unreadable = True
+        readings = []
+
+    if unreadable:
+        # Nulls, not zeros, and not a fallback volume either: the caller reads this as
+        # "could not tell", which neither warns nor blocks a download.
+        return {"path": None, "total_gb": None, "free_gb": None, "percent_used": None}
+
+    if not readings:
+        # Nothing resolved: fall back to the same places the old reading used.
+        for probe in (hf_default_cache_dir(), studio_root(), Path(os.path.abspath(os.sep))):
+            found = _locate(probe)
+            reading = None if found is None else _read(found[0])
+            if reading is not None:
+                readings.append(reading)
+                break
+
+    if readings:
+        tightest = min(readings, key = lambda r: r["free_gb"])
+        answer = dict(tightest)
+        # An API key reaches this route through get_current_subject, and `path` is a raw host
+        # path naming the service account and its home layout. The repo already draws that
+        # boundary for the Hub inventory routes; a capacity reading is not a reason to cross
+        # it, and the low-disk client uses only the numbers.
+        #
+        # A managed account is the same disclosure by a different door: its session JWT also
+        # satisfies get_current_subject, and via_api_key is false for it, so the API-key test
+        # alone would hand it the owner's home layout. Resources is owner-only and
+        # /settings/caches sits behind _owner_settings_router, so the path is owner-only here
+        # too. Redacted rather than 403: requestStart and the poll loop call this for whoever
+        # is downloading, owner or not, and the numbers are what that caller needs. On a
+        # single-user install the context defaults to OWNER, so nothing changes.
+        #
+        # The INVENTORY redactor, not redact_host_paths: the latter runs _redact with
+        # redact_ambiguous_path=False and so leaves a field literally named "path" alone,
+        # which is the whole value here. Verified against the real helper, not assumed.
+        from utils.account_context import is_owner_context
+
+        return redact_inventory_host_paths(
+            answer, via_api_key = via_api_key or not is_owner_context()
+        )
+    # Every probe failed. Nulls, not zeros: diskPressure() reads a zero total as psutil having
+    # failed and a zero free as a full disk, and this is neither.
+    return {"path": None, "total_gb": None, "free_gb": None, "percent_used": None}
 
 
 @app.get("/api/system/gpu-visibility")
@@ -2163,6 +2634,12 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
         return html_bytes, None
 
+    from auth.policy import installation_has_managed_accounts
+
+    # A local browser may belong to any account, including a deactivated one.
+    if installation_has_managed_accounts():
+        return html_bytes, None
+
     bootstrap_pw = getattr(app.state, "bootstrap_password", None)
     if not bootstrap_pw:
         return html_bytes, None
@@ -2220,6 +2697,17 @@ def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]
     else:
         port = _DEFAULT_PORTS.get(scheme, 0)
     return (scheme, host, port)
+
+
+def _origin_of(url: Optional[str]) -> Optional[tuple[str, str, int]]:
+    """Canonical origin of a URL or of an Origin header value, or ``None`` when it is neither."""
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    return _canonical_origin(parsed.scheme, parsed.netloc)
 
 
 def _is_loopback_ip(host: Optional[str]) -> bool:
@@ -2303,13 +2791,44 @@ def _is_same_origin_request(request: Request) -> bool:
     return origin_canon == self_canon
 
 
+# Colab's proxy is itself a forwarded-header ingress, invisible to the loopback tests, so it is identified
+# positively by its own authority: naming one tunnel vendor instead leaves every other relay (ngrok,
+# localtunnel, bore, ssh -R) reading as the local browser.
+_COLAB_PROXY_HOST_SUFFIXES = ("colab.googleusercontent.com", ".googleusercontent.com", ".colab.dev")
+# The proxy relays the notebook owner and only the notebook owner, so it sets x-forwarded-for (which is why
+# run.py runs uvicorn with proxy_headers there). The other four mark a relay we cannot attribute to it.
+_COLAB_TOLERATED_PROXY_HEADERS = frozenset({"x-forwarded-for"})
+
+
+def _host_header_is_colab_proxy(host_header: Optional[str]) -> bool:
+    """Whether the Host authority belongs to Colab's own port proxy."""
+    if not host_header:
+        return False
+    host = host_header.strip()
+    if host.startswith("["):  # bracketed IPv6 is never a Colab proxy authority
+        return False
+    if host.count(":") == 1:  # host:port
+        host = host.split(":", 1)[0]
+    host = host.lower().rstrip(".")
+    return host.endswith(_COLAB_PROXY_HOST_SUFFIXES)
+
+
+def _is_colab_notebook_request(request: Request) -> bool:
+    """Allow bootstrap injection through Colab's single-user notebook proxy, and nothing else."""
+    for header in _PROXIED_CLIENT_HEADERS:
+        if header in _COLAB_TOLERATED_PROXY_HEADERS:
+            continue
+        if request.headers.get(header) is not None:
+            return False
+    return _host_header_is_colab_proxy(request.headers.get("host"))
+
+
 def _should_inject_bootstrap(request: Request) -> bool:
     """Whether to embed the seeded bootstrap password in index.html."""
     if not _is_same_origin_request(request):
         return False
-    if _IS_COLAB:
-        # Single-user notebook proxy: allow autofill, but never a public tunnel (sets cf-connecting-ip).
-        return request.headers.get("cf-connecting-ip") is None
+    if _IS_COLAB and _is_colab_notebook_request(request):
+        return True
     return _is_local_bootstrap_request(request)
 
 

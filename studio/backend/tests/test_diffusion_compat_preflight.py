@@ -1411,10 +1411,14 @@ def test_both_media_routes_refuse_a_speech_pick_before_taking_the_gpu():
 
     # The CALL, not the import line at the top of each route, which names acquire_for far earlier.
     for source, acquire, label in (
-        (inspect.getsource(video_route.load_video_model_gated), "acquire_for(VIDEO", "video"),
+        (
+            inspect.getsource(video_route.load_video_model_gated),
+            "acquire_for_request(VIDEO",
+            "video",
+        ),
         (
             inspect.getsource(inference_route.load_diffusion_model_gated),
-            "acquire_for(DIFFUSION",
+            "acquire_for_request(DIFFUSION",
             "images",
         ),
     ):
@@ -1704,3 +1708,20 @@ def test_the_chat_backend_does_not_import_pyyaml_to_learn_the_speech_verdict():
         assert not hasattr(
             gguf_metadata, name
         ), f"{name} must be imported from utils.gguf_archs, not through utils.models"
+
+
+def test_qwen_image_2_1_takes_the_dynamic_4bit_text_encoder():
+    """The no-GPU route's encoder is pinned by FILENAME, and a name that is not in the repo is
+    not an error anyone sees at config time: the fetch 404s mid-load, after the denoiser has
+    already been staged. Pin the Dynamic 2.0 rung by exact name so a rename or a drop to the
+    uniform quant has to break this rather than a user's load."""
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam.sd_cpp_text_encoders == (
+        (
+            "unsloth/Qwen3-VL-8B-Instruct-GGUF",
+            "Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf",
+            "llm",
+        ),
+    )
