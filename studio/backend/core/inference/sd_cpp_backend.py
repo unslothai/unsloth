@@ -1575,7 +1575,10 @@ _ARCH_MARKER_CACHE: dict[tuple[str, int, int, str], bool] = {}
 
 
 def binary_carries_marker(
-    binary: Optional[str], marker: Optional[str], *, unreadable: bool = True
+    binary: Optional[str],
+    marker: Optional[str],
+    *,
+    unreadable: bool = True,
 ) -> bool:
     """Whether the sd.cpp executable at ``binary`` contains the literal ``marker``.
 
@@ -3498,7 +3501,6 @@ class SdCppDiffusionBackend:
                     raise ValueError("width and height are required for this workflow.")
                 else:
                     from core.inference.diffusion_conditioning import check_output_size
-
                     check_output_size(state.family, int(width), int(height))
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)
