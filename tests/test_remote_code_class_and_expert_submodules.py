@@ -410,3 +410,16 @@ def test_force_download_bypasses_the_imported_sibling(monkeypatch):
     finally:
         sys.modules.pop("transformers_modules.fake.configuration_fake", None)
         sys.modules.pop("transformers_modules.fake.modeling_fake", None)
+
+
+def test_every_resolver_probe_forwards_the_trust_decision():
+    """A class probe that omits trust_remote_code would import a remote modeling module
+    before transformers can refuse the load."""
+    import ast, inspect
+    from unsloth.models import loader, vision
+
+    for module in (loader, vision):
+        tree = ast.parse(inspect.getsource(module))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) in ("resolve_model_class", "_resolve_omni_auto_model"):
+                assert any(k.arg == "trust_remote_code" for k in node.keywords), (module.__name__, node.lineno)
