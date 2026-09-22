@@ -11234,16 +11234,7 @@ def test_a_pipeline_pick_refuses_an_explicit_scheme_that_did_not_engage(
 
 
 def test_a_pipeline_pick_quantises_under_whole_module_offload(fake_runtime, tmp_path, monkeypatch):
-    """Whole-module offload no longer costs the quantisation.
-
-    This asserted the opposite while the loader refused every offload tier, on the grounds that
-    torchao tensors cannot move. Measured, and they can: an int8 Linear round-trips
-    cuda -> cpu -> cuda with max abs diff 0.0 on L4 (sm_89) and A100 (sm_80), and Qwen-Image-2.1
-    renders identically at int8 and fp8 under group and whole-module offload on sm_100.
-
-    Refusing was also self-defeating: offload is chosen precisely when the dense weights do not
-    fit, so dropping quantisation there hands a too-small card the bf16 weights anyway, plus a
-    per-step host round trip."""
+    """torchao tensors survive whole-module offload, so it no longer costs the quantisation."""
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch)
     real_plan = DiffusionBackend._plan_memory
@@ -11264,9 +11255,8 @@ def test_a_pipeline_pick_quantises_under_whole_module_offload(fake_runtime, tmp_
 def test_the_offload_replan_sizes_the_text_encoder_the_pipe_holds(
     fake_runtime, tmp_path, monkeypatch
 ):
-    """The table's encoder is bf16, but a hosted pre-cast fp8 encoder is already in the pipe at
-    about half that. The replan takes the measured figure when it is smaller and keeps the table's
-    when it is not, so an injection that fell back to the dense encoder is never under-sized."""
+    """The measured encoder replaces the table's bf16 figure only when smaller, so a pre-cast
+    fp8 encoder is not double-counted and a dense fallback is never under-sized."""
     from core.inference import diffusion as dmod
 
     real_plan = DiffusionBackend._plan_memory
@@ -11302,10 +11292,7 @@ def test_the_offload_replan_sizes_the_text_encoder_the_pipe_holds(
 def test_a_pipeline_pick_still_stays_dense_under_sequential_offload(
     fake_runtime, tmp_path, monkeypatch
 ):
-    """Sequential offload keeps the old refusal: it moves the transformer submodule by submodule,
-    it is already documented as broken for GGUF through diffusers 0.39, and none of the evidence
-    above was gathered on it. The narrow guard is what keeps that an explicit decision rather than
-    a side effect of widening the tier above."""
+    """Sequential offload is unmeasured with torchao tensors, so it keeps the refusal."""
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch)
     real_plan = DiffusionBackend._plan_memory

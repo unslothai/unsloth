@@ -5249,24 +5249,10 @@ class DiffusionBackend:
                                             plan.offload_policy,
                                         )
                                         plan = replanned
-                            # Quantise UNDER offload, rather than giving it up to keep offload.
-                            #
-                            # This used to refuse every offload tier, on the stated grounds that
-                            # "torchao quantised tensors reject Module.to()". Measured, and they do
-                            # not: an int8 Linear round-trips cuda -> cpu -> cuda with max abs diff
-                            # 0.0 on L4 (sm_89) and A100 (sm_80), and Qwen-Image-2.1 renders
-                            # identically at int8 and at fp8 under both group and whole-module
-                            # offload on sm_100 (same luma to 1 decimal, peak 25.4 -> 16.4 GiB).
-                            #
-                            # The refusal was also self-defeating. Offload is picked when the DENSE
-                            # weights do not fit, so dropping quantisation there keeps the arm that
-                            # made them not fit: a card too small for bf16 got bf16 anyway, plus a
-                            # per-step host round trip. Quantising first is what lets the next load
-                            # of the same model skip offload entirely.
-                            #
-                            # Sequential stays out. It is submodule-level, already documented as
-                            # broken for GGUF through diffusers 0.39, and nothing above was measured
-                            # on it, so it keeps the old behaviour until someone runs it.
+                            # torchao tensors survive group and whole-module offload (int8 round-trips cuda->cpu->cuda
+                            # with max|diff| 0.0 on sm_80/sm_89; Qwen-Image-2.1 renders identically on sm_100), and
+                            # offload is picked because the dense weights do not fit, so quantising is what helps.
+                            # Sequential is unmeasured and keeps the refusal.
                             if plan.offload_policy == OFFLOAD_SEQUENTIAL:
                                 logger.info(
                                     "diffusion.transformer_quant: skipped (sequential offload moves "
