@@ -949,10 +949,12 @@ def test_notes_surface_is_borderless_and_lifts_in_dark_mode():
     # shorthand as an rgb() whose alpha scales with --contrast-wash-gain, which is the same
     # 0.06 white at the default gain of 1, so read the white and the amount rather than one
     # spelling. A darker inset, or a different amount, still fails. The class also has to end
-    # where the match does, at whitespace or the end of the string it is written in. Anything
-    # else and Tailwind reads a different candidate than the one named here: `-broken` names
-    # no utility at all, `/50` is a different lift, `:broken` is a variant on nothing.
+    # where the match does, and start where it starts. Anything else and Tailwind reads a
+    # different candidate than the one named here: `-broken` names no utility at all, `/50`
+    # is a different lift, `:broken` is a variant on nothing, and a `hover:` in front paints
+    # the lift only under the pointer instead of on the dark surface.
     assert re.search(
+        r"(?:(?<=[\s\"'`])|^)"
         r"dark:bg-(?:white/\[0\.06\]"
         r"|\[rgb\(255_255_255_/_calc\(0\.06\*var\(--contrast-wash-gain,\s*1\)\)\)\])"
         r"(?=[\s\"'`]|$)",

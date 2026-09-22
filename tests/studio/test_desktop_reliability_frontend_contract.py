@@ -2506,28 +2506,32 @@ def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
     assert '"failed"' not in call
 
 
-# The media pages and the navbar measure their header band against this file's arithmetic,
-# and every one of those contracts reads the band through `_ui_source`. That reader answers
-# with the length at the default scale, which is the same 48px whether the source still
-# scales it or has gone back to a bare `h-[48px]`. The contracts cannot tell those apart, so
-# the scaling is stated here instead: unwrap one of these and this fails, rather than every
-# geometry contract quietly passing while the band stopped following the interface font size.
-_BANDS_THAT_MUST_KEEP_THE_SCALE = (
-    (NAVBAR, 2),
-    (IMAGES_PAGE, 1),
-    (AUDIO_PAGE, 1),
-    (VIDEO_PAGE, 1),
-    (CHAT_PAGE, 1),
+# Every geometry contract above reads its lengths through `_ui_source`, which answers with
+# the length at the default scale. That is the same 48px whether the source still scales the
+# band or has gone back to a bare `h-[48px]`, so no contract that measures the band can tell
+# those apart, and none of them should have to: the scaling is a separate claim and it is
+# stated here. Each row is a length one of those contracts measures, with how many times the
+# file states it. Unwrap one and this fails, rather than every contract downstream of it
+# passing while the layout has stopped following the interface font size.
+_LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
+    (NAVBAR, "h", "48px", 2),
+    (IMAGES_PAGE, "h", "48px", 1),
+    (AUDIO_PAGE, "h", "48px", 1),
+    (VIDEO_PAGE, "h", "48px", 1),
+    (CHAT_PAGE, "h", "48px", 1),
+    (IMAGES_PAGE, "pt", "60px", 1),
+    (AUDIO_PAGE, "pt", "60px", 2),
+    (DIFFUSION_TRAIN_PANEL, "pt", "42px", 2),
 )
 
 
-def test_the_header_band_these_contracts_measure_still_follows_the_ui_scale():
-    for path, expected in _BANDS_THAT_MUST_KEEP_THE_SCALE:
+def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
+    for path, utility, length, expected in _LENGTHS_THAT_MUST_KEEP_THE_SCALE:
         source = path.read_text(encoding = "utf-8")
-        scaled = source.count("h-[calc(48px*var(--ui-space-scale,1))]")
-        assert (
-            scaled == expected
-        ), f"{path.name} states {scaled} scaled 48px header bands, not {expected}"
-        assert (
-            "h-[48px]" not in source
-        ), f"{path.name} has a bare 48px header band, which stays put while its labels grow"
+        scaled = source.count(f"{utility}-[calc({length}*var(--ui-space-scale,1))]")
+        assert scaled == expected, (
+            f"{path.name} states {scaled} scaled {utility}-{length}, not {expected}"
+        )
+        assert f"{utility}-[{length}]" not in source, (
+            f"{path.name} has a bare {utility}-[{length}], which stays put while its text grows"
+        )
