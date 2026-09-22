@@ -1871,6 +1871,11 @@ _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
     _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
 )
 
+# Also an upper bound: no mtmd audio projector emits over 25 embeddings a second, and
+# Whisper-style preprocessing appends 30 s of silence before cutting 30 s windows.
+_OPENAI_LLAMA_ADMISSION_AUDIO_TOKENS_PER_SECOND = 25
+_OPENAI_LLAMA_ADMISSION_AUDIO_WINDOW_SECONDS = 30
+
 # An ESTIMATE where the rest of the sizing is a bound: a run that generates more is
 # undercharged until something re-costs it, which a tool loop does every round boundary and
 # a plain chat cannot yet, so on a full cache a long uncapped generation can still overrun.
@@ -2096,6 +2101,11 @@ def _openai_llama_admission_messages_for_estimate(
                     estimate_content.append({"type": part_type, part_type: {"url": "[video]"}})
                     continue
 
+                # The recording is charged by duration from ``audio_base64``.
+                if part_type == "input_audio":
+                    estimate_content.append({"type": part_type, part_type: {"data": "[audio]"}})
+                    continue
+
                 if part_type not in _ADMISSION_IMAGE_PART_TYPES:
                     estimate_content.append(part)
                     continue
@@ -2133,6 +2143,27 @@ def _conversation_video_clips(messages) -> list[str]:
     return clips
 
 
+def _openai_llama_admission_audio_tokens(b64: str) -> int:
+    fallback = max(1, len(b64) // 4)
+    if b64.startswith("data:"):
+        b64 = b64.split(",", 1)[1] if "," in b64 else ""
+    try:
+        raw = base64.b64decode(b64)
+    except Exception:
+        return fallback
+    container = _sniff_audio_container(raw)
+    seconds = _passthrough_audio_seconds(raw, container, _MAX_AUDIO_SECONDS) if container else None
+    if seconds is None:
+        return fallback
+    return (
+        math.ceil(
+            _OPENAI_LLAMA_ADMISSION_AUDIO_TOKENS_PER_SECOND
+            * (seconds + _OPENAI_LLAMA_ADMISSION_AUDIO_WINDOW_SECONDS)
+        )
+        + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
+    )
+
+
 def _openai_llama_admission_media_tokens(
     payload,
     *,
@@ -2148,21 +2179,21 @@ def _openai_llama_admission_media_tokens(
     already carry is a second image really sent. The allowance is per-image rather than
     per-byte because the real mtmd count follows the loaded projector, not base64 length.
 
-    Audio and video keep the old top-level accounting until they have a model-specific
-    estimate; this is scoped to the image path that regressed vision concurrency.
+    Audio is charged by its header's duration, or by its bytes where none is stated. Video
+    keeps the old top-level accounting until it has a model-specific estimate.
     """
     extra = 0
     extra += max(0, message_image_parts) * image_tokens
     if _legacy_image_is_distinct(payload):
         extra += image_tokens
+    audio = getattr(payload, "audio_base64", None)
+    if isinstance(audio, str) and audio:
+        extra += _openai_llama_admission_audio_tokens(audio)
     # _inject_video_part splices the legacy clip into the conversation as input_video before the
     # loop starts, so during a recost the clips below already include it and charging the field
     # too priced it exactly twice.
-    fields = (
-        ("audio_base64",) if message_video_clips is not None else ("audio_base64", "video_base64")
-    )
-    for attribute in fields:
-        value = getattr(payload, attribute, None)
+    if message_video_clips is None:
+        value = getattr(payload, "video_base64", None)
         if isinstance(value, str) and value:
             extra += max(1, len(value) // 4)
     # Recosting passes the CURRENT conversation: a clip on a turn that truncate_oldest has since
@@ -2381,10 +2412,13 @@ async def _openai_llama_admission_reserve_async(
     messages_override = None,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     """The same reservation, with the estimate off the loop when a replayed envelope
-    would make it parse one."""
+    would make it parse one, or a recording would make it decode one."""
     tokens = _TOKENS_UNSET
-    if payload is not None and _messages_mention_mcp_images(
-        messages_override if messages_override is not None else payload.messages
+    if payload is not None and (
+        getattr(payload, "audio_base64", None)
+        or _messages_mention_mcp_images(
+            messages_override if messages_override is not None else payload.messages
+        )
     ):
         tokens = await asyncio.to_thread(
             _openai_llama_admission_estimate,
@@ -3381,6 +3415,7 @@ from models.inference import (
     ChatCountTokensRequest,
     ChatCompletionChunk,
     ChatCompletion,
+    ToolApprovalStatusRequest,
     ToolConfirmRequest,
     ChatMessage,
     ChunkChoice,
@@ -3554,7 +3589,7 @@ def _request_used_api_key(request: Any) -> bool:
         return False
 
 
-from state.tool_approvals import resolve_tool_decision
+from state.tool_approvals import resolve_tool_decision, tool_decision_is_pending
 
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
@@ -10651,6 +10686,9 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     except Exception as e:
         logger.warning(f"Could not read adapter_config.json: {e}")
         return load_in_4bit
+    trained_in_4bit = adapter_cfg.get("unsloth_load_in_4bit")
+    if isinstance(trained_in_4bit, bool):
+        return trained_in_4bit
     training_method = adapter_cfg.get("unsloth_training_method")
     if training_method == "lora":
         return False
@@ -18565,6 +18603,22 @@ async def confirm_tool_call(
     return {"resolved": True}
 
 
+@studio_router.post("/tool-approval-status")
+async def tool_approval_status(
+    request: ToolApprovalStatusRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Whether a parked approval is still waiting on a human.
+
+    A reopened tab restores Approve/Deny from a saved card that has no result and an approval id.
+    That shape is identical whether the call is still parked or the user already answered it and
+    the tool is mid-flight, since the result only arrives with tool_end. Without this the tab
+    re-arms the answered one and every press 404s.
+
+    POST rather than GET so the id travels in the body instead of a URL that lands in logs.
+    """
+    return {"pending": tool_decision_is_pending(request.approval_id, request.session_id)}
+
+
 @studio_router.get("/monitor")
 async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     """Return recent OpenAI-compatible API activity for Unsloth."""
@@ -21150,13 +21204,12 @@ def _wav_seconds(raw: bytes) -> Optional[float]:
                 # here can check a codec's own header, so say so and let the
                 # bounded decoder have it.
                 return None
-            # Among the PCM fields nAvgBytesPerSec is the redundant one, so it
-            # is the one that can be moved alone. Multiplied by ten thousand it
-            # made half an hour read as a quarter of a second, and a quarter of
-            # a second is forwarded untouched. Recompute it, and take the
-            # declaration only where it agrees.
-            computed = sample_rate * (block_align or channels * (bits // 8))
-            byte_rate = computed if computed > 0 and declared_rate != computed else declared_rate
+            # Measure a frame as llama.cpp's decoder (miniaudio) does: by sample width for
+            # byte-aligned PCM, else by nBlockAlign. Trusting either rate field as written let an
+            # inflated one make half an hour read as a quarter of a second, forwarded untouched.
+            frame_bytes = channels * bits // 8 if bits % 8 == 0 else block_align
+            computed = sample_rate * frame_bytes
+            byte_rate = computed or declared_rate
         elif chunk == b"data":
             if byte_rate <= 0:
                 return None
@@ -21802,6 +21855,30 @@ def _messages_have_input_audio(messages) -> bool:
         and any(isinstance(part, InputAudioContentPart) for part in msg.content)
         for msg in messages
     )
+
+
+def _messages_have_embedded_image(messages) -> bool:
+    """True when any message carries an image as an inline base64 data URL.
+
+    Deliberately narrower than "has an image". A remote image_url is a short string and costs
+    nothing to persist, so it has no business forcing a turn off the durable path; an inline
+    data URL is the whole blob, and durable runs persist their request verbatim, so admitting
+    one writes it into request_json again on every follow-up turn for the life of the thread.
+    That is the exact cost the media guard exists to prevent, and it is reachable without any
+    top-level image field once the gate is turn-scoped: the history image still rides along
+    inside messages[].content.
+    """
+    for msg in messages:
+        content = getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if getattr(part, "type", None) != "image_url":
+                continue
+            url = getattr(getattr(part, "image_url", None), "url", None)
+            if isinstance(url, str) and url.startswith("data:"):
+                return True
+    return False
 
 
 def _normalise_chat_content_parts(payload) -> None:
@@ -25240,6 +25317,9 @@ async def produce_openai_chat_completions(
             except Exception as e:
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
+            # Admission reads the duration from this field's header, which only the forwarded
+            # wav/mp3 is sure to state; an m4a, ogg or flac upload would be charged by its bytes.
+            payload.audio_base64 = audio_b64
 
         # llama-server samples frames but encodes each at the clip's resolution.
         video_b64 = None
