@@ -254,6 +254,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
         const pointerId = event.pointerId;
         const at = { x: startX, y: startY };
         let started = false;
+        let escaped = false;
         let frame = 0;
 
         const detach = () => {
@@ -304,7 +305,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
         // Every window handler answers only the pointer that started the gesture. A second
         // pointer, a finger on a touch screen above all, is not this drag.
         function onMove(moved: PointerEvent) {
-          if (moved.pointerId !== pointerId) return;
+          if (moved.pointerId !== pointerId || escaped) return;
           at.x = moved.clientX;
           at.y = moved.clientY;
           if (!started) {
@@ -337,7 +338,9 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           if (released.pointerId !== pointerId) return;
           detach();
           if (!started) return;
+          // A drop or an escape: either way this release must not click the row it landed on.
           swallowClick();
+          if (escaped) return;
           const dragged = sidebarDragSource();
           const aimed = aim(released.clientX, released.clientY);
           clear();
@@ -346,18 +349,23 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           }
         }
 
-        function onCancel(cancelled: PointerEvent) {
-          if (cancelled.pointerId !== pointerId) return;
+        function onCancel(aborted: PointerEvent) {
+          if (aborted.pointerId !== pointerId) return;
           detach();
           if (started) clear();
         }
 
         function onKey(pressed: KeyboardEvent) {
-          if (pressed.key !== "Escape") return;
-          detach();
-          if (!started) return;
+          if (pressed.key !== "Escape" || escaped) return;
+          if (!started) {
+            // Nothing was lifted, so the press is abandoned and a click after it is the row's.
+            detach();
+            return;
+          }
           pressed.preventDefault();
-          swallowClick();
+          // The button is still down. The gesture keeps its listeners so the release, whenever
+          // it comes, is still ours to swallow: a guard armed now would be long gone by then.
+          escaped = true;
           clear();
         }
 
