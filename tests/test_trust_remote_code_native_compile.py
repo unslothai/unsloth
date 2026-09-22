@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
 """`trust_remote_code = True` on a native architecture must not switch the compiler off.
 
 The compiler pass (fast LoRA forward, fused linear cross entropy, compiled norms and
@@ -125,4 +128,35 @@ def test_native_model_with_trust_remote_code_keeps_fast_lora(tmp_path, monkeypat
     assert Linear4bit.forward.__name__ == "unsloth_forward", Linear4bit.forward.__module__
     assert any(
         f.startswith("unsloth_compiled_module_gemma4") for f in os.listdir("unsloth_compiled_cache")
+    )
+
+
+def test_compiler_call_site_gates_the_flag_on_the_config():
+    """Every other test here calls the predicate directly, so all of them stay green if
+    the one line that uses it is reverted. This is the only test that fails on main."""
+    import ast
+    import inspect
+
+    from unsloth.models import loader
+
+    gated = []
+    for node in ast.walk(ast.parse(inspect.getsource(loader))):
+        if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "id", None) != "unsloth_compile_transformers":
+            continue
+        keywords = {k.arg: k.value for k in node.keywords}
+        assert "trust_remote_code" in keywords, "the compiler call lost its trust_remote_code"
+        gated.append(
+            any(
+                isinstance(n, ast.Call)
+                and getattr(n.func, "id", None) == "_config_uses_remote_code"
+                for n in ast.walk(keywords["trust_remote_code"])
+            )
+        )
+
+    assert gated, "no unsloth_compile_transformers call site found"
+    assert all(gated), (
+        f"{gated.count(False)} of {len(gated)} compiler call sites pass trust_remote_code "
+        "straight through instead of gating it on _config_uses_remote_code(model_config)"
     )
