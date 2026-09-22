@@ -2885,14 +2885,9 @@ class VideoBackend:
             return None, []
         # The root name first, then the legacy scheme name: resolve_prequant_source hands back both and the load tries
         # them in that order, so the plan must stage whichever one exists.
-        wanted = [
-            n
-            for n in (
-                getattr(source, "filename", None),
-                getattr(source, "fallback_filename", None),
-            )
-            if n
-        ]
+        from core.inference.diffusion_prequant import candidate_filenames_of
+
+        wanted = list(candidate_filenames_of(source))
         try:
             info = api.model_info(source.location, files_metadata = True)
         except Exception as exc:  # noqa: BLE001 -- unavailable prequant means the dense DiT
@@ -2939,11 +2934,10 @@ class VideoBackend:
             return None
         from core.inference.diffusion import DiffusionBackend
 
-        for name in (
-            getattr(source, "filename", None),
-            getattr(source, "fallback_filename", None),
-        ):
-            if name and DiffusionBackend._hub_file_is_cached(source.location, name):
+        from core.inference.diffusion_prequant import candidate_filenames_of
+
+        for name in candidate_filenames_of(source):
+            if DiffusionBackend._hub_file_is_cached(source.location, name):
                 return source.location
         # No log here: the caller reports the same "keeping its dense denoiser shards" outcome for a miss, and logging
         # it twice would read as two separate decisions.

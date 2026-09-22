@@ -52,7 +52,9 @@ def upload_destination(
     scheme: str,
     *,
     rotated: bool,
+    safetensors: bool = False,
     override: Optional[str] = None,
+    upload_repo: Optional[str] = None,
 ) -> str:
     """The repo-root filename this build should publish under.
 
@@ -61,21 +63,68 @@ def upload_destination(
     ``transformer_<scheme>.pt`` is either never resolved at all, or resolved as the fallback by a
     build too old to honour the rotation, which then refuses the v2 tag and drops to the dense
     download. A rotated build therefore goes to the declared name or nowhere. Plain builds keep
-    the legacy name they have always used."""
+    the legacy name they have always used.
+
+    A SAFETENSORS build is in the same position for a different reason: both derived names end in
+    ``.pt``, so no build ever asks the Hub for a safetensors artifact unless the family names it.
+    Uploading one under a derived name produces a file that is reachable by nothing and a repo that
+    looks like it has a checkpoint when it does not, so it is refused here rather than discovered
+    as a silent dense fallback later.
+
+    An ``override`` skips the family table, because naming the artifact by hand is the escape hatch
+    for a repo the table does not describe yet. It does NOT skip the container check: every loader
+    dispatches on the extension alone, so a safetensors build published as ``.pt`` is read as a
+    pickle and a pickle published as ``.safetensors`` is read from a header it does not have. Either
+    way the upload succeeds and the artifact is unopenable, after the hours the quantization took.
+    """
     if override:
+        wanted = ".safetensors" if safetensors else ".pt"
+        if not override.lower().endswith(wanted):
+            container = "safetensors" if safetensors else "torch.save"
+            raise ValueError(
+                f"--upload-filename {override!r} does not end in {wanted!r}, but --out writes the "
+                f"{container} container. The loader dispatches on the extension alone, so this "
+                "would publish an artifact nothing can open. Rename the upload, or change --out."
+            )
         return override
     from core.inference.diffusion_prequant import prequant_filename
 
-    if not rotated:
+    if not rotated and not safetensors:
         return prequant_filename(scheme)
     from core.inference.diffusion_families import family_prequant_filename
 
     preferred = family_prequant_filename(fam, scheme)
+    why = "a rotated checkpoint" if rotated else "a safetensors checkpoint"
     if not preferred:
+        # A PLAIN safetensors build now has a derived name, and only because
+        # ``derived_prequant_filenames`` asks for ``<Model>-<SCHEME>.safetensors`` FIRST. The
+        # reachability this refusal protects is exactly what that chain supplies, so refusing here
+        # would make every family without a declared entry pass an override it could compute
+        # itself. Rotation keeps needing a declared name: no derived spelling carries the marker.
+        if safetensors and not rotated and upload_repo:
+            from core.inference.diffusion_prequant import prequant_repo_filename
+            return prequant_repo_filename(upload_repo, scheme, ".safetensors")
         raise ValueError(
             f"family {getattr(fam, 'name', fam)!r} declares no prequant_filenames entry for "
-            f"{scheme!r}, so a rotated checkpoint has no name the loader would ask for. Add the "
+            f"{scheme!r}, so {why} has no name the loader would ask for. Add the "
             "entry to the family table, or pass --upload-filename."
+        )
+    # Both directions, not just one. The declared name and the container have to agree, and a
+    # family that has moved its entry to a .safetensors artifact makes the REVERSE mismatch the
+    # reachable one: a rotated pickle build then publishes torch.save bytes under a safetensors
+    # name, every loader dispatches on the extension and hands them to safe_open, and the artifact
+    # is unopenable after the hours the quantization took. Same failure as the guarded direction,
+    # so it gets the same refusal.
+    wanted = ".safetensors" if safetensors else ".pt"
+    if not preferred.lower().endswith(wanted):
+        reads_as = "a pickle" if safetensors else "safetensors"
+        writes = "safetensors" if safetensors else "torch.save"
+        raise ValueError(
+            f"family {getattr(fam, 'name', fam)!r} declares {preferred!r} for {scheme!r}, which "
+            f"does not end in {wanted!r}, but --out writes the {writes} container. The loader "
+            f"dispatches on the extension alone, so this would be published under a name it reads "
+            f"as {reads_as}. Point the prequant_filenames entry at the matching artifact, or pass "
+            "--upload-filename."
         )
     return preferred
 
@@ -87,7 +136,12 @@ def main(argv = None) -> int:
     )
     p.add_argument("--family", required = True, help = "diffusion family name/alias (e.g. z-image)")
     p.add_argument("--scheme", required = True, help = "quant scheme: int8 | fp8 | nvfp4 | mxfp8")
-    p.add_argument("--out", required = True, help = "output .pt path for the checkpoint")
+    p.add_argument(
+        "--out",
+        required = True,
+        help = "output path; a .safetensors extension writes the safetensors container, anything "
+        "else writes the torch.save one",
+    )
     p.add_argument("--min-features", type = int, default = 512)
     p.add_argument("--dtype", default = "bfloat16", choices = ["bfloat16"])
     p.add_argument("--hf-token", default = None)
@@ -144,6 +198,38 @@ def main(argv = None) -> int:
         print(f"error: unknown family '{args.family}'", flush = True)
         return 2
     transformer_cls = getattr(diffusers, fam.transformer_class)
+    # The CONTAINER is chosen by the --out extension, so one flag picks the on-disk format, the reachable upload name
+    # and the writer, and they cannot be set to disagree.
+    is_safetensors_out = str(args.out).lower().endswith(".safetensors")
+    if is_safetensors_out:
+        from core.inference.prequant_safetensors import (
+            safetensors_prequant_supported,
+            scheme_is_flattenable,
+        )
+
+        if not safetensors_prequant_supported():
+            print(
+                "error: --out names a .safetensors checkpoint but this install cannot write one "
+                "(needs torchao >= 0.16 for torchao.prototype.safetensors.safetensors_support, "
+                "plus the safetensors package)",
+                flush = True,
+            )
+            return 2
+        # The helpers importing is not the same question as this scheme producing something they can
+        # flatten, and for int8 the two disagree through torchao 0.17. Probed here, on one tiny CPU
+        # Linear, so the answer arrives in a second instead of after the download and the hours of
+        # GPU quantization. None means the probe could not run, which is not evidence: proceed.
+        from core.inference.diffusion_transformer_quant import _make_quant_config
+
+        if scheme_is_flattenable(_make_quant_config(scheme)) is False:
+            print(
+                f"error: --out names a .safetensors checkpoint but this torchao quantises "
+                f"{scheme!r} to a legacy tensor subclass that cannot be written to safetensors. "
+                "torchao >= 0.18 produces the flattenable subclasses for every scheme Unsloth "
+                "ships. Upgrade torchao, or write this build as a .pt checkpoint.",
+                flush = True,
+            )
+            return 2
     # Resolved BEFORE the load, so a rotated build with nowhere resolvable to publish fails in a second rather than
     # after the quantise and the multi-gigabyte save.
     upload_dest = None
@@ -153,7 +239,9 @@ def main(argv = None) -> int:
                 fam,
                 scheme,
                 rotated = bool(args.convrot_groupsize),
+                safetensors = is_safetensors_out,
                 override = args.upload_filename,
+                upload_repo = args.upload_repo,
             )
         except ValueError as exc:
             print(f"error: {exc}", flush = True)
@@ -240,7 +328,16 @@ def main(argv = None) -> int:
 
     out = Path(args.out)
     out.parent.mkdir(parents = True, exist_ok = True)
-    torch.save(ckpt, out)
+    if is_safetensors_out:
+        from core.inference.prequant_safetensors import save_prequant_safetensors
+        save_prequant_safetensors(
+            str(out),
+            fmt = ckpt["format"],
+            state_dict = state_dict,
+            metadata = metadata,
+        )
+    else:
+        torch.save(ckpt, out)
     size_gb = out.stat().st_size / 1e9
     print(f"  saved {out}  ({size_gb:.2f} GB) in {time.time() - t0:.0f}s", flush = True)
     print(f"  metadata: {ckpt['metadata']}", flush = True)
