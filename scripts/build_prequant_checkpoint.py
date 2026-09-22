@@ -202,12 +202,29 @@ def main(argv = None) -> int:
     # and the writer, and they cannot be set to disagree.
     is_safetensors_out = str(args.out).lower().endswith(".safetensors")
     if is_safetensors_out:
-        from core.inference.prequant_safetensors import safetensors_prequant_supported
+        from core.inference.prequant_safetensors import (
+            safetensors_prequant_supported,
+            scheme_is_flattenable,
+        )
         if not safetensors_prequant_supported():
             print(
                 "error: --out names a .safetensors checkpoint but this install cannot write one "
                 "(needs torchao >= 0.16 for torchao.prototype.safetensors.safetensors_support, "
                 "plus the safetensors package)",
+                flush = True,
+            )
+            return 2
+        # The helpers importing is not the same question as this scheme producing something they can
+        # flatten, and for int8 the two disagree through torchao 0.17. Probed here, on one tiny CPU
+        # Linear, so the answer arrives in a second instead of after the download and the hours of
+        # GPU quantization. None means the probe could not run, which is not evidence: proceed.
+        from core.inference.diffusion_transformer_quant import _make_quant_config
+        if scheme_is_flattenable(_make_quant_config(scheme)) is False:
+            print(
+                f"error: --out names a .safetensors checkpoint but this torchao quantises "
+                f"{scheme!r} to a legacy tensor subclass that cannot be written to safetensors. "
+                "torchao >= 0.18 produces the flattenable subclasses for every scheme Unsloth "
+                "ships. Upgrade torchao, or write this build as a .pt checkpoint.",
                 flush = True,
             )
             return 2
