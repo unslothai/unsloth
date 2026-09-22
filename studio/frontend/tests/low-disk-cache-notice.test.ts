@@ -199,6 +199,42 @@ test("a download asks the disk on the way past", () => {
   assert.match(check, /return null;/);
 });
 
+test("a reading that never settles cannot silence the feature for the session", () => {
+  // inFlight is the only slot. A fetch that never resolves, or a body that never finishes
+  // reading, would hold it for the life of the page: every later check either queues behind it
+  // or is handed it, so the disk warning goes quiet for the rest of the session. That is the
+  // one failure this feature cannot report on its own, so the read is bounded.
+  const check = readFileSync(
+    new URL("../src/features/settings/low-disk-check.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(check, /disposableTimeoutSignal/);
+  assert.match(check, /READ_TIMEOUT_MS/);
+  // The signal has to reach the request, not merely be constructed.
+  assert.match(check, /authFetch\("\/api\/system\/disk", \{ signal: timeout\.signal \}\)/);
+  // The helper's documented contract: dispose once settled, or abort listeners accumulate.
+  assert.match(check, /finally \{\s*\n\s*\/\/[^\n]*\n\s*timeout\.dispose\(\);/);
+  // A timeout must read as "could not tell", never as a full disk.
+  const read = check.slice(check.indexOf("async function readDisk"));
+  assert.match(read.slice(0, read.indexOf("\n}")), /return null;/);
+});
+
+test("a notifier that throws loses one toast, not the promise and not the session", () => {
+  // observeDiskPressure records the crossing BEFORE the notifier runs, so a throwing notifier
+  // would lose the warning and reject a detached promise nobody awaits.
+  const check = readFileSync(
+    new URL("../src/features/settings/low-disk-check.ts", import.meta.url),
+    "utf8",
+  );
+  const body = check.slice(check.indexOf("function runCheck"));
+  const observe = body.indexOf("observeDiskPressure(disk)");
+  const guarded = body.indexOf("try {\n      notifier(level, disk);");
+  assert.ok(guarded !== -1, "the notifier call is not guarded");
+  assert.ok(observe < guarded, "the crossing is spent before the notifier is even attempted");
+  // and inFlight is still cleared, so one bad toast cannot wedge the slot either
+  assert.match(body, /\.finally\(\(\) => \{\s*\n\s*inFlight = null;/);
+});
+
 test("a model load asks the disk too, because the backend downloads inside it", () => {
   // The download manager is not the only way bytes reach the cache, so requestStart is not the
   // whole funnel. Selecting an uncached model in Chat calls loadModel, and the BACKEND fetches

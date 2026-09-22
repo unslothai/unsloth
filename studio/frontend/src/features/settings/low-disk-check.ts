@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+// eslint-disable-next-line no-restricted-imports
+import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
 import { observeDiskPressure, type DiskPressure } from "./low-disk";
 
 /**
@@ -40,15 +42,27 @@ export function __resetLowDiskCheckForTests(): void {
   notifier = null;
 }
 
+/** Long enough for a busy backend, short enough that a wedged read re-arms within one download. */
+const READ_TIMEOUT_MS = 10_000;
+
 async function readDisk(): Promise<DiskReadingResponse | null> {
+  // Bounded, because `inFlight` is the only slot: a fetch that never settles, or a body that
+  // never finishes reading, would hold it for the life of the page and every later reading
+  // would queue behind it or be handed it. The disk warning would then go quiet for the rest
+  // of the session, which is the one failure this feature cannot report on its own. Ten
+  // seconds is far above a syscall the route answers in microseconds.
+  const timeout = disposableTimeoutSignal(READ_TIMEOUT_MS);
   try {
-    const response = await authFetch("/api/system/disk");
+    const response = await authFetch("/api/system/disk", { signal: timeout.signal });
     if (!response.ok) return null;
     return (await response.json()) as DiskReadingResponse;
   } catch {
     // A disk reading is advice, never a gate: a host that cannot answer must not stop a
-    // download or surface an error the user cannot act on.
+    // download or surface an error the user cannot act on. A timeout lands here too.
     return null;
+  } finally {
+    // The helper's contract: dispose once the request settles, or abort listeners pile up.
+    timeout.dispose();
   }
 }
 
@@ -62,7 +76,14 @@ function runCheck(): Promise<void> {
     if (!notifier) return;
     const level = observeDiskPressure(disk);
     if (level === null) return;
-    notifier(level, disk);
+    try {
+      notifier(level, disk);
+    } catch {
+      // observeDiskPressure has already spent the crossing, so a notifier that throws would
+      // otherwise lose the warning AND reject this detached promise as an unhandled rejection.
+      // Swallowed for the same reason a failed reading is: the disk is advice, and a toast
+      // that could not be shown is not something to fail a download over.
+    }
   })().finally(() => {
     inFlight = null;
   });
