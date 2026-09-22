@@ -33,10 +33,16 @@ def main():
         shutil.rmtree(temp, ignore_errors = True)
 
 
-# Branded Chrome and Edge put `$TMPDIR/com.google.Chrome.XXXXXX/SingletonSocket` at launch and abort
+# Branded Chrome and Edge put `$TMPDIR/<vendor dir>/SingletonSocket` at launch and abort
 # when that does not fit sockaddr_un.sun_path, less its terminating NUL: 108 bytes on Linux, 104 on
 # macOS and the BSDs.
-CHROME_SOCKET = "/com.google.Chrome.XXXXXX/SingletonSocket"
+# Edge names its directory `com.microsoft.Edge.XXXXXX`, one byte longer than Chrome's, and the
+# runner launches both, so the longest one is what has to fit.
+BROWSER_SOCKETS = (
+    "/com.google.Chrome.XXXXXX/SingletonSocket",
+    "/com.microsoft.Edge.XXXXXX/SingletonSocket",
+)
+LONGEST_SOCKET = max(BROWSER_SOCKETS, key = len)
 
 
 def sun_path_max() -> int:
@@ -51,7 +57,7 @@ def browser_tmpdir() -> Path:
     root = Path(__file__).resolve().parents[2]
     made = Path(tempfile.mkdtemp(prefix = "uqv-"))
     if os.name == "nt" or (
-        len(os.fsencode(made)) + len(CHROME_SOCKET) <= sun_path_max()
+        len(os.fsencode(made)) + len(LONGEST_SOCKET) <= sun_path_max()
         and root not in made.resolve().parents
     ):
         return made
