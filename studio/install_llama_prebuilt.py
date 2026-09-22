@@ -26,23 +26,16 @@ import stat
 import struct
 import subprocess
 import sys
-import tarfile
 import tempfile
 import textwrap
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
 from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace as dataclasses_replace
 
-try:
-    from filelock import FileLock, Timeout as FileLockTimeout
-except ImportError:
-    FileLock = None
-    FileLockTimeout = None
 from pathlib import Path, PurePath
 from typing import Any, Callable, Iterable, Iterator, Union
 
