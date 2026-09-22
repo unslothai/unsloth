@@ -267,6 +267,14 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
+def _config_has_native_class(auto_class, config):
+    """True when transformers itself maps ``type(config)`` in ``auto_class`` (no repo code needed)."""
+    try:
+        return auto_class is not None and type(config) in auto_class._model_mapping
+    except Exception:
+        return False
+
+
 def _resolve_omni_auto_model(model_config):
     """A multimodal auto class that really maps this config, or None.
 
@@ -1933,6 +1941,16 @@ class FastModel(FastBaseModel):
                 _auto_map = getattr(model_config, "auto_map", {}) or {}
                 _vlm_class_name = AutoModelForVision2Seq.__name__
                 _has_vlm_class = _vlm_class_name in _auto_map
+                # Untrusted, keep only auto_map entries transformers maps natively (Step-3.7's step3p7 is image-text).
+                if not trust_remote_code:
+                    import transformers as _transformers
+                    _auto_map = {
+                        _name: _ref
+                        for _name, _ref in _auto_map.items()
+                        if _config_has_native_class(
+                            getattr(_transformers, _name, None), model_config
+                        )
+                    }
                 if not _has_vlm_class and "AutoModelForCausalLM" in _auto_map:
                     auto_model = AutoModelForCausalLM
                 elif not _has_vlm_class and "AutoModel" in _auto_map:
