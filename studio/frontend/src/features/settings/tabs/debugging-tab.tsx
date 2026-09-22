@@ -546,7 +546,7 @@ export function DebuggingTab() {
                 void poll();
               }}
             >
-              <HugeiconsIcon icon={RefreshIcon} className="size-3.5" />
+              <HugeiconsIcon icon={RefreshIcon} />
               {t("settings.debugging.refreshNow")}
             </Button>
           </div>
@@ -622,7 +622,7 @@ export function DebuggingTab() {
                   onClick={() => setWrap((previous) => !previous)}
                   className={cn(wrap ? "bg-muted text-foreground" : "text-muted-foreground")}
                 >
-                  <HugeiconsIcon icon={TextWrapIcon} className="size-4" />
+                  <HugeiconsIcon icon={TextWrapIcon} />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>{t("settings.debugging.wrapLines")}</TooltipContent>
@@ -681,7 +681,7 @@ export function DebuggingTab() {
               data-testid="debug-log-jump-to-latest"
               className="absolute right-3 bottom-3 rounded-full shadow-md"
             >
-              <HugeiconsIcon icon={ArrowDownDoubleIcon} className="size-3" />
+              <HugeiconsIcon icon={ArrowDownDoubleIcon} />
               {t("settings.debugging.jumpToLatest")}
             </Button>
           ) : null}
@@ -707,7 +707,6 @@ export function DebuggingTab() {
                 >
                   <HugeiconsIcon
                     icon={pathCopied ? Tick02Icon : Copy01Icon}
-                    className="size-3.5"
                   />
                 </Button>
               </TooltipTrigger>
@@ -723,7 +722,6 @@ export function DebuggingTab() {
             >
               <HugeiconsIcon
                 icon={copied ? Tick02Icon : Copy01Icon}
-                className="size-3.5"
               />
               {t("settings.debugging.copyVisible")}
             </Button>
@@ -735,7 +733,7 @@ export function DebuggingTab() {
               disabled={exporting}
               onClick={() => void downloadAllLogs()}
             >
-              <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
+              <HugeiconsIcon icon={Download01Icon} />
               {exporting
                 ? t("settings.debugging.downloadingAllLogs")
                 : t("settings.debugging.downloadAllLogs")}
@@ -767,7 +765,7 @@ export function DebuggingTab() {
                 disabled={revealing}
                 onClick={() => void revealLogsFolder()}
               >
-                <HugeiconsIcon icon={FolderOpenIcon} className="size-3.5" />
+                <HugeiconsIcon icon={FolderOpenIcon} />
                 {t("settings.debugging.openLogsFolder")}
               </Button>
             ) : null}
