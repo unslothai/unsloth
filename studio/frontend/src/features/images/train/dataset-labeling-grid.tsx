@@ -116,7 +116,7 @@ function LabelTile({
 
   return (
     // Named group: a bare one would also match the scroller and reveal every tile's Remove.
-    <div className="group/tile flex flex-col overflow-hidden rounded-[10px] border border-border transition-colors hover:border-foreground/20">
+    <div className="group/tile flex flex-col overflow-hidden rounded-[10px] border border-border transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]">
       <div className="relative aspect-square w-full overflow-hidden bg-muted">
         {thumb ? (
           <img src={thumb} alt={record.filename} className="size-full object-cover" />

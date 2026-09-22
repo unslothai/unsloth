@@ -1131,7 +1131,7 @@ export const ko = {
       custom: {
         chatWidth: {
           label: "채팅 너비",
-          description: "메시지와 입력창의 너비를 설정합니다. 전체 너비는 사이드바 사이의 공간을 사용합니다.",
+          description: "메시지와 입력창의 너비입니다.",
           standard: "표준",
           wide: "넓게",
           full: "전체 너비",
@@ -1204,7 +1204,6 @@ export const ko = {
         },
         contrast: {
           label: "대비",
-          description: "테두리와 보조 텍스트의 강도입니다.",
         },
         reduceMotion: {
           label: "동작 줄이기",
@@ -1234,7 +1233,7 @@ export const ko = {
       sidebarNav: {
         title: "사이드바 탐색",
         description:
-          "사이드바 탭을 고정하고 순서를 바꿉니다. 고정하지 않은 탭은 ‘더 보기’ 메뉴에 모입니다. 고정하지 않은 탭이 하나뿐이면 항목이 하나뿐인 메뉴를 만들지 않고 그 탭을 숨깁니다. 새 채팅은 항상 고정됩니다.",
+          "사이드바 탭을 고정하고 순서를 바꿉니다. 고정하지 않은 탭은 ‘더 보기’ 메뉴로 들어갑니다.",
         dragToReorder: "끌어서 순서 변경",
         pinToSidebar: "{name}을(를) 사이드바에 고정",
         moreHolds: "더 보기({count})",
@@ -1242,7 +1241,7 @@ export const ko = {
       sidebarMenu: {
         title: "사이드바 메뉴",
         description:
-          "사이드바 프로필 메뉴의 항목을 표시하거나 숨기고 순서를 바꿉니다. 설정, 도움말, 로그아웃, 종료는 고정됩니다.",
+          "프로필 메뉴의 바로가기를 고르고 순서를 바꿉니다.",
         darkModeToggle: "다크 모드 전환",
         dragToReorder: "끌어서 순서 변경",
       },

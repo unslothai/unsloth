@@ -124,7 +124,7 @@ export function TabsTrigger({
           className={cn(
             "absolute inset-0",
             indicatorClassName ??
-              "rounded-xl bg-background dark:bg-input/30 group-data-[variant=line]/tabs-list:bg-[#ececec] dark:group-data-[variant=line]/tabs-list:bg-[#2d2f33] dark:group-data-[variant=line]/tabs-list:border-0",
+              "rounded-xl bg-background dark:bg-input/30 group-data-[variant=line]/tabs-list:bg-tabs-line-indicator dark:group-data-[variant=line]/tabs-list:border-0",
           )}
           transition={{
             type: "spring",

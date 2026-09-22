@@ -1117,7 +1117,7 @@ export const ja = {
       custom: {
         chatWidth: {
           label: "チャットの幅",
-          description: "メッセージと入力欄の幅を設定します。全幅ではサイドバーの間のスペースを使います。",
+          description: "メッセージと入力欄の幅です。",
           standard: "標準",
           wide: "広い",
           full: "全幅",
@@ -1188,7 +1188,6 @@ export const ja = {
         },
         contrast: {
           label: "コントラスト",
-          description: "枠線と補助テキストの強さ。",
         },
         reduceMotion: {
           label: "モーションを減らす",
@@ -1217,7 +1216,7 @@ export const ja = {
       sidebarNav: {
         title: "サイドバーナビゲーション",
         description:
-          "サイドバーのタブを固定したり並べ替えたりします。固定していないタブは「その他」メニューにまとめられます。固定していないタブが 1 つだけの場合は、項目が 1 つのメニューを作らずにそのタブを非表示にします。「新規チャット」は固定されたままです。",
+          "サイドバーのタブを固定して並べ替えます。固定していないタブは「その他」メニューに入ります。",
         dragToReorder: "ドラッグして並べ替え",
         pinToSidebar: "{name} をサイドバーに固定",
         moreHolds: "その他 ({count})",
@@ -1225,7 +1224,7 @@ export const ja = {
       sidebarMenu: {
         title: "サイドバーメニュー",
         description:
-          "サイドバーのプロフィールメニュー項目の表示と並び順を変更します。設定、ヘルプ、ログアウト、シャットダウンは固定です。",
+          "プロフィールメニューのショートカットを選んで並べ替えます。",
         darkModeToggle: "ダークモード切り替え",
         dragToReorder: "ドラッグして並べ替え",
       },
