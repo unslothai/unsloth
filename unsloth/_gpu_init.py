@@ -104,15 +104,9 @@ torchvision_compatibility_check()
 disable_torchaudio_if_cuda_mismatched()
 fix_diffusers_warnings()
 fix_huggingface_hub()
-# Warn, do not raise: a run that loads no pre-quantized multimodal checkpoint never fails.
-# Below `disable_torchaudio_if_cuda_mismatched` and not up with the other version checks,
-# because this one is the only check here that IMPORTS transformers rather than reading its
-# metadata: `from transformers import conversion_mapping` pulls in 271 transformers
-# submodules, and putting that ahead of the torchaudio guard would be the exact ordering
-# that guard exists to prevent. Measured on transformers 5.17.0, the probe's import does
-# not itself reach transformers.processing_utils, transformers.audio_utils or torchaudio,
-# but nothing holds that true for the next release, and this check has no reason to run
-# early.
+# Below the torchaudio guard, not up with the other version checks: this is the only check
+# here that IMPORTS transformers rather than reading its metadata, and that is the ordering
+# the guard above exists to prevent.
 check_transformers_prequantized_vlm_quant_state()
 del configure_amdgpu_asic_id_table_path
 del fix_bitsandbytes_rocm_arch_detection

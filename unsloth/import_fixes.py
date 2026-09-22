@@ -3254,26 +3254,17 @@ def check_triton_py_ssize_t_clean():
 
 
 def _transformers_rescopes_submodule_prefix_renamings():
-    """Does this transformers scope a submodule's conversion mapping to where the submodule lives?
+    """True when this build scopes a nested submodule's conversions to where it lives.
 
-    `get_model_conversion_mapping` recurses into every `PreTrainedModel` submodule and
-    merges each one's registered conversions into the parent's mapping. A submodule's
-    mapping is written against ITS OWN key space, so a renaming anchored at the start of
-    the key is meaningless once the submodule is nested, and upstream's correction
-    (transformers PR #45567) was to re-scope those by the submodule's dotted path: it
-    added a `PrefixChange` transform and a `model_prefix` argument to
-    `extract_weight_conversions_for_model`.
-
-    Asked of that API, never of a version number. A transformers without
-    `conversion_mapping` at all (4.x) has no recursion to correct, so it answers True as
-    well -- True means "this build is fine".
-
-    Upstream has spelled the scoping three ways since, so all three count: the
+    A submodule's mapping is written against ITS OWN key space, so once
+    `get_model_conversion_mapping` merges it into the parent (transformers PR #44300) a
+    renaming anchored at the start of the key is meaningless; PR #45567 re-scoped them by
+    the submodule's dotted path. Three spellings since, any one of which counts: the
     `model_prefix` argument of 5.6 to 5.9, `PrefixChange.with_submodel_prefix` over the
-    same range, and the `scope_prefix` field every transform carries from 5.10 on. Any one
-    of them present means the recursion knows where a submodule's mapping belongs; none of
-    them present is the defect. Anything unrecognisable answers True, because a warning is
-    worth nothing if it fires on builds nobody can show are broken.
+    same range, `scope_prefix` on every transform from 5.10 on.
+
+    Every unknown answers True: a warning is worth nothing if it fires on builds nobody
+    can show are broken.
     """
     try:
         from transformers import conversion_mapping
@@ -3281,16 +3272,13 @@ def _transformers_rescopes_submodule_prefix_renamings():
         return True
     extract = getattr(conversion_mapping, "extract_weight_conversions_for_model", None)
     if extract is None:
-        # No per-submodule extraction, so no recursion to correct. This is every 5.x before
-        # 5.4.0, which reads the top model's mapping and stops, and it is also the answer
-        # for any future build whose machinery we cannot recognise.
+        # No per-submodule extraction, so no recursion to correct: every 5.x before 5.4.0.
         return True
     try:
         from transformers import core_model_loading
     except Exception:
-        # Imported separately and allowed to fail: `core_model_loading` pulls in torch, and
-        # the two spellings it carries are only ever extra evidence. The signature check
-        # below is the one that has to stand on its own.
+        # Separate import, allowed to fail: it needs torch, and the two spellings it carries
+        # are extra evidence. The signature check below has to stand on its own.
         core_model_loading = None
     if core_model_loading is not None:
         transform = getattr(core_model_loading, "WeightTransform", None)
@@ -3308,35 +3296,17 @@ def _transformers_rescopes_submodule_prefix_renamings():
 def _transformers_drops_prequantized_vlm_quant_state():
     """True when the installed transformers loses bnb-4bit quant_state on composite models.
 
-    transformers 5.4.0 made `get_model_conversion_mapping` recurse into
-    `PreTrainedModel` submodules (transformers PR #44300). That pulled the
-    `qwen3_5_text` `WeightRenaming` -- written for the standalone text model, and
-    spelled `^model.language_model.` -> `^model.(?!language_model.)` -- into the
-    mapping of the composite `Qwen3_5ForConditionalGeneration`. Renamings run
-    before the bitsandbytes converter, so every checkpoint key lost its
-    `language_model.` segment: `...weight` was rescued and loaded as a raw packed
-    uint8 `nn.Parameter`, while `weight.absmax`, `weight.quant_map`,
-    `weight.nested_absmax`, `weight.nested_quant_map` and
-    `weight.quant_state.bitsandbytes__nf4` matched nothing, became unexpected keys
-    and were discarded. `Bnb4bitDeserialize` therefore never ran and every
-    quantized Linear came back with `quant_state = None`.
+    The text model's `^model.language_model.` -> `^model.` renaming enters the composite
+    model's mapping and runs before the bitsandbytes converter, so `weight` loads as a raw
+    packed uint8 while `weight.absmax`, `weight.quant_map`, `weight.nested_absmax`,
+    `weight.nested_quant_map` and `weight.quant_state.bitsandbytes__nf4` rename to keys the
+    model does not have and are dropped as unexpected. Affected text config types:
+    `qwen3_5_text`, `qwen3_5_moe_text`, `gemma3n_text`; flat text-only checkpoints have no
+    such prefix, which is why the window went unnoticed.
 
-    transformers PR #45567 replaced that entry with a scoped `PrefixChange` and
-    shipped in 5.6.0, so among RELEASES the defect window is exactly 5.4.0 and 5.5.0
-    to 5.5.4. That window is not what this asks. It asks
-    `_transformers_rescopes_submodule_prefix_renamings`, because a version number is
-    the wrong instrument for a source install: upstream main reported `5.3.0.dev0` at
-    the commit that introduced the defect and `5.6.0.dev0` at the commit that fixed it,
-    so a version interval is wrong at both ends for anyone on git main.
-    Measured on unsloth/qwen3.8-27b-unsloth-bnb-4bit: 352 of 352 quantized Linear
-    modules lose quant_state on 5.4.0 and 5.5.4, and 0 of 352 on 5.2.0, 5.3.0 and
-    every release from 5.6.2 to 5.17.0. Flat text-only checkpoints such as
-    unsloth/Qwen3-0.6B-unsloth-bnb-4bit carry no `model.language_model.` prefix
-    and are unaffected, which is why the window went unnoticed.
-
-    Three text sub-model types carry a prefix-stripping entry in 5.4.0 and 5.5.x,
-    so the affected families are those whose text config is one of
-    `qwen3_5_text`, `qwen3_5_moe_text` or `gemma3n_text`.
+    Asked of the API and not of a version, because main reported `5.3.0.dev0` at the commit
+    that introduced the defect and `5.6.0.dev0` at the one that fixed it, so an interval is
+    wrong at both ends on a source install. Among releases it is 5.4.0 and 5.5.0 to 5.5.4.
     """
     return not _transformers_rescopes_submodule_prefix_renamings()
 
@@ -3344,17 +3314,10 @@ def _transformers_drops_prequantized_vlm_quant_state():
 def check_transformers_prequantized_vlm_quant_state():
     """Warn when transformers will silently drop a pre-quantized VLM's quant_state.
 
-    unsloth #9867, #10010, #10017, #10276: loading a pre-quantized bnb-4bit
-    multimodal checkpoint raised
-
-        RuntimeError: mat1 and mat2 shapes cannot be multiplied (8x5120 and 1x15728640)
-
-    which reads like a corrupt checkpoint and sent reporters off regenerating
-    perfectly good ones. It is not: the loader threw the quantization metadata
-    away. See `_transformers_drops_prequantized_vlm_quant_state` for the
-    mechanism. Warns rather than raises, and says so before the misleading shape
-    error appears: a run that only touches text-only or unquantized checkpoints
-    is unaffected, and this must not break it.
+    unsloth #9867, #10010, #10017, #10276 all report `mat1 and mat2 shapes cannot be
+    multiplied`, which reads like a corrupt checkpoint and sent reporters off regenerating
+    good ones. Warns rather than raises: a run touching only text-only or unquantized
+    checkpoints is unaffected and must not break.
     """
     if os.environ.get("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", "0").lower() in (
         "1",
