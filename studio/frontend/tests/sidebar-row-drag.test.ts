@@ -14,7 +14,7 @@ import {
   planSidebarDrop,
   rowKey,
   sectionRingKey,
-  SIDEBAR_TAIL_ID,
+  SIDEBAR_TAIL_SCOPE,
   STAY,
   type SidebarDragItem,
   type SidebarDropOutcome,
@@ -1116,7 +1116,7 @@ test("a chat can be dropped after a folder that ends the Pinned list", () => {
       drag,
       {
         section: "pinned",
-        blockEnd: { scope: PINNED_ORDER_SCOPE, id: SIDEBAR_TAIL_ID },
+        blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "pinned" },
       },
       "bottom",
       ctx,
@@ -1128,19 +1128,39 @@ test("a chat can be dropped after a folder that ends the Pinned list", () => {
   ]);
   // Its own line, not the one under the folder's last chat: same pixels would be two drops.
   assert.deepEqual(afterFolder.cue, {
-    line: { rowKey: rowKey(PINNED_ORDER_SCOPE, SIDEBAR_TAIL_ID), edge: "bottom" },
+    line: { rowKey: rowKey(SIDEBAR_TAIL_SCOPE, "pinned"), edge: "bottom" },
   });
   assert.notDeepEqual(afterFolder.cue, intoFolder.cue);
-  // Printable, and not something a generated id can be. A control character reads the same
-  // on screen and turns the whole planner binary to Git, hiding it from every diff.
+  // A row's id is not ours: a restored backup keeps the id in the file and the backend takes any
+  // string, so reserving an id and asserting its shape proves nothing about what a project can be
+  // called. A scope is ours. Every one is a constant here or `project:<id>`, so no row key can be
+  // the tail's however hostile the id, and the tail cannot paint a line on somebody's folder.
+  const tailKey = rowKey(SIDEBAR_TAIL_SCOPE, "pinned");
+  for (const hostile of [
+    "pinned",
+    "sidebar-tail",
+    SIDEBAR_TAIL_SCOPE,
+    `${SIDEBAR_TAIL_SCOPE}:pinned`,
+  ]) {
+    for (const scope of [
+      PINNED_ORDER_SCOPE,
+      PROJECT_ORDER_SCOPE,
+      RECENTS_ORDER_SCOPE,
+      projectOrderScope(hostile),
+    ]) {
+      assert.notEqual(rowKey(scope, hostile), tailKey);
+      assert.notEqual(scope, SIDEBAR_TAIL_SCOPE);
+    }
+  }
+  // Printable too: a control character reads the same on screen and turns the whole planner
+  // binary to Git, hiding it from every diff.
   assert.ok(
-    [...SIDEBAR_TAIL_ID].every((ch) => {
+    [...SIDEBAR_TAIL_SCOPE].every((ch) => {
       const code = ch.codePointAt(0) ?? 0;
       return code > 0x1f && code !== 0x7f;
     }),
-    `the tail id holds a control character: ${JSON.stringify(SIDEBAR_TAIL_ID)}`,
+    `the tail scope holds a control character: ${JSON.stringify(SIDEBAR_TAIL_SCOPE)}`,
   );
-  assert.doesNotMatch(SIDEBAR_TAIL_ID, /^[0-9a-fA-F-]+$/);
   // Part of the layout, not summoned by the drag: a row mounting at drag start shifts every
   // section below it after the pointer was sampled, and the cue and the drop then disagree.
   const pinnedMenu = APP_SIDEBAR.slice(
@@ -1150,7 +1170,7 @@ test("a chat can be dropped after a folder that ends the Pinned list", () => {
   assert.ok(pinnedMenu.length > 0, "the Pinned section moved");
   assert.match(
     pinnedMenu,
-    /<SidebarMenuItem\n\s*aria-hidden\n\s*className=\{cn\(\n\s*"relative h-\[calc\(8px\*var\(--ui-space-scale,1\)\)\]",\n\s*dropCueClass\(PINNED_ORDER_SCOPE, SIDEBAR_TAIL_ID\),/,
+    /<SidebarMenuItem\n\s*aria-hidden\n\s*className=\{cn\(\n\s*"relative h-\[calc\(8px\*var\(--ui-space-scale,1\)\)\]",\n\s*dropCueClass\(SIDEBAR_TAIL_SCOPE, "pinned"\),/,
   );
   assert.ok(
     !/draggingRow && /.test(pinnedMenu),

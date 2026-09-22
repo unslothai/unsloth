@@ -42,7 +42,7 @@ export interface SidebarDropZone {
   /** For a chat under a folder: its place in the folder's block. */
   block?: { index: number; count: number };
   /** The row a line landing below this spot is drawn on: the last row of a folder's block, or
-   *  SIDEBAR_TAIL_ID for the strip a section draws past its last row. */
+   *  SIDEBAR_TAIL_SCOPE for the strip a section draws past its last row. */
   blockEnd?: { scope: string; id: string };
   /** The section header. It stands for the top of its first row (given as `row`), so the gap
    *  above the first row is not dead space, and takes a drop while the section is collapsed. */
@@ -111,9 +111,12 @@ export interface SidebarDropPlan {
 export const STAY = "stay";
 export type SidebarDropOutcome = SidebarDropPlan | typeof STAY | null;
 
-/** The strip a section draws past its last row, so "after everything" has a row to aim at.
- *  Not a chat or a folder: the punctuation keeps it clear of any id either could be given. */
-export const SIDEBAR_TAIL_ID = "sidebar:tail";
+/** The scope of the strip a section draws past its last row, so "after everything" has a row to
+ *  aim at. A scope of its own rather than an id of its own: a row's id is whatever a restored
+ *  backup or the API put in the database, and the backend takes any string, so no id is safe to
+ *  reserve. Every scope is one of the four above or `project:<id>`, none of which is this, so a
+ *  key built on it cannot be a real row's however a row was named. */
+export const SIDEBAR_TAIL_SCOPE = "sidebar-tail";
 
 export const rowKey = (scope: string, id: string): string => `${scope}:${id}`;
 export const sectionRingKey = (section: SidebarSection): string =>

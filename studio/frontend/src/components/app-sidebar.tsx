@@ -236,7 +236,7 @@ import { useIsCoarsePointer } from "@/hooks/use-mobile";
 import {
   folderRingKey,
   sectionRingKey,
-  SIDEBAR_TAIL_ID,
+  SIDEBAR_TAIL_SCOPE,
   useSidebarDrag,
   type SidebarDragItem,
   type SidebarDropContext,
@@ -4368,14 +4368,11 @@ export function AppSidebar() {
                       aria-hidden
                       className={cn(
                         "relative h-[calc(8px*var(--ui-space-scale,1))]",
-                        dropCueClass(PINNED_ORDER_SCOPE, SIDEBAR_TAIL_ID),
+                        dropCueClass(SIDEBAR_TAIL_SCOPE, "pinned"),
                       )}
                       {...dnd.dropZoneProps({
                         section: "pinned",
-                        blockEnd: {
-                          scope: PINNED_ORDER_SCOPE,
-                          id: SIDEBAR_TAIL_ID,
-                        },
+                        blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "pinned" },
                       })}
                     />
                   </SidebarMenu>
