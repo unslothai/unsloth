@@ -173,9 +173,27 @@ def scan_checkpoints(
 
             config_file = item / "config.json"
             adapter_config = item / "adapter_config.json"
+            has_root_model = own_entry(config_file) or own_entry(adapter_config)
 
-            if not (own_entry(config_file) or own_entry(adapter_config)):
+            # Scan for intermediate checkpoints (checkpoint-N subdirs).
+            valid_checkpoints = []
+            for sub in item.iterdir():
+                if not sub.is_dir() or not sub.name.startswith("checkpoint-"):
+                    continue
+                if not within_account(sub):
+                    continue
+                sub_config = sub / "config.json"
+                sub_adapter = sub / "adapter_config.json"
+                if own_entry(sub_config) or own_entry(sub_adapter):
+                    valid_checkpoints.append(sub)
+            valid_checkpoints.sort(key = _checkpoint_sort_key)
+
+            if not has_root_model and not valid_checkpoints:
                 continue
+
+            if not has_root_model:
+                config_file = valid_checkpoints[0] / "config.json"
+                adapter_config = valid_checkpoints[0] / "adapter_config.json"
 
             # Training metadata from adapter_config.json / config.json
             metadata: dict = {}
@@ -221,29 +239,18 @@ def scan_checkpoints(
             checkpoints = []
 
             # Main adapter placeholder — loss filled from the last checkpoint below.
-            checkpoints.append((item.name, str(item), None))
-
-            # Scan for intermediate checkpoints (checkpoint-N subdirs).
-            valid_checkpoints = []
-            for sub in item.iterdir():
-                if not sub.is_dir() or not sub.name.startswith("checkpoint-"):
-                    continue
-                if not within_account(sub):
-                    continue
-                sub_config = sub / "config.json"
-                sub_adapter = sub / "adapter_config.json"
-                if own_entry(sub_config) or own_entry(sub_adapter):
-                    valid_checkpoints.append(sub)
+            if has_root_model:
+                checkpoints.append((item.name, str(item), None))
 
             intermediate_checkpoints = []
-            for sub in sorted(valid_checkpoints, key = _checkpoint_sort_key):
+            for sub in valid_checkpoints:
                 loss = _read_checkpoint_loss(sub)
                 intermediate_checkpoints.append((sub.name, str(sub), loss))
 
             checkpoints.extend(intermediate_checkpoints)
 
             # Assign the latest checkpoint's loss to the main adapter entry.
-            if intermediate_checkpoints:
+            if has_root_model and intermediate_checkpoints:
                 last_checkpoint_loss = intermediate_checkpoints[0][2]
                 checkpoints[0] = (
                     checkpoints[0][0],

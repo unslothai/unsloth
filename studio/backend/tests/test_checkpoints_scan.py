@@ -254,3 +254,58 @@ def test_scan_checkpoints_prefers_exact_history_match_over_newer_suffix(tmp_path
     models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
 
     assert models[0][2]["base_model"] == "correct/base"
+
+
+def test_scan_checkpoints_lists_run_with_only_intermediate_checkpoints(tmp_path, monkeypatch):
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
+    checkpoint_dir = outputs_dir / "run_x" / "checkpoint-100"
+    checkpoint_dir.mkdir(parents = True)
+    (checkpoint_dir / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "unsloth/X", "peft_type": "LORA", "r": 16})
+    )
+    (checkpoint_dir / "trainer_state.json").write_text(
+        json.dumps({"log_history": [{"loss": 0.5}]})
+    )
+
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+
+    assert models == [
+        (
+            "run_x",
+            [("checkpoint-100", str(checkpoint_dir), 0.5)],
+            {"base_model": "unsloth/X", "peft_type": "LORA", "lora_rank": 16},
+        )
+    ]
+
+    targets = checkpoints_module.list_preview_targets(str(outputs_dir))
+
+    assert len(targets) == 1
+    assert targets[0]["ref"] == "run_x/checkpoint-100"
+    assert targets[0]["is_latest"] is False
+
+
+def test_scan_checkpoints_keeps_root_adapter_first(tmp_path, monkeypatch):
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
+    run_dir = outputs_dir / "run_root"
+    checkpoint_dir = run_dir / "checkpoint-50"
+    checkpoint_dir.mkdir(parents = True)
+    (run_dir / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "unsloth/X", "peft_type": "LORA", "r": 16})
+    )
+    (checkpoint_dir / "adapter_config.json").write_text("{}")
+    (checkpoint_dir / "trainer_state.json").write_text(
+        json.dumps({"log_history": [{"loss": 0.25}]})
+    )
+
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+
+    assert models == [
+        (
+            "run_root",
+            [
+                ("run_root", str(run_dir), 0.25),
+                ("checkpoint-50", str(checkpoint_dir), 0.25),
+            ],
+            {"base_model": "unsloth/X", "peft_type": "LORA", "lora_rank": 16},
+        )
+    ]
