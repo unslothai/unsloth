@@ -270,3 +270,43 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
             f"(e.g. {sorted(leftover)[0]!r}); the checkpoint is incomplete or was edited"
         )
     return {"format": str(fmt), "state_dict": state_dict, "metadata": metadata}
+
+
+def scheme_is_flattenable(quant_config: Any, *, features: int = 512) -> Optional[bool]:
+    """Whether THIS torchao can flatten what ``quant_config`` quantizes a weight to.
+
+    ``safetensors_prequant_supported`` answers a different question: the helpers import, the package
+    is there. That is necessary and not sufficient, and int8 is the case where the gap bites. Through
+    torchao 0.17 ``Int8DynamicActivationInt8WeightConfig`` still produces a
+    ``LinearActivationQuantizedTensor`` over an ``AffineQuantizedTensor``, which ``flatten`` refuses;
+    0.18 produces ``Int8Tensor``, which it accepts. Without this the builder passes its preflight,
+    downloads the model, spends the hours of GPU quantization, and only then discovers it cannot
+    write the file it was asked for.
+
+    Probed on one tiny CPU Linear rather than read off a version string, for the same reason
+    ``_torchao_helpers`` imports by feature: the constraint is what the installed release actually
+    produces. ``None`` means the probe itself could not run (no torch, a config this torchao will not
+    apply to a bare Linear), which callers must treat as "proceed": refusing a build because the
+    probe was unavailable would be worse than the late failure it exists to prevent.
+    """
+    helpers = _torchao_helpers()
+    if helpers is None:
+        return False
+    try:
+        import torch
+        from torchao.quantization import quantize_
+
+        probe = torch.nn.Linear(features, features, bias = False)
+        quantize_(probe, quant_config)
+    except Exception:  # noqa: BLE001 - an unprobeable config is not evidence of anything
+        return None
+    flatten, _ = helpers
+    try:
+        flatten(probe.state_dict())
+    except ValueError as exc:
+        if "Unsupported tensor type" in str(exc):
+            return False
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+    return True
