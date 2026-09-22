@@ -404,7 +404,6 @@ def test_standard_tokenizer_fields_count_as_text_inputs():
     """A wrapper whose forward requires token_type_ids can take a text batch: the Trainer
     supplies it, so it is no reason to unwrap."""
     from unsloth.models.vision import _TEXT_BATCH_KEYS
-
     assert "token_type_ids" in _TEXT_BATCH_KEYS
 
 
