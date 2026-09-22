@@ -43,10 +43,11 @@ def test_old_flag_alone_is_not_flash_support_on_new_transformers():
     class Neither:
         pass
 
-    if hasattr(PreTrainedModel, "_supports_flash_attn"):
-        assert U._model_class_supports_flash_attention(OldRemote) is False
-    else:
-        assert U._model_class_supports_flash_attention(OldRemote) is True
+    # 5.0 to 5.3 define the new flag but their dispatch check still accepts the old one.
+    legacy_ok = not hasattr(PreTrainedModel, "_supports_flash_attn") or (
+        U._flash_dispatch_reads_legacy_flag(PreTrainedModel)
+    )
+    assert U._model_class_supports_flash_attention(OldRemote) is legacy_ok
     assert U._model_class_supports_flash_attention(NewNative) is True
     assert U._model_class_supports_flash_attention(Neither) is False
     assert U._model_class_supports_flash_attention(None) is False
@@ -56,7 +57,9 @@ def test_resolver_does_not_request_flash_for_old_flag_remote_class():
     U = _utils()
     from transformers.modeling_utils import PreTrainedModel
 
-    if not hasattr(PreTrainedModel, "_supports_flash_attn"):
+    if not hasattr(PreTrainedModel, "_supports_flash_attn") or (
+        U._flash_dispatch_reads_legacy_flag(PreTrainedModel)
+    ):
         pytest.skip("transformers still dispatches on _supports_flash_attn_2")
 
     class OldRemote:
