@@ -368,3 +368,35 @@ def test_per_tensor_scale_on_a_3d_stack_is_chunked(monkeypatch):
     assert seen, "no fp32 cast observed"
     # Never the whole stack at once: that is the transient the OOM fallback exists to dodge.
     assert max(seen) == 2, (seen, E)
+
+
+def test_activation_scale_cleanup_is_per_attribute():
+    """gate_up_proj is converted while down_proj keeps its own scale in the same module: only
+    gate_up_proj's activation scale goes, down_proj's stays for the fp8 forward, and the
+    module-level input scale stays while anything in the module is still fp8."""
+    model, tensors, expected = _build()
+    model.experts.down_proj_scale_inv = nn.Parameter(tensors["experts.down_proj_scale_inv"], requires_grad = False)
+    model.experts.register_buffer("gate_up_proj_activation_scale", torch.ones(1))
+    model.experts.register_buffer("down_proj_activation_scale", torch.ones(1))
+    model.experts.register_buffer("input_activation_scale", torch.ones(1))
+    with tempfile.TemporaryDirectory() as d:
+        _write_checkpoint(d, tensors)
+        done, skipped = _dequantize_leftover_fp8_params(model, d, torch.bfloat16)
+    assert model.experts.gate_up_proj.dtype == torch.bfloat16
+    assert model.experts.down_proj.dtype in _FP8_DTYPES
+    assert not hasattr(model.experts, "gate_up_proj_activation_scale")
+    assert hasattr(model.experts, "down_proj_activation_scale")
+    assert hasattr(model.experts, "input_activation_scale")
+
+
+def test_a_trainable_fp8_parameter_stays_trainable_after_dequantization():
+    """full_finetuning = True loads its parameters trainable; the 16bit replacement must not
+    freeze them, or the experts silently sit out the fine-tune."""
+    model, tensors, expected = _build()
+    model.experts.gate_up_proj.requires_grad_(True)
+    with tempfile.TemporaryDirectory() as d:
+        _write_checkpoint(d, tensors)
+        _dequantize_leftover_fp8_params(model, d, torch.bfloat16)
+    assert model.experts.gate_up_proj.dtype == torch.bfloat16
+    assert model.experts.gate_up_proj.requires_grad is True
+    assert model.experts.down_proj.requires_grad is False

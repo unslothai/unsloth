@@ -1575,11 +1575,13 @@ def _dequantize_leftover_fp8_params(
 
         # Pass 1: dequantize on the parameter's own device. The device map was planned for the 16bit size, so a card that is full to its plan while its stacks are still fp8 has room for the result but not for the transient; such a stack is parked on the CPU (which frees its fp8 bytes) and finished in pass 2 once the rest of the card is at its final size.
         deferred = []
-        converted_modules = set()
+        converted = set()  # (module, attr): one module can hold a converted stack and one that kept its scale
         for weight_key, (module, live_name, attr) in target_of_ckpt.items():
             param = getattr(module, attr, None)
             if not isinstance(param, torch.Tensor) or param.dtype not in _FP8_DTYPES:
                 continue
+            # A full fine-tune loads its parameters trainable; the replacement keeps that.
+            trainable = bool(getattr(param, "requires_grad", False))
             # A module that kept its own scale runs the fp8 forward and must keep fp8 weights.
             if any(
                 isinstance(getattr(module, s, None), torch.Tensor)
@@ -1604,14 +1606,14 @@ def _dequantize_leftover_fp8_params(
                     failed += 1
                     last_error = f"{weight_key}: scale {tuple(scale.shape)} does not tile {tuple(param.shape)}"
                     continue
-                module._parameters[attr] = torch.nn.Parameter(out, requires_grad = False)
-                converted_modules.add(module)
+                module._parameters[attr] = torch.nn.Parameter(out, requires_grad = trainable)
+                converted.add((module, attr))
                 dequantized += 1
             except Exception as e:
                 if _is_oom(e):
                     device = param.device
                     quantized = param.data.to("cpu")
-                    module._parameters[attr] = torch.nn.Parameter(quantized, requires_grad = False)
+                    module._parameters[attr] = torch.nn.Parameter(quantized, requires_grad = trainable)
                     del param
                     deferred.append((weight_key, module, attr, device))
                     _empty_device_cache(device)
@@ -1624,6 +1626,7 @@ def _dequantize_leftover_fp8_params(
         for weight_key, module, attr, device in deferred:
             try:
                 param = getattr(module, attr)
+                trainable = bool(getattr(param, "requires_grad", False))
                 scale = _scale_for(weight_key, "cpu")
                 with torch.no_grad():
                     out = _fp8_scale_grid_dequant(param.data, scale, dtype)
@@ -1632,9 +1635,9 @@ def _dequantize_leftover_fp8_params(
                     last_error = f"{weight_key}: scale {tuple(scale.shape)} does not tile {tuple(param.shape)}"
                     continue
                 _empty_device_cache(device)
-                module._parameters[attr] = torch.nn.Parameter(out.to(device), requires_grad = False)
+                module._parameters[attr] = torch.nn.Parameter(out.to(device), requires_grad = trainable)
                 del param, out
-                converted_modules.add(module)
+                converted.add((module, attr))
                 dequantized += 1
             except Exception as e:
                 failed += 1
@@ -1651,7 +1654,7 @@ def _dequantize_leftover_fp8_params(
                         and stranded.device.type == "cpu"
                     ):
                         module._parameters[attr] = torch.nn.Parameter(
-                            stranded.data.to(device), requires_grad = False
+                            stranded.data.to(device), requires_grad = bool(stranded.requires_grad)
                         )
                 except Exception:
                     pass
@@ -1667,12 +1670,24 @@ def _dequantize_leftover_fp8_params(
         if dequantized > 0:
             # The remaining activation scales of a static checkpoint mean nothing once a module's
             # weights are 16bit. A module that kept its fp8 weight and scale keeps its activation scale too.
-            for module in converted_modules:
-                for stale in [
-                    n
-                    for n, p in list(module._parameters.items())
-                    if p is not None and n.endswith("activation_scale")
-                ] + [n for n in list(module._buffers) if n.endswith("activation_scale")]:
+            # Per attribute, not per module: an expert block whose gate_up_proj was converted while
+            # down_proj kept its own scale must keep down_proj_activation_scale for the fp8 path.
+            # A scale that names no attribute (input_activation_scale) belongs to the module and
+            # goes only once nothing in the module is fp8 any more.
+            by_module = {}
+            for module, attr in converted:
+                by_module.setdefault(module, set()).add(attr)
+            for module, attrs in by_module.items():
+                still_fp8 = [
+                    n for n, p in module._parameters.items()
+                    if isinstance(p, torch.Tensor) and p.dtype in _FP8_DTYPES
+                ]
+                for stale in [n for n in list(module._parameters) + list(module._buffers) if n.endswith("activation_scale")]:
+                    owner = next((a for a in list(attrs) + still_fp8 if stale.startswith(a + "_")), None)
+                    if owner is None and still_fp8:
+                        continue
+                    if owner is not None and owner not in attrs:
+                        continue
                     if stale in module._parameters:
                         del module._parameters[stale]
                     else:
