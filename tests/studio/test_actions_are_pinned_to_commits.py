@@ -44,25 +44,11 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 GITHUB = REPO / ".github"
 
-# `uses: owner/repo@ref`, with the optional `owner/repo/subdir@ref` form actions may take.
-# Deliberately a text scan rather than a YAML walk: `uses:` can appear inside a workflow,
-# a composite action, or a reusable-workflow call, and at several nesting depths, and the
-# question here is purely lexical.
-#
-# The key itself is matched in every spelling YAML accepts for it, not just the bare
-# token. `- "uses": actions/checkout@v4` and `uses : owner/action@main` are both read as
-# a `uses` field by Actions, and a scanner that recognised only `uses:` would have let a
-# mutable tag through under either -- a bypass costing one pair of quotes, in a guard whose
-# whole job is to refuse mutable tags. Matching the key loosely cannot produce a false
-# positive on its own, because the value still has to parse as `owner/repo@ref`.
-_USES = re.compile(
-    r"""^\s*-?\s*['"]?uses['"]?\s*:\s*['"]?(?P<ref>(?P<repo>[A-Za-z0-9][\w.-]*/[\w.-]+(?:/[\w.\-/]+)?)@(?P<rev>[\w.\-/]+))""",
-    re.MULTILINE,
-)
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
 # A pinned-by-SHA reference whose upstream repository is gone or renamed cannot be
@@ -91,17 +77,54 @@ def _sources():
         yield path, path.read_text(encoding = "utf-8", errors = "ignore")
 
 
+_REF = re.compile(
+    r"""^(?P<repo>[A-Za-z0-9][\w.-]*/[\w.-]+(?:/[\w.\-/]+)?)@(?P<rev>[\w.\-/]+)$"""
+)
+
+
+def _uses_values(node):
+    """Every `uses` value anywhere in a parsed document, at any depth.
+
+    Walking the parsed structure rather than the source text, because enumerating
+    spellings of the key does not converge. The lexical scan started on `uses:`, then
+    needed `"uses":` and `uses :`, and flow style `- {uses: actions/checkout@v4}` is
+    another valid step mapping again -- each one a reference the guard simply could not
+    see, in a module whose entire job is to refuse mutable tags. PyYAML resolves all of
+    them to the same mapping key, so asking it ends the sequence instead of extending it.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if str(key).strip() == "uses" and isinstance(value, str):
+                yield value.strip()
+            else:
+                yield from _uses_values(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _uses_values(item)
+
+
 def _references():
     """(path, lineno, ref, repo, rev) for every third-party `uses:` in the tree."""
     for path, text in _sources():
-        for match in _USES.finditer(text):
-            repo = match.group("repo")
-            # `uses: ./.github/actions/x` and `uses: docker://...` do not match _USES at
-            # all; this catches the remaining first-party spellings defensively.
-            if repo.startswith(".") or repo.startswith("docker://"):
+        try:
+            doc = yaml.safe_load(text)
+        except yaml.YAMLError:
+            continue
+        for ref in _uses_values(doc):
+            # `uses: ./.github/actions/x` resolves inside this checkout, and
+            # `docker://` is an image rather than an action; neither is a mutable
+            # third-party pointer.
+            if ref.startswith(".") or ref.startswith("docker://"):
                 continue
-            lineno = text.count("\n", 0, match.start()) + 1
-            yield path, lineno, match.group("ref"), repo, match.group("rev")
+            match = _REF.match(ref)
+            if match is None:
+                continue
+            # The parser discards positions, so recover the line from the source for the
+            # failure message. Only ever cosmetic: a reference that cannot be located is
+            # still reported, at line 0.
+            index = text.find(ref)
+            lineno = text.count("\n", 0, index) + 1 if index >= 0 else 0
+            yield path, lineno, ref, match.group("repo"), match.group("rev")
 
 
 def test_the_scan_finds_the_references_it_claims_to():
@@ -134,33 +157,53 @@ def test_the_sha_predicate_reads_the_revision():
         assert bool(_SHA.match(rev)) is expected, f"_SHA.match({rev!r})"
 
 
-def test_the_scan_reads_every_spelling_of_the_uses_key():
+def test_the_scan_reads_every_spelling_of_a_step_mapping():
     """A guard that recognises one spelling of its own key is a guard with a keyhole.
 
-    YAML accepts a quoted key and whitespace before the colon, and Actions reads both as
-    a `uses` field. Recognising only the bare `uses:` token meant `- "uses":
-    actions/checkout@v4` was absent from the scan entirely, so a mutable tag written that
-    way passed a test whose entire purpose is to refuse mutable tags. The cost of the
-    bypass was one pair of quotes.
+    The scan began as a regex on `uses:`, which missed `"uses":` and `uses :`, and then
+    missed flow style `- {uses: actions/checkout@v4}` after those were added. Each miss
+    was a reference absent from the scan entirely, so a mutable tag written that way
+    passed a test whose whole purpose is to refuse mutable tags, and the cost of the
+    bypass was a pair of quotes or a pair of braces. Enumerating spellings does not
+    converge; the parser resolves all of them to the same mapping key.
     """
     spellings = [
-        "      - uses: actions/checkout@v4",
-        '      - "uses": actions/checkout@v4',
-        "      - 'uses': actions/checkout@v4",
-        "      - uses : actions/checkout@v4",
-        "        uses: actions/checkout@v4",
-        '      - uses: "actions/checkout@v4"',
+        "steps:\n  - uses: actions/checkout@v4\n",
+        'steps:\n  - "uses": actions/checkout@v4\n',
+        "steps:\n  - 'uses': actions/checkout@v4\n",
+        "steps:\n  - uses : actions/checkout@v4\n",
+        "steps:\n  - {uses: actions/checkout@v4}\n",
+        "steps: [{uses: actions/checkout@v4}]\n",
+        'steps:\n  - uses: "actions/checkout@v4"\n',
+        # Nested inside a composite action, which is the other place `uses` appears.
+        "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n",
     ]
-    for line in spellings:
-        match = _USES.search(line)
-        assert match is not None, f"the scan does not see {line!r}"
-        assert match.group("repo") == "actions/checkout", line
-        assert match.group("rev") == "v4", line
+    for source in spellings:
+        found = list(_uses_values(yaml.safe_load(source)))
+        assert found == ["actions/checkout@v4"], f"{source!r} produced {found!r}"
 
-    # And the value still has to look like a reference, so loosening the key cannot make
-    # the scan match prose.
-    for line in ("  # uses: whatever we like", "      - name: uses colons: here"):
-        assert _USES.search(line) is None, f"unexpectedly matched {line!r}"
+    # A `uses` value that is not a reference, and a key that merely contains the word,
+    # must not be picked up as third-party references.
+    assert list(_uses_values(yaml.safe_load("steps:\n  - uses: ./.github/actions/x\n"))) == [
+        "./.github/actions/x"
+    ]
+    assert list(_uses_values(yaml.safe_load("steps:\n  - name: uses a cache\n"))) == []
+
+
+def test_the_reference_predicate_reads_owner_repo_at_ref():
+    """`_REF` decides what counts as a third-party reference at all."""
+    cases = [
+        ("actions/checkout@v4", True),
+        ("actions/cache/restore@v4", True),
+        ("owner/repo@0123456789abcdef0123456789abcdef01234567", True),
+        ("./.github/actions/x", False),
+        ("docker://alpine:3", False),
+        ("actions/checkout", False),      # no ref at all
+        ("notapath@v4", False),           # no owner
+        ("", False),
+    ]
+    for ref, expected in cases:
+        assert bool(_REF.match(ref)) is expected, f"_REF.match({ref!r})"
 
 
 def test_every_third_party_action_is_pinned_to_a_commit_sha():

@@ -238,45 +238,77 @@ def _persisted_paths(job):
 
 
 
-def _local_action_steps(job, seen = None):
-    """Steps of the local composite actions this job uses, flattened into the job.
+def _flat_steps(job, inherited = None, seen = None):
+    """(step, inherited env) for this job's steps and those of every local composite.
 
-    A composite's `run` steps execute INSIDE the calling job, with that job's
-    environment, next to that job's cache steps, so a login performed there writes a
-    token into exactly the same directory. Reading only the workflow's own `run` bodies
-    meant a job could persist its credential home, delegate the login to
-    `uses: ./.github/actions/whatever`, and pass: the workflow appears to contain no
-    login at all, and the action is scanned separately, where neither the caller's
-    environment nor its persisted paths are visible. Neither half sees the combination.
+    A composite's steps execute INSIDE the calling job, and the invoking step's `env:`
+    applies while they run, so that environment has to travel with them. Appending the
+    inner step dictionaries alone discarded it: a composite invoked with
+    `env: {HF_HOME: hf-cache}` whose inner step logs in showed no credential home at all,
+    and the login was accepted.
 
     Recursive, with a seen set, since a composite may use another composite.
     """
+    inherited = {} if inherited is None else inherited
     seen = set() if seen is None else seen
     out = []
     for step in _steps(job):
+        own = step.get("env")
+        env = {**inherited, **({str(k): str(v) for k, v in own.items()}
+                               if isinstance(own, dict) else {})}
+        out.append((step, inherited))
         uses = str(step.get("uses") or "").strip().strip("'\"")
         if not uses.startswith("./"):
             continue
         base = REPO / uses[2:]
         for cand in (base, base / "action.yml", base / "action.yaml"):
-            if not cand.is_file():
+            if not cand.is_file() or cand in seen:
                 continue
-            if cand in seen:
-                break
             seen.add(cand)
             try:
                 doc = yaml.safe_load(cand.read_text(encoding = "utf-8"))
             except yaml.YAMLError:
                 break
-            if not isinstance(doc, dict):
-                break
-            runs = doc.get("runs")
-            inner = {"steps": runs["steps"]} if (
-                isinstance(runs, dict) and isinstance(runs.get("steps"), list)
-            ) else {}
-            out.extend(_steps(inner))
-            out.extend(_local_action_steps(inner, seen))
+            runs = doc.get("runs") if isinstance(doc, dict) else None
+            if isinstance(runs, dict) and isinstance(runs.get("steps"), list):
+                # The invoking step's own env is what the composite runs under.
+                out.extend(_flat_steps({"steps": runs["steps"]}, env, seen))
             break
+    return out
+
+
+def _local_action_steps(job):
+    """The composite-provided steps only, for tests that assert flattening happened."""
+    own = {id(s) for s in _steps(job)}
+    return [step for step, _env in _flat_steps(job) if id(step) not in own]
+
+
+def _persisted_with_env(job, doc):
+    """(path, env) for every path this job persists, with the env of the DECLARING step.
+
+    Actions resolves a `path: ${{ env.CACHE_DIR }}` against the environment of the step
+    that performs the save, so expanding it with some other step's environment answers a
+    different question. Carrying the pair keeps the two apart, and it also brings in
+    persistence that happens inside a local composite, which the caller-only scan could
+    not see at all: a composite saving the job's credential home while the workflow logs
+    in was a combination neither half observed.
+    """
+    job_env = _env_of(job, doc)
+    out = []
+    for step, inherited in _flat_steps(job):
+        uses = str(step.get("uses") or "").casefold()
+        if not any(marker.casefold() in uses for marker in _PERSIST):
+            continue
+        with_ = step.get("with")
+        if not isinstance(with_, dict) or with_.get("path") is None:
+            continue
+        own = step.get("env")
+        env = {**job_env, **inherited, **({str(k): str(v) for k, v in own.items()}
+                                         if isinstance(own, dict) else {})}
+        for line in str(with_["path"]).splitlines():
+            line = line.strip()
+            if line and not line.startswith("!"):
+                out.append((_expand(line, env), step))
     return out
 
 
@@ -291,21 +323,20 @@ def _login_offenders(doc, job):
     decides, which is also the only thing the runtime cares about.
     """
     job_env = _env_of(job, doc)
-    raw = _raw_persisted(job)
-    if not raw:
+    persisted = [path for path, _step in _persisted_with_env(job, doc)]
+    if not persisted:
         return []
     offenders = []
-    for step in _steps(job) + _local_action_steps(job):
+    for step, inherited in _flat_steps(job):
         body = str(step.get("run") or "")
         if not body:
             continue
-        step_env = step.get("env")
-        env = {**job_env, **({str(k): str(v) for k, v in step_env.items()}
-                             if isinstance(step_env, dict) else {})}
+        own = step.get("env")
+        env = {**job_env, **inherited, **({str(k): str(v) for k, v in own.items()}
+                                         if isinstance(own, dict) else {})}
         homes = {v: _expand(str(env[v]), env) for v in CREDENTIAL_HOMES if v in env}
         if not homes:
             continue
-        persisted = [_expand(p, env) for p in raw]
         for var, home in sorted(homes.items()):
             hit = next((p for p in persisted if _inside(home, p)), None)
             if hit is None:
@@ -321,9 +352,9 @@ def _login_offenders(doc, job):
     return offenders
 
 
-def _raw_persisted(job):
-    """Just the persisted path strings, unexpanded."""
-    return [line for line, _step in _persisted_paths(job)]
+def _raw_persisted(job, doc = None):
+    """Expanded persisted paths, including those declared inside local composites."""
+    return [path for path, _step in _persisted_with_env(job, doc or {})]
 
 def _normalise(path: str) -> str:
     """Strip expressions and separators so a path and an env value can be compared."""
@@ -353,8 +384,7 @@ def _offending_jobs():
                 homes = {v: env[v] for v in CREDENTIAL_HOMES if v in env}
                 if not homes:
                     continue
-                for persisted, _step in _persisted_paths(job):
-                    persisted = _expand(persisted, env)
+                for persisted, _step in _persisted_with_env(job, doc):
                     for var, home in homes.items():
                         if _inside(_expand(home, env), persisted):
                             yield f"{path.name}:{jid}", var, persisted, home
@@ -505,8 +535,7 @@ def test_no_job_persists_a_default_credential_home():
     for path, doc in _docs():
         for jid, job in _jobs(doc):
             env = _env_of(job, doc)
-            for persisted, _step in _persisted_paths(job):
-                persisted = _expand(persisted, env)
+            for persisted, _step in _persisted_with_env(job, doc):
                 for default, creds in DEFAULT_CREDENTIAL_HOMES.items():
                     if _inside(default, persisted):
                         offenders.append(
@@ -636,3 +665,100 @@ def test_a_login_inside_a_local_composite_action_is_seen(tmp_path, monkeypatch):
         "just the same, so it must be a finding"
     )
     assert "hf auth login" in offenders[0] or "login" in offenders[0], offenders
+
+
+def test_a_composite_invoked_with_a_credential_home_carries_that_env(tmp_path, monkeypatch):
+    """The invoking step's `env:` applies while the composite runs, so it must travel.
+
+    Appending the inner step dictionaries alone discarded it: a composite invoked with
+    `env: {HF_HOME: hf-cache}` whose inner step logs in showed no credential home at all,
+    neither job-level nor inner-step, and the login was accepted even though the job saves
+    `hf-cache`.
+    """
+    import sys
+
+    module = sys.modules[__name__]
+    action = tmp_path / ".github" / "actions" / "hf-login"
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: hf login\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - shell: bash\n"
+        "      run: hf auth login --token \"$HF_TOKEN\"\n"
+    )
+    monkeypatch.setattr(module, "REPO", tmp_path)
+
+    job = {"steps": [
+        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+        {"uses": "./.github/actions/hf-login", "env": {"HF_HOME": "hf-cache"}},
+    ]}
+    offenders = _login_offenders({}, job)
+    assert offenders, (
+        "the credential home is set on the step that invokes the composite, and the "
+        "composite's login writes into it, so this must be a finding"
+    )
+
+
+def test_persistence_inside_a_local_composite_is_seen(tmp_path, monkeypatch):
+    """A composite can hold the `actions/cache/save`, and the caller-only scan saw none.
+
+    `_raw_persisted` examined the workflow's own steps and returned empty, so the login
+    scan never ran at all. Scanning the composite separately does not help either,
+    because that document has neither the caller's environment nor its login step, so
+    neither half observed the combination.
+    """
+    import sys
+
+    module = sys.modules[__name__]
+    action = tmp_path / ".github" / "actions" / "save-cache"
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: save cache\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: actions/cache/save@v4\n"
+        "      with:\n"
+        "        path: hf-cache\n"
+        "        key: k\n"
+    )
+    monkeypatch.setattr(module, "REPO", tmp_path)
+
+    job = {
+        "env": {"HF_HOME": "hf-cache"},
+        "steps": [
+            {"name": "log in", "run": "hf auth login --token x"},
+            {"uses": "./.github/actions/save-cache"},
+        ],
+    }
+    paths = [p for p, _s in _persisted_with_env(job, {})]
+    assert "hf-cache" in paths, f"the composite's cache save was not collected: {paths}"
+    assert _login_offenders({}, job), (
+        "the composite saves the job's credential home and the workflow logs in, which "
+        "is the combination this module exists to refuse"
+    )
+
+
+def test_a_cached_path_is_expanded_with_its_own_step_s_environment():
+    """Actions resolves `path:` against the environment of the step doing the save.
+
+    Expanding it with some other step's environment answers a different question: with
+    `env: {CACHE_DIR: creds}` on the cache step and a login step setting a credential
+    home under `creds`, the path resolved to empty against the login step's environment
+    and the combination was missed.
+    """
+    job = {"steps": [
+        {"name": "save", "uses": "actions/cache/save@v4",
+         "with": {"path": "${{ env.CACHE_DIR }}", "key": "k"},
+         "env": {"CACHE_DIR": "creds"}},
+        {"name": "log in", "run": "hf auth login --token x", "env": {"HF_HOME": "creds/hf"}},
+    ]}
+    paths = [p for p, _s in _persisted_with_env(job, {})]
+    assert paths == ["creds"], (
+        f"the path had to resolve against the saving step's own CACHE_DIR; got {paths}"
+    )
+    assert _login_offenders({}, job), (
+        "HF_HOME is creds/hf, inside the cached creds, and that step logs in"
+    )

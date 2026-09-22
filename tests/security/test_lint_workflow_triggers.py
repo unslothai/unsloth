@@ -1626,3 +1626,273 @@ def test_a_folded_restore_keys_block_is_one_prefix_not_several(tmp_path):
         f"rejected:\n{proc.stdout}\n{proc.stderr}"
     )
     assert "shared-" in proc.stderr
+
+
+def test_a_quoted_restore_keys_field_is_read(tmp_path):
+    """`"restore-keys": |` is valid YAML and offers the same fallback.
+
+    The lexical reader matched only the bare token, so this spelling produced no
+    prefixes at all and the collision was accepted. One of several spellings that had to
+    be added one at a time before the reader was replaced with the parser, which resolves
+    all of them to the same mapping key.
+    """
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "pr-build.yml").write_text(_pr_workflow("shared-${{ runner.os }}-abc"))
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  publish:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n"
+        "          path: wheels\n"
+        '          "key": pub-${{ runner.os }}\n'
+        '          "restore-keys": |\n'
+        "            shared-\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"a quoted restore-keys field was not read:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "shared-" in proc.stderr
+
+
+def test_a_restore_keys_sequence_is_read(tmp_path):
+    """`restore-keys: [a-, shared-]` is the sequence form, which the line reader never saw."""
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "pr-build.yml").write_text(_pr_workflow("shared-${{ runner.os }}-abc"))
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  publish:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n"
+          "          path: wheels\n"
+        "          key: pub-${{ runner.os }}\n"
+        "          restore-keys: [safe-, shared-]\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"a sequence-form restore-keys was not read:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "shared-" in proc.stderr
+
+
+def test_a_flow_style_local_uses_is_followed(tmp_path):
+    """`- {uses: ./.github/actions/x}` is the same step mapping in flow style.
+
+    The traversal matched `uses:` lexically, so a flow-style or quoted-key call was never
+    followed and the namespace that action declares stayed outside the comparison.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "shared-cache"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: shared cache\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: actions/cache@v4\n"
+        "      with:\n"
+        "        path: wheels\n"
+        "        key: flow-v1-${{ runner.os }}-abc\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - {uses: ./.github/actions/shared-cache}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("flow-v1-pub-${{ runner.os }}", "            flow-v1-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"a flow-style local `uses` was not followed, so the action's namespace was "
+        f"invisible:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "flow-v1-" in proc.stderr
+
+
+def test_a_caller_supplied_key_is_resolved_not_dismissed(tmp_path):
+    """`key: ${{ inputs.cache_key }}` is caller-supplied, which is not delegation.
+
+    `steps.*` genuinely delegates: the real key is built in a composite's shell and is
+    collected from there. `inputs.*` is different, because the value comes from the
+    CALLER, so a pull request passing `cache_key: shared-abc` writes the `shared-`
+    namespace. Treating the two alike dropped this key silently and a publish `shared-`
+    fallback passed.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "shared-build.yml").write_text(
+        "name: shared-build\n"
+        "on:\n"
+        "  workflow_call:\n"
+        "    inputs:\n"
+        "      cache_key:\n"
+        "        required: true\n"
+        "        type: string\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n"
+        "          path: wheels\n"
+        "          key: ${{ inputs.cache_key }}\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  call:\n"
+        "    uses: ./.github/workflows/shared-build.yml\n"
+        "    with:\n"
+        "      cache_key: shared-abc\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("shared-pub-${{ runner.os }}", "            shared-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"a caller-supplied cache key was dismissed as delegation:\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+    assert "shared-" in proc.stderr
+
+
+def test_a_key_delegated_to_a_step_output_is_still_accepted(tmp_path):
+    """The other half of the rule above, and the reason it is not simply stricter.
+
+    Every live caller of this repository's pip-cache-save passes
+    `key: ${{ steps.pip-cache.outputs.key }}`, whose real namespace was already collected
+    from the restoring action's shell. Reporting that as undecidable failed the live tree,
+    which is the false-failure shape that gets a security check switched off, so
+    resolved-with-no-literals has to mean delegation rather than doubt.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "cache-save"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: cache save\n"
+        "inputs:\n"
+        "  key:\n"
+        "    required: true\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: actions/cache/save@v4\n"
+        "      with:\n"
+        "        path: wheels\n"
+        "        key: ${{ inputs.key }}\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - id: probe\n"
+        "        run: echo 'key=own-v1-abc' >> \"$GITHUB_OUTPUT\"\n"
+        "      - uses: ./.github/actions/cache-save\n"
+        "        with:\n"
+        "          key: ${{ steps.probe.outputs.key }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("unrelated-pub-${{ runner.os }}", "            unrelated-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"a key delegated to a step output, against an unrelated publish namespace, "
+        f"must pass:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_inputs_are_collected_through_a_wrapper_action(tmp_path):
+    """Call sites live in composites too, not only in workflow files.
+
+    A cache action reached through a wrapper gets its inputs from that wrapper. Reading
+    only the top-level workflows meant that call site was invisible, so if the workflow
+    ALSO called the action directly with a literal, every input looked resolved and the
+    narrowing dropped the namespace the wrapper passes.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    inner = root / "actions" / "pip-cache-restore"
+    wrapper = root / "actions" / "setup-wrapper"
+    wf.mkdir(parents = True)
+    inner.mkdir(parents = True)
+    wrapper.mkdir(parents = True)
+    (inner / "action.yml").write_text(
+        "name: pip cache restore\n"
+        "inputs:\n"
+        "  name:\n"
+        "    required: true\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - id: probe\n"
+        "      shell: bash\n"
+        "      run: |\n"
+        "        name=\"${{ inputs.name }}\"\n"
+        "        prefix=\"pip-v3-${name}-\"\n"
+        "        echo \"key=${prefix}abc\" >> \"$GITHUB_OUTPUT\"\n"
+    )
+    (wrapper / "action.yml").write_text(
+        "name: setup wrapper\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: ./.github/actions/pip-cache-restore\n"
+        "      with:\n"
+        "        name: wrapped\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  direct:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/pip-cache-restore\n"
+        "        with:\n"
+        "          name: direct\n"
+        "  viawrapper:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/setup-wrapper\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys(
+            "pip-v3-wrapped-pub-${{ runner.os }}", "            pip-v3-wrapped-\n"
+        )
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the wrapper's `name: wrapped` call site was not collected, so the narrowing "
+        f"dropped that namespace:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "pip-v3-" in proc.stderr

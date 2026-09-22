@@ -34,6 +34,9 @@ except ImportError:
     sys.exit(2)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Kept in one place because every reader below opens files the same way.
+ENC = "utf-8"
+
 DEFAULT_WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
 BANNED_TRIGGERS: tuple[str, ...] = ("pull_request_target",)
@@ -62,54 +65,150 @@ def _load_workflow(path: Path):
         sys.exit(2)
 
 
+def _mappings(node):
+    """Every mapping anywhere in a parsed document, at any depth."""
+    if isinstance(node, dict):
+        yield node
+        for value in node.values():
+            yield from _mappings(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _mappings(item)
+
+
+def _parse(path: Path):
+    try:
+        return yaml.safe_load(path.read_text(ENC))
+    except Exception:
+        return None
+
+
 def _extract_cache_keys(path: Path) -> list[str]:
-    text = path.read_text(encoding = "utf-8")
+    """Every `key:` declared anywhere in the document.
+
+    Read from the parsed structure rather than by scanning text for `key:`. The lexical
+    version had to be taught one spelling at a time and never finished: `"restore-keys":`
+    is valid YAML, so is `uses :`, so is flow style `- {uses: ...}`, and each spelling it
+    did not know was a declaration the lint could not see at all. On a security check that
+    is a bypass, not a rough edge.
+    """
+    doc = _parse(path)
     keys: list[str] = []
-    for m in re.finditer(r"(?:^|\n)\s*key:\s*([^\n]+)", text):
-        keys.append(m.group(1).strip())
+    for mapping in _mappings(doc):
+        value = mapping.get("key")
+        if isinstance(value, (str, int, float)):
+            text = str(value).strip()
+            if text:
+                keys.append(text)
     return keys
 
 
 def _extract_restore_key_prefixes(path: Path) -> list[str]:
-    """Every prefix a `restore-keys:` block offers as a fallback.
+    """Every prefix a `restore-keys:` field offers as a fallback.
 
     The exact-key comparison is blind to these: `restore-keys` restores the newest entry
     whose key merely STARTS WITH the prefix, so a publish workflow can adopt an entry a
     pull request wrote without the two keys ever being equal.
 
-    Two YAML details decide what the list actually contains, and getting either wrong
-    changes the answer rather than the wording.
-
-    A blank line does NOT end a literal block. It runs until the indentation drops, blank
-    lines included, and actions/cache reads the value as a newline-delimited list and
-    skips empty entries. So `safe-`, a blank line, then `shared-` really does offer
-    `shared-`, while breaking at the blank line dropped every prefix after it.
-
-    A FOLDED block (`>`) is one prefix, not several. Folding replaces the newlines with
-    spaces, so `safe-only-` then `shared-` arrives at actions/cache as the single string
-    `safe-only- shared-`, which cannot restore a `shared-` key at all. Reading each
-    physical line as its own prefix invented a fallback the runtime does not have, and
-    inventing one is a false rejection of a correct configuration.
+    Taken from the parsed value, which is the string `actions/cache` itself receives, so
+    the YAML details that decide the answer are decided by the parser and not
+    re-implemented here. Both of them used to be wrong. A blank line inside a literal
+    block does not end it, and breaking there dropped every prefix after it. A FOLDED
+    block (`>`) is a single space-joined scalar, so `safe-only-` then `shared-` arrives
+    as `safe-only- shared-` and offers no `shared-` fallback at all, while reading each
+    physical line invented one -- a false rejection of a correct configuration. PyYAML
+    gets both right by construction, and the sequence form (`restore-keys: [a-, b-]`),
+    which the line reader never handled, comes free.
     """
-    text = path.read_text(encoding = "utf-8")
+    doc = _parse(path)
     prefixes: list[str] = []
-    for m in re.finditer(r"(?:^|\n)([ \t]*)restore-keys:[ \t]*(\|-?|>-?)?[ \t]*([^\n]*)\n", text):
-        indent, block, inline = m.group(1), m.group(2), m.group(3).strip()
-        if inline and not block:
-            prefixes.append(inline)
-            continue
-        collected: list[str] = []
-        for line in text[m.end():].split("\n"):
-            if not line.strip():
-                continue          # blank lines sit inside the block, they do not end it
-            if len(line) - len(line.lstrip()) <= len(indent):
-                break             # the indentation dropped: the block is over
-            collected.append(line.strip())
-        if block and block.startswith(">"):
-            # Folded: the whole block is a single space-joined scalar.
-            collected = [" ".join(collected)] if collected else []
-        prefixes.extend(collected)
+    for mapping in _mappings(doc):
+        value = mapping.get("restore-keys")
+        if isinstance(value, str):
+            prefixes.extend(line.strip() for line in value.splitlines())
+        elif isinstance(value, list):
+            prefixes.extend(str(item).strip() for item in value)
     return [p for p in prefixes if p]
+
+
+def _local_uses(path: Path) -> list[str]:
+    """Every `uses:` value in the document that points inside this repository."""
+    doc = _parse(path)
+    out: list[str] = []
+    for mapping in _mappings(doc):
+        value = mapping.get("uses")
+        if isinstance(value, str) and value.strip().startswith("./"):
+            out.append(value.strip())
+    return out
+
+
+def _call_sites(path: Path, target: str) -> list[dict]:
+    """The `with:` mappings of every call to a local action or workflow named `target`.
+
+    `target` is the last path component of the `uses: ./...` reference, which is the
+    action's directory or the reusable workflow's filename.
+    """
+    doc = _parse(path)
+    sites: list[dict] = []
+    for mapping in _mappings(doc):
+        value = mapping.get("uses")
+        if not isinstance(value, str):
+            continue
+        ref = value.strip()
+        if not ref.startswith("./"):
+            continue
+        stem = ref.rstrip("/").split("/")[-1]
+        if stem != target and PurePosixPath(stem).stem != PurePosixPath(target).stem:
+            continue
+        with_ = mapping.get("with")
+        sites.append(with_ if isinstance(with_, dict) else {})
+    return sites
+
+
+def _resolved_inputs(caller_paths: list, target: str) -> dict:
+    """{input: (literal values, every call site resolved)} over all callers of `target`.
+
+    Callers are read from every PR-reachable document, workflows AND composites, not
+    just the top-level workflow files. A cache action reached through a wrapper action
+    gets its inputs from that wrapper, and collecting only from workflows meant such a
+    call site was invisible: if the workflow ALSO called the action directly with a
+    literal, every input looked resolved and the narrowing below dropped the namespace
+    the wrapper passes.
+
+    The second element of each pair is what keeps the narrowing honest. A call site
+    passing `name: ${{ matrix.cache_name }}`, or omitting the input so the action default
+    applies, has no literal value here. Substituting only the literals its siblings pass
+    would DISCARD that caller's namespace, turning a fix for a false rejection into a
+    false acceptance, which is the worse of the two.
+
+    A value that is itself a `steps.*` or `needs.*` reference counts as neither literal
+    nor unresolved: it is genuine delegation. Every live caller of pip-cache-save and
+    uv-cache-save passes `key: ${{ steps.pip-cache.outputs.key }}`, whose real namespace
+    was already collected from the restoring action's shell, so reporting it as
+    undecidable was a false failure on this tree -- and a check that fails on a correct
+    configuration is one that gets switched off.
+    """
+    values: dict = {}
+    seen_any = False
+    for pth in caller_paths:
+        for site in _call_sites(pth, target):
+            seen_any = True
+            for name, raw in site.items():
+                literal = str(raw).strip().strip("'\"")
+                bucket = values.setdefault(str(name), [set(), 0])
+                if re.fullmatch(r"[A-Za-z0-9][\w.-]*", literal):
+                    bucket[0].add(literal)
+                elif _DELEGATED_KEY.fullmatch(literal):
+                    pass
+                else:
+                    bucket[1] += 1
+            for name, bucket in values.items():
+                if name not in site:
+                    # Omitted, so the action's default applies and is not visible here.
+                    bucket[1] += 1
+    if not seen_any:
+        return {}
+    return {name: (vals, unresolved == 0) for name, (vals, unresolved) in values.items()}
 
 
 def _literal_prefix(key: str) -> str:
@@ -130,7 +229,11 @@ _RUNNER_OS_EXPR = re.compile(r"\$\{\{\s*runner\.os\s*\}\}")
 
 # A key that is nothing but one expression referring to a step output or an action input
 # delegates its namespace rather than declaring one.
-_DELEGATED_KEY = re.compile(r"\$\{\{\s*(steps|inputs|needs)\.[^}]*\}\}")
+_DELEGATED_KEY = re.compile(r"\$\{\{\s*(steps|needs)\.[^}]*\}\}")
+
+# `inputs.X` is NOT delegation: the value arrives from the caller, so it has to be
+# resolved against the call sites rather than dismissed.
+_INPUT_KEY = re.compile(r"\$\{\{\s*inputs\.([A-Za-z_][\w-]*)\s*\}\}")
 
 
 def _prefix_candidates(key: str) -> list[str]:
@@ -204,64 +307,6 @@ def _shell_built_key_prefixes(
 
 
 
-def _local_action_inputs(pr_paths: list, action_dir: str) -> tuple[set, bool]:
-    """The `name:`-style values callers pass to a local action, and whether all are known.
-
-    Read off the `with:` block of each `uses: ./...<action_dir>` call site. Needed because
-    a namespace recorded more broadly than the real one is a false rejection: this repo's
-    pip cache builds `prefix="pip-${name}-..."`, so reading the shell alone records the
-    bare head `pip-`, which then collides with any publish prefix beginning `pip-`
-    including a properly partitioned `pip-release-` that no pull request can write.
-
-    The second return value is what keeps the narrowing honest. A call site passing
-    `name: ${{ matrix.cache_name }}` has no literal value here, and substituting only the
-    literals its siblings pass would DISCARD that caller's namespace: one caller with
-    `name: mlx` would reduce the recorded set to `pip-mlx-`, while the matrix call could
-    still write `pip-shared-` and a publish `restore-keys: pip-shared-` would pass. So
-    narrowing is allowed only when every reachable call site resolves to a literal, and
-    otherwise the broad head is kept alongside whatever literals were found.
-
-    Read line by line, bounded by the indentation of the step's `-` marker, because a
-    regex capturing "the indented lines that follow" runs straight past the end of the
-    step and into the rest of the file. That is not a tidiness point: with two call sites
-    in one workflow the first match swallowed the second, only the first `name:` in the
-    combined text was read, and a dynamic sibling went unnoticed -- which is precisely
-    the case the flag above exists to catch.
-    """
-    values: set = set()
-    all_literal = True
-    ref = re.compile(r"uses:\s*['\"]?\./[\w./-]*" + re.escape(action_dir) + r"\s*$")
-    for pth in pr_paths:
-        try:
-            lines = pth.read_text().split("\n")
-        except OSError:
-            continue
-        for i, line in enumerate(lines):
-            if not ref.search(line):
-                continue
-            marker = line.find("-")
-            bound = marker if 0 <= marker < line.find("uses:") else len(line) - len(line.lstrip())
-            found = None
-            for follow in lines[i + 1:]:
-                if not follow.strip():
-                    continue
-                if (len(follow) - len(follow.lstrip())) <= bound:
-                    break     # the step ended; anything past here belongs to another
-                hit = re.match(r"\s+name:\s*(.+?)\s*$", follow)
-                if hit is not None:
-                    found = hit.group(1)
-                    break
-            if found is None:
-                # No `name:` on this call site: the action's default applies and is not
-                # visible from here, so the namespace stays undecided.
-                all_literal = False
-                continue
-            raw = found.strip().strip("'\"")
-            if re.fullmatch(r"[A-Za-z0-9][\w.-]*", raw):
-                values.add(raw)
-            else:
-                all_literal = False
-    return values, all_literal
 
 def _pr_reachable_action_dirs(workflows_dir: Path, pr_paths: list) -> set:
     """Composite actions a PR-triggered workflow actually uses.
@@ -286,13 +331,8 @@ def _pr_reachable_action_dirs(workflows_dir: Path, pr_paths: list) -> set:
         if pth in seen:
             continue
         seen.add(pth)
-        try:
-            text = pth.read_text()
-        except OSError:
-            continue
-        for m in re.finditer(r"uses:\s*['\"]?(\./[\w./-]+)", text):
-            rel = m.group(1)[2:]
-            cand = root.parent / rel
+        for ref in _local_uses(pth):
+            cand = root.parent / ref[2:]
             # A local reusable workflow reference names the .yml file itself rather than a
             # directory containing an action.yml, so it has to be followed on its own.
             if cand.is_file() and cand.suffix in (".yml", ".yaml"):
@@ -642,14 +682,18 @@ def main() -> int:
     # them runs on pull requests. Without this the prefix rule below would compare
     # against opaque expressions and match nothing.
     pr_workflow_paths = [pth for pth, _ in pr_triggered]
+    pr_reachable = sorted(_pr_reachable_action_dirs(workflows_dir, pr_workflow_paths))
+    # Call sites come from every reachable document, workflows and composites alike, so a
+    # cache action reached through a wrapper action is narrowed by what the WRAPPER passes
+    # and not only by what a workflow passes directly.
+    pr_callers = pr_workflow_paths + pr_reachable
     composite_keys: list[str] = []
-    for action_path in sorted(_pr_reachable_action_dirs(workflows_dir, pr_workflow_paths)):
+    for action_path in pr_reachable:
         composite_keys.extend(_extract_cache_keys(action_path))
-        names, all_literal = _local_action_inputs(
-            pr_workflow_paths, action_path.parent.name
-        )
+        resolved = _resolved_inputs(pr_callers, action_path.parent.name)
+        names, all_literal = resolved.get("name", (set(), False))
         composite_keys.extend(
-            _shell_built_key_prefixes(action_path.read_text(), names, all_literal)
+            _shell_built_key_prefixes(action_path.read_text(ENC), names, all_literal)
         )
 
     # The publish side delegates to local actions exactly as the pull-request side does,
@@ -688,10 +732,37 @@ def main() -> int:
     # equal, which is the only thing the check above compares.
     pr_heads: set = set()
     undecidable_pr_keys: list[str] = []
+    # Inputs any PR-reachable target is called with, so a `key: ${{ inputs.X }}` can be
+    # resolved to the namespace its callers actually produce.
+    input_namespaces: dict = {}
+    for target in pr_reachable:
+        for field, pair in _resolved_inputs(
+            pr_callers, target.parent.name if target.name.startswith("action.") else target.name
+        ).items():
+            vals, ok = input_namespaces.get(field, (set(), True))
+            input_namespaces[field] = (vals | pair[0], ok and pair[1])
     for k in list(pr_keys) + composite_keys:
         cands = _prefix_candidates(k)
         if cands:
             pr_heads.update(cands)
+        elif _INPUT_KEY.fullmatch(k.strip()):
+            # `key: ${{ inputs.cache_key }}` in a reusable workflow or composite names no
+            # namespace here, but unlike a `steps.*` reference it is not delegation
+            # either: the value comes from the CALLER, and a pull request caller passing
+            # `cache_key: shared-abc` writes the `shared-` namespace. Treating it as
+            # delegation dropped it silently and a publish `shared-` fallback passed.
+            field = _INPUT_KEY.fullmatch(k.strip()).group(1)
+            vals, resolved = input_namespaces.get(field, (set(), False))
+            heads = [h for v in sorted(vals) for h in _prefix_candidates(v)]
+            pr_heads.update(heads)
+            if not resolved:
+                # Some call site passes a value this check cannot expand, such as
+                # `${{ matrix.cache_name }}`, or omits the input so the action default
+                # applies. Say so rather than assuming it is harmless. Resolved with no
+                # literals is the DELEGATION case and is fine: every live caller of
+                # pip-cache-save passes `key: ${{ steps.pip-cache.outputs.key }}`, whose
+                # real namespace was collected from the restoring action's shell.
+                undecidable_pr_keys.append(k)
         elif _DELEGATED_KEY.fullmatch(k.strip()):
             # `key: ${{ steps.pip-cache.outputs.key }}` names no namespace of its own; it
             # hands the decision to a composite action, whose real prefix was collected
