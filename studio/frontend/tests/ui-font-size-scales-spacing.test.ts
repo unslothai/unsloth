@@ -56,6 +56,14 @@ test("every tailwind spacing utility goes through it", () => {
   }
 });
 
+test("a measured cutoff moves with the box it measures", () => {
+  // min-h-9 scales, so a one-line chip field is 27px at the 12px setting and
+  // 46px at 20px. A fixed 44 calls the tall one wrapped while it is empty.
+  const chips = readSrc("features/recipe-studio/components/chip-input.tsx");
+  assert.match(chips, /element\.clientHeight > 44 \* uiSpaceScale/);
+  assert.match(chips, /\}, \[values\.length, draft, uiSpaceScale\]\);/);
+});
+
 test("em lengths are left alone, they already follow the text", () => {
   // rem is against the 16px root, which the preference never touches, so it
   // needs the multiplier. em is against the element's own font size, which
