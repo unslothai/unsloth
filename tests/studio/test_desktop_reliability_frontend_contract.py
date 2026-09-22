@@ -1001,7 +1001,7 @@ def _gain_owed_to(preceding: str) -> str | None:
 
 def _resolve_amount(source: str, match: "re.Match[str]") -> str:
     """A gain-scaled colour amount, read back only where the gain matches the colour's role."""
-    if _gain_owed_to(source[:match.start()]) != match.group(2):
+    if _gain_owed_to(source[: match.start()]) != match.group(2):
         return match.group(0)
     return match.group(1)
 
