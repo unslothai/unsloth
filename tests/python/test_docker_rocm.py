@@ -25,6 +25,8 @@ _ENTRYPOINT = os.path.join(_DOCKER, "entrypoint-rocm.sh")
 _DOCKERFILE = os.path.join(_DOCKER, "Dockerfile.rocm")
 _SMOKE = os.path.join(_DOCKER, "smoke_test_rocm.py")
 _WORKFLOW = os.path.join(_REPO, ".github", "workflows", "docker-publish-rocm.yml")
+_STUDIO_LAUNCH = os.path.join(_DOCKER, "studio_launch_rocm.sh")
+_STUDIO_DOCKERFILE = os.path.join(_DOCKER, "Dockerfile.studio-rocm")
 _HUB_PAGE = os.path.join(_DOCKER, "DOCKERHUB-ROCM.md")
 _README = os.path.join(_REPO, "README.md")
 
@@ -543,7 +545,10 @@ class TestRocmEntrypoint:
         assert "modprobe" not in err, err
         assert "run.sh --rocm" in err
 
-    @pytest.mark.skipif(os.geteuid() == 0, reason = "root reads a mode-0 file")
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason = "needs POSIX mode bits, and root reads a mode-0 file regardless",
+    )
     def test_an_unreadable_kfd_names_the_group_ids(self, tmp_path):
         rc, ran, err = _entrypoint(tmp_path, readable = False)
         assert rc == 1 and not ran
@@ -827,7 +832,16 @@ class TestRocmEntrypoint:
         out.write_text("")
         env = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(out)}
         env.update({k: str(v) for k, v in wf["env"].items()})
-        env.update({"IN_UNSLOTH": "", "IN_ZOO": "", "IN_ROCM": "", "IN_INDEX": "", "IN_GFX": ""})
+        env.update(
+            {
+                "IN_UNSLOTH": "",
+                "IN_ZOO": "",
+                "IN_NOTEBOOKS": "",
+                "IN_ROCM": "",
+                "IN_INDEX": "",
+                "IN_GFX": "",
+            }
+        )
         env.update(inputs)
         proc = subprocess.run(
             ["bash", "-e", "-c", step["run"]], env = env, capture_output = True, text = True
@@ -877,6 +891,67 @@ class TestRocmEntrypoint:
         assert "load_in_4bit = four_bit" in smoke and "ROCM_GFX=gfx906" in smoke
         entry = open(_ENTRYPOINT, encoding = "utf-8").read()
         assert "ROCM_GFX=gfx906 ROCM_VERSION=6.3.4" in entry
+        # The Studio venv is installed by install.sh with the index pinned, which
+        # skips the reroute that would notice gfx906, and the builder has no GPU
+        # to probe, so the arch has to be forwarded or the prebuilt wheel goes in.
+        studio = open(os.path.join(_DOCKER, "Dockerfile.studio-rocm"), encoding = "utf-8").read()
+        install = studio[
+            studio.index(". /etc/unsloth-rocm-build") : studio.index("bash install.sh --local")
+        ]
+        assert 'UNSLOTH_TORCH_INDEX_URL="${TORCH_INDEX_URL}"' in install
+        assert 'UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}"' in install
+
+    def test_the_studio_image_is_published_from_the_base_digest_with_the_same_refs(self):
+        """docker/Dockerfile.studio-rocm is built by the same run as the base, on the
+        base by digest (a tag can already be a newer run's) with the refs the base
+        baked, and takes the base's tags with a -studio leaf under the same gates.
+        Neither tag set moves until both digests exist: a :latest that moved while the
+        Studio build then failed would leave :studio on the previous base."""
+        import yaml
+
+        wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
+        build = wf["jobs"]["build-studio"]
+        assert "build" in build["needs"] and "tag" not in build["needs"], build["needs"]
+        assert "build-studio" in wf["jobs"]["tag"]["needs"], wf["jobs"]["tag"]["needs"]
+        step = next(s for s in build["steps"] if s.get("id") == "build")
+        assert step["with"]["file"] == "./docker/Dockerfile.studio-rocm"
+        args = dict(ln.split("=", 1) for ln in step["with"]["build-args"].splitlines() if ln)
+        assert args["BASE_IMAGE"].endswith("@${{ needs.build.outputs.digest }}"), args
+        assert args["UNSLOTH_STUDIO_REF"] == "${{ needs.prepare.outputs.unsloth_ref }}"
+        assert args["UNSLOTH_STUDIO_ZOO_REF"] == "${{ needs.prepare.outputs.zoo_ref }}"
+        # the notebooks too: the layer is keyed on this string, so a mutable ref
+        # would be a cache hit on the next run and ship the old set
+        assert args["UNSLOTH_NOTEBOOKS_REF"] == "${{ needs.prepare.outputs.notebooks_commit }}"
+        prepare = wf["jobs"]["prepare"]
+        assert prepare["outputs"]["notebooks_commit"] == "${{ steps.notebooks.outputs.commit }}"
+        resolve = next(s for s in prepare["steps"] if s.get("id") == "notebooks")
+        assert "git ls-remote https://github.com/unslothai/notebooks" in resolve["run"]
+
+        def tag_lines(job):
+            meta = next(s for s in wf["jobs"][job]["steps"] if s.get("id") == "meta")
+            return [ln for ln in meta["with"]["tags"].splitlines() if ln.strip()]
+
+        tag = wf["jobs"]["tag-studio"]
+        assert "build-studio" in tag["needs"] and "tag" in tag["needs"], tag["needs"]
+        studio, base = tag_lines("tag-studio"), tag_lines("tag")
+        assert len(studio) == len(base) == 5
+        for s_ln, b_ln in zip(studio, base):
+            assert "studio" in s_ln, s_ln
+            # the same enable= gate as the base line it mirrors
+            assert s_ln.split(",enable=", 1)[1:] == b_ln.split(",enable=", 1)[1:], (s_ln, b_ln)
+        # the page describes both images, so it syncs only once both moved
+        assert "tag-studio" in wf["jobs"]["hub-readme"]["needs"]
+
+    def test_a_notebooks_override_gets_sha_tags_only(self, tmp_path):
+        """A dispatch that bakes another notebooks ref is an experiment like any
+        other override: :studio and :latest name the default build only."""
+        for ref in ("", "main"):
+            rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = ref)
+            assert rc == 0 and got["stable"] == "true", (ref, out)
+        rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = "some-branch")
+        assert rc == 0 and got["stable"] == "false", out
+        rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = "some-branch", IN_GFX = "gfx1151")
+        assert rc == 0 and got["gfx_tag"] == "false", out
 
     def test_the_gfx_tag_needs_every_other_input_at_its_default(self):
         """A feature-branch ref plus rocm_gfx=gfx1151 must not replace the public
@@ -902,3 +977,97 @@ class TestRocmEntrypoint:
 
         assert not re.search(r"RX\s*\d{4}", body), "marketing names in the entrypoint's arch table"
         assert "gfx906" in body and "6.3" in body, "gfx906 needs the version-aware note"
+
+
+# ── studio_launch_rocm.sh ────────────────────────────────────────────────────
+
+
+def _studio_launch(
+    tmp_path,
+    *,
+    password = None,
+    stored = False,
+):
+    """Drive the launcher with unsloth-studio-run stubbed: `--stored` answers from a
+    marker, and the real call records the env and the initial-password file it saw."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    initial = tmp_path / "initial-password"
+    seen = tmp_path / "seen"
+    if stored:
+        (tmp_path / "stored").write_text("")
+    _stub(str(bindir / "unsloth-studio-home"), "echo home-linked\n")
+    _stub(
+        str(bindir / "unsloth-studio-run"),
+        f'if [[ "${{1:-}}" == "--stored" ]]; then [[ -e "{tmp_path / "stored"}" ]]; exit; fi\n'
+        f"printf 'env=%s\\nfile=%s\\n' \"${{UNSLOTH_STUDIO_PASSWORD:-unset}}\" "
+        f'"$(cat "{initial}" 2>/dev/null || echo none)" > "{seen}"\n',
+    )
+    env = {
+        "PATH": str(bindir) + ":/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "UNSLOTH_STUDIO_INITIAL_PASSWORD_FILE": str(initial),
+        "UNSLOTH_STUDIO_PORT": "8123",
+    }
+    if password is not None:
+        env["UNSLOTH_STUDIO_PASSWORD"] = password
+    proc = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", _STUDIO_LAUNCH],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    recorded = (
+        dict(ln.split("=", 1) for ln in seen.read_text().splitlines()) if seen.exists() else {}
+    )
+    return proc, recorded, initial
+
+
+@_posix_shell
+class TestStudioLaunchRocm:
+    """UNSLOTH_STUDIO_PASSWORD only sets the FIRST admin password and `unsloth studio`
+    exits 1 when handed one afterwards, so the launcher must hand it over through the
+    file unsloth-studio-run reads while nothing is stored, and never as env."""
+
+    def test_the_first_boot_hands_the_password_over_by_file_not_env(self, tmp_path):
+        proc, seen, initial = _studio_launch(tmp_path, password = "s3cret pw")
+        assert proc.returncode == 0, proc.stderr
+        assert seen == {"env": "unset", "file": "s3cret pw"}, seen
+        assert stat.S_IMODE(os.stat(initial).st_mode) == 0o600
+        assert "password from UNSLOTH_STUDIO_PASSWORD env" in proc.stdout
+        assert "http://localhost:8123" in proc.stdout
+
+    def test_a_restart_with_the_variable_still_set_does_not_replay_it(self, tmp_path):
+        proc, seen, initial = _studio_launch(tmp_path, password = "s3cret pw", stored = True)
+        assert proc.returncode == 0, proc.stderr
+        assert seen == {"env": "unset", "file": "none"}, seen
+        assert not initial.exists()
+        assert "set on an earlier boot" in proc.stdout
+
+    def test_no_password_starts_studio_and_says_one_is_generated(self, tmp_path):
+        proc, seen, initial = _studio_launch(tmp_path)
+        assert proc.returncode == 0, proc.stderr
+        assert seen == {"env": "unset", "file": "none"}, seen
+        assert not initial.exists()
+        assert "generated on first boot" in proc.stdout
+
+    def test_a_stale_file_from_an_earlier_boot_is_cleared_first(self, tmp_path):
+        (tmp_path / "initial-password").write_text("old")
+        proc, seen, initial = _studio_launch(tmp_path, stored = True)
+        assert proc.returncode == 0, proc.stderr
+        assert not initial.exists() and seen["file"] == "none"
+
+    def test_the_image_runs_the_launcher_and_ships_the_run_helper(self):
+        body = open(_STUDIO_DOCKERFILE, encoding = "utf-8").read()
+        assert 'CMD ["/usr/local/bin/unsloth-studio-launch"]' in body
+        assert "COPY studio_run.sh /usr/local/bin/unsloth-studio-run" in body
+        # The single-service ROCm launcher was replaced by the shared studio_launch.sh
+        # under supervisord once this image gained JupyterLab (#11286); the
+        # program list itself is asserted in test_docker_studio_rocm_jupyter.py.
+        assert "COPY studio_launch.sh /usr/local/bin/unsloth-studio-launch" in body
+        assert "COPY supervisord.conf /etc/supervisor/supervisord.conf" in body
+        # the gfx906 base removes bitsandbytes; the Studio venv must be told the arch
+        assert 'UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}"' in body
+        ignore = open(os.path.join(_DOCKER, ".dockerignore"), encoding = "utf-8").read()
+        assert "!studio_launch.sh" in ignore and "!studio_run.sh" in ignore

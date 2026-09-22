@@ -1634,6 +1634,7 @@ try:
         parse_reasoning_budget_message_override,
         parse_reasoning_budget_override,
         parse_split_mode_override,
+        parse_tensor_split_override,
         resolve_reasoning_budget,
         resolve_reasoning_budget_message,
         resolve_tensor_parallel,
@@ -1697,6 +1698,7 @@ except ImportError:
         parse_reasoning_budget_message_override,
         parse_reasoning_budget_override,
         parse_split_mode_override,
+        parse_tensor_split_override,
         resolve_reasoning_budget,
         resolve_reasoning_budget_message,
         resolve_tensor_parallel,
@@ -2936,6 +2938,16 @@ def _deferred_error_body(status_code: int, detail) -> bytes:
     return json.dumps(body).encode()
 
 
+def _handle_restored_http_exception(exc: HTTPException) -> HTTPException:
+    """A new exception rather than a mutated one, so status code and headers stay as raised."""
+    from hub.utils.host_paths import restore_inventory_handles
+
+    detail = restore_inventory_handles(exc.detail)
+    if detail == exc.detail:
+        return exc
+    return HTTPException(status_code = exc.status_code, detail = detail, headers = exc.headers)
+
+
 async def _tunnel_safe_json(coro, *, label: str):
     """Await ``coro``, padding the response body if it outruns the tunnel timer.
 
@@ -2948,6 +2960,8 @@ async def _tunnel_safe_json(coro, *, label: str):
     A client disconnect does not cancel the work: the model stays resident, as
     it does today.
     """
+    from hub.utils.host_paths import restore_inventory_handles
+
     task = asyncio.ensure_future(coro)
     # A client that disconnects mid-pad leaves nobody to await the task, and an
     # unretrieved exception logs "Task exception was never retrieved". Retrieving
@@ -2955,7 +2969,11 @@ async def _tunnel_safe_json(coro, *, label: str):
     task.add_done_callback(lambda t: t.cancelled() or t.exception())
     done, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_AFTER_S)
     if done:
-        return task.result()  # re-raises exactly as an un-wrapped await would
+        # Here rather than at each `return LoadResponse`: the one funnel every answer passes.
+        try:
+            return restore_inventory_handles(task.result())
+        except HTTPException as exc:
+            raise _handle_restored_http_exception(exc) from None
 
     logger.info(
         f"{label} exceeded {_TUNNEL_KEEPALIVE_AFTER_S:.0f}s; "
@@ -2972,12 +2990,16 @@ async def _tunnel_safe_json(coro, *, label: str):
                 payload = task.result()
             except HTTPException as exc:
                 logger.info(f"{label} failed with {exc.status_code} after the response committed")
-                yield _deferred_error_body(exc.status_code, exc.detail)
+                yield _deferred_error_body(exc.status_code, restore_inventory_handles(exc.detail))
             except Exception as exc:
                 logger.exception(f"{label} failed after the response was committed")
-                yield _deferred_error_body(500, f"{type(exc).__name__}: {exc}")
+                # A filesystem failure quotes the path it failed on, never shown to a caller
+                # that started from an inventory reference.
+                yield _deferred_error_body(
+                    500, restore_inventory_handles(f"{type(exc).__name__}: {exc}")
+                )
             else:
-                yield json.dumps(jsonable_encoder(payload)).encode()
+                yield json.dumps(jsonable_encoder(restore_inventory_handles(payload))).encode()
             return
 
     return _SameTaskStreamingResponse(
@@ -3439,7 +3461,11 @@ from core.inference.anthropic_compat import (
     AnthropicPassthroughEmitter,
 )
 from auth import policy as auth_policy, storage as auth_storage
-from auth.authentication import API_KEY_PREFIX, get_current_subject
+from auth.authentication import (
+    API_KEY_PREFIX,
+    authenticated_via_api_key,
+    get_current_subject,
+)
 from state import active_generations
 
 
@@ -7198,10 +7224,13 @@ def _should_strip_tensor_split(request: LoadRequest) -> bool:
     override it), and with the ratio cleared it wants llama.cpp's default
     free-VRAM split. Either way an inherited --tensor-split must go, else the
     cleared case silently keeps the stale ratio while status reports None.
-    Unlike _should_strip_split_mode this leaves --split-mode untouched, so a
-    user's row/none/layer mode survives an Unsloth split-ratio edit. When the
-    Tensor Parallelism toggle IS overriding the mode, _should_strip_split_mode
-    (called alongside this at every site) strips --split-mode anyway.
+    Explicit extras must be promoted into ``request.tensor_split`` first (same
+    pattern as ``-ngl`` -> ``gpu_layers``) or the strip would discard the only
+    copy of an asymmetric MoE split (#11330). Unlike _should_strip_split_mode
+    this leaves --split-mode untouched, so a user's row/none/layer mode survives
+    an Unsloth split-ratio edit. When the Tensor Parallelism toggle IS overriding
+    the mode, _should_strip_split_mode (called alongside this at every site)
+    strips --split-mode anyway.
     """
     return (
         getattr(request, "gpu_memory_mode", "auto") == "manual"
@@ -15446,6 +15475,97 @@ async def load_model(
     )
 
 
+def _repo_is_in_the_hub_cache(model_ref) -> Optional[bool]:
+    """``None`` when the question does not arise or cannot be answered."""
+    try:
+        from hub.utils import hf_tokens as _hf_tokens
+
+        repo = (model_ref or "").strip()
+        if not repo or "/" not in repo or repo.startswith((".", "/", "~")) or ":" in repo[:3]:
+            return None
+        return bool(_hf_tokens._repo_present_on_disk(repo, "model"))
+    except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
+        return None
+
+
+def _hub_cache_footprint(model_ref) -> Optional[tuple]:
+    """Only ``blobs/`` counts: ``refs/`` and ``.no_exist`` are written by a cache HIT too."""
+    try:
+        from hub.utils.hf_cache_state import iter_repo_cache_dirs
+
+        repo = (model_ref or "").strip()
+        if not repo or "/" not in repo or repo.startswith((".", "/", "~")) or ":" in repo[:3]:
+            return None
+        count = total = 0
+        errors: list = []
+        for repo_dir in iter_repo_cache_dirs("model", repo, scan_errors = errors):
+            for blob in (repo_dir / "blobs").iterdir():
+                if blob.is_symlink() or not blob.is_file():
+                    continue
+                count += 1
+                total += blob.stat().st_size
+        # A root that could not be listed makes the comparison meaningless rather than equal.
+        return None if errors else (count, total)
+    except FileNotFoundError:
+        return (0, 0)
+    except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
+        return None
+
+
+def _load_fetched_bytes(model_ref, cached_before, footprint_before) -> bool:
+    """Only usable where the caller AWAITED the fetch; the media loads decide at entry instead.
+    A wrong record withholds a public cached copy permanently, so a reading that could not be
+    taken is not evidence, and GROWTH is the test, not difference (a SHRUNK cache was pruned)."""
+    if cached_before is False and _repo_is_in_the_hub_cache(model_ref):
+        return True
+    if cached_before is not True or footprint_before is None:
+        return False
+    footprint_after = _hub_cache_footprint(model_ref)
+    if footprint_after is None:
+        return False
+    # Per component, so a prune racing an arrival still reads as a fetch.
+    return any(after > before for after, before in zip(footprint_after, footprint_before))
+
+
+def _lora_base_already_in_the_hub_cache(model_ref) -> Optional[str]:
+    """Resolvable only once the adapter itself is cached; otherwise this load brings both in."""
+    try:
+        from utils.transformers_version import _adapter_base_from_hf_cache
+        base = _adapter_base_from_hf_cache(model_ref) if model_ref else None
+    except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
+        return None
+    return base if base and _repo_is_in_the_hub_cache(base) else None
+
+
+def _note_lora_base_fetched_with_a_request_token(
+    model_ref,
+    hf_token,
+    already_cached = None,
+) -> None:
+    """Read from the hub cache, not the network: an unresolvable base has no record, so REFUSES."""
+    try:
+        from utils.transformers_version import _adapter_base_from_hf_cache
+        base = _adapter_base_from_hf_cache(model_ref) if model_ref else None
+    except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
+        return
+    # A base ALREADY here was not fetched by this load; recording it withholds a public model.
+    if base and base != model_ref and base != already_cached and _repo_is_in_the_hub_cache(base):
+        _note_load_fetched_with_a_request_token(base, hf_token)
+
+
+def _note_load_fetched_with_a_request_token(model_ref, hf_token) -> None:
+    """A load auto-downloads through its own loader, not the download lifecycle. Never local."""
+    try:
+        from hub.utils import hf_tokens as _hf_tokens
+
+        repo = (model_ref or "").strip()
+        if not repo or "/" not in repo or repo.startswith((".", "/", "~")) or ":" in repo[:3]:
+            return
+        _hf_tokens.note_repo_fetched_with_a_request_token(hf_token, repo, "model")
+    except Exception:  # noqa: BLE001 -- a load never fails on its own bookkeeping
+        pass
+
+
 async def load_model_gated(
     request: LoadRequest,
     fastapi_request: Request,
@@ -15570,6 +15690,12 @@ async def _load_model_impl(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
+    # A one-off `X-Unsloth-HF-Token` on a LOAD pulls the repo into the same cache and is kept
+    # nowhere, so provenance is recorded in the finally below. Presence alone is not the test:
+    # an existing repo can still have blobs pulled.
+    _cached_before_this_load = _repo_is_in_the_hub_cache(request.model_path)
+    _cache_footprint_before = _hub_cache_footprint(request.model_path)
+    _lora_base_before_this_load = _lora_base_already_in_the_hub_cache(request.model_path)
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     def _raise_if_scoped_load_cancelled() -> None:
@@ -15637,11 +15763,36 @@ async def _load_model_impl(
         # stripping the raw flags. This keeps CLI pass-through such as
         # ``-ngl 20`` from being silently replaced by the manual default (-1).
         # The inherited path already strips offload flags. Manual + per-GPU
-        # ratio owns --tensor-split the same way.
+        # ratio owns --tensor-split the same way: promote ``-ts`` into
+        # ``tensor_split`` first, or the strip drops an asymmetric MoE split
+        # and llama-server falls back to a near-even layer count (#11330).
+        # At gpu_layers < 0 the strip does not fire, so the ratio sits in extras
+        # AND in the field; both copies die in load_model's Auto-layers branch,
+        # which test_manual_auto_layers_never_emits_two_tensor_splits pins.
         if request.gpu_memory_mode == "manual" and extra_llama_args:
+            _manual_updates: dict[str, Any] = {}
             _gpu_layers_override = parse_gpu_layers_override(extra_llama_args)
             if _gpu_layers_override is not None:
-                request = request.model_copy(update = {"gpu_layers": _gpu_layers_override})
+                _manual_updates["gpu_layers"] = _gpu_layers_override
+            # reserialized only where the launcher REWRITES the ratio, the same predicate
+            # _should_strip_tensor_split uses: manual with the RESOLVED layer count non-negative.
+            # At Auto layers both copies are dropped before argv, so judging a rendering nothing
+            # emits would refuse a flag the child never sees. 400, not the 500 a raise gives.
+            _resolved_layers = (
+                _gpu_layers_override
+                if _gpu_layers_override is not None
+                else getattr(request, "gpu_layers", -1)
+            )
+            try:
+                _tensor_split_override = parse_tensor_split_override(
+                    extra_llama_args, reserialized = _resolved_layers >= 0
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+            if _tensor_split_override is not None:
+                _manual_updates["tensor_split"] = _tensor_split_override
+            if _manual_updates:
+                request = request.model_copy(update = _manual_updates)
             _stripped_explicit = strip_shadowing_flags(
                 extra_llama_args,
                 strip_context = False,
@@ -16727,6 +16878,15 @@ async def _load_model_impl(
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
     finally:
         gguf_load_stack.close()
+        # Runs for a load that failed part way too: the bytes it pulled are cached anyway.
+        if _load_fetched_bytes(
+            request.model_path, _cached_before_this_load, _cache_footprint_before
+        ):
+            _note_load_fetched_with_a_request_token(request.model_path, request.hf_token)
+        # The LoRA base, unknown until the adapter's config is on disk.
+        _note_lora_base_fetched_with_a_request_token(
+            request.model_path, request.hf_token, already_cached = _lora_base_before_this_load
+        )
         # Catch-all: an error or cancelled load would otherwise leave the row "loading".
         api_monitor.fail_open(_load_event, "Load did not complete")
 
@@ -16858,6 +17018,15 @@ def _requires_security_review_for_model(
         return False
 
 
+def _mlx_base_for_config(config) -> Optional[str]:
+    from core.inference.model_ids import mlx_host_bnb_base_repo
+    for candidate in (getattr(config, "identifier", None), getattr(config, "base_model", None)):
+        base = mlx_host_bnb_base_repo(candidate)
+        if base:
+            return base
+    return None
+
+
 @router.post("/validate", response_model = ValidateModelResponse)
 async def validate_model(
     request: ValidateModelRequest,
@@ -16870,6 +17039,9 @@ async def validate_model(
     Checks that ModelConfig.from_identifier() can resolve model_path, but does
     NOT load model weights into GPU memory.
     """
+    # What goes out is the string that came in, not the path this request resolved it to.
+    from hub.utils.host_paths import restore_inventory_handles
+
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
@@ -16960,15 +17132,34 @@ async def validate_model(
         # the GPU; the opposite pairing refused a load that only ever runs on the CPU.
         # Same translation, same strip, so the guard below judges the same command.
         # After the validation above, so nothing here parses a token the load refuses.
+        # ``-ts`` / ``--tensor-split`` is promoted the same way (#11330).
         if getattr(request, "gpu_memory_mode", None) == "manual" and effective_extra_args:
             from core.inference.llama_server_args import (
                 parse_gpu_layers_override,
+                parse_tensor_split_override,
                 strip_shadowing_flags,
             )
 
+            _validate_manual_updates: dict[str, Any] = {}
             _validate_ngl_override = parse_gpu_layers_override(effective_extra_args)
             if _validate_ngl_override is not None:
-                request = request.model_copy(update = {"gpu_layers": _validate_ngl_override})
+                _validate_manual_updates["gpu_layers"] = _validate_ngl_override
+            # Same reserialized judgement, and the same 400, as the load path above.
+            _validate_resolved_layers = (
+                _validate_ngl_override
+                if _validate_ngl_override is not None
+                else getattr(request, "gpu_layers", -1)
+            )
+            try:
+                _validate_ts_override = parse_tensor_split_override(
+                    effective_extra_args, reserialized = _validate_resolved_layers >= 0
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            if _validate_ts_override is not None:
+                _validate_manual_updates["tensor_split"] = _validate_ts_override
+            if _validate_manual_updates:
+                request = request.model_copy(update = _validate_manual_updates)
             effective_extra_args = strip_shadowing_flags(
                 effective_extra_args,
                 strip_context = False,
@@ -17205,45 +17396,50 @@ async def validate_model(
             except Exception as e:
                 logger.debug("Header probe failed for %s: %s", model_log_label, e)
 
-        return ValidateModelResponse(
-            valid = True,
-            message = "Model identifier is valid.",
-            identifier = model_log_label if native_grant_backed else config.identifier,
-            resident = await asyncio.to_thread(
-                _validated_target_is_resident,
-                request,
-                model_identifier = model_identifier,
-                config = config,
+        return restore_inventory_handles(
+            ValidateModelResponse(
+                valid = True,
+                message = "Model identifier is valid.",
+                identifier = model_log_label if native_grant_backed else config.identifier,
+                resident = await asyncio.to_thread(
+                    _validated_target_is_resident,
+                    request,
+                    model_identifier = model_identifier,
+                    config = config,
+                    is_gguf = is_gguf,
+                    native_grant_backed = native_grant_backed,
+                ),
+                display_name = model_log_label
+                if native_grant_backed
+                else getattr(config, "display_name", config.identifier),
                 is_gguf = is_gguf,
-                native_grant_backed = native_grant_backed,
-            ),
-            display_name = model_log_label
-            if native_grant_backed
-            else getattr(config, "display_name", config.identifier),
-            is_gguf = is_gguf,
-            is_diffusion = is_gguf and placement.diffusion_kind is True,
-            # An unavailable header is inconclusive, not proof of an ordinary GGUF.
-            diffusion_unknown = is_gguf and placement.diffusion_kind is None,
-            is_lora = getattr(config, "is_lora", False),
-            is_vision = getattr(config, "is_vision", False),
-            requires_trust_remote_code = requires_trust_remote_code,
-            requires_security_review = requires_security_review,
-            context_length = context_length,
-            layer_count = layer_count,
-            moe_layer_count = moe_layer_count,
-            chat_template = chat_template,
-            requires_transformers_upgrade = transformers_upgrade is not None,
-            transformers_upgrade = transformers_upgrade,
+                is_diffusion = is_gguf and placement.diffusion_kind is True,
+                # An unavailable header is inconclusive, not proof of an ordinary GGUF.
+                diffusion_unknown = is_gguf and placement.diffusion_kind is None,
+                is_lora = getattr(config, "is_lora", False),
+                is_vision = getattr(config, "is_vision", False),
+                requires_trust_remote_code = requires_trust_remote_code,
+                requires_security_review = requires_security_review,
+                context_length = context_length,
+                layer_count = layer_count,
+                moe_layer_count = moe_layer_count,
+                chat_template = chat_template,
+                requires_transformers_upgrade = transformers_upgrade is not None,
+                transformers_upgrade = transformers_upgrade,
+                mlx_loads_base_model = await asyncio.to_thread(_mlx_base_for_config, config),
+            )
         )
 
-    except HTTPException:
-        raise
+    except HTTPException as http_error:
+        # The `model_log_label` in the detail is the RESOLVED path.
+        raise _handle_restored_http_exception(http_error) from http_error
     except LlamaServerNotFoundError as e:
         # Missing GGUF runtime: 400 with the install message, not a generic "Invalid model".
         logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
-        raise HTTPException(status_code = 400, detail = str(e))
+        raise HTTPException(status_code = 400, detail = restore_inventory_handles(str(e)))
     except Exception as e:
-        redacted_msg = redact_native_paths(str(e))
+        # Restored here rather than at each raise below: every branch quotes this string.
+        redacted_msg = restore_inventory_handles(redact_native_paths(str(e)))
         if is_hf_authentication_error(e):
             raise HTTPException(
                 status_code = 400,
@@ -17501,8 +17697,10 @@ async def check_transformers_upgrade_route(
         install_breaks_exact_resume = await asyncio.to_thread(
             _install_breaks_exact_resume, request.resume_run_id
         )
+    from hub.utils.host_paths import restore_inventory_handles
+
     return TransformersUpgradeCheckResponse(
-        model_name = model_name,
+        model_name = restore_inventory_handles(model_name),
         requires_transformers_upgrade = transformers_upgrade is not None,
         transformers_upgrade = transformers_upgrade,
         # Already booleans: False, or the preflight's own bool result. Re-wrapping the
@@ -18354,9 +18552,13 @@ async def clear_api_monitor(current_subject: str = Depends(get_current_subject))
 
 
 @studio_router.get("/monitor/{entry_id}")
-async def get_api_monitor_entry(entry_id: str, current_subject: str = Depends(get_current_subject)):
+async def get_api_monitor_entry(
+    entry_id: str,
+    current_subject: str = Depends(get_current_subject),
+    include_prompt: bool = True,
+):
     """Return full prompt/reply details for one OpenAI-compatible API request."""
-    entry = api_monitor.get(entry_id, subject = current_subject)
+    entry = api_monitor.get(entry_id, subject = current_subject, include_prompt = include_prompt)
     if entry is None:
         raise HTTPException(status_code = 404, detail = "Monitor entry not found")
     return entry
@@ -18737,7 +18939,28 @@ async def get_llama_flags(
 
 
 @router.get("/status", response_model = InferenceStatusResponse)
-async def get_status(current_subject: str = Depends(get_current_subject)):
+async def inference_status(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """`GET /api/inference/status`, redacted the way the image and video status routes are.
+
+    A chat or GGUF row loaded from an inventory reference RETAINS the resolved absolute path
+    as the resident model identity, and it comes back out here through `active_model`,
+    `model_identifier` and `loaded`. This route answers long after the request that resolved
+    the reference has ended, so there is no handle in the request context to put back and
+    `restore_inventory_handles` cannot help: the redactor hands out the same opaque reference
+    the caller sent instead. Without it, an API-key caller recovered the path the inventory
+    redaction exists to hide by loading the row and then polling status.
+    """
+    from hub.utils.host_paths import redact_host_paths
+    return redact_host_paths(
+        await get_status(current_subject = current_subject),
+        via_api_key = via_api_key,
+    )
+
+
+async def get_status(current_subject: str):
     """
     Get current inference backend status.
     Reports whichever backend (Unsloth or llama-server) is active.
@@ -38304,12 +38527,7 @@ async def diffusion_download_plan(
             model_kind = kind,
             base_repo = request.base_repo,
         )
-        # Plan for the engine /images/load will pick, not diffusers unconditionally: a GGUF on a GPU-less host routes to native
-        # sd.cpp, which reads different files. predict_engine applies the policy without activating anything.
         planner = backend
-        if fam is not None and predict_engine(fam, model_kind = kind) == ENGINE_SD_CPP:
-            from core.inference.sd_cpp_backend import get_sd_cpp_backend
-            planner = get_sd_cpp_backend()
         # BEFORE the plan is handed back and staged. The load route refuses a precision this
         # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
         # unsupported host paid for the GGUF and its companions -- or tens of GB of video
@@ -38324,11 +38542,20 @@ async def diffusion_download_plan(
         # the training guard below exists to prevent, so the RANKING waits until training is known
         # idle. The ids are validated and translated either way -- that costs no CUDA context, and
         # skipping it entirely let the plan accept a GPU the load would refuse, and size its file
-        # set for the wrong card. ONE resolution for the whole request, reused by preflight + plan.
+        # set for the wrong card. ONE resolution for the whole request, reused by the engine
+        # prediction below, the preflight and the plan.
         gpu_ordinal = None
         training = fam is not None and await asyncio.to_thread(_training_is_active)
         if fam is not None:
             gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
+        # Plan for the engine /images/load will pick: a GGUF on a GPU-less host routes to native
+        # sd.cpp, which reads different files. Card-scoped, since the failure records are per card.
+        if (
+            fam is not None
+            and predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal) == ENGINE_SD_CPP
+        ):
+            from core.inference.sd_cpp_backend import get_sd_cpp_backend
+            planner = get_sd_cpp_backend()
         if fam is not None and not training:
             if planner is backend:
                 await asyncio.to_thread(
@@ -38429,9 +38656,29 @@ def _assert_native_precision_unset(
 @studio_router.post("/images/load", response_model = DiffusionStatusResponse)
 @account_access.gpu_busy_route
 async def load_diffusion_model(
-    request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
+    request: DiffusionLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return await load_diffusion_model_gated(request, current_subject, user_initiated = True)
+    # The status describes whatever is resident, which on a second load is the PREVIOUS model,
+    # resolved by an earlier request this context has no handle for. In the route, not the gated
+    # body, whose internal callers serve no API-key request.
+    from hub.utils.host_paths import (
+        raised_inventory_detail,
+        redact_host_paths,
+        restore_inventory_handles,
+    )
+    try:
+        loaded = await load_diffusion_model_gated(request, current_subject, user_initiated = True)
+    except HTTPException as exc:
+        # A load that RAISES skips both wrappers, and the inner loader redacted native paths
+        # only, which do not know inventory handles.
+        exc.detail = raised_inventory_detail(exc.detail, via_api_key = via_api_key)
+        raise
+    return redact_host_paths(
+        restore_inventory_handles(loaded),
+        via_api_key = via_api_key,
+    )
 
 
 async def load_diffusion_model_gated(
@@ -38457,6 +38704,14 @@ async def load_diffusion_model_gated(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
+    # Tested at ENTRY because `begin_load` returns before the worker moves a byte, so the only
+    # fact available is that a repo ALREADY cached is not one this load will fetch. The WRITE is
+    # deferred to the launch below, since the validation in between 400s without moving a byte.
+    _media_repos_to_record = [
+        ref
+        for ref in (request.model_path, request.base_repo)
+        if ref and _repo_is_in_the_hub_cache(ref) is not True
+    ]
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
@@ -38534,7 +38789,12 @@ async def load_diffusion_model_gated(
         # afterwards destroys the model this preserves. Fails open on offline/transient, and runs
         # only where something is at stake -- a GPU handoff, or an engine switch.
         try:
-            pending_name = predict_engine(fam, model_kind = kind) if fam is not None else None
+            # Card-scoped like the activation below, or the wrong engine's preflight runs.
+            pending_name = (
+                predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal)
+                if fam is not None
+                else None
+            )
         except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
             pending_name = None
         # Same bar, same reason, for an EXPLICIT precision this host can never honor. begin_load
@@ -38588,7 +38848,14 @@ async def load_diffusion_model_gated(
         require_no_foreign_generations()
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         engine = await asyncio.to_thread(
-            select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind
+            functools.partial(
+                select_and_activate_engine,
+                fam,
+                hf_token = request.hf_token,
+                model_kind = kind,
+                # The ordinal resolved above: re-resolving re-ranks by free VRAM and can pick another card.
+                gpu_ordinal = gpu_ordinal,
+            )
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
         # install then fails lands on the OTHER engine. Re-ask the engine actually activated when
@@ -38623,6 +38890,11 @@ async def load_diffusion_model_gated(
                 )
 
         def _start_engine_load():
+            # Recorded HERE for the reason the video route gives: inside the admitted callback,
+            # past the busy guard, the arbiter and the retirement check, and still before the
+            # worker is handed the credential.
+            for _ref in _media_repos_to_record:
+                _note_load_fetched_with_a_request_token(_ref, request.hf_token)
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
             return engine.begin_load(
                 request.model_path,
@@ -39231,7 +39503,10 @@ async def clear_gallery_transcripts(current_subject: str = Depends(get_current_s
 
 @studio_router.post("/images/unload", response_model = DiffusionStatusResponse)
 @account_access.gpu_busy_route
-async def unload_diffusion_model(current_subject: str = Depends(get_current_subject)):
+async def unload_diffusion_model(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     account_access.require_resident_control("diffusion")
     from core.inference.diffusion_engine_router import annotate_status, get_active_diffusion_engine
     from core.inference.gpu_arbiter import release_if, DIFFUSION
@@ -39252,19 +39527,30 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
         DIFFUSION,
         lambda: not engine.loading_repo_ids() and not engine.is_loaded,
     )
-    return DiffusionStatusResponse(**annotate_status(status_dict))
+    # An unload answers with the state it left behind, which still names the model it dropped.
+    from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
+
+    return redact_host_paths(
+        restore_inventory_handles(DiffusionStatusResponse(**annotate_status(status_dict))),
+        via_api_key = via_api_key,
+    )
 
 
 @studio_router.get("/images/status", response_model = DiffusionStatusResponse)
-async def diffusion_status(current_subject: str = Depends(get_current_subject)):
+async def diffusion_status(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     if account_access.resident_hidden("diffusion"):
         return account_access.hidden_resident_response()
     from core.inference.diffusion_engine_router import active_status
+    from hub.utils.host_paths import redact_host_paths
 
     status_dict = active_status()
     if account_access.resident_hidden("diffusion", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
-    return DiffusionStatusResponse(**status_dict)
+    # Answered long after the resolving request ended, so no handle is in context.
+    return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 
 
 @studio_router.get("/images/info", response_model = DiffusionInferenceInfoResponse)
@@ -39278,7 +39564,10 @@ async def diffusion_inference_info(current_subject: str = Depends(get_current_su
 
 
 @studio_router.get("/images/load-progress", response_model = DiffusionLoadProgressResponse)
-async def diffusion_load_progress(current_subject: str = Depends(get_current_subject)):
+async def diffusion_load_progress(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     if account_access.resident_hidden("diffusion"):
         return account_access.hidden_resident_response()
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
@@ -39289,7 +39578,9 @@ async def diffusion_load_progress(current_subject: str = Depends(get_current_sub
         return account_access.hidden_resident_response()
     progress = get_active_diffusion_engine().load_progress()
     log_media_load_progress("image", progress.get("phase"), progress.get("fraction"))
-    return DiffusionLoadProgressResponse(**progress)
+    from hub.utils.host_paths import redact_load_progress
+
+    return DiffusionLoadProgressResponse(**redact_load_progress(progress, via_api_key = via_api_key))
 
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)

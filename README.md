@@ -38,11 +38,15 @@ Download the native Unsloth Desktop app for your operating system:
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux / Ubuntu (deb)</b></td>
+    <td><b>Linux x64 / Ubuntu (deb)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux (AppImage)</b></td>
+    <td><b>Linux ARM64 / Ubuntu 24.04+ (deb)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu-ARM64.deb'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Linux x64 (AppImage)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
   </tr>
 </table>
@@ -123,11 +127,15 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux / Ubuntu (deb)</b></td>
+    <td><b>Linux x64 / Ubuntu (deb)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux (AppImage)</b></td>
+    <td><b>Linux ARM64 / Ubuntu 24.04+ (deb)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu-ARM64.deb'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Linux x64 (AppImage)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
   </tr>
   <tr>
@@ -348,6 +356,21 @@ For a local run the flag is `--isolated-uv-cache`:
 ```
 ```powershell
 .\install.ps1 --local --isolated-uv-cache
+```
+
+Discard the previous environment immediately when reinstalling, instead of keeping a copy until the new one works. A reinstall normally holds both at once, so it needs room for two; this needs room for one, at the cost of not being able to undo a failed install:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_INSTALL_NO_ROLLBACK=1 sh
+```
+```powershell
+$env:UNSLOTH_INSTALL_NO_ROLLBACK=1; irm https://unsloth.ai/install.ps1 | iex
+```
+For a local run the flag is `--no-rollback`:
+```bash
+./install.sh --local --no-rollback
+```
+```powershell
+.\install.ps1 --local --no-rollback
 ```
 
 Pinning the Python version:

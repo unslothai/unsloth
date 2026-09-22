@@ -5,8 +5,6 @@
 
 import os
 import structlog
-import urllib.parse
-import urllib.request
 import threading
 from contextvars import ContextVar
 import time
@@ -17,6 +15,10 @@ from typing import Optional
 import shutil
 import tempfile
 from utils.paths.path_utils import is_appledouble_metadata
+from . import auth_safe
+
+AuthSafeRedirectHandler = auth_safe.AuthSafeRedirectHandler
+auth_safe_open = auth_safe.auth_safe_open
 
 
 logger = get_logger(__name__)
@@ -37,10 +39,32 @@ def hf_env_offline() -> bool:
     return False
 
 
-def anonymous_and_offline(hf_token) -> bool:
-    """The one condition under which a Hub-reaching request can only be answered by disk. ``token=False`` denies authentication, not the cache: offline, huggingface_hub and datasets both resolve a previously downloaded private repo without ever authorizing, and a caller holding the anonymous sentinel has no network to establish access over, so every downstream read is a disk read it never earned. Guarding this at the route entry rather than at each call site is deliberate: the per-site version was fixed six times (the snapshot walk, the config probes, the embedding marker, the GGUF listing, the preview slices, AutoConfig) and each fix only moved the boundary to the next reader, so this states the rule once, before any of them run."""
-    from hub.utils.hf_tokens import is_anonymous
-    return is_anonymous(hf_token) and hf_env_offline()
+def anonymous_and_offline(hf_token, *, repo_id: Optional[str] = None) -> bool:
+    """The one condition under which a Hub-reaching request can only be answered by disk.
+
+    ``token=False`` denies authentication, not the cache: offline, huggingface_hub and datasets
+    both resolve a previously downloaded private repo without ever authorizing. Guarded at the
+    route entry, since each per-call-site fix only moved the boundary to the next reader. Given
+    a repo id the shared cached-read rule applies rather than a blanket refusal: a PUBLIC repo
+    was always readable, and one not on the disk has nothing to leak.
+    """
+    from hub.utils.hf_tokens import cached_read_refused, is_anonymous
+
+    if not is_anonymous(hf_token):
+        return False
+    if not hf_env_offline():
+        # The per-reader gates answer the online question; this guard is the offline one.
+        return False
+    if repo_id is None:
+        return True
+    # is_cached is True because these routes read whatever the cache holds; only authorization
+    # is left, and offline that resolves against the disk.
+    return cached_read_refused(
+        hf_token,
+        repo_id = repo_id,
+        is_cached = lambda: True,
+        offline = True,
+    )
 
 
 def canonical_model_repo_id(model_name: str) -> str:
@@ -117,40 +141,6 @@ def hf_proxy_usable_by_urllib(proxy: Optional[str]) -> bool:
 def hf_proxy_configured() -> bool:
     """True when egress goes through a proxy: it resolves the hub host, so local DNS proves nothing about reachability and must not declare the hub offline."""
     return hf_proxy_for_endpoint() is not None
-
-
-class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Redirect policy for a urllib request carrying a Hub token.
-
-    urllib's default handler copies request headers onto the redirect target, so a
-    mirror's cross-host 302 hands the token to a host the operator never configured.
-    Pass this to ``build_opener``, which then leaves out the default. A refusal
-    surfaces as ``HTTPError`` on the 3xx, which every probe here reads as reachable.
-    """
-
-    @staticmethod
-    def _origin(url):
-        parts = urllib.parse.urlsplit(url)
-        scheme = parts.scheme.lower()
-        port = parts.port or (443 if scheme == "https" else 80)
-        return scheme, (parts.hostname or "").lower(), port
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        old = self._origin(req.full_url)
-        new = self._origin(newurl)
-        if old[0] == "https" and new[0] == "http":
-            return None  # no TLS downgrade, whatever the target is
-        result = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if result is not None and new != old:
-            # The redirected request, not the caller's: urllib copied req.headers into a
-            # fresh dict, so the original stays reusable.
-            result.headers.pop("Authorization", None)
-        return result
-
-
-def auth_safe_open(req, timeout):
-    """The single seam: tests patch THIS, never ``urllib.request.urlopen``."""
-    return urllib.request.build_opener(AuthSafeRedirectHandler()).open(req, timeout = timeout)
 
 
 def call_with_deadline(

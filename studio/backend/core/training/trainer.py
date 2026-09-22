@@ -870,6 +870,7 @@ class UnslothTrainer:
         actual_model_repo_id: Optional[str] = None,
         model_revision: Optional[str] = None,
         use_gradient_checkpointing: Union[str, bool] = "unsloth",
+        on_model_resolved: Optional[Callable[[str], None]] = None,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
         self.load_in_4bit = load_in_4bit
@@ -1037,6 +1038,7 @@ class UnslothTrainer:
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 logger.info("Loaded CSM audio model")
 
@@ -1058,6 +1060,7 @@ class UnslothTrainer:
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 self.model.generation_config.language = "<|en|>"
                 self.model.generation_config.task = "transcribe"
@@ -1079,6 +1082,7 @@ class UnslothTrainer:
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 logger.info(f"Loaded {self._audio_type} audio model (FastLanguageModel)")
 
@@ -1099,6 +1103,8 @@ class UnslothTrainer:
                 if local_files_only:
                     repo_path = lookup_name
                 else:
+                    if on_model_resolved is not None:
+                        on_model_resolved(hf_repo)
                     repo_path = snapshot_download(
                         hf_repo,
                         revision = model_revision,
@@ -1117,6 +1123,7 @@ class UnslothTrainer:
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                     use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 logger.info("Loaded Spark-TTS (bicodec) model")
 
@@ -1133,6 +1140,7 @@ class UnslothTrainer:
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 logger.info("Loaded OuteTTS (dac) model (FastModel)")
 
@@ -1150,6 +1158,7 @@ class UnslothTrainer:
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 logger.info("Loaded audio VLM model (FastModel)")
 
@@ -1166,6 +1175,7 @@ class UnslothTrainer:
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 logger.info("Loaded vision model")
 
@@ -1194,6 +1204,7 @@ class UnslothTrainer:
                     revision = model_revision,
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
                 logger.info("Loaded text model")
 
@@ -1245,6 +1256,7 @@ class UnslothTrainer:
                     actual_model_repo_id = actual_model_repo_id,
                     model_revision = model_revision,
                     use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()
@@ -3279,6 +3291,9 @@ class UnslothTrainer:
                 self._update_progress(error = error_msg)
                 return None
 
+            if dataset_info.get("dropped_rows_warning"):
+                self._record_warning(dataset_info["dropped_rows_warning"])
+
             detected = dataset_info.get("detected_format", "unknown")
             final_ds = dataset_info.get("dataset")
             final_n = len(final_ds) if hasattr(final_ds, "__len__") else "?"
@@ -3301,6 +3316,14 @@ class UnslothTrainer:
                     dataset_name = dataset_source,
                     custom_format_mapping = custom_format_mapping,
                 )
+                if not eval_info.get("success", True):
+                    eval_errors = eval_info.get("errors", [])
+                    error_msg = "; ".join(eval_errors) or "Eval dataset formatting failed"
+                    logger.error(f"Eval dataset conversion failed: {error_msg}")
+                    self._update_progress(error = error_msg)
+                    return None
+                if eval_info.get("dropped_rows_warning"):
+                    self._record_warning(f"Eval dataset: {eval_info['dropped_rows_warning']}")
                 eval_dataset = eval_info["dataset"]
                 logger.info("Eval dataset formatted successfully\n")
             elif eval_enabled and not has_separate_eval_source and not dataset_streaming:

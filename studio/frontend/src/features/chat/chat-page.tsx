@@ -47,14 +47,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
@@ -99,11 +91,11 @@ import {
 } from "./utils/conversation-markdown";
 import {
   Archive03Icon,
-  BookOpen01Icon,
   BubbleChatTemporaryIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  FolderAttachmentIcon,
   Folder01Icon,
   Folder02Icon,
   FolderExportIcon,
@@ -155,6 +147,7 @@ import {
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
+import { EditProjectDialog } from "./components/edit-project-dialog";
 import {
   buildExternalModelId,
   isExternalModelId,
@@ -167,7 +160,6 @@ import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
 import {
   deleteChatProject,
   moveChatItemToProject,
-  renameChatProject,
   useChatProjects,
 } from "./hooks/use-chat-projects";
 import {
@@ -814,7 +806,7 @@ function CompareShell({
         </div>
         {/* Symmetric: the extra right inset mirrored the viewport's one-sided
             scrollbar gutter, which is now reserved on both edges. */}
-        <div className="shrink-0 bg-background pl-5 pr-5 md:px-[30px] pb-2 pt-1">
+        <div className="shrink-0 bg-background pl-5 pr-5 md:px-[calc(30px*var(--ui-space-scale,1))] pb-2 pt-1">
           <div className="mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
           {showModelDisclaimer && (
             <p className="composer-footer-note">
@@ -957,7 +949,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           }
           borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
           header={
-            <div className="shrink-0 px-3 py-1.5 text-start md:text-end md:pr-[calc(4rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+            <div className="shrink-0 px-3 py-1.5 text-start md:text-end md:pr-[calc(4rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
               <span className="text-ui-10 font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned
               </span>
@@ -1009,12 +1001,12 @@ function GeneralCompareHeader({
   return (
     <div
       className={cn(
-        "pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+        "pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
         side === "left"
           ? pinned
             ? "pl-12 pr-3 md:pl-2"
-            : "pl-12 pr-3 md:pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
-          : "pl-3 pr-[calc(3rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
+          : "pl-3 pr-[calc(3rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
       )}
     >
       <ModelSelector
@@ -1389,8 +1381,7 @@ function ProjectLanding({
   const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
   const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
   const projectPinned = pinnedProjectIds.includes(projectId);
-  const [renamingProject, setRenamingProject] = useState(false);
-  const [projectNameDraft, setProjectNameDraft] = useState("");
+  const [editingProject, setEditingProject] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
 
   async function handleProjectExport(
@@ -1408,23 +1399,19 @@ function ProjectLanding({
     }
   }
 
-  async function commitProjectRename(): Promise<void> {
-    const name = projectNameDraft.trim();
-    setRenamingProject(false);
-    if (!name || name === projectName) return;
-    try {
-      await renameChatProject(projectId, name);
-    } catch (err) {
-      toast.error("Failed to rename project", {
-        description: err instanceof Error ? err.message : undefined,
-      });
-    }
+  /** A project workspace is a bigger thing to remove than a chat's sandbox, so it asks from
+   *  scratch rather than following the chat preference, as the sidebar does it. */
+  function openProjectDelete(): void {
+    setDeleteFilesOnDelete(false);
+    setDeletingProject(true);
   }
 
   async function commitProjectDelete(): Promise<void> {
+    const deleteFiles = deleteFilesOnDelete;
     setDeletingProject(false);
+    setDeleteFilesOnDelete(false);
     try {
-      await deleteChatProject(projectId);
+      await deleteChatProject(projectId, { deleteFiles });
       // Refresh chat history so the project's now-deleted chats do not linger in the sidebar, matching
       // the sidebar delete path.
       notifyChatHistoryUpdated();
@@ -1478,6 +1465,11 @@ function ProjectLanding({
 
   // Full chat actions, matching the sidebar chat menu.
   const { projects } = useChatProjects();
+  // The record behind the header, for the Edit dialog.
+  const currentProject = useMemo(
+    () => projects.find((project) => project.id === projectId),
+    [projects, projectId],
+  );
   const pinnedChatIds = usePinnedChatsStore((s) => s.pinnedIds);
   const togglePinnedChat = usePinnedChatsStore((s) => s.togglePin);
   const confirmDeleteChats = useChatPreferencesStore(
@@ -1727,7 +1719,7 @@ function ProjectLanding({
           }
         >
           {/* Slightly narrower than the composer max; every block shares this. */}
-          <div className="mx-auto flex w-full max-w-[44rem] flex-col pt-[120px] pb-14">
+          <div className="mx-auto flex w-full max-w-[44rem] flex-col pt-[calc(120px*var(--ui-space-scale,1))] pb-14">
             <div className="mb-12 flex items-center gap-4">
               <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
                 <HugeiconsIcon
@@ -1755,14 +1747,9 @@ function ProjectLanding({
                   </button>
                 )}
               >
-                <DropdownMenuItem
-                  onSelect={() => {
-                    setProjectNameDraft(projectName);
-                    setRenamingProject(true);
-                  }}
-                >
+                <DropdownMenuItem onSelect={() => setEditingProject(true)}>
                   <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Rename project</span>
+                  <span>Edit project</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => togglePinProject(projectId)}>
                   <HugeiconsIcon icon={projectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
@@ -1787,7 +1774,7 @@ function ProjectLanding({
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   variant="destructive"
-                  onSelect={() => setDeletingProject(true)}
+                  onSelect={() => openProjectDelete()}
                 >
                   <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
                   <span>Delete project</span>
@@ -1841,7 +1828,7 @@ function ProjectLanding({
                     return (
                       <div
                         key={`${item.type}:${item.id}`}
-                        className="flex min-h-[58px] w-full items-center rounded-full px-4 py-2"
+                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-full px-4 py-2"
                       >
                         <div className="min-w-0 flex-1">
                           <input
@@ -1888,7 +1875,7 @@ function ProjectLanding({
                   return (
                     <div
                       key={`${item.type}:${item.id}`}
-                      className="group relative flex min-h-[58px] w-full items-center rounded-full transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
+                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-full transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
                     >
                       <button
                         type="button"
@@ -1901,7 +1888,7 @@ function ProjectLanding({
                                 : { compare: item.id, project: projectId },
                           });
                         }}
-                        className="flex min-h-[58px] min-w-0 flex-1 items-center gap-4 rounded-full px-4 py-2 text-left"
+                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] min-w-0 flex-1 items-center gap-4 rounded-full px-4 py-2 text-left"
                       >
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-ui-15 font-semibold leading-5 text-foreground">
@@ -1924,7 +1911,7 @@ function ProjectLanding({
                             type="button"
                             onClick={(event) => event.stopPropagation()}
                             aria-label="Chat options"
-                            className="absolute right-3 top-1/2 inline-flex size-8 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none transition-opacity hover:bg-foreground/10 md:pointer-fine:opacity-0 md:pointer-fine:pointer-events-none focus-visible:opacity-100 focus-visible:pointer-events-auto group-hover:opacity-100 group-hover:pointer-events-auto data-[state=open]:opacity-100 data-[state=open]:pointer-events-auto"
+                            className="absolute right-3 top-1/2 inline-flex size-8 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none transition-opacity hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] md:pointer-fine:opacity-0 md:pointer-fine:pointer-events-none focus-visible:opacity-100 focus-visible:pointer-events-auto group-hover:opacity-100 group-hover:pointer-events-auto data-[state=open]:opacity-100 data-[state=open]:pointer-events-auto"
                           >
                             <HugeiconsIcon
                               icon={MoreVerticalIcon}
@@ -1967,7 +1954,8 @@ function ProjectLanding({
                               strokeWidth={1.75}
                               className="size-icon"
                             />
-                            <span>Move to project</span>
+                            {/* Same label the sidebar row menu uses. */}
+                            <span>Project</span>
                           </DropdownMenuSubTrigger>
                           <DropdownMenuSubContent className="unsloth-plus-menu w-52">
                             <DropdownMenuItem
@@ -2024,11 +2012,11 @@ function ProjectLanding({
                           onSelect={() => void handleSaveAsSource(item)}
                         >
                           <HugeiconsIcon
-                            icon={BookOpen01Icon}
+                            icon={FolderAttachmentIcon}
                             strokeWidth={1.75}
                             className="size-icon"
                           />
-                          <span>Save to project sources</span>
+                          <span>Project sources</span>
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
@@ -2095,47 +2083,18 @@ function ProjectLanding({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <Dialog
-        open={active && renamingProject}
+      {/* The sidebar's dialog, so a project is edited the same way wherever it is opened from.
+          Delete hands back here, which owns the confirmation below. */}
+      <EditProjectDialog
+        project={active && editingProject ? (currentProject ?? null) : null}
         onOpenChange={(open) => {
-          if (!open) setRenamingProject(false);
+          if (!open) setEditingProject(false);
         }}
-      >
-        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Rename project</DialogTitle>
-          </DialogHeader>
-          <Input
-            value={projectNameDraft}
-            onChange={(e) => setProjectNameDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void commitProjectRename();
-              }
-            }}
-            autoFocus={true}
-            maxLength={120}
-            placeholder="Project name"
-            aria-label="Project name"
-            className="focus-visible:border-input focus-visible:ring-0"
-          />
-          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-            <Button type="button" variant="ghost" onClick={() => setRenamingProject(false)}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void commitProjectRename()}
-              disabled={
-                !projectNameDraft.trim() || projectNameDraft.trim() === projectName
-              }
-            >
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        onDelete={() => {
+          setEditingProject(false);
+          openProjectDelete();
+        }}
+      />
       <AlertDialog
         open={active && deletingProject}
         onOpenChange={(open) => {
@@ -2149,10 +2108,20 @@ function ProjectLanding({
               Delete "{projectName}"? Its chats will be permanently deleted.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {/* Same offer the sidebar makes, naming the folder when the record carries one. */}
+          <DeleteChatFilesSwitch
+            id="chat-landing-delete-project-files"
+            checked={deleteFilesOnDelete}
+            onCheckedChange={setDeleteFilesOnDelete}
+            description={
+              currentProject?.rootPath ??
+              "The project workspace folder will be removed from disk."
+            }
+          />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={() => void commitProjectDelete()}>
-              Delete
+              {deleteFilesOnDelete ? "Delete all" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -4020,16 +3989,16 @@ export function ChatPage({
         )}
         <div
           className={cn(
-            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[10px] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[10px] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile
               ? "pl-12"
               : pinned
                 ? "pl-2"
                 : isTauri
                   ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-                  : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
+                  : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
-              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
           <div className="pointer-events-auto flex items-center gap-1">
@@ -4041,7 +4010,7 @@ export function ChatPage({
                 title="New chat"
                 aria-label="New chat"
                 onClick={handleDesktopNewChat}
-                className="!size-[30px] rounded-[10px] text-muted-foreground"
+                className="!size-[calc(30px*var(--ui-space-scale,1))] rounded-[10px] text-muted-foreground"
               >
                 <HugeiconsIcon
                   icon={PencilEdit02Icon}
@@ -4184,7 +4153,7 @@ export function ChatPage({
                     type="button"
                     onClick={toggleIncognito}
                     className={cn(
-                      "flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                      "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                       incognito
                         ? "bg-primary/10 text-primary hover:bg-primary/15"
                         : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
@@ -4224,7 +4193,7 @@ export function ChatPage({
                       closeArtifactSurface();
                       openResearchPanel(latestResearchRunId);
                     }}
-                    className="relative flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
+                    className="relative flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
                     aria-label="Open research activity"
                     aria-pressed={openResearchRunId === latestResearchRunId}
                   >
@@ -4252,7 +4221,7 @@ export function ChatPage({
                       useResearchRunStore.getState().closePanel();
                       setSettingsOpen(true);
                     }}
-                    className="flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     aria-label="Open run settings"
                   >
                     <HugeiconsIcon

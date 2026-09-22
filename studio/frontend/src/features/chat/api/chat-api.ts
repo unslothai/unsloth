@@ -226,9 +226,12 @@ export async function getApiMonitor(): Promise<ApiMonitorResponse> {
   return parseJsonOrThrow<ApiMonitorResponse>(response);
 }
 
-export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
+export async function getApiMonitorEntry(
+  id: string,
+  includePrompt = true,
+): Promise<ApiMonitorEntry> {
   const response = await authFetch(
-    `/api/inference/monitor/${encodeURIComponent(id)}`,
+    `/api/inference/monitor/${encodeURIComponent(id)}${includePrompt ? "" : "?include_prompt=false"}`,
   );
   return parseJsonOrThrow<ApiMonitorEntry>(response);
 }
@@ -538,8 +541,10 @@ export interface DownloadProgressResponse {
 export async function getDownloadProgress(
   repoId: string,
   hfToken?: string | null,
+  mlxLoad = false,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
+  if (mlxLoad) params.set("mlx_load", "true");
   const response = await authFetch(`/api/models/download-progress?${params}`, {
     headers: hubTokenHeader(hfToken),
   });
