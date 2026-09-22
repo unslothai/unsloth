@@ -168,8 +168,14 @@ test("a dark selection fill takes the token, not a wash", () => {
   // the surface under them there.
   assert.match(
     HUB_CSS,
-    /html\.dark \.hub-tab-toggle-pill,\s*html\.dark \.hub-tab-toggle-pill:hover \{[^}]*background-color: var\(--accent\)/,
+    /html\.dark \.hub-tab-toggle-pill \{[^}]*background-color: var\(--accent\)/,
     "the selected segment is not on --accent",
+  );
+  // Its hover is the same token lifted, so it rides the slider too.
+  assert.match(
+    HUB_CSS,
+    /html\.dark \.hub-tab-toggle-pill:hover \{[^}]*var\(--accent\)\)/,
+    "the selected segment's hover is not on --accent",
   );
   for (const file of [
     "features/hub/catalog/gguf-download-card.tsx",

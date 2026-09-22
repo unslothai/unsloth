@@ -44,20 +44,28 @@ test("the page track is left on its own wash", () => {
 
 test("the panel track stops just under the panel rather than far below it", () => {
   const rule = HUB_CSS.match(MENU_TRACK);
-  // 13% of #181818 over #272727 is #252525.
-  assert.match(rule?.[1] ?? "", /var\(--background\) 13%/);
+  // 27% of #181818 over #272727 is #232323.
+  assert.match(rule?.[1] ?? "", /var\(--background\) 27%/);
 });
 
-test("hovering the selected tab lightens it instead of darkening it", () => {
+test("hovering a pill lightens it instead of darkening it", () => {
+  const hover = HUB_CSS.match(
+    /html\.dark \.hub-tab-toggle-pill:hover \{([^}]*)\}/,
+  );
+  assert.ok(hover, "the pill has no dark hover");
+  // Mixed into --accent, not washed over the element: a wash lands on the
+  // track behind the pill and composites below it, which reads as darkening.
+  assert.match(hover[1] ?? "", /var\(--foreground\) 8%, var\(--accent\)/);
+  assert.doesNotMatch(hover[1] ?? "", /transparent/);
+});
+
+test("no tab pins its hover to a colour that is only right in one theme", () => {
   const tabs = readSrc(
     "features/model-picker/components/model-selector/pill-tabs.tsx",
   );
-  const hover = tabs.match(/dark:hover:!bg-\[([^\]]*)\]/);
-  assert.ok(hover, "the active tab has no dark hover");
-  // Over --accent, not over the track: a wash on the track composites below
-  // the pill, which is what made the selected tab darken under the pointer.
-  assert.match(hover[1] ?? "", /var\(--accent\)\)$/);
-  assert.doesNotMatch(hover[1] ?? "", /transparent/);
+  // hover:!bg-[var(--background)] carries no mode variant, so in dark it
+  // painted the page colour over the pill and blacked the tab out.
+  assert.doesNotMatch(tabs, /hover:!bg-\[var\(--background\)\]/);
 });
 
 test("an option menu rests at its trigger's tone, not the panel's", () => {
@@ -76,19 +84,16 @@ test("a highlighted row still lifts clear of the lighter menu", () => {
   assert.match(row[1] ?? "", /var\(--foreground\) 6%, var\(--accent\)/);
 });
 
-test("a button borrowing the pill look gets the hover the pill pins away", () => {
-  const hover = HUB_CSS.match(
-    /html\.dark \.hub-tab-toggle-pill\.hub-pill-action:hover \{([^}]*)\}/,
+test("a white pill in light mode stays put, having nowhere lighter to go", () => {
+  const rule = HUB_CSS.match(
+    /html:not\(\.dark\) \.hub-tab-toggle-pill\[role="tab"\]:hover \{([^}]*)\}/,
   );
-  assert.ok(hover, "hub-pill-action hover rule is missing");
-  // Lighter than rest: --accent carrying a little --foreground.
-  assert.match(hover[1] ?? "", /var\(--foreground\)[^;]*var\(--accent\)/);
+  assert.ok(rule, "the light tab hover is missing");
+  assert.match(rule[1] ?? "", /background-color:\s*var\(--background\)/);
 });
 
 test("pressing a borrowed pill returns it to the selection colour", () => {
-  const hover = HUB_CSS.indexOf(
-    "html.dark .hub-tab-toggle-pill.hub-pill-action:hover",
-  );
+  const hover = HUB_CSS.indexOf("html.dark .hub-tab-toggle-pill:hover");
   const active = HUB_CSS.indexOf(
     "html.dark .hub-tab-toggle-pill.hub-pill-action:active",
   );

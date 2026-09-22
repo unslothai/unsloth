@@ -722,13 +722,13 @@
      the selected pill depends on that surface: 21 levels below --accent on the
      page, but only 7 on an elevated panel, where the two halves of the control
      stop reading apart. Panels therefore sink the track toward the page
-     instead of lifting it off the panel, stopping just under it at #252525.
-     No wash gain here: that guard keeps lit washes from fading out, and this
-     one darkens. */
+     instead of lifting it off the panel, stopping under it at #232323. No
+     wash gain here: that guard keeps lit washes from fading out, and this one
+     darkens. */
   html.dark .menu-soft-surface .hub-tab-toggle,
   html.dark .menu-soft-surface-up .hub-tab-toggle,
   html.dark [data-slot="dialog-content"] .hub-tab-toggle {
-    background-color: color-mix(in srgb, var(--background) 13%, transparent);
+    background-color: color-mix(in srgb, var(--background) 27%, transparent);
   }
 
   html:not(.dark) .hub-tab-toggle-pill {
@@ -742,24 +742,32 @@
     background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), var(--background));
   }
 
+  /* A tab is a real button, so unlike the sliding indicator it can hover. In
+     light the pill is already the lightest thing on the panel, so it stays
+     put rather than moving the only direction left, which is down. */
+  html:not(.dark) .hub-tab-toggle-pill[role="tab"]:hover {
+    background-color: var(--background);
+  }
+
   /* The selected segment takes --accent, the app's one selection colour, so it
      reads like every other lit row. As its own wash it was scaled by the wash
      gain, which falls much further than the token does: at the bottom of the
-     contrast range the selected tab sank to barely above its own track. Hover
-     is the same colour, so a selected segment stays put under the pointer. */
-  html.dark .hub-tab-toggle-pill,
-  html.dark .hub-tab-toggle-pill:hover {
+     contrast range the selected tab sank to barely above its own track. */
+  html.dark .hub-tab-toggle-pill {
     background-color: var(--accent);
     border: 0;
     box-shadow: none;
   }
 
-  /* Standalone buttons borrow the pill look without being a segment, so they
-     want back the hover the rule above pins away. Press returns to --accent. */
-  html.dark .hub-tab-toggle-pill.hub-pill-action:hover {
+  /* Hover lifts the pill itself. Washing --foreground over the element instead
+     paints on the track behind it, which composites below the pill and turned
+     the hover into a darkening. Lives here rather than on the elements so it
+     holds for every pill, borrowed ones included. */
+  html.dark .hub-tab-toggle-pill:hover {
     background-color: color-mix(in srgb, var(--foreground) 8%, var(--accent));
   }
 
+  /* Press returns a borrowed pill to the selection colour. */
   html.dark .hub-tab-toggle-pill.hub-pill-action:active {
     background-color: var(--accent);
   }

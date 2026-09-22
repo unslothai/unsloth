@@ -99,13 +99,11 @@ export function PillTabs({
             value === tab.value
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
-            // The active tab carries the pill. In dark it lightens on hover,
-            // the same step Search Hub takes: the old wash was laid over the
-            // track rather than the pill, so it composited below it and made
-            // pointing at the selected tab darken it.
-            fit &&
-              value === tab.value &&
-              "hub-tab-toggle-pill hover:!bg-[var(--background)] dark:hover:!bg-[color-mix(in_srgb,var(--foreground)_8%,var(--accent))]",
+            // The active tab carries the pill; its hover lives on the pill
+            // rules in hub.css. The pin that used to sit here was written
+            // without a mode variant, so in dark it painted the page colour
+            // over the pill and pointing at the selected tab blacked it out.
+            fit && value === tab.value && "hub-tab-toggle-pill",
           )}
         >
           {tab.icon}
