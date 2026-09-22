@@ -241,7 +241,13 @@ def apply_gfx101x_triton_workaround(environ = None, triton_home = None):
     with an empty cache directory trained normally. Redirecting the cache to a sibling
     directory whenever this workaround is active keeps the two builds from ever mixing.
 
-    Both are setdefault: a user who set either variable on purpose keeps their value.
+    torch.compile goes through the same hole one level up: Inductor stores the Triton
+    kernels it generates under its own TORCHINDUCTOR_CACHE_DIR (default
+    <tmp>/torchinductor_<user>) and keys them without the knob either. gemma-3-270m on the
+    same card went nan on every step with buffer ops off once a buffer-ops-on run had filled
+    that directory, so it gets a sibling directory too.
+
+    All setdefault: a user who set any of the variables on purpose keeps their value.
     Returns True when the buffer-ops knob was set here, False when it was already set."""
     import os
     environ = os.environ if environ is None else environ
@@ -255,6 +261,14 @@ def apply_gfx101x_triton_workaround(environ = None, triton_home = None):
             or os.path.join(os.path.expanduser("~"), ".triton")
         )
         environ["TRITON_CACHE_DIR"] = os.path.join(home, "cache-no-buffer-ops")
+    if "TORCHINDUCTOR_CACHE_DIR" not in environ:
+        import getpass
+        import re
+        import tempfile
+        user = re.sub(r'[\/:*?"<>|]', "_", getpass.getuser())
+        environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(
+            tempfile.gettempdir(), f"torchinductor_{user}_no_buffer_ops"
+        )
     return True
 
 

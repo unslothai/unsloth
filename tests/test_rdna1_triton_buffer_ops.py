@@ -73,6 +73,9 @@ def test_workaround_sets_knob_and_a_separate_cache_dir():
     assert device_type.apply_gfx101x_triton_workaround(env, triton_home = "/th") is True
     assert env["AMDGCN_USE_BUFFER_OPS"] == "0"
     assert env["TRITON_CACHE_DIR"].replace("\\", "/") == "/th/cache-no-buffer-ops"
+    # Inductor caches the Triton kernels it generates on its own, keyed the same blind way.
+    assert env["TORCHINDUCTOR_CACHE_DIR"].endswith("_no_buffer_ops")
+    assert "torchinductor_" in env["TORCHINDUCTOR_CACHE_DIR"]
 
 
 def test_workaround_honours_a_user_who_already_chose():
@@ -81,9 +84,10 @@ def test_workaround_honours_a_user_who_already_chose():
     assert env == {
         "AMDGCN_USE_BUFFER_OPS": "1"
     }, "an explicit choice is not overridden and no cache dir is forced"
-    env = {"TRITON_CACHE_DIR": "/mine"}
+    env = {"TRITON_CACHE_DIR": "/mine", "TORCHINDUCTOR_CACHE_DIR": "/mine-inductor"}
     assert device_type.apply_gfx101x_triton_workaround(env, triton_home = "/th") is True
     assert env["TRITON_CACHE_DIR"] == "/mine"
+    assert env["TORCHINDUCTOR_CACHE_DIR"] == "/mine-inductor"
 
 
 def test_workaround_follows_triton_home():
