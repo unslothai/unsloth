@@ -264,6 +264,45 @@ test("a model load asks the disk too, because the backend downloads inside it", 
   assert.doesNotMatch(body, /await checkDiskSpace/);
 });
 
+test("a training run asks the disk on both sides of the worker's download", () => {
+  // The third cache writer, and the largest. start-fresh-training-run and
+  // resume-training-run both call startTraining directly, and the worker then pulls
+  // the base model through FastLanguageModel.from_pretrained plus any remote dataset,
+  // passing neither requestStart nor loadModel.
+  const api = readFileSync(
+    new URL("../src/features/training/api/train-api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(api, /import \{ checkDiskSpace \}/);
+  const start = api.slice(api.indexOf("export async function startTraining"));
+  const body = start.slice(0, start.indexOf("\nexport "));
+  assert.match(body, /void checkDiskSpace\(\);/);
+  // NOT forced here, and not in a finally: the download happens in the worker long
+  // after this request returns, so a reading taken on return describes the disk
+  // BEFORE the bytes landed and would read as reassurance.
+  assert.doesNotMatch(body, /checkDiskSpace\(\{ force: true \}\)/);
+
+  // The post-download half lives where the run leaves the active state, which
+  // happens whether it completed or failed.
+  const watch = readFileSync(
+    new URL(
+      "../src/features/training/hooks/use-training-completion-watch.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(watch, /import \{ checkDiskSpace \}/);
+  assert.match(watch, /void checkDiskSpace\(\{ force: true \}\);/);
+  // In the effect cleanup, so it fires on the active -> inactive transition rather
+  // than on every poll tick.
+  const cleanup = watch.slice(watch.indexOf("return () => {"));
+  assert.ok(
+    cleanup.indexOf("void checkDiskSpace({ force: true })") !== -1,
+    "the post-run reading must be in the watch cleanup, not on every tick",
+  );
+  assert.doesNotMatch(watch, /await checkDiskSpace/);
+});
+
 test("the disk route does one syscall and no directory walk", () => {
   const main = readFileSync(
     new URL("../../backend/main.py", import.meta.url),
