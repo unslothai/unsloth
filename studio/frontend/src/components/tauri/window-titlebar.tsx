@@ -151,7 +151,9 @@ export function DesktopTitlebarNavigation({
           />
         </button>
       ) : (
-        <div aria-hidden="true" className="size-[calc(30px*var(--ui-space-scale,1))] shrink-0" />
+        // Holds the slot the navbar's own trigger sits in, so it is the
+        // button's fixed size, not a scaled one.
+        <div aria-hidden="true" className="size-[30px] shrink-0" />
       )}
       <button
         type="button"

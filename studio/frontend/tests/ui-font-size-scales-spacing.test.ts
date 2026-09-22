@@ -123,6 +123,9 @@ test("the titlebar reserves room for its controls, which stay in the band", () =
   // The band is a fixed 34px and clips nothing, so a grown button would hang
   // over the page and take its clicks.
   assert.match(titlebar, /inline-flex size-\[30px\] shrink-0/);
+  // The spacer stands in for one of those buttons while the navbar renders
+  // its own trigger, so it holds the same fixed width.
+  assert.match(titlebar, /aria-hidden="true" className="size-\[30px\] shrink-0"/);
   assert.match(titlebar, /inline-flex h-\[26px\] w-\[26px\] shrink-0/);
   // The padding and gaps around them still scale, so the drag region has to
   // start further out or it covers the last button.
