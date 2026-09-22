@@ -936,3 +936,13 @@ def test_a_slot_evicted_while_a_request_routes_is_not_served(backends, monkeypat
 
     monkeypatch.setattr(inf, "_slot_serving", evicted_mid_probe)
     assert _routed("org/B-GGUF") == (None, backends[0])
+
+
+def test_a_slot_on_another_gpu_is_no_victim(backends):
+    _, extra = backends
+    extra.llama._planned_vram_mib = {1: 9000}
+    other = _slot("org/D-GGUF", last_used = 5.0)
+    other.llama._planned_vram_mib = {0: 6000}
+    inf._extra_slots.append(other)
+    assert inf._eviction_victims(None, 5000, (0,)) == [other]
+    assert inf._eviction_victims(None, 5000) == [extra]

@@ -7978,7 +7978,11 @@ def _forget_evicted(model_path: str, keep_kv: bool = False) -> Optional[dict]:
     return kept
 
 
-def _eviction_victims(exclude: Optional[_ExtraSlot], short_mib: int) -> list[_ExtraSlot]:
+def _eviction_victims(
+    exclude: Optional[_ExtraSlot],
+    short_mib: int,
+    gpu_indices = None,
+) -> list[_ExtraSlot]:
     """Least recently used slots first, as many as it takes to free ``short_mib``; one at a time
     when a footprint is unknown, since the retry prices the rest."""
     # A slot still generating is never a victim: evicting it would cut a reply off mid-stream.
@@ -7992,7 +7996,11 @@ def _eviction_victims(exclude: Optional[_ExtraSlot], short_mib: int) -> list[_Ex
     )
     victims, freed = [], 0
     for slot in slots:
-        held = sum(getattr(slot.llama, "_planned_vram_mib", {}).values())
+        planned = getattr(slot.llama, "_planned_vram_mib", {})
+        # Only memory on the GPUs the load was priced on makes room for it.
+        held = sum(mib for idx, mib in planned.items() if gpu_indices is None or idx in gpu_indices)
+        if planned and not held:
+            continue
         victims.append(slot)
         freed += held
         if not held or freed >= short_mib:
@@ -16115,7 +16123,9 @@ async def load_model_gated(
                         # chat may start on a victim between the pick and its teardown.
                         async with inference_lifecycle_gate() if new_slot else nullcontext():
                             dropped = 0
-                            for victim in _eviction_victims(extra, exc.short_mib):
+                            for victim in _eviction_victims(
+                                extra, exc.short_mib, getattr(exc, "gpu_indices", None)
+                            ):
                                 if not _claim_victim(victim):
                                     continue
                                 if victim.request is not None:

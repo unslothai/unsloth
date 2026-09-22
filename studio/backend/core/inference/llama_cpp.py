@@ -508,19 +508,21 @@ class LlamaServerNotFoundError(RuntimeError):
 
 class GpuMemoryShortError(RuntimeError):
     """A load that must fit next to the loaded models does not. ``capped``: it would, at a
-    smaller context than asked for."""
+    smaller context than asked for. ``gpu_indices``: the GPUs ``short_mib`` was measured on."""
 
-    __slots__ = ("capped", "short_mib")
+    __slots__ = ("capped", "short_mib", "gpu_indices")
 
     def __init__(
         self,
         message: str,
         capped: bool = False,
         short_mib: int = 0,
+        gpu_indices = None,
     ):
         super().__init__(message)
         self.capped = capped
         self.short_mib = short_mib
+        self.gpu_indices = gpu_indices
 
 
 # The backends serving side by side (the primary and any loaded alongside), so a load can price the
@@ -26185,6 +26187,7 @@ class LlamaCppBackend:
                         ),
                         capped = capped_only,
                         short_mib = max(0, need_mib - free_mib),
+                        gpu_indices = tuple(idx for idx, _ in gpus),
                     )
 
                 # An unenumerated explicit Vulkan ordinal can't be pinned; fail loudly

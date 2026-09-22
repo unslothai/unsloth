@@ -2970,14 +2970,25 @@ export function useChatModelRuntime() {
       );
       if (!decision.proceed) return false;
     }
-    await Promise.allSettled(
+    const results = await Promise.allSettled(
       others.map((id) =>
         unloadModel({ model_path: id, force_cancel_active: true }),
       ),
     );
     await refresh();
+    const failed = results.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (failed) {
+      setModelsError(
+        failed.reason instanceof Error
+          ? failed.reason.message
+          : "Failed to unload every model",
+      );
+      return false;
+    }
     return true;
-  }, [ejectModel, params.checkpoint, refresh]);
+  }, [ejectModel, params.checkpoint, refresh, setModelsError]);
 
   return {
     refresh,
