@@ -332,7 +332,6 @@ export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningFollowsPreference,
   resolveReasoningOpen,
-  resolveReasoningToggle,
   startsNewReasoningRound,
 } from "./utils/reasoning-visibility";
 export {

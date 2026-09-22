@@ -79,6 +79,13 @@ async (page) => {
   await page.waitForTimeout(500);
   check(await page.evaluate(() => window.getSelection().toString()) === selected, "recycling destroyed selection");
   await page.evaluate(() => window.getSelection().removeAllRanges());
+  await trigger.click();
+  await page.waitForTimeout(300);
+  const liveHeaderTop = (await trigger.boundingBox()).y;
+  await trigger.click();
+  await page.waitForTimeout(400);
+  check(Math.abs((await trigger.boundingBox()).y - liveHeaderTop) < 3, "reopening live reasoning moved its header");
+  check((await page.locator('[data-slot="reasoning-text"]').innerText()).includes("Flappy Bird game"), "live reopening reused a stale reading anchor");
   await page.getByRole("button", { name: "Scroll to bottom", exact: true }).click();
   await page.waitForFunction(() => window.__reasoning.stats().done, null, { timeout: 30000 });
   await page.waitForTimeout(500);
@@ -95,5 +102,5 @@ async (page) => {
   await page.screenshot({ path: ".playwright-cli/reasoning-inline-mobile-dark.png" });
   await page.evaluate(() => document.documentElement.classList.remove("dark"));
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  return { passed: true, checks: ["bounded saved trace", "no pagination chrome", "canonical copy", "collapse/reopen", "threshold anchor", "streaming anchor", "resize anchor", "selection", "resume following", "narrow code", "light/dark"] };
+  return { passed: true, checks: ["bounded saved trace", "no pagination chrome", "canonical copy", "collapse/reopen", "live collapse/reopen", "threshold anchor", "streaming anchor", "resize anchor", "selection", "resume following", "narrow code", "light/dark"] };
 }

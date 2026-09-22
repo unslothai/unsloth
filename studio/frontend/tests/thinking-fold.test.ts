@@ -282,7 +282,7 @@ test("opening by hand grows the block downward instead of pinning the bottom", (
   const reasoning = readSrc("components/assistant-ui/reasoning.tsx");
   assert.match(
     reasoning,
-    /if \(open && !isReasoningStreaming\) \{\n\s*detachFromBottom\(\);\n\s*\}/,
+    /if \(open\) \{\n\s*detachFromBottom\(\);\n\s*\}/,
   );
   for (const file of ["tool-group.tsx", "tool-fallback.tsx"]) {
     const source = readSrc(`components/assistant-ui/${file}`);

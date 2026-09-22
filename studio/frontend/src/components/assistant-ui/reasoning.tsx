@@ -32,7 +32,6 @@ import {
   isRenderableRenderHtmlToolPart,
   resolveReasoningGroupDuration,
   resolveReasoningOpen,
-  resolveReasoningToggle,
   setReasoningRoundOpen,
   startsNewReasoningRound,
   useChatPreferencesStore,
@@ -414,6 +413,16 @@ function useReasoningTranscriptMode({
     active: boolean;
     anchor?: ReasoningReadingAnchor;
   }>({ messageId, active: wantsWindow });
+  useEffect(() => {
+    if (!session.anchor) return;
+    // The transcript captures this only on its first mount. Reopening the block
+    // later must not replay a reading position from the threshold transition.
+    const timer = setTimeout(
+      () => setSession((current) => ({ ...current, anchor: undefined })),
+      0,
+    );
+    return () => clearTimeout(timer);
+  }, [session.anchor]);
   if (session.messageId !== messageId || (!wantsWindow && session.active))
     setSession({ messageId, active: wantsWindow });
   useEffect(() => {
@@ -482,7 +491,6 @@ function ReasoningBody({
   messageId,
   messageHasRenderableRenderHtmlTool,
   isStreaming,
-  retainStreamingHeight = false,
   textClassName,
   children,
 }: {
@@ -490,14 +498,13 @@ function ReasoningBody({
   messageId: string;
   messageHasRenderableRenderHtmlTool: boolean;
   isStreaming: boolean;
-  retainStreamingHeight?: boolean;
   textClassName?: string;
   children: ReactNode;
 }) {
   return (
     <ReasoningText
       className={textClassName}
-      streaming={isStreaming || retainStreamingHeight}
+      streaming={isStreaming}
       virtualized={transcript.active}
     >
       {transcript.active ? (
@@ -697,7 +704,6 @@ const ReasoningGroupBlock = ({
 
   // null until toggled by hand, then it outranks the setting for the round.
   const [override, setOverride] = useState<boolean | null>(null);
-  const [retainStreamingHeight, setRetainStreamingHeight] = useState(false);
   const [duration, setDuration] = useState<number>(0);
   const startTimeRef = useRef<number | null>(null);
 
@@ -737,27 +743,6 @@ const ReasoningGroupBlock = ({
     override,
   });
 
-  // Keep the streaming height cap until the automatic close finishes. Removing it on the completion
-  // frame expands long reasoning to its full height before the collapsible can close, which makes
-  // the entire chat jump. The grid path needs the same margin the collapsible's own backstop uses.
-  // The height keyframes animate from a height captured at toggle time, so releasing the cap
-  // mid-animation cannot change what they animate; `1fr` instead resolves against the live content
-  // every frame, so an early release grows the row in the middle of the collapse and produces
-  // exactly the jump this timer prevents. The transition also starts a render after this timer is
-  // armed, so an exact ANIMATION_DURATION lands inside it. A block the setting keeps open past
-  // its stream has no collapse to wait out and grows into its full height when this fires. isOpen
-  // is deliberately not a dependency: re-running on a manual open would re-arm the cap that
-  // handleOpenChange just released.
-  useEffect(() => {
-    const closeDelay = GRID_COLLAPSE_REASONING_ENABLED
-      ? ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS
-      : ANIMATION_DURATION;
-    const timeout = window.setTimeout(
-      () => setRetainStreamingHeight(isReasoningStreaming),
-      isReasoningStreaming ? 0 : closeDelay,
-    );
-    return () => window.clearTimeout(timeout);
-  }, [isReasoningStreaming]);
   // Publish the lead's open state for everything folded under it, and count the tool calls for
   // its header. A layout effect, so the folded parts settle before the frame the user sees.
   const roundKey = reasoningRoundKey(messageId, endIndex);
@@ -791,19 +776,12 @@ const ReasoningGroupBlock = ({
   const detachFromBottom = useDetachThreadFromBottom();
   const handleOpenChange = useCallback(
     (open: boolean) => {
-      if (open && !isReasoningStreaming) {
+      if (open) {
         detachFromBottom();
       }
-      const next = resolveReasoningToggle(open, {
-        isStreaming: isReasoningStreaming,
-        visibility,
-      });
-      if (next.releaseStreamingHeight) {
-        setRetainStreamingHeight(false);
-      }
-      setOverride(next.override);
+      setOverride(open);
     },
-    [isReasoningStreaming, visibility, detachFromBottom],
+    [detachFromBottom],
   );
 
   return (
@@ -840,7 +818,6 @@ const ReasoningGroupBlock = ({
             messageHasRenderableRenderHtmlTool
           }
           isStreaming={isReasoningStreaming}
-          retainStreamingHeight={retainStreamingHeight}
         >
           {children}
         </ReasoningBody>
