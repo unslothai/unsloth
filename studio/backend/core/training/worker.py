@@ -3117,7 +3117,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
         eta = session_eta_seconds(elapsed, step, start_step, total) or 0
         epoch = 0
         if total > 0:
-            trainer_epoch = None if is_vlm else getattr(getattr(trainer, "state", None), "epoch", None)
+            trainer_epoch = (
+                None if is_vlm else getattr(getattr(trainer, "state", None), "epoch", None)
+            )
             epoch = (
                 round(trainer_epoch, 2)
                 if trainer_epoch is not None

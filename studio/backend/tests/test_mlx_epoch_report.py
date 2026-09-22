@@ -46,12 +46,21 @@ def _step_callback_block():
     tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
     body = tree.body[0].body
     starts = [i for i, n in enumerate(body) if ast.unparse(n) == "start_step = 0"]
-    ends = [i for i, n in enumerate(body) if ast.unparse(n) == "trainer.add_step_callback(_on_step)"]
+    ends = [
+        i for i, n in enumerate(body) if ast.unparse(n) == "trainer.add_step_callback(_on_step)"
+    ]
     assert len(starts) == 1 and len(ends) == 1 and starts[0] < ends[0]
     return body[starts[0] : ends[0] + 1]
 
 
-def _run_step_callback(rows, step, total_steps, state_epoch, is_vlm = False, **config):
+def _run_step_callback(
+    rows,
+    step,
+    total_steps,
+    state_epoch,
+    is_vlm = False,
+    **config,
+):
     block = compile(ast.Module(body = _step_callback_block(), type_ignores = []), "<on_step>", "exec")
     events = []
     trainer = _StubMLXTrainer()
