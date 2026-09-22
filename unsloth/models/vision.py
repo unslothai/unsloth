@@ -2748,8 +2748,11 @@ class FastBaseModel:
         # the nested alternative to it, scoped to the MLP leaves the caller asked for. Before the
         # expert detection below, so the routed experts count as reachable. Only a regex built
         # here is widened: one the caller wrote (`.*\.shared_experts\.down_proj`) is their scope.
+        # The routed experts live in the language model, so a vision-only request
+        # (finetune_language_layers = False) must not be widened onto them either.
         target_modules, _moe_module_detect, _expert_submodule_leaves = widen_target_regex_to_expert_submodules(
-            model, target_modules, _moe_module_detect, auto_regex = _target_modules_auto_regex,
+            model, target_modules, _moe_module_detect,
+            auto_regex = _target_modules_auto_regex and bool(finetune_language_layers),
         )
         if _expert_submodule_leaves:
             print(
