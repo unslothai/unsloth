@@ -1058,10 +1058,13 @@ test("a sort picked while a move is in flight is not overwritten", () => {
   );
   // The change itself is watched. A value read at the drop and again at the end cannot tell a
   // sort picked and picked back from one never touched, and that is a newer intent either way.
+  // And only the list this drop switches: the other sort governs another list, so standing down
+  // for it would leave the slot written into a list still sorted, undoing the drop.
   assert.match(
     commit,
-    /const stopWatchingSort = useSidebarOrganizationStore\.subscribe\(\n\s*\(now, before\) => \{\n\s*sortPicked \|\|=\n\s*now\.chatSort !== before\.chatSort \|\|\n\s*now\.pinnedSort !== before\.pinnedSort;/,
+    /const stopWatchingSort = switching\n\s*\? useSidebarOrganizationStore\.subscribe\(\(now, before\) => \{\n\s*sortPicked \|\|=\n\s*switching === "pinned"\n\s*\? now\.pinnedSort !== before\.pinnedSort\n\s*: now\.chatSort !== before\.chatSort;\n\s*\}\)\n\s*: \(\) => \{\};/,
   );
+  assert.match(commit, /const switching = effects\.switchSort;/);
   // Only the path that waits. Nothing can come between a drop and a switch applied in the turn.
   assert.match(
     commit,

@@ -1897,14 +1897,19 @@ export function AppSidebar() {
     const generation = (previous?.generation ?? 0) + 1;
     // Watches for the change itself, not the value before against the value after: a sort picked
     // and picked back while the move is in flight reads as untouched by value, and it is not.
+    // Only the one list this drop would switch, since the two sorts are independent: a pick in
+    // the other is no intent about this one, and standing down for it would leave the slot
+    // written into a list still sorted, which is the drop ignored all over again.
+    const switching = effects.switchSort;
     let sortPicked = false;
-    const stopWatchingSort = useSidebarOrganizationStore.subscribe(
-      (now, before) => {
-        sortPicked ||=
-          now.chatSort !== before.chatSort ||
-          now.pinnedSort !== before.pinnedSort;
-      },
-    );
+    const stopWatchingSort = switching
+      ? useSidebarOrganizationStore.subscribe((now, before) => {
+          sortPicked ||=
+            switching === "pinned"
+              ? now.pinnedSort !== before.pinnedSort
+              : now.chatSort !== before.chatSort;
+        })
+      : () => {};
     const chain = (previous?.chain ?? Promise.resolve())
       .then(() => moveChatToProject(item, move.projectId))
       .then((moved) => {
