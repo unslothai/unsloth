@@ -13,9 +13,11 @@ import {
   isSearchImagesToolResult,
   useToolAwaitingApproval,
 } from "@/features/chat";
+import { escapeBidiControls } from "@/lib/escape-bidi-controls";
 import { openLink } from "@/lib/open-link";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo } from "react";
+import { ScrollPane } from "./scroll-pane";
 import { SearchImageThumb } from "./search-image";
 import { Source, SourceIcon, SourceTitle } from "./sources";
 import {
@@ -29,7 +31,6 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 import { useToolActivityOpen } from "./use-tool-activity-open";
-import { ScrollPane } from "./scroll-pane";
 
 interface ParsedSource {
   title: string;
@@ -188,9 +189,8 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
         icon={GlobeIcon}
       />
       <ToolFallbackContent>
-        {/* A url call parks on Allow/Deny before it has a result, and the path, query or
-            fragment the decision turns on is invisible in the trigger's hostname. Inert text:
-            the argument is untrusted, and the finished card already links the url. */}
+        {/* A url call parks on Allow/Deny before it has a result, and the path the decision turns on
+            is invisible in the trigger's hostname. Inert text: the argument is untrusted. */}
         {isRunning && url ? (
           <div
             data-slot="tool-web-fetch-url"
@@ -199,12 +199,16 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
             <span className="shrink-0 font-medium text-muted-foreground">
               URL:
             </span>
-            <code
-              dir="ltr"
-              className="min-w-0 break-all text-foreground/85 [unicode-bidi:plaintext]"
+            {/* Capped: a generated url can wrap into thousands of lines and push Allow/Deny
+                out of the viewport while the decision is being made. */}
+            <ScrollPane
+              className="min-w-0 max-h-24 rounded bg-muted/50 px-2 py-1"
+              scrollerClassName="overflow-auto whitespace-pre-wrap break-all text-foreground/85"
             >
-              {url}
-            </code>
+              <code dir="ltr" className="break-all text-foreground/85">
+                {escapeBidiControls(url)}
+              </code>
+            </ScrollPane>
           </div>
         ) : null}
         {isRunning ? (

@@ -120,8 +120,7 @@ function requireRow(): ts.JsxElement {
   const row = slotElement(URL_SLOT);
   assert.ok(
     row,
-    `the expanded card has no ${URL_SLOT} row, so a url fetch parked on Allow/Deny still shows ` +
-      "only the hostname it is reading",
+    `the expanded card has no ${URL_SLOT} row, so a url fetch parked on Allow/Deny still shows only the hostname it is reading`,
   );
   return row;
 }
@@ -136,7 +135,7 @@ test("the parked web-fetch card shows the complete raw url", () => {
     "the url must render inside the expanded content; the collapsed trigger stays hostname-only",
   );
 
-  // Rendered while the call runs, which is exactly when it is parked on the decision.
+  // Rendered while the call runs: that is when it is parked on the decision.
   const guard = guardCondition(row.openingElement);
   assert.ok(
     guard,
@@ -154,12 +153,15 @@ test("the parked web-fetch card shows the complete raw url", () => {
     "the row must be gated on a url being present, or a plain search gains an empty URL line",
   );
 
-  // The complete raw argument, not the parsed host the trigger names.
-  const rendered = find(row, ts.isJsxExpression).map((expression) =>
-    expression.expression?.getText(source) ?? "",
+  // The raw argument, not the parsed host the trigger names.
+  const rendered = find(row, ts.isJsxExpression).map(
+    (expression) => expression.expression?.getText(source) ?? "",
   );
   assert.ok(
-    rendered.includes("url"),
+    rendered.some(
+      (expression) =>
+        expression.includes("url") && !expression.includes("safeUrl"),
+    ),
     `the row must render the raw argument; it renders ${JSON.stringify(rendered)}`,
   );
 });
@@ -186,10 +188,24 @@ test("the raw url is inert text that wraps inside the card", () => {
     "a url must keep a stable left-to-right reading direction",
   );
 
-  const className = classNameOf(code[0].openingElement);
-  assert.match(className, /break-all/, "a long url must wrap instead of clipping");
   assert.match(
-    className,
+    classNameOf(code[0].openingElement),
+    /break-all/,
+    "a long url must wrap instead of clipping",
+  );
+  // A flex child defaults to min-width: auto and would overflow instead of shrinking.
+  const rowClasses = [
+    classNameOf(row.openingElement),
+    ...find(row, ts.isJsxElement)
+      .filter(
+        (element) =>
+          ts.isIdentifier(element.openingElement.tagName) &&
+          element.openingElement.tagName.text === "ScrollPane",
+      )
+      .map((element) => classNameOf(element.openingElement)),
+  ].join(" ");
+  assert.match(
+    rowClasses,
     /min-w-0/,
     "a flex item without min-w-0 refuses to shrink below its content, which clips the row",
   );
@@ -214,9 +230,64 @@ test("the raw url is inert text that wraps inside the card", () => {
   );
 });
 
+test("a bidi control in the url is escaped before it reaches the row", () => {
+  // U+202E obeys in `unicode-bidi: plaintext`, so the row could read a different path
+  // than the one being approved.
+  const row = requireRow();
+  const rendered = find(row, ts.isJsxExpression).map(
+    (expression) => expression.expression?.getText(source) ?? "",
+  );
+  assert.ok(
+    rendered.some((expression) => expression.includes("escapeBidiControls(")),
+    `the row must escape bidi controls; it renders ${JSON.stringify(rendered)}`,
+  );
+  const imported = find(source, (node): node is ts.ImportDeclaration =>
+    ts.isImportDeclaration(node),
+  ).some((declaration) =>
+    declaration.getText(source).includes("escape-bidi-controls"),
+  );
+  assert.ok(imported, "the row must import its escape from the shared helper");
+});
+
+test("the url row is height-capped so the approval controls stay reachable", () => {
+  // An unbounded url would push Allow/Deny below the viewport while the decision is
+  // being made.
+  const row = requireRow();
+  const pane = find(
+    row,
+    (node): node is ts.JsxElement =>
+      ts.isJsxElement(node) &&
+      ts.isIdentifier(node.openingElement.tagName) &&
+      node.openingElement.tagName.text === "ScrollPane",
+  );
+  assert.equal(
+    pane.length,
+    1,
+    "the url must sit in exactly one scroller rather than setting the card's height",
+  );
+  assert.match(
+    classNameOf(pane[0].openingElement),
+    /max-h-/,
+    "the scroller needs an explicit max height, or it still grows with the url",
+  );
+  // The scroller, not the wrapper, is what has to scroll.
+  assert.match(
+    attributeOf(
+      pane[0].openingElement,
+      "scrollerClassName",
+    )?.initializer?.getText(source) ?? "",
+    /overflow-auto/,
+    "the capped pane must scroll, so the complete value stays reachable",
+  );
+  assert.ok(
+    pane[0].getStart(source) >= row.getStart(source) &&
+      pane[0].getEnd() <= row.getEnd(),
+    "the scroller must wrap the url row's content",
+  );
+});
+
 test("the completed card keeps the url link that landed with #5787", () => {
-  // This change adds the parked row only. The finished card's link is main's own landed
-  // behaviour, so a diff that removes, rewrites or duplicates it is out of scope.
+  // The finished card's link is main's own landed behaviour and stays out of scope here.
   const anchors = tagsNamed("a");
   assert.equal(
     anchors.length,
