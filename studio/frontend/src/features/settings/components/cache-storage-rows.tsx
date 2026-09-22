@@ -277,7 +277,7 @@ export function CacheStorageRows() {
                   </span>
                   <span
                     title={entry.paths.join("\n")}
-                    className="max-w-lg truncate font-mono text-[11px] text-muted-foreground"
+                    className="max-w-lg truncate font-mono text-ui-11 text-muted-foreground"
                   >
                     {entry.paths[0] ?? ""}
                   </span>

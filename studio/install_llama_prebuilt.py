@@ -1021,12 +1021,67 @@ def github_releases(
     return releases
 
 
+def web_release_tags(repo: str, *, limit: int = 30) -> list[str]:
+    return _core.web_release_tags(_OPS, repo, limit = limit)
+
+
+def web_release_payload(repo: str, tag: str) -> dict[str, Any]:
+    # Upstream publishes every bNNNN build as a prerelease, so the tag already answers
+    # the label question if its page cannot be reached.
+    default = True if repo == UPSTREAM_REPO and is_release_tag_like(tag) else None
+    return _core.web_release_payload(_OPS, repo, tag, prerelease_default = default)
+
+
+def upstream_web_release_tags(repo: str, *, limit: int = 30) -> list[str]:
+    """Recent upstream build tags, newest first, resolved without api.github.com.
+
+    Filtered to bNNNN: upstream's designated latest is a versioned pointer release
+    whose only asset is nightly-tag.txt, so it never names a release carrying binaries.
+    """
+    return [tag for tag in web_release_tags(repo, limit = limit) if is_release_tag_like(tag)]
+
+
 def latest_upstream_release_tag() -> str:
-    payload = fetch_json(UPSTREAM_RELEASES_API)
-    tag = payload.get("tag_name")
-    if not isinstance(tag, str) or not tag:
-        raise RuntimeError(f"latest release tag was missing from {UPSTREAM_RELEASES_API}")
-    return tag
+    """The newest upstream build tag, which the source-build fallback compiles.
+
+    Only a bNNNN REST answer is taken: /releases/latest resolves by make_latest, which
+    upstream points at a pointer release packaging no prebuilt, and the source build
+    must compile the version the prebuilt path would have installed.
+    """
+    rest_tag = ""
+    try:
+        payload = fetch_json(UPSTREAM_RELEASES_API)
+        tag = payload.get("tag_name")
+        if isinstance(tag, str) and tag:
+            rest_tag = tag
+            if is_release_tag_like(tag):
+                return tag
+            reason: Exception = RuntimeError(
+                f"{UPSTREAM_RELEASES_API} named {tag}, which is not a build release"
+            )
+        else:
+            reason = RuntimeError(f"latest release tag was missing from {UPSTREAM_RELEASES_API}")
+    except RELEASE_LISTING_TRANSPORT_ERRORS as exc:
+        # A tokenless 403 surfaces as the RuntimeError fetch_json raises for a rate limit.
+        reason = exc
+    if not _web_fallback_eligible(UPSTREAM_REPO):
+        if rest_tag:
+            return rest_tag
+        raise reason
+    try:
+        tags = upstream_web_release_tags(UPSTREAM_REPO, limit = 10)
+    except Exception as exc:  # noqa: BLE001 - the REST cause is the one worth reporting
+        if rest_tag:
+            log(f"could not resolve a build tag from the release feed ({exc}); using {rest_tag}")
+            return rest_tag
+        raise RuntimeError(f"{reason}; release feed fallback also failed: {exc}") from reason
+    if tags:
+        log(f"resolved the latest upstream build tag {tags[0]} from the release feed")
+        return tags[0]
+    if rest_tag:
+        log(f"the release feed listed no build tag; using {rest_tag}")
+        return rest_tag
+    raise reason
 
 
 def is_release_tag_like(value: str | None) -> bool:
@@ -1051,13 +1106,91 @@ def release_time_sort_key(release: dict[str, Any]) -> tuple[str, int]:
     return (timestamp, normalized_id)
 
 
+def release_is_selectable(repo: str, release: dict[str, Any]) -> bool:
+    """Whether a listed release may be planned against. A draft never is.
+
+    Nor is a prerelease, except an upstream bNNNN build: ggml-org marks every one of
+    them prerelease, so the plain rule strands the upstream path hundreds of builds
+    back on the newest release that is not one, and those publish no prebuilt at all.
+    """
+    if release.get("draft"):
+        return False
+    if repo == UPSTREAM_REPO:
+        # Upstream ships binaries only under bNNNN, and marks every one of them
+        # prerelease. Both halves matter: accepting the prerelease is what stops the
+        # path stranding hundreds of builds back, and refusing the versioned pointer
+        # releases is what stops one of them being named newest by the freshness check
+        # while the planner walks past it for want of an asset.
+        return is_release_tag_like(release.get("tag_name"))
+    return not release.get("prerelease")
+
+
+def _web_fallback_eligible(repo: str) -> bool:
+    """Whether <repo> may be resolved through github.com when the REST API is down.
+
+    Upstream only. The fork already has its own API-free path through the download
+    host (_download_host_resolved_release), and any other repo could publish assets
+    this parser has never seen.
+    """
+    return repo == UPSTREAM_REPO and _download_host_resolve_enabled()
+
+
+def _web_release_or_raise(repo: str, tag: str, reason: Exception) -> dict[str, Any]:
+    try:
+        release = web_release_payload(repo, tag)
+    except Exception as exc:  # noqa: BLE001 - report both causes, neither alone explains it
+        raise RuntimeError(f"{reason}; release page fallback also failed: {exc}") from reason
+    log(
+        f"GitHub REST release listing failed ({reason}); resolved {repo}@{tag} "
+        "from its release page instead"
+    )
+    return release
+
+
+def _web_release_payloads(repo: str, reason: Exception) -> Iterable[dict[str, Any]]:
+    """Recent upstream releases, newest first, with no api.github.com call.
+
+    Lazy, one page at a time, so the caller's older-release walk-back still works and
+    only the releases actually looked at cost a request.
+    """
+    try:
+        tags = upstream_web_release_tags(repo, limit = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES * 4)
+    except Exception as exc:  # noqa: BLE001 - report both causes
+        raise RuntimeError(f"{reason}; release feed fallback also failed: {exc}") from reason
+    if not tags:
+        raise RuntimeError(
+            f"{reason}; the release feed for {repo} listed no build tags"
+        ) from reason
+    log(
+        f"GitHub REST release listing failed ({reason}); resolved {len(tags)} recent "
+        f"{repo} releases from the release feed instead"
+    )
+    for tag in tags:
+        try:
+            release = web_release_payload(repo, tag)
+        except Exception as exc:  # noqa: BLE001 - one unreadable release is not the end of the walk
+            log(f"skipping {repo}@{tag}: {exc}")
+            continue
+        # The REST listing's rule, on a status read rather than assumed, so the two
+        # paths cannot select differently.
+        if not release_is_selectable(repo, release):
+            log(f"skipping {repo}@{tag}: not selectable (prerelease or draft)")
+            continue
+        yield release
+
+
 def iter_release_payloads_by_time(
     repo: str,
     published_release_tag: str = "",
     requested_tag: str = "",
 ) -> Iterable[dict[str, Any]]:
     if published_release_tag:
-        yield github_release(repo, published_release_tag)
+        try:
+            yield github_release(repo, published_release_tag)
+        except RELEASE_LISTING_TRANSPORT_ERRORS as exc:
+            if not _web_fallback_eligible(repo):
+                raise
+            yield _web_release_or_raise(repo, published_release_tag, exc)
         return
 
     if requested_tag and requested_tag != "latest" and is_release_tag_like(requested_tag):
@@ -1065,17 +1198,37 @@ def iter_release_payloads_by_time(
             yield github_release(repo, requested_tag)
             return
         except urllib.error.HTTPError as exc:
+            # HTTPError subclasses URLError, so this clause shadows the one below and
+            # must route the fallback itself; a 404 tag has no page to read either.
             if exc.code == 404:
                 log(f"release tag {requested_tag} not found in {repo}; scanning recent releases")
+            elif _web_fallback_eligible(repo):
+                yield _web_release_or_raise(repo, requested_tag, exc)
+                return
             else:
                 raise
+        except RELEASE_LISTING_TRANSPORT_ERRORS as exc:
+            # A named release is one page, so a pin is what this path serves best; the
+            # macOS-floor pin (b9415) reaches here.
+            if not _web_fallback_eligible(repo):
+                raise
+            yield _web_release_or_raise(repo, requested_tag, exc)
+            return
         except Exception:
             raise
 
+    try:
+        listing = github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
+    except RELEASE_LISTING_TRANSPORT_ERRORS as exc:
+        if not _web_fallback_eligible(repo):
+            raise
+        yield from _web_release_payloads(repo, exc)
+        return
+
     releases = [
         release
-        for release in github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
-        if isinstance(release, dict) and not release.get("draft") and not release.get("prerelease")
+        for release in listing
+        if isinstance(release, dict) and release_is_selectable(repo, release)
     ]
     releases.sort(key = release_time_sort_key, reverse = True)
     for release in releases:
@@ -8460,18 +8613,18 @@ def prebuilt_full_check_requested() -> bool:
     )
 
 
-def _newest_release_tag_from_releases(releases: "Iterable[Any]") -> "str | None":
+def _newest_release_tag_from_releases(repo: str, releases: "Iterable[Any]") -> "str | None":
     """The newest published release tag by published_at, the ordering _select uses.
 
-    Mirrors iter_release_payloads_by_time's sort (release_time_sort_key, drafts and
-    prereleases dropped) so the two cannot answer differently from the same payload.
+    Mirrors iter_release_payloads_by_time's sort and its repo-aware selectability rule,
+    hence the repo: answering differently here reports the freshly installed build as
+    stale and reinstalls it on every update run.
     """
     published = [
         release
         for release in releases
         if isinstance(release, dict)
-        and not release.get("draft")
-        and not release.get("prerelease")
+        and release_is_selectable(repo, release)
         and isinstance(release.get("tag_name"), str)
         and release.get("tag_name")
     ]
@@ -8489,7 +8642,7 @@ def _api_newest_release_tag(repo: str) -> "str | None":
     """
     try:
         return _newest_release_tag_from_releases(
-            github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
+            repo, github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
         )
     except Exception as exc:  # noqa: BLE001 - unreachable is a reason to do the work
         log(f"could not resolve the latest release from the GitHub API ({exc})")
@@ -8521,7 +8674,7 @@ def _api_newest_release_tag_for_upstream(
             or release["tag_name"] == recorded_release
         )
     ]
-    return _newest_release_tag_from_releases(matching)
+    return _newest_release_tag_from_releases(repo, matching)
 
 
 def _memoized_api_newest_release_tag(repo: str) -> "str | None":
@@ -8543,7 +8696,7 @@ def _memoized_api_newest_release_tag(repo: str) -> "str | None":
         url = key[1]
         if isinstance(url, str) and url.startswith(prefix) and isinstance(payload, list):
             releases.extend(payload)
-    return _newest_release_tag_from_releases(releases) if releases else None
+    return _newest_release_tag_from_releases(repo, releases) if releases else None
 
 
 def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:
