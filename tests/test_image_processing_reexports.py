@@ -758,6 +758,45 @@ def test_the_remote_image_processor_finder_is_installed_once():
     assert installed[0].find_spec("transformers_modules.nope.not_here") is None
 
 
+def test_one_thread_inside_the_finder_does_not_blind_another():
+    """The re-entrancy guard is per thread, so a concurrent import is still patched.
+
+    Deterministic rather than a race: the guard is raised by hand on this
+    thread while another asks for a real remote module. Shared as a plain
+    attribute the second thread is told "not mine" and the module is imported
+    UNPATCHED with nothing raised, which is the failure worth pinning.
+    """
+    import shutil
+    import sys
+    import threading
+
+    from unsloth.import_fixes import _RemoteImageProcessorFinder
+
+    _unsloth_import_or_skip()
+    package, module_name = _remote_probe_package()
+    finder = _RemoteImageProcessorFinder()
+    result = {}
+
+    def ask():
+        result["spec"] = finder.find_spec(module_name)
+
+    try:
+        finder._finding.active = True
+        thread = threading.Thread(target = ask)
+        thread.start()
+        thread.join()
+        # Still guarded on the thread that raised it, or find_spec recurses.
+        result["same_thread"] = finder.find_spec(module_name)
+    finally:
+        finder._finding.active = False
+        shutil.rmtree(package, ignore_errors = True)
+        sys.modules.pop(module_name, None)
+
+    assert result["spec"] is not None
+    assert type(result["spec"].loader).__name__ == "_RemoteImageProcessorLoader"
+    assert result["same_thread"] is None
+
+
 def test_remote_code_calling_the_backend_methods_on_numpy_loads_and_runs(tmp_path):
     """End to end through `get_class_in_module`, the way a checkpoint does it.
 

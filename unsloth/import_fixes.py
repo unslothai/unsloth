@@ -1320,7 +1320,12 @@ class _RemoteImageProcessorFinder(importlib.abc.MetaPathFinder):
 
     def __init__(self):
         setattr(self, _REMOTE_IMAGE_FINDER_SENTINEL, True)
-        self._finding = False  # find_spec below walks sys.meta_path again
+        # find_spec below walks sys.meta_path again, so it has to know it is
+        # already inside itself. Thread-local, not a plain attribute: two
+        # threads importing remote modules at once (a threaded DataLoader is
+        # the realistic case) would otherwise read each other's flag, and the
+        # loser is handed back an UNPATCHED module with nothing raised.
+        self._finding = threading.local()
 
     def find_spec(
         self,
@@ -1328,15 +1333,17 @@ class _RemoteImageProcessorFinder(importlib.abc.MetaPathFinder):
         path = None,
         target = None,
     ):
-        if self._finding or not fullname.startswith(_REMOTE_IMAGE_MODULE_PREFIX):
+        if getattr(self._finding, "active", False):
             return None
-        self._finding = True
+        if not fullname.startswith(_REMOTE_IMAGE_MODULE_PREFIX):
+            return None
+        self._finding.active = True
         try:
             spec = importlib.util.find_spec(fullname)
         except Exception:
             return None
         finally:
-            self._finding = False
+            self._finding.active = False
         if spec is None or spec.loader is None:
             return None
         if not hasattr(spec.loader, "exec_module"):
