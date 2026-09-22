@@ -420,7 +420,7 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
 
 
 def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
-    helper = _ui_source(CLIPBOARD_FILES) + CLIPBOARD_PAYLOAD.read_text(encoding = "utf-8")
+    helper = _ui_source(CLIPBOARD_FILES) + _ui_source(CLIPBOARD_PAYLOAD)
     thread = _ui_source(THREAD)
     shared_composer = _ui_source(SHARED_COMPOSER)
     capabilities = _ui_source(TAURI_CAPABILITIES)
