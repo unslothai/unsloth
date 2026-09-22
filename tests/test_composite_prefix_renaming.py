@@ -22,6 +22,7 @@ on its version number: on a build that leaks they prove the fix removes the leak
 build that does not leak they prove the fix leaves it alone.
 """
 
+import os
 import sys
 
 import pytest
@@ -44,12 +45,27 @@ from unsloth.import_fixes import (  # noqa: E402
 )
 
 
+def _skip_a_stand_in(module):
+    """transformers 4.x has neither module, and importing unsloth fills the gap with inert
+    stand-ins so peft can import (`_make_peft_stub_module` in unsloth/import_fixes.py). Their
+    WeightRenaming stores its patterns and renames nothing, and their mapping function returns
+    nothing, so a test run against them measures the stand-in rather than transformers. A real
+    module is a file on disk; a stand-in's `__file__` is `<unsloth stub: ...>`."""
+    path = getattr(module, "__file__", None)
+    if not os.path.isfile(path or ""):
+        pytest.skip(
+            f"{module.__name__} is a stand-in ({path!r}), not a module this transformers ships"
+        )
+
+
 def _weight_renaming():
     """transformers 4.x has no `core_model_loading`, and so no pathology to test."""
     try:
+        from transformers import core_model_loading
         from transformers.core_model_loading import WeightRenaming
     except Exception:
         pytest.skip("this transformers has no core_model_loading.WeightRenaming")
+    _skip_a_stand_in(core_model_loading)
     return WeightRenaming
 
 
@@ -58,6 +74,7 @@ def _conversion_mapping():
         from transformers import conversion_mapping
     except Exception:
         pytest.skip("this transformers has no conversion_mapping module")
+    _skip_a_stand_in(conversion_mapping)
     if not hasattr(conversion_mapping, "get_model_conversion_mapping"):
         pytest.skip("this transformers has no get_model_conversion_mapping")
     return conversion_mapping
