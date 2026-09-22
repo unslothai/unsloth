@@ -603,9 +603,7 @@ def test_the_push_names_the_destination_and_not_the_staging_folder(saving, capsy
 def test_the_printed_destination_is_where_the_files_landed(saving, capsys, kwargs, expected):
     """A branch or pull-request upload does not appear on the repository page."""
     env, records, _ = saving
-    env["unsloth_generic_push_to_hub_merged"](
-        FullModel(), "owner/model", token = "fixture", **kwargs
-    )
+    env["unsloth_generic_push_to_hub_merged"](FullModel(), "owner/model", token = "fixture", **kwargs)
     printed = capsys.readouterr().out
     assert f"Saved model to {expected}\n" in printed, printed
 
@@ -632,11 +630,22 @@ def test_a_pickle_request_this_transformers_cannot_honour_is_reported(saving):
     class NoSafeSerialization(FullModel):
         """transformers 5's shape: named parameters, but nothing that honours the request."""
 
-        def save_pretrained(self, directory, max_shard_size = "50GB", variant = None, **kwargs):
+        def save_pretrained(
+            self,
+            directory,
+            max_shard_size = "50GB",
+            variant = None,
+            **kwargs,
+        ):
             super().save_pretrained(directory)
 
     class HonoursIt(FullModel):
-        def save_pretrained(self, directory, safe_serialization = True, **kwargs):
+        def save_pretrained(
+            self,
+            directory,
+            safe_serialization = True,
+            **kwargs,
+        ):
             super().save_pretrained(directory)
 
     class Patched(FullModel):
