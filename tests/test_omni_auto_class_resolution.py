@@ -48,7 +48,7 @@ def test_the_defect_is_real_on_this_transformers():
 
 def test_omni_resolves_to_the_class_its_family_registered():
     config = _omni_config()
-    resolved = _resolve_omni_auto_model(config, ["Qwen3OmniMoeForConditionalGeneration"])
+    resolved = _resolve_omni_auto_model(config)
     assert resolved is not None
     # and it really maps, rather than merely being a different name to fail on
     assert resolve_model_class(resolved, config) is not None
@@ -64,18 +64,28 @@ def test_ordinary_vlms_are_never_rerouted(config_name):
     assert resolve_model_class(IMAGE_TEXT_CLASS, config_class()) is not None
 
 
-def test_unmappable_config_falls_back_to_the_named_architecture():
-    """Nothing matching must return the concrete class, not None-by-accident."""
-    resolved = _resolve_omni_auto_model(
-        transformers.LlamaConfig(),
-        ["LlamaForCausalLM"],
-    )
-    assert resolved is not None
+def test_nothing_matching_returns_None_rather_than_a_concrete_class():
+    """None means "keep your own choice", so the existing error surfaces.
+
+    Returning the concrete class the checkpoint names was tried and removed: a
+    concrete class is in no auto mapping, so it fell out of the processor set
+    and downgraded a multimodal checkpoint to an AutoTokenizer.
+    """
+    assert _resolve_omni_auto_model(transformers.LlamaConfig()) is None
+    assert _resolve_omni_auto_model(object()) is None
 
 
-def test_no_architecture_and_no_mapping_returns_None():
-    """None means "keep your own choice", so the existing error surfaces."""
-    assert _resolve_omni_auto_model(object(), []) is None
+def test_every_class_the_resolver_can_return_takes_a_processor():
+    """The resolver's answer decides processor selection, so every possible
+    answer must be in the set that selects AutoProcessor."""
+    import unsloth.models.loader as loader
+
+    processor_classes = _multimodal_auto_classes()
+    for name in loader._OMNI_AUTO_CLASS_NAMES:
+        auto_class = getattr(transformers, name, None)
+        if auto_class is None:
+            continue
+        assert auto_class in processor_classes, name
 
 
 def test_speech_seq2seq_is_not_treated_as_a_vision_model():
