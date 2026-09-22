@@ -17186,18 +17186,41 @@ def _check_signal_escape_patterns(code: str):
             found = {".".join(head.split(".") + parts[1:]) for head in heads}
             return {fq for fq in found if fq in _NETWORK_MODULES}
 
+        def _functions_named_by(self, value, at) -> "set[str]":
+            """Every network FUNCTION a value can name, the counterpart of `_modules_named_by`.
+
+            Without it an assignment shed the function the way it once shed the module:
+            `from requests import get as fetch` then `fetch = fetch`, or `g = fetch`, recorded the
+            target as shadowed and left the later call with no candidate at all.
+            """
+            if isinstance(value, ast.Name):
+                return set(self.func_aliases.get(value.id) or ())
+            if isinstance(value, ast.Attribute):
+                return {
+                    fq
+                    for fq in self._fq_candidates(value, at)
+                    if any(fq.startswith(prefix) for prefix in _NETWORK_FQ_PREFIXES)
+                }
+            return set()
+
         def visit_Assign(self, node):
             if not self.collecting:
                 self.generic_visit(node)
                 return
+            at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
             carried = self._modules_named_by(node.value)
+            carried_functions = self._functions_named_by(node.value, at)
             registered: set[str] = set()
-            if carried:
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        self.module_aliases.setdefault(target.id, set()).update(carried)
-                        self._register_alias(target.id, node)
-                        registered.add(target.id)
+            for target in node.targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if carried:
+                    self.module_aliases.setdefault(target.id, set()).update(carried)
+                if carried_functions:
+                    self.func_aliases.setdefault(target.id, set()).update(carried_functions)
+                if carried or carried_functions:
+                    self._register_alias(target.id, node)
+                    registered.add(target.id)
             self._rebind(node, exempt = registered)
             self.generic_visit(node)
 

