@@ -489,8 +489,9 @@ def test_a_field_a_newer_torchao_added_is_dropped_when_it_is_inert(monkeypatch):
         return {"w.weight": object()}, {}
 
     header = {
-        "w.weight": json.dumps({"_type": "Int8Tensor", "_data": {"reduce_range": False,
-                                                                 "block_size": [1, 4]}}),
+        "w.weight": json.dumps(
+            {"_type": "Int8Tensor", "_data": {"reduce_range": False, "block_size": [1, 4]}}
+        ),
         ps.UNSLOTH_FORMAT_KEY: "fp8_v1",
     }
     pruned = ps._header_without_unconstructible_fields(
@@ -506,6 +507,7 @@ def test_a_field_a_newer_torchao_added_is_dropped_when_it_is_inert(monkeypatch):
 def test_a_field_carrying_a_real_setting_is_refused_rather_than_dropped():
     """Dropping a field that is doing something would load the weights under settings the file did
     not ask for. A refusal keeps the dense fallback, which is merely slower."""
+
     def _unflatten(tensors, header):
         raise ValueError("unexpected keyword argument 'reduce_range'")
 

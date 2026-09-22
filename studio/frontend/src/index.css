@@ -3341,6 +3341,15 @@ html[data-chat-font] .aui-root {
 	cursor: pointer;
 }
 
+/* A sidebar row is being carried. The gesture is a pointer drag, not a native one, so the
+   selection it would otherwise sweep up and the cursor off the row are ours to hold. */
+body.sidebar-row-dragging,
+body.sidebar-row-dragging * {
+	-webkit-user-select: none;
+	user-select: none;
+	cursor: grabbing !important;
+}
+
 /* Flat scrollbar chrome */
 * {
 	scrollbar-width: thin;

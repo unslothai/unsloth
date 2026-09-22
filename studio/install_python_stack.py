@@ -10396,6 +10396,51 @@ def _direct_reference_in_requirements(req: Path) -> "tuple[str, str, str] | None
 
 _COMMIT_REVISION_RE = re.compile(r"[0-9a-fA-F]{7,40}")
 
+# The hosts whose /archive/<commit>.zip is the same tree git would have cloned.
+_GITHUB_ARCHIVE_HOSTS = ("github.com", "www.github.com")
+
+
+def _github_archive_url(
+    url: str,
+    revision: str,
+    subdirectory: str = "",
+) -> "str | None":
+    """The zip GitHub serves for *revision* of *url*, or None when there is no such URL.
+
+    This is the route a host with no working git takes. pip fetches a zip over plain https and
+    needs no git binary anywhere, which is the entire point: git is absent from the desktop bundle,
+    and on macOS `git` is frequently a bare xcrun shim that exits non-zero, so the git requirement
+    is skipped on hosts whose owners have no idea they are missing anything.
+
+    Deliberately narrow, because an archive is weaker evidence than a clone:
+
+    * a FULL 40-character commit only. An archive carries no history and records no ref, so a
+      branch or tag would become "whatever that name pointed at when it was fetched" with nothing
+      left on disk to tell two fetches apart. A commit has no such ambiguity, and the SHA is in the
+      URL, so the recorded url IS the provenance.
+    * github.com over http(s) only. Every other forge spells its archive differently, and guessing
+      wrong installs nothing rather than something wrong, but there is no reason to guess.
+    * no subdirectory. ``#subdirectory=`` is part of the package identity and this URL cannot
+      carry it, so a requirement that uses one keeps the git route and skips as before.
+    """
+    if subdirectory:
+        return None
+    if len(revision) != 40 or not _COMMIT_REVISION_RE.fullmatch(revision):
+        return None
+    scheme, separator, remainder = url.partition("://")
+    if not separator or scheme.lower() not in ("http", "https"):
+        return None
+    netloc, _, path = remainder.partition("/")
+    if netloc.lower() not in _GITHUB_ARCHIVE_HOSTS:
+        return None
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    owner, slash, repo = path.partition("/")
+    if not (owner and slash and repo) or "/" in repo:
+        return None
+    return f"https://github.com/{owner}/{repo}/archive/{revision.lower()}.zip"
+
 
 def _vcs_url_key(url: str) -> str:
     """A git URL without the trailing slash or ``.git``, which uv drops from direct_url.json.
@@ -10423,7 +10468,19 @@ def _direct_reference_is_installed(req: Path, dist_name: str) -> bool:
         return False
     vcs = payload.get("vcs_info")
     if not isinstance(vcs, dict):
-        return False
+        # The no-git route installed the same commit from a zip, which pip records as archive_info
+        # with no ref at all, so the URL is the only evidence there is. For a full commit that is
+        # exactly as strong as the vcs record, because the SHA is IN the URL. Reading it matters as
+        # much as writing it: without this the archive build is never recognised as resident, so
+        # _diffusers_main_supersedes_release reads the main build as absent, the RELEASE pin
+        # reinstalls over it on the very next pass, and a git-less host silently loses the build it
+        # was just given. Measured, not theorised: the zip went in, the next update put 0.40.0 back.
+        archive = _github_archive_url(url, revision, subdirectory)
+        return (
+            archive is not None
+            and isinstance(payload.get("archive_info"), dict)
+            and str(payload.get("url") or "") == archive
+        )
     if not (
         _vcs_url_key(str(payload.get("url") or "")) == _vcs_url_key(url)
         and str(vcs.get("requested_revision") or "") == revision
@@ -10550,13 +10607,20 @@ def _diffusers_main_supersedes_release() -> bool:
     return _diffusers_main_requested() and _diffusers_main_resident()
 
 
+def _diffusers_main_archive(req: Path) -> "str | None":
+    """The zip route 11c takes on a host with no working git, or None when it has none."""
+    wanted = _direct_reference_in_requirements(req)
+    return _github_archive_url(*wanted) if wanted is not None else None
+
+
 def _diffusers_main_needs_dependency_pass() -> bool:
     """For the setup fast path: is the resident Diffusers the wrong one for the requested mode?
 
     The fast path skips this script whenever the core package is current, so without this an
     install that never ran 11c (updated by an installer that predates it, or opted back in) stays
     on the release until the next version bump. The same gates as 11c decide whether the pass
-    could install the build at all, so a host without git keeps its fast path. A pass that tried
+    could install the build at all, so a host with neither git nor the zip route keeps its fast
+    path. A pass that tried
     and failed records "failed" and also keeps it: without that, a host that cannot reach
     github.com would repeat the whole dependency pass on every update.
     """
@@ -10566,7 +10630,9 @@ def _diffusers_main_needs_dependency_pass() -> bool:
     if not _diffusers_main_requested():
         # Opted out while the build is still resident: 11b puts the release back.
         return _diffusers_main_resident(req)
-    if sys.version_info < DIFFUSERS_MAIN_MIN_PYTHON or not _has_working_git():
+    if sys.version_info < DIFFUSERS_MAIN_MIN_PYTHON:
+        return False
+    if not _has_working_git() and _diffusers_main_archive(req) is None:
         return False
     if _diffusers_main_resident(req):
         return False
@@ -10615,14 +10681,23 @@ def _diffusers_main_step() -> None:
     if not req.is_file():
         _progress("diffusers main (skipped, no pin file)")
         return
+    # The zip route, taken ONLY when git cannot do the job. Not the default: a clone records the
+    # ref in direct_url.json and an archive records only a URL, and the git URL is what the pin
+    # file is written in. But "no git" is the common case, not the exotic one (the desktop bundle
+    # ships no git, and a macOS `git` that is an unconfigured xcrun shim exits non-zero), and
+    # skipping there costs the newest model family on a host that could have fetched the same tree
+    # over plain https. None when the pin is not a full GitHub commit, which keeps the old skip.
+    archive = None
     if not _has_working_git():
-        _progress("diffusers main (skipped, no git)")
-        _note(
-            "No working git, so this install keeps the pinned Diffusers release instead of the "
-            "pinned main build. Everything else works; models that need an unreleased Diffusers "
-            "will refuse with a message naming the version they want.",
-        )
-        return
+        archive = _diffusers_main_archive(req)
+        if archive is None:
+            _progress("diffusers main (skipped, no git)")
+            _note(
+                "No working git, so this install keeps the pinned Diffusers release instead of "
+                "the pinned main build. Everything else works; models that need an unreleased "
+                "Diffusers will refuse with a message naming the version they want.",
+            )
+            return
     # The escape hatch reaches this skip too. UNSLOTH_STUDIO_FULL_DEPS is the documented way to
     # repair an install whose evidence looks fine and whose payload is not, and _diffusers_main_resident
     # is exactly such evidence: _payload_recorded_intact compares recorded sizes, so a same-size
@@ -10631,7 +10706,7 @@ def _diffusers_main_step() -> None:
         _progress("diffusers main (satisfied, skipped)")
         _record_step("diffusers-main.txt", "skipped")
         return
-    _progress("diffusers main")
+    _progress("diffusers main (no git, from archive)" if archive else "diffusers main")
     _record_step("diffusers-main.txt", "ran")
     # pip_install_try, NOT pip_install, and this is the whole reason the step is safe to run by
     # default. pip_install exits the installer on failure, which would make a reachable github.com
@@ -10639,12 +10714,21 @@ def _diffusers_main_step() -> None:
     # over https, a transient upstream outage would each turn a working install into no install at
     # all. Diffusers is mandatory, so the failure has to be survivable, and it is exactly survivable
     # because the release pin ran first and is still resident. Degrading costs one model.
-    if not pip_install_try(
-        "Installing the pinned Diffusers main build",
-        "--no-cache-dir",
-        req = req,
-        constrain = False,
-    ):
+    if archive is not None:
+        installed = pip_install_try(
+            "Installing the pinned Diffusers main build (zip archive, no git)",
+            "--no-cache-dir",
+            f"diffusers @ {archive}",
+            constrain = False,
+        )
+    else:
+        installed = pip_install_try(
+            "Installing the pinned Diffusers main build",
+            "--no-cache-dir",
+            req = req,
+            constrain = False,
+        )
+    if not installed:
         # "failed", not "skipped": the fast path reads it to stop forcing a pass that cannot succeed.
         _record_step("diffusers-main.txt", "failed")
         _note(
