@@ -249,3 +249,26 @@ def test_a_string_model_that_can_take_the_metadata_is_left_alone(monkeypatch):
 
     assert len(injected) == 1
     assert instance.args.padding_free is True
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    [nn.DataParallel, nn.parallel.DistributedDataParallel],
+)
+def test_a_distributed_wrapper_is_unwrapped(wrapper, monkeypatch):
+    """Their forward is `(*inputs, **kwargs)`, so they answer yes for anything.
+
+    `.module` on one of these is the checkpoint itself, not the inner decoder
+    `base_model` would reach, so following it answers for the right module.
+    """
+    from unsloth.trainer import _forward_accepts_packing_kwargs as gate
+
+    inner = _NoKwargs()
+    # Built without touching device placement or process groups.
+    wrapped = wrapper.__new__(wrapper)
+    nn.Module.__init__(wrapped)
+    wrapped.module = inner
+
+    assert gate(wrapped.module) is False, "the negative control"
+    assert gate(wrapped) is False
+    assert gate(_TakesKwargs()) is True

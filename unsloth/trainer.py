@@ -19,8 +19,10 @@ from types import SimpleNamespace
 from typing import Optional, List
 from functools import wraps
 
-import trl
+import importlib
 import inspect
+
+import trl
 from trl import SFTTrainer
 
 # Bypass the partially-initialised unsloth namespace during the _gpu_init load.
@@ -284,6 +286,31 @@ _HYBRID_CONFIG_MARKERS = (
 )
 
 
+def _delegating_module_wrappers():
+    """`nn.Module` wrappers whose forward is `(*inputs, **kwargs)` over a real model.
+
+    Resolved once, tolerantly: FSDP moved between torch versions and a missing
+    name must not turn the whole gate into an error.
+    """
+    import torch
+
+    found = []
+    for module_path, name in (
+        ("torch.nn.parallel", "DataParallel"),
+        ("torch.nn.parallel", "DistributedDataParallel"),
+        ("torch.distributed.fsdp", "FullyShardedDataParallel"),
+    ):
+        try:
+            found.append(getattr(importlib.import_module(module_path), name))
+        except Exception:
+            continue
+    del torch
+    return tuple(found)
+
+
+_DELEGATING_MODULE_WRAPPERS = _delegating_module_wrappers()
+
+
 def _forward_accepts_packing_kwargs(model) -> bool:
     """Can this model's forward be handed the packing metadata at all?
 
@@ -307,6 +334,16 @@ def _forward_accepts_packing_kwargs(model) -> bool:
     # **kwargs and answer for a model that does not.
     target = model
     for _ in range(4):
+        # The distributed wrappers delegate the same way: their forward is
+        # `(*inputs, **kwargs)`, so they answer yes for whatever they hold.
+        # `.module` on one of these IS the checkpoint, not an inner decoder,
+        # and the isinstance is exact so nothing else with a `.module`
+        # attribute is followed.
+        if isinstance(target, _DELEGATING_MODULE_WRAPPERS):
+            inner = getattr(target, "module", None)
+            if inner is not None and inner is not target:
+                target = inner
+                continue
         # PEFT's own unwrap only. `PreTrainedModel.base_model` is a property
         # returning the inner decoder, whose forward usually does take
         # **kwargs, so following it would answer for the wrong module.
