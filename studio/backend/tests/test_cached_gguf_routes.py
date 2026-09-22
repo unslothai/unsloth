@@ -2602,11 +2602,12 @@ def test_legacy_gguf_progress_delegates_to_shared_service(monkeypatch):
     assert calls == [("org/repo", "Q4_K_M", 20, "token")]
 
 
-def test_legacy_model_progress_delegates_to_shared_service(monkeypatch):
+@pytest.mark.parametrize("mlx_load", [False, True])
+def test_legacy_model_progress_delegates_to_shared_service(monkeypatch, mlx_load):
     calls = []
 
-    async def shared(repo_id, *, hf_token):
-        calls.append((repo_id, hf_token))
+    async def shared(repo_id, *, hf_token, mlx_load):
+        calls.append((repo_id, hf_token, mlx_load))
         return {"downloaded_bytes": 10, "expected_bytes": 20, "progress": 0.5}
 
     monkeypatch.setattr(
@@ -2619,11 +2620,12 @@ def test_legacy_model_progress_delegates_to_shared_service(monkeypatch):
             repo_id = "org/repo",
             hf_token = "token",
             current_subject = "test-user",
+            mlx_load = mlx_load,
         )
     )
 
     assert result["progress"] == 0.5
-    assert calls == [("org/repo", "token")]
+    assert calls == [("org/repo", "token", mlx_load)]
 
 
 def test_legacy_delete_delegates_to_shared_service(monkeypatch):
