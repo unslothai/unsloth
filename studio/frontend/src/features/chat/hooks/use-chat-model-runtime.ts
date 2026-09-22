@@ -69,6 +69,10 @@ import {
   validateModel,
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
+import {
+  ownsModelLoadRun,
+  releaseOwnedModelLoadRun,
+} from "../utils/model-load-run";
 import { confirmStopRunningChatsIfNeeded } from "../utils/confirm-stop-running-chats";
 import {
   requestLocalPromptQueueStop,
@@ -159,6 +163,39 @@ import type {
   ChatModelRow,
 } from "../types/runtime";
 
+type LoadingModelState = {
+  id: string;
+  displayName: string;
+  isDownloaded?: boolean;
+  isCachedLora?: boolean;
+  ggufVariant?: string | null;
+  nativePathToken?: string | null;
+};
+
+/** One attempt at claiming the single shared load slot. Its token lets late async
+ *  callbacks prove the slot is still theirs before they touch shared loading state. */
+type ActiveModelLoadRun = {
+  attemptId: number;
+  intentId: number;
+  abortController: AbortController;
+  /** Stable ID sent as `load_request_id` on this run's /load and matched by
+   *  `cancel_load_request_id` on /unload, so a cancel binds to this attempt and to
+   *  no other surface's load. */
+  requestId: string;
+  /** The exact model_path this run POSTed to /load. /unload must name the same
+   *  target or the scoped cancel cannot match the registered attempt. */
+  loadAttemptPath: string | null;
+  cancelPromise: Promise<boolean> | null;
+  rollbackCheckpoint: string | null;
+  rollbackConfig?: PerModelConfig;
+};
+
+/** The selection the user last asked for, so an await can tell it was superseded. */
+let modelSelectionIntentEpoch = 0;
+let latestExternalSelectionIntentId: number | null = null;
+let pendingExternalReplacement:
+  | { intentId: number; config?: PerModelConfig }
+  | null = null;
 export type SelectedModelInput = {
   id: string;
   /** Sent as model_path in place of the id, which stays the identity the UI shows. */
@@ -233,6 +270,14 @@ function sameGpuSelection(
 }
 
 const approvedRemoteCodeFingerprints = new Map<string, string>();
+type PendingReplacementRollback = {
+  checkpoint: string | null;
+  config?: PerModelConfig;
+};
+
+// Cancellation can finish after a newer selection intent has already started, so the
+// rollback target the replacement inherits is retained until the winner reserves its run.
+let pendingReplacementRollback: PendingReplacementRollback | null = null;
 function rememberApprovedRemoteCode(
   checkpoint: string,
   fingerprint: string | null,
@@ -723,6 +768,9 @@ export function useChatModelRuntime() {
   const loadToastDismissedRef = useRef(false);
   const cancelUnloadPendingRef = useRef(false);
   const loadLifecycleLeaseRef = useRef<ModelLifecycleLease | null>(null);
+  // The run that owns the single shared load slot. Async callbacks compare their own
+  // token against it, so a superseded run cannot release a newer run's slot.
+  const activeLoadRunRef = useRef<ActiveModelLoadRun | null>(null);
 
   const setLoadToastDismissedState = useCallback((dismissed: boolean) => {
     loadToastDismissedRef.current = dismissed;
@@ -748,6 +796,21 @@ export function useChatModelRuntime() {
       }
     }
   }, [setLoadToastDismissedState]);
+
+  const resetLoadingUiForRun = useCallback(
+    (run: ActiveModelLoadRun) => {
+      if (!ownsModelLoadRun(activeLoadRunRef.current, run)) return;
+      // Cancellation owns the slot until /unload settles. The aborted load's
+      // finally block may arrive first, but must not release that slot.
+      if (run.cancelPromise) return;
+      activeLoadRunRef.current = releaseOwnedModelLoadRun(
+        activeLoadRunRef.current,
+        run,
+      );
+      resetLoadingUi();
+    },
+    [resetLoadingUi],
+  );
 
   const renderLoadDescription = useCallback(
     (
@@ -810,48 +873,181 @@ export function useChatModelRuntime() {
     [refresh],
   );
 
-  const cancelLoading = useCallback(() => {
-    const model = loadingModelRef.current;
-    if (!model) return;
-    notifyLocalPromptQueueLoadFailed(loadLifecycleLeaseRef.current);
-    loadAbortRef.current?.abort();
-    loadAbortRef.current = null;
-    loadingModelRef.current = null;
-    useChatRuntimeStore.getState().clearLoadingModelPick(pickOf(model));
-    const tid = loadToastIdRef.current;
-    loadToastIdRef.current = null;
-    setLoadingModel(null);
-    setLoadProgress(null);
-    setLoadToastDismissedState(false);
-    clearCheckpoint();
-    if (tid != null) toast.dismiss(tid);
-    const isCachedOrLocal = model.isDownloaded || model.isCachedLora;
-    toast.info("Stopped loading model", {
-      description: isCachedOrLocal
-        ? undefined
-        : "The current download may still finish in the background.",
-    });
-    cancelUnloadPendingRef.current = true;
-    void (async () => {
-      try {
-        // Unforced on purpose: a chat may stream on the PREVIOUS model and must not be killed by
-        // cancelling this load. Nothing to report, since the route runs its stop-loading path first.
-        await unloadModel({ model_path: model.id }).catch(() => {});
-        // clearCheckpoint above assumed nothing was left loaded, but a forced switch keeps the previous
-        // model resident until /load's teardown. Take the answer from the backend.
-        await syncInferenceStatusToStore().catch(() => {});
-      } finally {
-        cancelUnloadPendingRef.current = false;
-        if (!loadingModelRef.current) {
-          const lease = loadLifecycleLeaseRef.current;
-          loadLifecycleLeaseRef.current = null;
-          if (lease !== null) {
-            useChatRuntimeStore.getState().endModelLoading(lease);
+  /**
+   * Stop the run that owns the slot and wait for the backend to acknowledge it.
+   *
+   * The abort signal alone cannot stop a load that is already POSTing, so /unload
+   * is what actually interrupts it. Awaiting that answer is what lets a replacement
+   * claim the slot without racing the load it replaces.
+   */
+  const cancelLoadRun = useCallback(
+    async (
+      expectedRun?: ActiveModelLoadRun,
+      preserveCheckpoint = false,
+    ): Promise<boolean> => {
+      const run = activeLoadRunRef.current;
+      if (!run || (expectedRun && !ownsModelLoadRun(run, expectedRun))) {
+        return false;
+      }
+      if (run.cancelPromise) return run.cancelPromise;
+
+      const model = loadingModelRef.current;
+      run.abortController.abort();
+      loadAbortRef.current = null;
+      loadingModelRef.current = null;
+      const tid = loadToastIdRef.current;
+      loadToastIdRef.current = null;
+      setLoadingModel(null);
+      setLoadProgress(null);
+      setLoadToastDismissedState(false);
+      if (tid != null) toast.dismiss(tid);
+      if (model) {
+        useChatRuntimeStore.getState().clearLoadingModelPick(pickOf(model));
+      }
+      const isCachedOrLocal = model?.isDownloaded || model?.isCachedLora;
+      toast.info("Stopping model load", {
+        description: isCachedOrLocal
+          ? undefined
+          : "The current download may still finish in the background.",
+      });
+      const cancelPromise = (async (): Promise<boolean> => {
+        try {
+          // Unforced on purpose: a chat may stream on the PREVIOUS model and must not
+          // be killed by cancelling this load. The route cancels a still-loading
+          // model ahead of its active-generation refusal.
+          //
+          // Scoped to this run, and only once it has actually POSTed /load: the
+          // matching cancel_load_request_id binds the unload to this attempt alone,
+          // and a load whose registration has not landed yet is replayed from the
+          // backend's cancel tombstone. The old second, unscoped /unload is exactly
+          // what let cancellation race the load it was meant to stop.
+          if (run.loadAttemptPath) {
+            await unloadModel({
+              model_path: run.loadAttemptPath,
+              cancel_load_request_id: run.requestId,
+            });
+          }
+          // A standalone cancellation can race before the target reaches the backend.
+          // /unload then leaves the resident model untouched, so derive the UI
+          // checkpoint from the backend rather than clearing it optimistically.
+          if (!preserveCheckpoint) {
+            clearCheckpoint();
+            await refresh();
+          }
+          return true;
+        } catch (error) {
+          const detail =
+            error instanceof Error ? error.message : "Unknown unload error";
+          const message = `Failed to stop ${model?.displayName ?? "the model"}`;
+          setModelsError(`${message}: ${detail}`);
+          toast.error(message, { description: detail });
+          // The request failed, so reconcile against the backend before releasing the
+          // slot. The caller still receives false and must not start a replacement
+          // from an uncertain backend state.
+          try {
+            await refresh();
+            setModelsError(`${message}: ${detail}`);
+          } catch (refreshError) {
+            const refreshDetail =
+              refreshError instanceof Error
+                ? refreshError.message
+                : "Unknown status refresh error";
+            setModelsError(
+              `${message}: ${detail}. Failed to refresh model status: ${refreshDetail}`,
+            );
+          }
+          return false;
+        } finally {
+          if (ownsModelLoadRun(activeLoadRunRef.current, run)) {
+            activeLoadRunRef.current = releaseOwnedModelLoadRun(
+              activeLoadRunRef.current,
+              run,
+            );
+            const lease = loadLifecycleLeaseRef.current;
+            loadLifecycleLeaseRef.current = null;
+            if (lease !== null) {
+              useChatRuntimeStore.getState().endModelLoading(lease);
+            }
           }
         }
+      })();
+      run.cancelPromise = cancelPromise;
+      return cancelPromise;
+    },
+    [clearCheckpoint, refresh, setLoadToastDismissedState, setModelsError],
+  );
+
+  const cancelLoadingWithCheckpointPolicy = useCallback(
+    (preserveCheckpoint = false): Promise<boolean> => {
+      const run = activeLoadRunRef.current;
+      return run
+        ? cancelLoadRun(run, preserveCheckpoint)
+        : Promise.resolve(false);
+    },
+    [cancelLoadRun],
+  );
+
+  const cancelLoading = useCallback(
+    (): Promise<boolean> => cancelLoadingWithCheckpointPolicy(false),
+    [cancelLoadingWithCheckpointPolicy],
+  );
+
+  /**
+   * Stop the pending load so a different pick can take the slot. Preserves the
+   * working checkpoint, which the replacement needs as its rollback target.
+   */
+  const cancelLoadingForReplacement = useCallback(
+    async (intentId: number): Promise<boolean> => {
+      const run = activeLoadRunRef.current;
+      pendingExternalReplacement = { intentId, config: run?.rollbackConfig };
+      const stopped = await cancelLoadingWithCheckpointPolicy(true);
+      // The load can finish after the caller observed its store flags but before
+      // cancellation captured the run. With no owner left there is nothing uncertain
+      // to stop, so the replacement may proceed.
+      if (!stopped && !activeLoadRunRef.current) {
+        return true;
       }
-    })();
-  }, [clearCheckpoint, setLoadToastDismissedState]);
+      if (!stopped && pendingExternalReplacement?.intentId === intentId) {
+        pendingExternalReplacement = null;
+      }
+      return stopped;
+    },
+    [cancelLoadingWithCheckpointPolicy],
+  );
+
+  const invalidatePendingModelSelection = useCallback((): number => {
+    modelSelectionIntentEpoch += 1;
+    latestExternalSelectionIntentId = modelSelectionIntentEpoch;
+    return modelSelectionIntentEpoch;
+  }, []);
+
+  const discardExternalReplacement = useCallback((intentId: number): void => {
+    if (pendingExternalReplacement?.intentId === intentId) {
+      pendingExternalReplacement = null;
+    }
+  }, []);
+
+  const restoreConfigForExternalReplacement = useCallback(
+    (intentId: number): void => {
+      const config =
+        (pendingExternalReplacement?.intentId === intentId
+          ? pendingExternalReplacement.config
+          : undefined) ?? pendingReplacementRollback?.config;
+      if (config) {
+        applyPerModelConfigToRuntime(config, {
+          isDiffusion: useChatRuntimeStore.getState().loadedIsDiffusion,
+        });
+      }
+      discardExternalReplacement(intentId);
+      pendingReplacementRollback = null;
+    },
+    [discardExternalReplacement],
+  );
+
+  const isModelSelectionIntentCurrent = useCallback(
+    (intentId: number) => modelSelectionIntentEpoch === intentId,
+    [],
+  );
 
   const selectModel = useCallback(
     async (selection: string | SelectedModelInput) => {
@@ -872,9 +1068,11 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? undefined : selection.isGguf;
       let isDiffusion =
         typeof selection === "string" ? undefined : selection.isDiffusion;
+      let previousConfigForReplacement =
+        typeof selection === "string" ? undefined : selection.previousConfig;
       const restorePreviousConfig = () => {
-        if (typeof selection !== "string" && selection.previousConfig) {
-          applyPerModelConfigToRuntime(selection.previousConfig, {
+        if (previousConfigForReplacement) {
+          applyPerModelConfigToRuntime(previousConfigForReplacement, {
             isDiffusion:
               useChatRuntimeStore.getState().loadedIsDiffusion,
           });
@@ -885,40 +1083,120 @@ export function useChatModelRuntime() {
       const keepSpeculative =
         typeof selection === "string" ? false : selection.keepSpeculative ?? false;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
-      if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
+      const initiallyLoadingSamePick =
+        loadingModelRef.current?.id === modelId &&
+        (loadingModelRef.current?.ggufVariant ?? null) === (ggufVariant ?? null) &&
+        (loadingModelRef.current?.nativePathToken ?? null) ===
+          (nativePathToken ?? null);
+      if (
+        !forceReload &&
+        (!modelId ||
+          (params.checkpoint === modelId &&
+            (ggufVariant ?? null) === (currentVariant ?? null) &&
+            !loadingModelRef.current &&
+            !useChatRuntimeStore.getState().loadingModelPick &&
+            !pendingReplacementRollback))
+      ) {
+        // A resident-model re-selection is still a user intent. Invalidate a local pick
+        // that may be awaiting status or a confirmation before it owns a run.
+        if (modelId) modelSelectionIntentEpoch += 1;
+        restorePreviousConfig();
+        return;
+      }
+      if (
+        initiallyLoadingSamePick &&
+        !activeLoadRunRef.current?.cancelPromise
+      ) {
         restorePreviousConfig();
         return;
       }
       dismissStartToastsForModelSelection();
 
-      // A load is already in flight. If it is this exact pick (id + variant + token), ignore the
-      // duplicate click. If it is a DIFFERENT model, including a different GGUF variant of the same repo,
-      // do not start a second concurrent load and do not swallow the request: surface it so the user
-      // waits or cancels. Centralized here so every entry point is covered.
-      const bailIfLoadInFlight = (): boolean => {
+      // Register the user's intent before awaiting cancellation. A superseded run's
+      // error cleanup must not restore its previous config over settings the new
+      // caller has already applied.
+      const loadIntentId = ++modelSelectionIntentEpoch;
+      if (pendingReplacementRollback?.config) {
+        previousConfigForReplacement = pendingReplacementRollback.config;
+      }
+      // The cancelled run's own rollback target is the model that was working before
+      // it, not the transient state it may already have applied. Adopt that target,
+      // or a failed replacement restores the wrong model's runtime settings.
+      const inheritCancelledRunRollback = (cancelledRun: ActiveModelLoadRun) => {
+        if (cancelledRun.rollbackConfig) {
+          previousConfigForReplacement = cancelledRun.rollbackConfig;
+        }
+        pendingReplacementRollback = {
+          checkpoint: cancelledRun.rollbackCheckpoint,
+          config: previousConfigForReplacement,
+        };
+      };
+
+      // A different pick supersedes the load in flight. Await its cancellation and the
+      // backend unload before claiming the slot, then re-check: the load can settle
+      // between the two, and another selection may be waiting on the same run.
+      while (true) {
+        const activeRun = activeLoadRunRef.current;
         const inFlightLoad =
           loadingModelRef.current ??
           useChatRuntimeStore.getState().loadingModelPick;
-        if (!inFlightLoad) return false;
-        // The helper form, not an inline apply: it also carries the loaded diffusion flag, which the
-        // restored config needs.
-        restorePreviousConfig();
+        if (!inFlightLoad) break;
         const loadingSamePick =
           inFlightLoad.id === modelId &&
           (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
           (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
-        if (loadingSamePick) return true;
-        const message =
-          "Another model is already loading. Wait for it to finish or cancel it first.";
-        setModelsError(message);
-        if (throwOnError) throw new Error(message);
-        toast.info("Another model is already loading", {
-          description: "Wait for it to finish or cancel it first.",
-        });
-        return true;
-      };
-      if (bailIfLoadInFlight()) return;
+        if (loadingSamePick && !activeRun?.cancelPromise) {
+          restorePreviousConfig();
+          return;
+        }
+        if (!activeRun) {
+          // Published to the store but no run owns it yet: the other caller is still
+          // in preflight, so this pick cannot safely take the slot from it.
+          restorePreviousConfig();
+          return;
+        }
+        // Keep the working checkpoint as the rollback target for the replacement.
+        // A standalone Stop still clears the selection.
+        inheritCancelledRunRollback(activeRun);
+        const stopped = await cancelLoadRun(activeRun, true);
+        // Cancellation can settle after the slot is released, so adopt the target
+        // again from the run the cancel was asked about.
+        inheritCancelledRunRollback(activeRun);
+        if (modelSelectionIntentEpoch !== loadIntentId) {
+          if (throwOnError) {
+            throw new Error("Model selection was superseded by a newer choice.");
+          }
+          return;
+        }
+        if (!stopped) {
+          restorePreviousConfig();
+          const message =
+            "The current model could not be stopped, so the new model was not loaded.";
+          setModelsError(message);
+          if (throwOnError) throw new Error(message);
+          return;
+        }
+      }
 
+      // A local pick that is superseded by a later selection must not keep the slot.
+      // The replacement loop only judges the load present when it ran. A rival pick can
+      // still claim the slot during the awaits below, and it owns the resident model
+      // now, so the adopt and confirm paths must yield to it rather than adopt over it.
+      const rivalLoadStarted = (): boolean => {
+        const rival = useChatRuntimeStore.getState().loadingModelPick;
+        if (!rival) return false;
+        return !(
+          rival.id === modelId &&
+          (rival.ggufVariant ?? null) === (ggufVariant ?? null) &&
+          (rival.nativePathToken ?? null) === (nativePathToken ?? null)
+        );
+      };
+      if (modelSelectionIntentEpoch !== loadIntentId) {
+        if (throwOnError) {
+          throw new Error("Model selection was superseded by a newer choice.");
+        }
+        return;
+      }
       // Ask the backend, not params.checkpoint: an external pick leaves the local model resident, and
       // a pinned cached row loads under a name its picker row never shows.
       // A staged config always carries forceReload, so Apply still reloads and prompts.
@@ -1029,7 +1307,6 @@ export function useChatModelRuntime() {
             },
             parallelSlots: managedFlags?.defaultParallelSlots || null,
             // Never a config field, so the store is the only place it can come from, and the reset clears it
-            // before the load reads it.
             splitRatio: resetsPerModelSettings
               ? null
               : useChatRuntimeStore.getState().splitRatio,
@@ -1058,7 +1335,7 @@ export function useChatModelRuntime() {
           if (confirmedStatus && adoptable(confirmedStatus)) {
             // Same window as the confirm below: a rival load may have started during that GET, and it owns
             // the resident model now.
-            if (bailIfLoadInFlight()) return;
+            if (rivalLoadStarted()) return;
             // Roll back the config pre-applied for the load that is not happening, before hydrating, so the
             // resident status wins over the staged snapshot. The helper carries the diffusion flag.
             restorePreviousConfig();
@@ -1159,7 +1436,7 @@ export function useChatModelRuntime() {
       }
       // Re-check the tracked picker for a load that was already starting when this lifecycle lease was acquired.
       try {
-        if (bailIfLoadInFlight()) {
+        if (rivalLoadStarted()) {
           releasePreflightLifecycleLease();
           return;
         }
@@ -1190,11 +1467,18 @@ export function useChatModelRuntime() {
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
       const displayName = model?.name || lora?.name || modelId;
       const toastDisplayName = shortModelLabel(displayName);
-      const currentCheckpoint =
-        useChatRuntimeStore.getState().params.checkpoint;
-      const previousCheckpoint = currentCheckpoint;
-      const previousVariant =
-        useChatRuntimeStore.getState().activeGgufVariant ?? null;
+      const currentRollbackState = useChatRuntimeStore.getState();
+      const inheritedPendingRollback = pendingReplacementRollback;
+      if (inheritedPendingRollback?.config) {
+        previousConfigForReplacement = inheritedPendingRollback.config;
+      }
+      const currentCheckpoint = currentRollbackState.params.checkpoint;
+      // A replacement rolls back to the model the cancelled load was replacing, not
+      // to whatever the store holds mid-switch.
+      const previousCheckpoint = inheritedPendingRollback
+        ? inheritedPendingRollback.checkpoint
+        : currentCheckpoint;
+      const previousVariant = currentRollbackState.activeGgufVariant ?? null;
       const reloadingSameModel =
         previousCheckpoint === modelId &&
         (ggufVariant ?? null) === (previousVariant ?? null);
@@ -1237,6 +1521,23 @@ export function useChatModelRuntime() {
       loadingModelRef.current = loadInfo;
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
+      // Claim the slot for this attempt. Every late callback below proves it still
+      // owns the run before it touches shared loading state.
+      const loadRun: ActiveModelLoadRun = {
+        attemptId: loadIntentId,
+        intentId: loadIntentId,
+        abortController: abortCtrl,
+        cancelPromise: null,
+        rollbackCheckpoint: previousCheckpoint,
+        rollbackConfig: previousConfigForReplacement,
+
+        requestId: crypto.randomUUID(),
+        loadAttemptPath: null,
+      };
+      activeLoadRunRef.current = loadRun;
+      // The winning intent reserved the slot, so the inherited rollback target is
+      // no longer pending.
+      pendingReplacementRollback = null;
       let hfToken = useChatRuntimeStore.getState().hfToken || null;
       const postLoadRefresh = { needed: false };
       let progressModelIds = [modelId];
@@ -1831,8 +2132,13 @@ export function useChatModelRuntime() {
             if (lifecycleLease !== null) {
               chatModelLifecycleGate.markLoading(lifecycleLease);
             }
+            // Bind this attempt to its request ID before the POST, so a cancel that
+            // arrives first lands as a backend tombstone the load replays against.
+            loadRun.loadAttemptPath = loadPath;
+
             const loadResponse = await loadModel({
               model_path: loadPath,
+              load_request_id: loadRun.requestId,
               nativePathLease: loadNativePathLease,
               hf_token: hfToken,
               max_seq_length: loadMaxSeqLength,
@@ -2652,7 +2958,7 @@ export function useChatModelRuntime() {
           try {
             const reading = await getDownloadProgress(modelId, hfToken);
               // Re-read AFTER the await, as pollDownload does: the load can finish or be
-              // cancelled in flight, and `finally` then calls resetLoadingUi().
+              // cancelled in flight, and `finally` then calls resetLoadingUiForRun().
             if (abortCtrl.signal.aborted || !loadingModelRef.current) return false;
             const verdict = watchCacheMissDownload(cacheMissWatch, reading);
             cacheMissWatch = verdict.watch;
@@ -2742,7 +3048,7 @@ export function useChatModelRuntime() {
           throw err;
         } finally {
           if (progressInterval) clearInterval(progressInterval);
-          resetLoadingUi();
+          resetLoadingUiForRun(loadRun);
           if (postLoadRefresh.needed && !abortCtrl.signal.aborted) {
             void refreshContextUsage({ afterModelLoad: true });
           }
@@ -2750,7 +3056,7 @@ export function useChatModelRuntime() {
       } catch (error) {
         restorePreviousConfig();
         if (abortCtrl.signal.aborted) return; // User cancelled, nothing to report
-        resetLoadingUi();
+        resetLoadingUiForRun(loadRun);
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
@@ -2767,7 +3073,7 @@ export function useChatModelRuntime() {
       params.checkpoint,
       refresh,
       renderLoadDescription,
-      resetLoadingUi,
+      resetLoadingUiForRun,
       setLoadToastDismissedState,
       setModelsError,
       setLastModelLoadError,
@@ -2850,6 +3156,11 @@ export function useChatModelRuntime() {
     selectModel,
     ejectModel,
     cancelLoading,
+    cancelLoadingForReplacement,
+    invalidatePendingModelSelection,
+    discardExternalReplacement,
+    restoreConfigForExternalReplacement,
+    isModelSelectionIntentCurrent,
     loadingModel,
     loadProgress,
     loadToastDismissed,

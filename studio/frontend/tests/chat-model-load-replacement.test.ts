@@ -1,0 +1,234 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// Replacing an in-flight chat model load: picking model B while model A is still
+// loading must stop A and start B, instead of refusing the pick. Asserted at the
+// source level because the decision lives inside a React hook whose awaits span
+// the consent dialogs, the backend unload and the load itself.
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const RUNTIME = fileURLToPath(
+  new URL("../src/features/chat/hooks/use-chat-model-runtime.ts", import.meta.url),
+);
+const CHAT_PAGE = fileURLToPath(
+  new URL("../src/features/chat/chat-page.tsx", import.meta.url),
+);
+
+function read(path: string): string {
+  return readFileSync(path, "utf8");
+}
+
+function section(source: string, start: string, end: string): string {
+  const from = source.indexOf(start);
+  assert.notEqual(from, -1, `expected to find ${start}`);
+  const to = source.indexOf(end, from + start.length);
+  assert.notEqual(to, -1, `expected to find ${end} after ${start}`);
+  return source.slice(from, to);
+}
+
+test("only the run that owns the slot may update or clear it", async () => {
+  // The helper is what makes a superseded run stop touching shared loading state.
+  const { ownsModelLoadRun, releaseOwnedModelLoadRun } = await import(
+    "../src/features/chat/utils/model-load-run.ts"
+  );
+  const run = { attemptId: 7 };
+  assert.equal(ownsModelLoadRun(run, { attemptId: 7 }), true);
+  assert.equal(ownsModelLoadRun(run, { attemptId: 8 }), false);
+  assert.equal(ownsModelLoadRun(null, { attemptId: 7 }), false);
+  // A losing run must not clear the winner's slot.
+  const other = { attemptId: 9, label: "newer" };
+  assert.equal(releaseOwnedModelLoadRun(other, { attemptId: 7 }), other);
+  assert.equal(releaseOwnedModelLoadRun(other, { attemptId: 9 }), null);
+});
+
+test("a different pick supersedes the pending load instead of being rejected", () => {
+  const runtime = read(RUNTIME);
+
+  // The old behaviour: refuse the pick and tell the user to wait.
+  assert.equal(
+    runtime.includes("Another model is already loading"),
+    false,
+    "the 'Another model is already loading' bail-out must be gone",
+  );
+
+  // The new behaviour: cancel the pending run, then keep looping so the last
+  // selection wins even when several are waiting on the same cancellation.
+  const loop = section(
+    runtime,
+    "// A different pick supersedes the load in flight.",
+    "// Ask the backend, not params.checkpoint",
+  );
+  assert.match(loop, /while \(true\) \{/);
+  assert.match(loop, /const stopped = await cancelLoadRun\(activeRun, true\);/);
+  assert.match(loop, /if \(!stopped\) \{/);
+  assert.match(loop, /if \(!inFlightLoad\) break;/);
+});
+
+test("the pending load is stopped at the backend before the replacement claims the slot", () => {
+  const runtime = read(RUNTIME);
+  const cancel = section(
+    runtime,
+    "const cancelLoadRun = useCallback(",
+    "const cancelLoadingWithCheckpointPolicy = useCallback(",
+  );
+  // An abort signal cannot stop a load that is already POSTing, so the awaited
+  // /unload is what actually interrupts it.
+  assert.match(cancel, /await unloadModel\(\{/);
+  assert.match(cancel, /model_path: run\.loadAttemptPath,/);
+  assert.match(cancel, /const cancelPromise = \(async \(\): Promise<boolean> => \{/);
+  assert.match(cancel, /return false;/);
+  assert.match(cancel, /run\.cancelPromise = cancelPromise;/);
+  // The slot is released only by the run that still owns it.
+  assert.match(cancel, /ownsModelLoadRun\(activeLoadRunRef\.current, run\)/);
+  assert.match(cancel, /releaseOwnedModelLoadRun\(/);
+});
+
+test("the matching request ID is threaded to both /load and its cancel", () => {
+  const runtime = read(RUNTIME);
+  const registration = section(
+    runtime,
+    "const loadRun: ActiveModelLoadRun = {",
+    "activeLoadRunRef.current = loadRun;",
+  );
+  // Each run owns one stable opaque ID, minted once and never reused across runs.
+  assert.match(registration, /requestId: crypto\.randomUUID\(\),/);
+  // It is sent on the load itself...
+  const load = section(runtime, "const loadResponse = await loadModel({", "});");
+  assert.match(load, /load_request_id: loadRun\.requestId,/);
+  // ...and the cancel names the same ID plus the exact path that was POSTed, so the
+  // backend binds the unload to this attempt and never to a newer same-model load.
+  const cancel = section(
+    runtime,
+    "const cancelLoadRun = useCallback(",
+    "const cancelLoadingWithCheckpointPolicy = useCallback(",
+  );
+  assert.match(cancel, /cancel_load_request_id: run\.requestId,/);
+  assert.match(cancel, /model_path: run\.loadAttemptPath,/);
+  // The path is recorded at the load boundary, so a cancel only fires for a load
+  // that actually reached the backend.
+  assert.match(runtime, /loadRun\.loadAttemptPath = loadPath;/);
+  // The old unscoped double-unload, which let cancellation race the load it was
+  // meant to stop, must be gone.
+  assert.equal(
+    cancel.includes("await unloadModel({ model_path: backendLoadModelId })"),
+    false,
+    "the unscoped double-unload race must be gone",
+  );
+});
+
+test("the winning selection reserves the slot for its own run", () => {
+  const runtime = read(RUNTIME);
+  assert.match(runtime, /const activeLoadRunRef = useRef<ActiveModelLoadRun \| null>\(null\)/);
+  assert.match(runtime, /const loadIntentId = \+\+modelSelectionIntentEpoch;/);
+  const registration = section(runtime, "const loadRun: ActiveModelLoadRun = {", "activeLoadRunRef.current = loadRun;");
+  assert.match(registration, /abortController: abortCtrl,/);
+  assert.match(registration, /cancelPromise: null,/);
+  assert.match(runtime, /activeLoadRunRef\.current = loadRun;/);
+  // A selection that lost the race must not go on to start a load.
+  assert.match(runtime, /modelSelectionIntentEpoch !== loadIntentId/);
+});
+
+test("a downloaded replacement pick falls through to selectModel", () => {
+  const page = read(CHAT_PAGE);
+  const guard = section(
+    page,
+    "if (store.modelLoading) {",
+    "if (wantManagerStaging) {\n        setPendingHubAutoLoad(",
+  );
+  // Only two early exits may remain: the duplicate click of the pick already
+  // loading, and the download-manager handoff. A different, already-downloaded
+  // pick must fall through the guard to the selectModel call below it.
+  const returns = guard.match(/\breturn;/g) ?? [];
+  assert.equal(
+    returns.length,
+    2,
+    "the mid-load guard may only return for the duplicate click and the handoff",
+  );
+  assert.match(guard, /The duplicate click is the only pick this guard refuses/);
+  assert.match(page, /await selectModel\(\{/);
+  // The guard must end without a trailing bail-out: the old unconditional return
+  // used to sit right before its closing brace and swallowed every replacement pick.
+  assert.equal(
+    /return;\s*\}\s*$/.test(guard),
+    false,
+    "the mid-load guard must not bail out before selectModel",
+  );
+});
+
+test("a superseded run cannot clear a newer run's loading state", () => {
+  const runtime = read(RUNTIME);
+  // Both terminal paths must go through the ownership-checked helper, so a cancelled
+  // load settling late cannot clear the replacement's refs or release its lease.
+  assert.match(runtime, /resetLoadingUiForRun\(loadRun\);/);
+  assert.equal(
+    /\n\s{10}resetLoadingUi\(\);/.test(runtime),
+    false,
+    "no terminal cleanup may call the unowned resetLoadingUi() directly",
+  );
+  const helper = section(
+    runtime,
+    "const resetLoadingUiForRun = useCallback(",
+    "const renderLoadDescription = useCallback(",
+  );
+  assert.match(helper, /ownsModelLoadRun\(activeLoadRunRef\.current, run\)/);
+  // Cancellation owns the slot until its /unload settles.
+  assert.match(helper, /if \(run\.cancelPromise\) return;/);
+});
+
+test("rollback state is inherited from the run being replaced", () => {
+  const runtime = read(RUNTIME);
+  const inherit = section(
+    runtime,
+    "const inheritCancelledRunRollback = (",
+    "// A different pick supersedes the load in flight.",
+  );
+  // The cancelled run's own rollback target is adopted, not just its pending marker.
+  assert.match(inherit, /cancelledRun: ActiveModelLoadRun/);
+  assert.match(inherit, /cancelledRun\.rollbackConfig/);
+  assert.match(inherit, /pendingReplacementRollback = \{/);
+  assert.match(inherit, /checkpoint: cancelledRun\.rollbackCheckpoint/);
+  // Called with the run, so the target is populated rather than only read.
+  assert.match(runtime, /inheritCancelledRunRollback\(activeRun\);/);
+  // The replacement's own rollback checkpoint comes from the inherited target.
+  assert.match(runtime, /inheritedPendingRollback\?\.config/);
+  assert.match(
+    runtime,
+    /previousCheckpoint = inheritedPendingRollback\n\s*\? inheritedPendingRollback\.checkpoint/,
+  );
+});
+
+test("cacheRam stays in the load tuning snapshot", () => {
+  const runtime = read(RUNTIME);
+  const tuning = section(
+    runtime,
+    "let loadServerTuning: ServerTuningValues = {",
+    "try {",
+  );
+  // Dropping it here silently omits cache_ram from /load whenever per-model settings
+  // are not being reset, so a configured value is never sent or committed.
+  assert.match(
+    tuning,
+    /cacheRam: pendingLoadConfig\?\.cacheRam \?\? stateBeforeUnload\.cacheRam,/,
+  );
+});
+
+test("the picker no longer refuses a different model mid-load", () => {
+  const page = read(CHAT_PAGE);
+  const guard = section(
+    page,
+    "if (store.modelLoading) {",
+    "if (wantManagerStaging) {\n        setPendingHubAutoLoad(",
+  );
+  assert.equal(
+    guard.includes("Another model is already loading"),
+    false,
+    "the mid-load rejection toast must be gone from the picker",
+  );
+  // Only the same-pick duplicate click and the download-manager handoff return early.
+  assert.match(guard, /This model is already loading/);
+  assert.match(guard, /return;/);
+});
