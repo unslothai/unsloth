@@ -259,15 +259,9 @@ def _is_mistral_format_checkpoint(
     revision = None,
     local_files_only = False,
 ):
-    """A repo that ships `params.json` and no `config.json` is a checkpoint in Mistral's own
-    format (`library_name: vllm`, loaded through mistral-common), not a transformers one.
-    Mistral-Large-3 is published that way and its card says transformers support did not
-    make it in. AutoConfig cannot read it, so the generic "both configs failed" message
-    sends the user chasing a transformers version that does not exist. Answers False on
-    any doubt, including offline, so the generic path is never hidden."""
-    # `params.json` alone is not enough: Meta's original Llama checkpoints ship one too, next to
-    # `consolidated.00.pth`. Mistral's format also carries its tokenizer as `tekken.json` and its
-    # weights as `consolidated.safetensors` (or the index of that), so one of those must be there.
+    """True for a checkpoint in Mistral's own format (`params.json`, no `config.json`), which
+    AutoConfig cannot read. Answers False on any doubt, including offline."""
+    # Meta's original Llama checkpoints also ship `params.json`, so require a Mistral-only file.
     markers = ("tekken.json", "consolidated.safetensors", "consolidated.safetensors.index.json")
     try:
         if os.path.isdir(model_name):

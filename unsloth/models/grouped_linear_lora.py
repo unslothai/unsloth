@@ -11,23 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""LoRA for block-diagonal grouped linears.
+"""LoRA for block-diagonal grouped linears (DeepSeek-V4 `o_a_proj`, `FP8GroupedLinear`).
 
-DeepSeek-V4's grouped output projection (`DeepseekV4GroupedLinear`, and the
-`FP8GroupedLinear` transformers swaps in for FP8 checkpoints) subclasses
-`nn.Linear` and stores one `(n_groups * out_per_group, in_per_group)` weight,
-but its forward is block diagonal: input `(..., n_groups, in_per_group)` gives
-`(..., n_groups, out_per_group)`. PEFT sees an `nn.Linear`, wraps it with the
-dense LoRA layer and adds `lora_B(lora_A(x))` of shape
-`(..., n_groups, n_groups * out_per_group)` to it, which fails with
-`The size of tensor a (1024) must match the size of tensor b (8192)`.
-
-`GroupedLinearLoRA` keeps PEFT's dense parameters (`lora_A: in -> r`,
-`lora_B: r -> n_groups * out_per_group`) so checkpoints, `merge_and_unload`
-and every PEFT version from 0.18 load and save it as a plain LoRA, and only
-changes the forward: group g reads rows `g * out_per_group : (g + 1) * out_per_group`
-of `lora_B`, which is exactly the block that merging `lora_B @ lora_A` into the
-weight would add to that group.
+These subclass `nn.Linear` with one `(n_groups * out_per_group, in_per_group)` weight but a
+block-diagonal forward, so PEFT's dense LoRA sum has the wrong shape. `GroupedLinearLoRA`
+keeps PEFT's dense parameters, so saving, loading and merging are unchanged, and only
+changes the forward: group g uses rows `g * out_per_group : (g + 1) * out_per_group` of `lora_B`.
 """
 
 import torch
@@ -83,9 +72,7 @@ def _grouped_lora_layer():
                 if active_adapter not in self.lora_A:
                     continue
                 if active_adapter in getattr(self, "lora_variant", {}):
-                    # DoRA and the other PEFT variants replace the plain LoRA sum with their
-                    # own forward; this layer computes only the plain sum, so a variant would
-                    # train without its magnitude vector and merge to a different weight.
+                    # Variants (DoRA) replace the plain LoRA sum, which is all this layer computes.
                     raise NotImplementedError(
                         "Unsloth: DoRA and other LoRA variants are not supported on grouped "
                         "linears (block-diagonal `o_a_proj`). Use plain LoRA for these layers."
@@ -161,11 +148,8 @@ def register_grouped_linear_lora(lora_config, model):
 def register_grouped_linear_lora_for_adapter(model, adapter_path, **hub_kwargs):
     """The `PeftConfig` of a saved adapter with the grouped mapping registered, or None.
 
-    PEFT's custom module mapping holds class objects, so it is not in the saved
-    adapter config; a reload through `PeftModel.from_pretrained` would wrap a
-    grouped linear with the dense LoRA layer again. Returns None when the model
-    has no targeted grouped linear or the config cannot be read, in which case
-    the caller loads exactly as before.
+    The custom module mapping holds class objects, so it is not in the saved adapter
+    config. None when nothing grouped is targeted or the config cannot be read.
     """
     if not grouped_linear_classes(model):
         return None

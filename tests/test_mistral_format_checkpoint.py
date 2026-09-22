@@ -1,11 +1,5 @@
-"""A Mistral-format checkpoint (params.json, no config.json) gets a message that
-says what it is, instead of the generic "both configs failed" one.
-
-Mistral-Large-3 is published that way: `library_name: vllm`, loaded through
-mistral-common, and its card says transformers support did not make it in.
-AutoConfig and PeftConfig both fail on it, and the old message pointed the user
-at upgrading transformers, which cannot help.
-"""
+"""A Mistral-format checkpoint (params.json, no config.json, e.g. Mistral-Large-3) gets a
+message that says what it is, instead of the generic "both configs failed" one."""
 
 import json
 import os
@@ -29,8 +23,7 @@ def test_params_json_without_config_json_is_mistral_format(tmp_path):
 
 
 def test_a_params_json_without_a_mistral_marker_is_not_claimed(tmp_path):
-    """Meta's original Llama layout: params.json next to consolidated.00.pth and
-    tokenizer.model. Not Mistral's format, so the generic message must stay."""
+    """Meta's original Llama layout also has params.json; the generic message must stay."""
     from unsloth.models.loader import _is_mistral_format_checkpoint
 
     assert (

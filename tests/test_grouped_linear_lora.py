@@ -1,10 +1,4 @@
-"""LoRA on a block-diagonal grouped linear (DeepSeek-V4's `o_a_proj`).
-
-PEFT's dense LoRA layer adds `lora_B(lora_A(x))` of shape
-`(..., n_groups, n_groups * out_per_group)` to a base output of shape
-`(..., n_groups, out_per_group)`, which fails with
-`The size of tensor a (1024) must match the size of tensor b (8192)`.
-"""
+"""LoRA on a block-diagonal grouped linear (DeepSeek-V4's `o_a_proj`)."""
 
 import pytest
 import torch
@@ -106,9 +100,7 @@ def test_state_dict_is_a_plain_lora_checkpoint():
 
 
 def test_dora_is_refused_on_a_grouped_linear():
-    """The grouped forward computes the plain LoRA sum only. With `use_dora = True` PEFT would
-    still create the magnitude vector, which then never trains, and PEFT's DoRA-aware merge
-    would produce a weight the training forward never used. Refuse rather than train wrong."""
+    """The grouped forward computes the plain LoRA sum only, so DoRA is refused."""
     from peft import LoraConfig
     from unsloth.models.grouped_linear_lora import register_grouped_linear_lora
 

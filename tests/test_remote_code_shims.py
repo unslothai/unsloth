@@ -1,11 +1,4 @@
-"""Remote modeling code that embeds in `get_input_embeddings` or returns no loss.
-
-Step-3.7-Flash's `modeling_step3p7.py` (a vLLM port) defines
-`Step3p7TextModel.get_input_embeddings(self, input_ids)` and a top-level
-`forward` that accepts `labels`, computes a loss and never returns it. Every
-no-argument call on the training side then fails with
-`get_input_embeddings() missing 1 required positional argument: 'input_ids'`.
-"""
+"""Remote code that embeds in `get_input_embeddings` or returns no loss (Step-3.7-Flash)."""
 
 import sys
 
@@ -209,8 +202,7 @@ def test_the_synthesized_loss_is_the_first_ordered_entry(model):
 
 
 def test_positional_labels_reach_the_synthesized_loss(model):
-    """The wrapped signature takes labels positionally too; a caller using that form must get
-    the same loss as the keyword form, not the original forward's missing loss."""
+    """Positional labels get the same loss as keyword labels."""
     from unsloth.models.remote_code_shims import apply_remote_code_shims
 
     apply_remote_code_shims(model)

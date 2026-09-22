@@ -11,21 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Repairs for remote modeling code that breaks the transformers contract.
+"""Repairs for remote modeling code (vLLM ports such as Step-3.7-Flash) that breaks training:
 
-Ports written against vLLM keep two habits that stop training in transformers:
+* `get_input_embeddings(self, input_ids)` returns embedded tokens, not the embedding module.
+* `forward(..., labels=...)` accepts labels but returns no loss, or fails in its loss code.
 
-* `get_input_embeddings(self, input_ids)` returns the embedded tokens instead of
-  the embedding module. Everything on the training side (PEFT, gradient
-  checkpointing, `enable_input_require_grads`, embedding offload, resizing) calls
-  it with no arguments and expects an `nn.Module`.
-* `forward(..., labels=...)` accepts labels but never returns a loss, or trips
-  over its own loss code (`self.config.vocab_size` on a composite config).
-
-Both are fixed on the checkpoint's dynamically created classes, never on
-transformers' own, and the original behaviour stays reachable: the accessor
-still embeds when called with arguments, and a forward that does return a loss
-is left alone after one probe. Step-3.7-Flash is the case that surfaced both.
+Only the checkpoint's own classes are patched, and the original behaviour stays reachable.
 """
 
 import functools
@@ -220,8 +211,7 @@ def _fill_missing_loss(cls):
     self_placeholder = object()
 
     def _bind(args, kwargs):
-        """`labels` given positionally, as the wrapped signature permits, lands in kwargs so the
-        lookup and the pop below see it. Anything unbindable is left exactly as it came."""
+        """Move a positional `labels` into kwargs; anything unbindable is left as it came."""
         if not args or signature is None:
             return args, kwargs
         try:
@@ -269,9 +259,7 @@ def _fill_missing_loss(cls):
                 f"Unsloth: `{cls.__name__}.forward` returned neither a loss nor logits, so no loss can be trained on."
             )
         if isinstance(output, dict):
-            # `loss` must be the first ordered entry: HF Trainer reads output["loss"], but
-            # positional readers take output[0] and to_tuple()[0] as the loss when labels
-            # were given. Rebuild rather than append.
+            # `loss` must come first: positional readers take output[0] as the loss.
             fields = {k: v for k, v in output.items() if k != "loss"}
             try:
                 return type(output)(loss = loss, **fields)
