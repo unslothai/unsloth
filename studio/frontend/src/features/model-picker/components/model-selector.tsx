@@ -12,6 +12,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
+// eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
@@ -172,11 +174,11 @@ function ModelSelectorTrigger({
           "unsloth-model-selector-trigger group/trigger flex min-w-0 items-center gap-2 transition-colors",
           // Suppress the pill's hover background while the eject hit area is hovered.
           variant === "outline" &&
-            "rounded-full border border-border/60 hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
+            "rounded-full border border-border hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "ghost" &&
             "rounded-full hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "muted" &&
-            "rounded-full bg-muted hover:bg-muted/80 has-[[data-eject-hit]:hover]:!bg-muted",
+            "rounded-full bg-muted hover:bg-muted has-[[data-eject-hit]:hover]:!bg-muted",
           // More left padding than right; the chevron is pulled close to the label so the trigger reads
           // balanced around the text. Height stays pinned to --studio-chat-control-height.
           size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
@@ -201,7 +203,7 @@ function ModelSelectorTrigger({
                 onEject();
               }}
               // Hit area larger than the icon, with a hover circle; negative margin keeps the icon in place.
-              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-black/10 dark:hover:bg-white/10 [@media(hover:none)]:pointer-events-none"
+              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
             >
               <HugeiconsIcon
                 icon={CheckmarkCircle02Icon}
@@ -222,10 +224,12 @@ function ModelSelectorTrigger({
             {currentModel.icon}
           </span>
         ) : null}
-        <span className="flex min-w-0 flex-1 items-baseline">
+        {/* Hellix carries more descent than the caps use, so a box-centred label reads ~0.05em
+            low against the icons. Lift name and description together to keep their baseline. */}
+        <span className="relative -top-[0.05em] flex min-w-0 flex-1 items-baseline">
           <span
             className={cn(
-              "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white",
+              "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
               triggerLabelClassName,
             )}
           >
@@ -236,7 +240,7 @@ function ModelSelectorTrigger({
               <HugeiconsIcon
                 icon={CloudIcon}
                 strokeWidth={1.75}
-                className="relative top-[0.15625rem] ml-1.5 mr-[0.36rem] size-3.5 shrink-0 text-muted-foreground"
+                className="relative top-[0.15625rem] ml-1.5 mr-[calc(0.36rem*var(--ui-space-scale,1))] size-3.5 shrink-0 text-muted-foreground"
               />
             ) : null}
           </span>
@@ -330,6 +334,7 @@ function ModelSelectorContent({
   onEjectAll,
   onFoldersChange,
   onBrowseHub,
+  onConfigureConnection,
   onModelsChange,
   deleteDisabled,
   className,
@@ -359,6 +364,7 @@ function ModelSelectorContent({
   onEjectAll?: () => void;
   onFoldersChange?: () => void;
   onBrowseHub?: () => void;
+  onConfigureConnection?: (providerId: string) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   className?: string;
@@ -621,6 +627,7 @@ function ModelSelectorContent({
               resolveDownloadFootprint={resolveDownloadFootprint}
               onFoldersChange={onFoldersChange}
               onBrowseHub={onBrowseHub}
+              onConfigureConnection={onConfigureConnection}
               onModelsChange={onModelsChange}
               onConfigure={openConfigPage}
               deleteDisabled={deleteDisabled}
@@ -634,7 +641,7 @@ function ModelSelectorContent({
                 <PillTabs
                   // Wider tabs than the shared default. The panel reserves
                   // --picker-tab-pad a pill, so keep the two in step.
-                  className="[&_[role=tab]]:px-[calc(0.75rem_+_var(--picker-tab-pad)/2)]"
+                  className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
                   ariaLabel={t("picker.hubSectionAriaLabel")}
                   tabs={hubSectionTabs}
                   value={effectiveHubSection}
@@ -817,6 +824,13 @@ export function ModelSelector({
     void navigate({ to: "/hub", search: { tab: "discover" } });
   }
 
+  // A Connected group's gear. What is configurable about a remote model lives on its connection,
+  // so open that form rather than ModelConfigPage's local load settings.
+  function handleConfigureConnection(providerId: string) {
+    setOpen(false);
+    useSettingsDialogStore.getState().openConnectionSettings(providerId);
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
@@ -865,6 +879,7 @@ export function ModelSelector({
         onBrowseHub={
           task && communityModelPolicy === "none" ? undefined : handleBrowseHub
         }
+        onConfigureConnection={handleConfigureConnection}
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         className={contentClassName}

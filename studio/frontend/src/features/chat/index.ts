@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
+export { isRenderableRenderHtmlToolPart } from "./artifacts/html-fences";
 export {
   addScanFolder,
   browseFolders,
@@ -97,18 +98,53 @@ export {
   useChatNavigationStore,
   visibleChatItems,
 } from "./stores/chat-navigation-store";
+export {
+  setSidebarDragSource,
+  sidebarDragSource,
+  type SidebarDragSource,
+  type SidebarRowKind,
+} from "./stores/sidebar-drag-source";
+export {
+  clearReasoningRound,
+  setReasoningRoundOpen,
+  useReasoningRoundStore,
+  type ReasoningRoundState,
+} from "./stores/reasoning-round-store";
+export {
+  folderRingKey,
+  planKey,
+  planSidebarDrop,
+  rowKey,
+  sectionRingKey,
+  STAY,
+  type DropEdge,
+  type SidebarDragItem,
+  type SidebarDropAction,
+  type SidebarDropContext,
+  type SidebarDropCue,
+  type SidebarDropEffects,
+  type SidebarDropOutcome,
+  type SidebarDropPlace,
+  type SidebarDropPlan,
+  type SidebarDropZone,
+  type SidebarSection,
+} from "./lib/sidebar-drag";
+export { useSidebarDrag, SPRING_OPEN_DELAY_MS } from "./hooks/use-sidebar-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
   applyManualOrder,
-  dropEdgeFor,
+  dropEdgeAt,
+  folderDropTarget,
+  insertIdAt,
   moveIdBy,
+  placeIdAt,
   showsInRecents,
   PINNED_ORDER_SCOPE,
+  PINNED_PROJECT_ORDER_SCOPE,
   PROJECT_ORDER_SCOPE,
   projectOrderScope,
   RECENTS_ORDER_SCOPE,
-  reorderIds,
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   useSidebarOrganizationStore,
 } from "./stores/sidebar-organization-store";
@@ -201,6 +237,14 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+// A provider catalogue lands async, so capability reads need to re-run when it does.
+export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
+// What a per-model reasoning pin displaced in the live runtime, so clearing it can put it back.
+export {
+  noteEffortDisplacedByPin,
+  reconcilePinnedReasoningEffort,
+  takeEffortDisplacedByPin,
+} from "./stores/chat-runtime-store";
 export {
   type AttachmentText,
   assertDocumentAttachmentSize,
@@ -219,6 +263,20 @@ export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { StopRunningChatsDialog } from "./components/stop-running-chats-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
+export { EditProjectDialog } from "./components/edit-project-dialog";
+export {
+  canForkChatRow,
+  chatExportOptions,
+  exportConversationByFormat,
+  forkChatRow,
+  getSidebarItemThreadIds,
+  recordedSandboxSessionIds,
+  sandboxSessionIdsHolding,
+  type ConversationExportFormat,
+} from "./components/chat-row-menu";
+export { OpenChatFolderUnavailableItem } from "./components/open-chat-folder-item";
+export { useForkInFlight } from "./utils/fork-in-flight";
+export { showForkCreatedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
@@ -276,11 +334,21 @@ export {
 } from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
-  reasoningAutoOpensWhileStreaming,
+  reasoningFollowsPreference,
   resolveReasoningOpen,
-  resolveReasoningToggle,
   startsNewReasoningRound,
 } from "./utils/reasoning-visibility";
+export {
+  DEFAULT_THINKING_VISIBILITY,
+  DEFAULT_TOOL_VISIBILITY,
+  DISPLAY_VISIBILITIES,
+  type DisplayVisibility,
+  defaultOpenFor,
+  foldIsActive,
+  migrateVisibility,
+  normaliseDisplayVisibility,
+  resolveOpen,
+} from "./utils/display-visibility";
 export { ArtifactCard } from "./artifacts/artifact-card";
 export { ResearchMessage } from "./components/research-message";
 export {
@@ -394,6 +462,7 @@ export {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  followUpSubmitIntent,
   steeringInsertionIndex,
   type ComposerSendShortcut,
   type ComposerFollowUpBehavior,

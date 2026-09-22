@@ -62,9 +62,9 @@ export const hi = {
     announceMoveFailed: "इस संदेश को खिसकाने से पहले कतार बदल गई। फिर कोशिश करें।",
     announceDragReset: "कतार बदल गई। बाकी संदेशों का क्रम बदलने के लिए फिर से खींचें।",
     editingHint: "संदेश संपादित हो रहा है",
-    queueingOffHint: "नए संदेश मौजूदा उत्तर रोककर अगले चलते हैं।",
-    queueingOnHint: "नए संदेश अपनी बारी का इंतज़ार कर क्रम से चलते हैं।",
-    queueingHintShared: "कतार के संदेश बने रहते हैं।",
+    queueingOffHint: "नए संदेश बीच में आकर अगले चलते हैं।",
+    queueingOnHint: "नए संदेश अपनी बारी का इंतज़ार करते हैं।",
+    queueingHintShared: "कतार बनी रहती है।",
   },
   picker: {
     onDevice: "डिवाइस पर",
@@ -165,6 +165,8 @@ export const hi = {
       export: "एक्सपोर्ट",
       recents: "हाल के",
       noChatsYet: "अभी तक कोई चैट नहीं",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "कोई चैट नहीं",
       showMore: "और दिखाएं",
       showLess: "कम दिखाएं",
       settings: "सेटिंग्स",
@@ -195,6 +197,7 @@ export const hi = {
       unpinChats: "चैट अनपिन करें",
       archiveChats: "चैट संग्रहित करें",
       markUnread: "अपठित के रूप में चिह्नित करें",
+      markRead: "पढ़ा हुआ चिह्नित करें",
       deleteChats: "चैट हटाएँ",
       deleteTitle: "चैट हटाएँ",
       deleteDescription: "{count} चैट हटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
@@ -213,11 +216,12 @@ export const hi = {
       priority: "प्राथमिकता",
       lastUpdated: "अंतिम अपडेट",
       manualOrder: "मैन्युअल क्रम",
-      moveUp: "ऊपर ले जाएँ",
-      moveDown: "नीचे ले जाएँ",
+      switchedToManual: "अब मैन्युअल क्रम: पंक्तियाँ खींचकर क्रम बदलें",
       organizeChats: "चैट व्यवस्थित करें",
       organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
+      moveUp: "ऊपर ले जाएँ",
+      moveDown: "नीचे ले जाएँ",
     },
     dialog: {
       deleteChat: {
@@ -248,9 +252,19 @@ export const hi = {
   settings: {
     accounts: {
       title: "खाते",
-      description: "निजी Studio खाते बनाएँ। नए उपयोगकर्ता एक बार इस्तेमाल होने वाले सेटअप कोड से साइन इन करते हैं और पासवर्ड चुनते हैं।",
+      description: "निजी Unsloth खाते बनाएँ। नए उपयोगकर्ता एक बार इस्तेमाल होने वाले सेटअप कोड से साइन इन करते हैं और पासवर्ड चुनते हैं।",
       username: "उपयोगकर्ता नाम",
       create: "खाता बनाएँ",
+      createDescription: "सेटअप कोड साझा करें ताकि वे अपना पासवर्ड खुद चुन सकें।",
+      actionsFor: "{username} प्रबंधित करें",
+      actions: "कार्रवाइयाँ",
+      search: "खाते खोजें",
+      noResults: "कोई मेल खाता खाता नहीं",
+      created: "बनाया गया",
+      status: "स्थिति",
+      loginHint: "इस कोड को पासवर्ड के रूप में इस्तेमाल करके {username} के रूप में साइन इन करें, फिर नया पासवर्ड चुनें।",
+      privateAccount: "निजी खाता",
+      empty: "अभी कोई अन्य खाता नहीं",
       setupCode: "सेटअप कोड",
       setupFor: "{username} के लिए सेटअप कोड",
       shownOnce: "यह कोड अभी कॉपी करें और खाता धारक को दें। यह केवल यहीं दिखता है और 60 मिनट के भीतर एक बार इस्तेमाल किया जा सकता है।",
@@ -260,13 +274,13 @@ export const hi = {
       copyFailed: "कॉपी नहीं हो सका। ऊपर दिए सेटअप कोड को चुनकर कॉपी करें।",
       dismiss: "हो गया",
       owner: "इंस्टॉलेशन स्वामी",
-      active: "सक्रिय",
-      inactive: "निष्क्रिय",
+      active: "सक्षम",
+      inactive: "अक्षम",
       regenerate: "सेटअप कोड फिर से बनाएँ",
       resetTitle: "{username} का पासवर्ड रीसेट करें?",
       resetDescription: "सेटअप कोड फिर से बनाने पर {username} का पासवर्ड बदल जाता है, उनके सत्र समाप्त हो जाते हैं और उनकी API कुंजियाँ रद्द हो जाती हैं। उन्हें नया कोड दें ताकि वे फिर से पासवर्ड चुन सकें।",
-      deactivate: "निष्क्रिय करें",
-      reactivate: "फिर से सक्रिय करें",
+      deactivate: "अक्षम करें",
+      reactivate: "सक्षम करें",
       delete: "खाता हटाएँ",
       deleteTitle: "{username} को हटाएँ?",
       deleteDescription: "इससे {username} के सत्र रद्द हो जाएँगे और उनका चल रहा काम बंद हो जाएगा। उनकी चैट, सेटिंग्स, क्रेडेंशियल, अपलोड, डेटासेट, ट्रेनिंग रन, आउटपुट, एक्सपोर्ट, गैलरी, सैंडबॉक्स, प्रोजेक्ट और अस्थायी फ़ाइलें अलग रख दी जाती हैं। डायरेक्टरी का नाम बदलकर उन्हें किनारे कर दिया जाता है, हटाया कभी नहीं जाता। यही उपयोगकर्ता नाम फिर से बनाने पर इस डेटा के बिना एक नया खाता शुरू होता है।",
@@ -303,9 +317,10 @@ export const hi = {
     },
     keyboardShortcuts: {
       title: "कीबोर्ड शॉर्टकट",
-      description:
-        "कोई भी शॉर्टकट बदलें, या उसे हटाकर वह कुंजी-संयोजन अपने ब्राउज़र या OS के लिए खाली करें।",
       searchPlaceholder: "शॉर्टकट खोजें…",
+      keystrokePlaceholder: "खोजने के लिए शॉर्टकट दबाएँ",
+      searchByKeystrokes: "कीस्ट्रोक से खोजें",
+      searchByName: "नाम से खोजें",
       noResults: "इस खोज से कोई शॉर्टकट मेल नहीं खाता।",
       unassigned: "असाइन नहीं",
       recording: "कुंजियाँ दबाएँ…",
@@ -502,6 +517,14 @@ export const hi = {
           label: "संदेश भेजें",
           description: "लिखने के बॉक्स की सामग्री भेजें",
         },
+        queueMessage: {
+          label: "संदेश कतार में डालें",
+          description: "ड्राफ़्ट को कतार के अंत में भेजें",
+        },
+        steerMessage: {
+          label: "उत्तर बदलें",
+          description: "मौजूदा उत्तर रोककर ड्राफ़्ट अगला भेजें",
+        },
         cycleReasoningEffort: {
           label: "तर्क प्रयास बदलें",
           description: "तर्क प्रयास के स्तरों में क्रमशः बदलें",
@@ -542,7 +565,16 @@ export const hi = {
       sourceHint: "मॉडल रनर अपने अलग लॉग लिखते हैं, इसलिए लोड या जनरेशन विफल होने का कारण अक्सर सर्वर लॉग के बजाय वहीं मिलता है।",
       path: "स्थान",
       pathCopy: "पथ कॉपी करें",
-      refreshSection: "रिफ़्रेश",
+      currentSession: "वर्तमान",
+      statusLive: "लाइव",
+      statusPaused: "रुका हुआ",
+      statusStale: "पुराना",
+      filterPlaceholder: "पंक्तियाँ फ़िल्टर करें",
+      lineCount: "{count} पंक्तियाँ",
+      filteredLineCount: "{total} में से {shown} पंक्तियाँ",
+      wrapLines: "पंक्तियाँ रैप करें",
+      jumpToLatest: "नवीनतम पर जाएँ",
+      noMatches: "फ़िल्टर से कोई पंक्ति मेल नहीं खाती।",
       mode: "मोड",
       modeLive: "लाइव",
       modeInterval: "हर 3 सेकंड",
@@ -568,7 +600,7 @@ export const hi = {
       openLogsFolderFailed: "लॉग फ़ोल्डर नहीं खोला जा सका।",
       exportFailed: "लॉग डाउनलोड नहीं किए जा सके।",
       exportTooOld: "चल रहा Unsloth बैकएंड लॉग निर्यात करने के लिए बहुत पुराना है। उस बैकएंड को अपडेट करें और पुनः आरंभ करें।",
-      exportForbidden: "सभी लॉग डाउनलोड करने के लिए साइन-इन किया हुआ Studio सत्र चाहिए। केवल API कुंजी पर्याप्त नहीं है।",
+      exportForbidden: "सभी लॉग डाउनलोड करने के लिए साइन-इन किया हुआ Unsloth सत्र चाहिए। केवल API कुंजी पर्याप्त नहीं है।",
       keywords: "डिबग डिबगिंग लॉग त्रुटि गड़बड़ी क्रैश ट्रेसबैक निदान समस्या निवारण debug log logs error",
     },
     voice: {
@@ -861,6 +893,16 @@ export const hi = {
         revoked: "सभी पूर्वावलोकन लिंक रद्द किए गए",
         revokeError: "पूर्वावलोकन लिंक रद्द नहीं किए जा सके",
       },
+      managedProviderUrls: {
+        sectionTitle: "प्रबंधित खाते",
+        enableLabel: "स्थानीय और नेटवर्क कनेक्शन",
+        enableDescription:
+          "प्रबंधित खातों को अपने कनेक्शन स्थानीय या नेटवर्क पतों की ओर इंगित करने दें, जैसे इस कंप्यूटर या आपके लोकल नेटवर्क पर चल रहा Ollama या llama.cpp सर्वर। डिफ़ॉल्ट रूप से बंद, क्योंकि इससे वे खाते आपके कंप्यूटर और नेटवर्क पर चल रही सेवाओं तक पहुँच सकते हैं।",
+        lockedByEnvironment:
+          "इस सर्वर पर UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 द्वारा तय, जो सभी खातों के लिए निजी पतों को अस्वीकार करता है।",
+        loadError: "प्रबंधित खाता कनेक्शन सेटिंग्स लोड नहीं हो सकीं।",
+        saveError: "प्रबंधित खाता कनेक्शन सेटिंग्स सहेजी नहीं जा सकीं।",
+      },
       notifications: {
         sectionTitle: "सूचनाएं",
         showLlamaUpdates: "llama.cpp अपडेट सूचनाएं",
@@ -869,6 +911,9 @@ export const hi = {
         showLoadedModels: "लोड किए गए मॉडल का संकेतक",
         showLoadedModelsDescription:
           "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
+        showWhisperUpdates: "whisper.cpp अपडेट सूचनाएं",
+        showWhisperUpdatesDescription:
+          "स्पीच-टू-टेक्स्ट मॉडल के लिए जब कोई नया whisper.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप ऑडियो ट्रांसक्राइब नहीं करते हैं तो बंद कर दें।",
       },
       startup: {
         sectionTitle: "स्टार्टअप",
@@ -1095,7 +1140,7 @@ export const hi = {
       custom: {
         chatWidth: {
           label: "चैट की चौड़ाई",
-          description: "संदेशों और इनपुट बॉक्स की चौड़ाई तय करें। पूरी चौड़ाई साइडबार के बीच की जगह का उपयोग करती है।",
+          description: "संदेशों और इनपुट बॉक्स की चौड़ाई।",
           standard: "मानक",
           wide: "चौड़ा",
           full: "पूरी चौड़ाई",
@@ -1168,7 +1213,6 @@ export const hi = {
         },
         contrast: {
           label: "कंट्रास्ट",
-          description: "बॉर्डर और सेकंडरी टेक्स्ट की तीव्रता।",
         },
         reduceMotion: {
           label: "एनिमेशन कम करें",
@@ -1198,7 +1242,7 @@ export const hi = {
       sidebarNav: {
         title: "साइडबार नेविगेशन",
         description:
-          "साइडबार के टैब पिन करें और उनका क्रम बदलें। जो टैब पिन नहीं हैं वे “अधिक” मेन्यू में इकट्ठा हो जाते हैं; यदि सिर्फ़ एक ही टैब पिन नहीं है तो एक आइटम वाला मेन्यू बनाने के बजाय उसे छिपा दिया जाता है। नई चैट अपनी जगह पर तय रहती है।",
+          "साइडबार के टैब पिन करें और क्रम बदलें। बिना पिन वाले टैब “अधिक” मेन्यू में चले जाते हैं।",
         dragToReorder: "क्रम बदलने के लिए खींचें",
         pinToSidebar: "{name} को साइडबार में पिन करें",
         moreHolds: "अधिक ({count})",
@@ -1206,7 +1250,7 @@ export const hi = {
       sidebarMenu: {
         title: "साइडबार मेन्यू",
         description:
-          "साइडबार के प्रोफ़ाइल मेन्यू में आइटम दिखाएं, छिपाएं और क्रम बदलें। सेटिंग्स, सहायता, लॉग आउट और शटडाउन अपनी जगह पर तय रहते हैं।",
+          "प्रोफ़ाइल मेन्यू के शॉर्टकट चुनें और उनका क्रम बदलें।",
         darkModeToggle: "डार्क मोड टॉगल",
         dragToReorder: "क्रम बदलने के लिए खींचें",
       },
@@ -1238,7 +1282,11 @@ export const hi = {
       },
       gpu: {
         title: "GPU डिवाइस",
-        ggufInference: "GGUF इन्फ़रेंस",
+        memory: "GPU मेमोरी",
+        sharedWithSystemRam: "सिस्टम RAM के साथ साझा",
+        estimatedAvailable: "अनुमानित उपलब्ध: {value}",
+        sharedEstimatedAvailable: "साझा सिस्टम RAM: अनुमानित उपलब्ध {value}",
+        ggufInference: "GGUF मॉडल मेमोरी",
         unavailable: "उपलब्ध नहीं",
         detecting: "GPU खोजे जा रहे हैं...",
         unreadable: "इस सर्वर का हार्डवेयर नहीं पढ़ा जा सका।",
@@ -1303,6 +1351,8 @@ export const hi = {
           sourceBuild: "यह llama.cpp सोर्स से बनाया गया है, इसलिए इसका बैकएंड यहाँ से नहीं बदला जा सकता।",
           customPath: "एक कस्टम llama.cpp फ़ोल्डर चुना गया है। उसका बिल्ड कंप्यूट बैकएंड तय करता है।",
           unresolved: "उपलब्ध बैकएंड की जाँच नहीं हो सकी। अपना कनेक्शन देखकर दोबारा कोशिश करें।",
+          updateChecksDisabled:
+            "अपडेट जाँच बंद है (UNSLOTH_DISABLE_UPDATE_CHECK=1), इसलिए उपलब्ध बैकएंड नहीं खोजे जाते।",
         },
         // दिखाया नहीं जाता: सेटिंग्स खोज के लिए अतिरिक्त शब्द।
         llamaBackendKeywords:
@@ -1340,6 +1390,61 @@ export const hi = {
         copied: "पथ कॉपी किया गया",
         openError: "फ़ोल्डर नहीं खोला जा सका",
         copyError: "पथ कॉपी नहीं किया जा सका",
+        caches: {
+          label: "कैश फ़ाइलें",
+          description:
+            "कैश में {size}, जिनमें से {reclaimable} अभी साफ़ किया जा सकता है।",
+          hint: "पैकेज डाउनलोड, कंपाइल किए गए कर्नेल और ट्रांसफ़र कैश जिन्हें Unsloth ज़रूरत पड़ने पर दोबारा बना लेता है। डाउनलोड किए गए मॉडल, प्रोजेक्ट, चैट, सेटिंग्स और आपका Hugging Face टोकन यहाँ कभी साफ़ नहीं किए जाते।",
+          keywords:
+            "कैश साफ़ करना हटाना खाली जगह डिस्क अस्थायी कंपाइल cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "कैश का आकार मापा जा रहा है...",
+          measureFailed: "कैश मापे नहीं जा सके",
+          empty: "कोई कैश फ़ाइल नहीं मिली।",
+          detailsAction: "विवरण",
+          recheckAction: "फिर से जाँचें",
+          hideDetailsAction: "विवरण छिपाएँ",
+          clearAction: "कैश साफ़ करें",
+          clearOneAction: "साफ़ करें",
+          clearingAction: "साफ़ किया जा रहा है...",
+          confirmTitle: "कैश की गई फ़ाइलें साफ़ करें?",
+          confirmDescription: "इससे लगभग {size} खाली होगा।",
+          confirmOneTitle: "{name} साफ़ करें?",
+          safety:
+            "अगली बार ज़रूरत पड़ने पर Unsloth कैश दोबारा बना लेता है। डाउनलोड किए गए मॉडल, प्रोजेक्ट, चैट, सेटिंग्स और आपके Hugging Face टोकन को छुआ नहीं जाता।",
+          hubCost:
+            "यह मॉडल कैश है। इसे साफ़ करने पर अगली बार उपयोग करते समय वे मॉडल फिर से डाउनलोड होंगे।",
+          datasetsCost:
+            "इसे साफ़ करने पर अगली बार उपयोग करते समय वे डेटासेट फिर से डाउनलोड होंगे।",
+          blocked: "साफ़ नहीं किया गया: {reason}",
+          cleared: "{size} साफ़ किया गया",
+          partial: "कुछ कैश फ़ाइलें हटाई नहीं जा सकीं",
+          clearFailed: "कैश साफ़ नहीं किए जा सके",
+          names: {
+            uv: "uv पैकेज कैश",
+            pip: "pip डाउनलोड कैश",
+            npm: "npm पैकेज कैश",
+            bun: "Bun पैकेज कैश",
+            torchInductor: "Torch Inductor कंपाइल कैश",
+            torchExtensions: "Torch एक्सटेंशन बिल्ड",
+            triton: "Triton कर्नेल कैश",
+            cuda: "CUDA कर्नेल कैश",
+            numba: "Numba कंपाइल कैश",
+            matplotlib: "Matplotlib फ़ॉन्ट कैश",
+            vllm: "vLLM कैश",
+            unslothCompiled: "Unsloth कंपाइल किए गए मॉड्यूल",
+            hfXet: "Hugging Face ट्रांसफ़र कैश",
+            hfAssets: "Hugging Face एसेट कैश",
+            hfDatasets: "Hugging Face डेटासेट कैश",
+            hfHub: "Hugging Face मॉडल कैश",
+          },
+        },
+        lowDisk: {
+          title: "डिस्क स्पेस कम हो रहा है",
+          criticalTitle: "डिस्क स्पेस बेहद कम है",
+          description:
+            "{total} में से {free} खाली। कैश साफ़ करने से जगह खाली हो सकती है।",
+          action: "कैश देखें",
+        },
         futureDownloads: "केवल नए डाउनलोड",
         environmentManaged: "{variable} एनवायरनमेंट वेरिएबल द्वारा प्रबंधित।",
         locationFree: "{free} खाली",
@@ -1460,9 +1565,9 @@ export const hi = {
           "मंज़ूरी के प्रॉम्प्ट छोड़ देता है। केवल भरोसेमंद वातावरण में उपयोग करें।",
       },
       remote: {
-        title: "रिमोट Unsloth Studio से जुड़ें",
+        title: "रिमोट Unsloth से जुड़ें",
         description:
-          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे Unsloth Studio की ओर भेजें (या --api-key सीधे दें):",
+          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे Unsloth की ओर भेजें (या --api-key सीधे दें):",
       },
       passthrough: {
         title: "एजेंट को आर्ग्युमेंट भेजना",
@@ -1490,17 +1595,11 @@ export const hi = {
       rememberParamsPerModelHint:
         "बंद होने पर सभी मॉडल एक ही सेटिंग इस्तेमाल करते हैं।",
       autoCompactHint:
-        "उपलब्ध VRAM के बजाय आपके तय किए गए संदर्भ की लंबाई का उपयोग करता है।",
+        "केवल लोकल GGUF चैट पर लागू। हटाए गए टर्न इंडेक्स किए जाते हैं ताकि मॉडल उन्हें दोबारा खोज सके, और रीसेट पर जितने स्थायी निर्देश समा सकें, वे हूबहू दोहरा दिए जाते हैं, जिनमें बीच वाले के बजाय सबसे पुराने और सबसे नए को प्राथमिकता मिलती है। आर्काइव के लिए सहेजी गई चैट और वेक्टर इंडेक्स ज़रूरी हैं; इनके बिना पुराने टर्न हटा दिए जाते हैं। उपलब्ध VRAM के बजाय आपके तय किए गए संदर्भ की लंबाई का उपयोग करता है।",
       pastedTextShortDescription:
         "{count} या अधिक अक्षरों वाला पेस्ट किया गया टेक्स्ट .txt अटैचमेंट बन जाता है। छोटा टेक्स्ट संदेश बॉक्स में रहता है।",
       pastedTextOffDescription:
         "पेस्ट किया गया सारा टेक्स्ट संदेश बॉक्स में रहता है, चाहे उसकी लंबाई कितनी भी हो।",
-      compactionDescriptionInherit:
-        "सर्वर की संदर्भ नीति का पालन करें।",
-      compactionDescriptionCheckpoint:
-        "सबसे हाल का संवाद और स्थायी निर्देश बनाए रखें।",
-      compactionDescriptionRolling:
-        "पुराने संवाद हटाकर हाल का इतिहास और चुनी गई अतिरिक्त खाली जगह बनाए रखें।",
       projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
       projectsSectionDescription:
         "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",
@@ -1524,7 +1623,7 @@ export const hi = {
           "आइटम को चैट के + साइड मेन्यू में पिन करें। बाकी आइटम “More” में चले जाएँगे।",
         chatWithFiles: "फ़ाइलों के साथ चैट (RAG)",
         mcp: "MCP",
-        skills: "एजेंट कौशल",
+        skills: "कौशल",
         savedPrompts: "सहेजे गए प्रॉम्प्ट",
         compareChat: "चैट की तुलना करें",
         exportChat: "चैट एक्सपोर्ट करें",
@@ -1547,22 +1646,20 @@ export const hi = {
         "हर मॉडल के साथ आखिरी बार इस्तेमाल किए गए प्रॉम्प्ट, तापमान और अन्य सेटिंग्स वापस लाएँ।",
       autoCompact: "लंबी चैट को अपने आप कॉम्पैक्ट करें",
       autoCompactDescription:
-        "लोकल GGUF चैट की कॉन्टेक्स्ट सीमा भरने पर पुराने टर्न हटाएँ।",
-      compactionStyle: "कॉन्टेक्स्ट भरने पर",
-      compactionStyleDescription:
-        "सर्वर डिफ़ॉल्ट से UNSLOTH_CONTEXT_POLICY बना रहता है। बातचीत रीसेट करने पर नवीनतम टर्न और स्थायी निर्देश रहते हैं। स्लाइडिंग विंडो सबसे पुराने टर्न हटाती है और हाल का अधिक इतिहास रख सकती है।",
-      compactionStyleInherit: "सर्वर डिफ़ॉल्ट उपयोग करें",
-      compactionStyleCheckpoint: "बातचीत रीसेट करें",
-      compactionStyleRollingDefault: "पुराने टर्न हटाएँ (~25% अतिरिक्त जगह)",
-      compactionStyleRolling10: "पुराने टर्न हटाएँ (~10% अतिरिक्त जगह)",
-      compactionStyleRolling5: "पुराने टर्न हटाएँ (~5% अतिरिक्त जगह)",
-      compactionStyleRollingNone: "पुराने टर्न हटाएँ (कोई अतिरिक्त कटौती नहीं)",
+        "चैट का कॉन्टेक्स्ट भरने पर पुराने टर्न खोजे जा सकने वाले आर्काइव में चले जाते हैं।",
       autoCompactKeywords:
-        "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम compaction rolling checkpoint headroom",
+        "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम आर्काइव पुनर्प्राप्ति खोज compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "संक्षिप्त",
+        auto: "चलने के दौरान विस्तृत करें",
+        expanded: "हमेशा विस्तृत",
+      },
+      visibilityKeywords:
+        "संक्षिप्त समेटें विस्तृत खोलें बंद रीज़निंग थिंकिंग टूल कॉल टूल गतिविधि समूह स्ट्रीमिंग",
       thinking: {
-        collapseByDefault: "थिंकिंग को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
-        collapseByDefaultDescription:
-          "मॉडल के सोचते समय रीज़निंग अपने आप खुलने के बजाय संक्षिप्त रहती है। पढ़ने के लिए किसी भी ब्लॉक को विस्तृत करें।",
+        visibility: "थिंकिंग",
+        visibilityDescription:
+          "रीज़निंग कैसे खुलती है। आप किसी भी ब्लॉक को खुद विस्तृत या संक्षिप्त कर सकते हैं।",
       },
       currentDate: {
         label: "मॉडल को आज की तारीख बताएँ",
@@ -1572,9 +1669,14 @@ export const hi = {
         saveError: "मौजूदा तारीख की सेटिंग्स अपडेट नहीं हो सकीं",
       },
       tools: {
-        collapseByDefault: "टूल गतिविधि को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
-        collapseByDefaultDescription:
-          "टूल चलते समय उनके इनपुट और आउटपुट संक्षिप्त रखें। जाँचने के लिए किसी भी टूल पंक्ति को विस्तृत करें।",
+        visibility: "टूल कॉल",
+        visibilityDescription:
+          "टूल गतिविधि कैसे खुलती है। आप किसी भी कॉल को खुद विस्तृत या संक्षिप्त कर सकते हैं।",
+        foldIntoThinking: "टूल कॉल को थिंकिंग के अंतर्गत समूहित करें",
+        foldIntoThinkingDescription:
+          "किसी टर्न के टूल कॉल अलग पंक्तियों के बजाय उसके थिंकिंग ब्लॉक के भीतर दिखाएँ।",
+        foldIntoThinkingBlocked:
+          "जब तक टूल कॉल «हमेशा विस्तृत» पर सेट हैं तब तक उपलब्ध नहीं, क्योंकि वे अलग पंक्तियों में ही रहते हैं।",
       },
       webSearch: {
         title: "वेब खोज",
@@ -1953,7 +2055,7 @@ export const hi = {
         desktopAvailableDescription:
           "अभी अपडेट करें। अपडेट पूरा होने पर डेस्कटॉप ऐप फिर से शुरू होगा।",
         desktopExternalServer:
-          "जिस टर्मिनल से सर्वर शुरू किया गया था, उसमें `unsloth studio update` चलाएँ।",
+          "ऐप पहले से चल रहे Studio सर्वर से जुड़ा है और उसे अपडेट नहीं कर सकता। उस सर्वर को रोकें, फिर अपडेट करने के लिए डेस्कटॉप ऐप बंद करके दोबारा खोलें।",
         desktopManualInstall:
           "नवीनतम Linux पैकेज इंस्टॉल करने के लिए रिलीज़ पेज खोलें।",
         desktopCheckFailed: "अपडेट की जाँच नहीं हो सकी",
@@ -2682,11 +2784,11 @@ export const hi = {
     tooLarge: "VRAM से बड़ा है, CPU पर ऑफ़लोड होगा। छोटा क्वांटाइज़ेशन तेज़ चलता है",
   },
   skills: {
-    title: "एजेंट कौशल",
+    title: "कौशल",
     description: "कौशल आपके मानक एजेंट फ़ोल्डरों से खोजे जाते हैं। उन्हें यहाँ सक्षम करें, फिर चैट में @ टाइप करके किसी का उल्लेख करें।",
     precedence: "~/.agents/skills को ~/.claude/skills पर प्राथमिकता मिलती है।",
     refresh: "रीफ़्रेश",
-    empty: "कोई एजेंट कौशल नहीं मिला। ~/.agents/skills या ~/.claude/skills में SKILL.md फ़ोल्डर जोड़ें, फिर रीफ़्रेश करें।",
+    empty: "कोई कौशल नहीं मिला। ~/.agents/skills या ~/.claude/skills में SKILL.md फ़ोल्डर जोड़ें, फिर रीफ़्रेश करें।",
     sourceAgents: "Agents",
     sourceClaude: "Claude",
     sourceBundled: "बंडल्ड",
@@ -2696,7 +2798,7 @@ export const hi = {
     shadowedBy: "इसी नाम का एक और कौशल ({source}) प्राथमिकता लेता है।",
     enable: "{name} सक्षम करें",
     disable: "{name} अक्षम करें",
-    updateError: "एजेंट कौशल अपडेट नहीं हो सका",
-    mentions: "एजेंट कौशल",
+    updateError: "कौशल अपडेट नहीं हो सका",
+    mentions: "कौशल",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

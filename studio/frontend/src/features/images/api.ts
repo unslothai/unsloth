@@ -16,6 +16,8 @@ export interface DiffusionResolvedControl {
   // "applied" (honored, or nothing was asked) | "fell_back" | "unsupported". Absent on older backends.
   status?: "applied" | "fell_back" | "unsupported";
   reason: string;
+  // "prequant:<repo>/<file>" when a hosted checkpoint was seeded; absent on a runtime quantise.
+  artifact?: string | null;
 }
 
 export interface DiffusionStatus {
@@ -51,6 +53,8 @@ export interface DiffusionStatus {
   // Image workflows the loaded family supports (drives tab gating). Absent when nothing is loaded or
   // on the native engine.
   workflows?: string[];
+  // Absent on an older backend: callers keep the historical limits (4 images, RGB, 16 px, 2048).
+  conditioning?: DiffusionConditioning | null;
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA picker enabled state).
   supports_lora?: boolean;
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
@@ -59,6 +63,22 @@ export interface DiffusionStatus {
   // backend that records it; absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
 }
+
+export interface DiffusionConditioning {
+  // Total input images per call, INCLUDING the source.
+  max_condition_images: number;
+  alpha: boolean;
+  dimension_multiple: number;
+  max_output_side: number;
+  max_output_pixels: number;
+  reference_resolutions: number[];
+  unified_edit: boolean;
+  localized_edit_modes: LocalizedEditMode[];
+  // Engine-specific caveats shown next to the inputs.
+  notes?: string[];
+}
+
+export type LocalizedEditMode = "annotate" | "paint" | "mask";
 
 export interface DiffusionGenerateProgress {
   active: boolean;
@@ -91,7 +111,16 @@ export interface DiffusionLoadRequest {
   transformer_quant?: "auto" | "none" | "off" | "int8" | "fp8" | "nvfp4" | "mxfp8";
   // Text-encoder precision (omit to keep the dense bf16 encoder). Refused with a 409 when the host
   // cannot run it, rather than loading dense and reporting nothing.
-  text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
+  // "none"/"off" pin the released bf16 encoder; omitting the field (or "auto") lets the family
+  // choose, which is no longer the same thing.
+  text_encoder_quant?:
+    | "auto"
+    | "none"
+    | "off"
+    | "fp8"
+    | "fp8_dynamic"
+    | "int8"
+    | "nvfp4";
   attention_backend?:
     | "auto"
     | "native"
@@ -130,8 +159,12 @@ export interface DiffusionGenerateRequest {
   strength?: number;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;
-  // Additional reference images for the FLUX.2 reference workflow, combined with init_image.
+  // Additional images after init_image, in order, for the reference and edit workflows.
   reference_images?: string[];
+  workflow?: "edit" | "reference";
+  reference_resolution?: number;
+  // Unified edit only: annotate/paint composite onto the source, mask is sent as Image 2.
+  localized_edit?: { mode: LocalizedEditMode; image: string };
   // LoRA adapters for this generation (discovery id + weight, 0..2). Rejected with a 400 when the
   // loaded model cannot apply LoRA.
   loras?: LoraSpecInput[];
@@ -212,7 +245,10 @@ export interface GalleryImage {
   strength?: number | null;
   upscale?: number | null;
   controlnet_guidance?: string | null;
+  // Images beyond the source (reference_images), for the reference and edit workflows.
   reference_image_count?: number | null;
+  reference_resolution?: number | null;
+  localized_edit?: LocalizedEditMode | null;
   created_at: number;
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;

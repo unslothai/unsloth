@@ -42,6 +42,8 @@ export {
   migrateShippedSidebarNavDefault,
   prefersReducedMotion,
   sanitizeCustomization,
+  sidebarNavAutoAfterChoice,
+  sidebarNavRowPinned,
   useAppearanceCustomStore,
 } from "./stores/appearance-custom-store";
 export type {
@@ -85,6 +87,7 @@ export {
 export { Shortcut } from "./components/shortcut";
 export {
   currentBinding,
+  shortcutMatchingEvent,
   useKeyboardShortcutsStore,
 } from "./stores/keyboard-shortcuts-store";
 export type { ShortcutId } from "./lib/keyboard-shortcuts";

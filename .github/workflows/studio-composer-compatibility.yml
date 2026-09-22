@@ -10,12 +10,21 @@ on:
       - 'studio/frontend/src/features/chat/**'
       - 'studio/frontend/src/features/settings/components/composer-settings.tsx'
       - 'studio/frontend/src/index.css'
+      # playwright_queue_localization.py drives the queue surface in ja and asserts the
+      # shipped Japanese, so a translation-only edit is exactly the change that can break
+      # it, and this workflow is its only invocation. index.ts is in scope with the
+      # catalogs because the driver calls setLocale through it.
+      - 'studio/frontend/src/i18n/**'
       - 'studio/frontend/smoke-*'
       - 'studio/frontend/tests/**'
       - 'studio/frontend/package*.json'
       - 'studio/frontend/vite.config.ts'
       - 'tests/studio/*composer*'
       - 'tests/studio/*prompt_queue*'
+      # `*` does not cross a `/` and matches literally otherwise, so neither pattern above
+      # reaches playwright_queue_localization.py: it carries no "prompt_queue". Without this
+      # line a PR that changes only the driver never runs the driver.
+      - 'tests/studio/*queue_localization*'
       - 'tests/studio/_playwright_robust.py'
       - '.github/workflows/studio-composer-compatibility.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
@@ -117,6 +126,33 @@ jobs:
         run: |
           mkdir -p temp/queue-validation/compatibility
           status=0
+          # One retry per driver, per browser, and one only. Three drivers across five
+          # engines on three operating systems is enough surface that a hosted runner
+          # drops a dynamically imported module or closes a browser target often enough
+          # to fail somebody else's pull request: seen as "error loading dynamically
+          # imported module .../use-prompt-queue-reorder.ts" on firefox and
+          # "TargetClosedError: Target page, context or browser has been closed" on
+          # webkit, in both cases with every assertion in the driver already reported
+          # PASS. A real regression fails both attempts, so the gate is kept and a
+          # transient costs one rerun of one driver rather than a red leg.
+          #
+          # The command is passed through rather than named inside, so the workflow
+          # still spells `python tests/studio/<driver>.py` where
+          # tests/studio/test_playwright_suites_run_in_ci.py looks for it. Both
+          # attempts land in the same log, which is uploaded as the artifact.
+          run_driver() {
+            log="$1"
+            shift
+            if "$@" > "$log" 2>&1; then return 0; fi
+            echo "::warning::$* failed on $browser, retrying once"
+            printf '\n=== first attempt failed, retrying ===\n\n' >> "$log"
+            if "$@" >> "$log" 2>&1; then
+              echo "::notice::$* passed on $browser after one retry"
+              return 0
+            fi
+            echo "::error::$* failed twice on $browser"
+            return 1
+          }
           for browser in chromium firefox webkit chrome msedge; do
             export PW_ENGINE=chromium
             unset PW_CHANNEL PW_EXECUTABLE
@@ -124,10 +160,20 @@ jobs:
               firefox|webkit) export PW_ENGINE="$browser" ;;
               chrome|msedge) export PW_CHANNEL="$browser" ;;
             esac
-            python tests/studio/playwright_prompt_queue_actions.py \
-              > "temp/queue-validation/compatibility/$browser-queue.log" 2>&1 || status=1
-            python tests/studio/playwright_composer_settings.py \
-              > "temp/queue-validation/compatibility/$browser-composer.log" 2>&1 || status=1
+            run_driver "temp/queue-validation/compatibility/$browser-queue.log" \
+              python tests/studio/playwright_prompt_queue_actions.py || status=1
+            run_driver "temp/queue-validation/compatibility/$browser-composer.log" \
+              python tests/studio/playwright_composer_settings.py || status=1
+            # Added by #11117 and left unrun until now, which
+            # tests/studio/test_playwright_suites_run_in_ci.py failed on. It belongs in this
+            # loop rather than a job of its own: it drives the same
+            # /smoke-prompt-queue-actions.html fixture as the queue suite above, and what it
+            # asserts -- IME composition, Escape-during-composition and the send-shortcut
+            # chord in the queued-prompt editor -- is exactly the per-engine behaviour this
+            # matrix exists for. Verified green on chromium 153, firefox 155 and webkit 26.6
+            # before being wired in, so this adds coverage and not a new red.
+            run_driver "temp/queue-validation/compatibility/$browser-queue-localization.log" \
+              python tests/studio/playwright_queue_localization.py || status=1
           done
           exit "$status"
       - name: Native Safari simulations

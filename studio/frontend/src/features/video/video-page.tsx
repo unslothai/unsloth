@@ -87,13 +87,16 @@ import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { VIDEO_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
-import type { HostClass } from "@/features/model-picker/components/model-selector/host-artifact-policy";
+import {
+  type HostClass,
+  hostOffersDensePrecision,
+} from "@/features/model-picker/components/model-selector/host-artifact-policy";
 import {
   VIDEO_CATALOG,
   catalogToModelOptions,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
-import { useHostClass } from "@/hooks/use-host-class";
+import { useDenseQuantSchemes, useHostClass } from "@/hooks/use-host-class";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -184,8 +187,14 @@ import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-q
 // Curated models come from the shared catalog, one group per model with a format second level,
 // which also surfaces LTX-2.3 in Recommended since its HF pipeline_tag is image-to-video.
 // Host-dependent: a Mac gets only GGUF rows. The load kind per artifact comes from loadSpecFor.
-function useVideoModels(host: HostClass): ModelOption[] {
-  return useMemo(() => catalogToModelOptions(VIDEO_CATALOG, host), [host]);
+function useVideoModels(
+  host: HostClass,
+  denseQuantSchemes: readonly string[],
+): ModelOption[] {
+  return useMemo(
+    () => catalogToModelOptions(VIDEO_CATALOG, host, denseQuantSchemes),
+    [host, denseQuantSchemes],
+  );
 }
 
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first.
@@ -879,7 +888,8 @@ function VideoGenerator({
 }) {
   const initialReadySent = useRef(false);
   const hostClass = useHostClass();
-  const videoModels = useVideoModels(hostClass);
+  const denseQuantSchemes = useDenseQuantSchemes();
+  const videoModels = useVideoModels(hostClass, denseQuantSchemes);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "Ultra-realistic cinematic documentary footage of a quiet Kyoto neighborhood at sunrise. An elderly Japanese man opens his traditional wooden shop while a young woman wearing a simple kimono walks past carrying a small basket. Cherry blossom petals gently fall through the air, bicycles pass by, warm sunlight enters between narrow streets, distant temple bells echo. The camera slowly moves forward like a professional travel documentary, realistic human movements, natural expressions, authentic Japanese architecture, subtle wind movement in clothing and trees, realistic colors, 35mm film photography style.",
@@ -3269,17 +3279,23 @@ function VideoGenerator({
       {!status?.loaded || status.model_kind === "pipeline" ? (
         <AdvancedSelect
           label="Precision"
-          hint="How the model computes. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) by quantising the transformer onto low-precision tensor cores, and keeps plain bf16 when the device or memory plan can't take it. Off always runs bf16."
+          hint="How the model computes. Auto picks the fastest precision the hardware supports (INT8 on every capable GPU, then FP8 where the card has it) by quantising the transformer onto low-precision tensor cores, and keeps plain bf16 when the device or memory plan can't take it. Off always runs bf16."
           badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
           options={[
             ["auto", "Auto (fastest for GPU)"],
             ["none", "Off (bf16)"],
-            ["fp8", "FP8"],
-            ["int8", "INT8"],
-            ["nvfp4", "NVFP4 (Blackwell)"],
-            ["mxfp8", "MXFP8 (Blackwell)"],
+            // The explicit low-precision schemes need the dense tensor-core path, which a Mac or
+            // CPU-only host cannot run, so the picker does not list what the loader would refuse.
+            ...(hostOffersDensePrecision(hostClass)
+              ? ([
+                  ["fp8", "FP8"],
+                  ["int8", "INT8"],
+                  ["nvfp4", "NVFP4 (Blackwell)"],
+                  ["mxfp8", "MXFP8 (Blackwell)"],
+                ] as [string, string][])
+              : []),
           ]}
         />
       ) : (
@@ -3436,7 +3452,7 @@ function VideoGenerator({
       </Dialog>
       {/* Top: the model selector, clear of the sidebar and level with the controls column. Load
           progress shows in a toast. */}
-      <div className="@container pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+      <div className="@container pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
         {/* min-w-0: without it a long resident model name pushes the Images link off a phone screen. */}
         <div className="pointer-events-auto flex min-w-0 items-center gap-3">
           <ModelSelector
@@ -3448,7 +3464,7 @@ function VideoGenerator({
             resolveDownloadFootprint={resolveDownloadFootprint}
             onEject={status?.loaded ? handleUnload : undefined}
             variant="ghost"
-            className="!h-[34px]"
+            className="!h-[calc(34px*var(--ui-space-scale,1))]"
             task={VIDEO_GEN_TASKS}
             catalog={VIDEO_CATALOG}
             placeholder="Select video model"
@@ -3466,7 +3482,7 @@ function VideoGenerator({
                   variant="outline"
                   size="sm"
                   aria-label="Cancel load"
-                  className="!h-[34px] rounded-full text-xs"
+                  className="!h-[calc(34px*var(--ui-space-scale,1))] rounded-full text-xs"
                   onClick={() => void handleCancelLoad()}
                 >
                   Cancel load
@@ -4171,7 +4187,7 @@ function VideoGenerator({
           {(videos.length > 0 || busy === "generating") && (
             <div
               ref={stripRef}
-              className="hover-scrollbar flex shrink-0 items-stretch gap-2 overflow-x-auto border-t border-foreground/10 p-3"
+              className="hover-scrollbar flex shrink-0 items-stretch gap-2 overflow-x-auto border-t border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] p-3"
               onScroll={(e) => {
                 // Near the right edge: pull the next older page (infinite scroll).
                 const el = e.currentTarget;
@@ -4227,7 +4243,7 @@ function VideoGenerator({
                   </span>
                   {/* Selection marker on a non-focusable overlay. */}
                   {video.id === selected?.id && (
-                    <span className="pointer-events-none absolute inset-0 z-20 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
+                    <span className="pointer-events-none absolute inset-0 z-20 rounded-[10px] border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
                   )}
                 </button>
                 </TooltipTrigger>
