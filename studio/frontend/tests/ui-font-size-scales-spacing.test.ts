@@ -4,7 +4,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+
 import { readSrc } from "./helpers/kit.ts";
+
+/** Every source that can carry a length. */
+const SOURCES = (function walk(dir: string): string[] {
+  return readdirSync(join(import.meta.dirname, "../src", dir), {
+    withFileTypes: true,
+  }).flatMap((entry) => {
+    const path = dir ? `${dir}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) return walk(path);
+    return /\.(tsx?|css)$/.test(entry.name) ? [path] : [];
+  });
+})("");
 
 // UI font size has to move what separates the text too: a 20px label in a row
 // padded for 12px reads as cramped. --ui-space-scale is the one multiplier
@@ -40,6 +54,21 @@ test("every tailwind spacing utility goes through it", () => {
       /--spacing:\s*calc\(0\.25rem \* var\(--ui-space-scale, 1\)\);/,
     );
   }
+});
+
+test("em lengths are left alone, they already follow the text", () => {
+  // rem is against the 16px root, which the preference never touches, so it
+  // needs the multiplier. em is against the element's own font size, which
+  // does move, so scaling it applies the preference twice.
+  const withEm = SOURCES.filter((file) =>
+    /[^a-z0-9.]-?[\d.]+em\s*\*\s*var\(--ui-space-scale/.test(readSrc(file)),
+  );
+  assert.deepEqual(withEm, [], "these em lengths take the scale twice");
+  const pickers = readSrc(
+    "features/model-picker/components/model-selector/pickers.tsx",
+  );
+  assert.match(pickers, /mx-\[-0\.1em\]/);
+  assert.match(pickers, /ml-\[0\.14em\]/);
 });
 
 test("chat chrome that holds text scales, window chrome does not", () => {

@@ -813,11 +813,11 @@ function SizeText({ value }: { value: string }) {
       {whole}
       {fraction === undefined ? null : (
         <>
-          <span className="mx-[calc(-0.1em*var(--ui-space-scale,1))]">.</span>
+          <span className="mx-[-0.1em]">.</span>
           {fraction}
         </>
       )}
-      <span className="ml-[calc(0.14em*var(--ui-space-scale,1))]">{unit}</span>
+      <span className="ml-[0.14em]">{unit}</span>
     </>
   );
 }
