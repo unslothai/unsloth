@@ -4,12 +4,9 @@
 /**
  * Where the Live resource monitor stands relative to the Run settings panel.
  *
- * The monitor lives in the bottom-right corner, which is exactly where the
- * settings panel opens. A 256 px monitor and a 248-560 px panel cannot both
- * hold that corner, and the monitor is the one that can move: docking it to
- * the panel's left edge leaves both usable. A window too narrow to put the two
- * side by side has nowhere to dock to, so the monitor yields to the sheet
- * instead of hiding behind it.
+ * The monitor and the panel share the bottom-right corner, and the monitor is
+ * the one that can move: docking it left of the panel leaves both usable. It
+ * yields instead where there is nowhere to dock to.
  */
 
 /** The resting inset on every edge, `inset-4` at a 16px root font size. */
@@ -23,6 +20,23 @@ export interface FloatingMonitorDockState {
   isMobile: boolean;
   isChatRoute: boolean;
   settingsPanelOpen: boolean;
+  /** The panel's painted width, which leads the stored one during a drag. */
+  settingsWidth: number;
+  /** A pinned sidebar's width, 0 when it holds no column. */
+  sidebarWidth: number;
+  /** Viewport width; 0 or less means unknown, which skips the capacity check. */
+  viewportWidth: number;
+}
+
+export interface FloatingMonitorLayout {
+  visible: boolean;
+  /**
+   * Hidden because the settings panel covers the corner, not because the user
+   * closed the monitor. The caller keeps the panel mounted so its geometry
+   * survives a temporary overlay.
+   */
+  suppressed: boolean;
+  dockedBesideRunSettings: boolean;
 }
 
 export function getFloatingMonitorLayout({
@@ -30,28 +44,51 @@ export function getFloatingMonitorLayout({
   isMobile,
   isChatRoute,
   settingsPanelOpen,
-}: FloatingMonitorDockState): {
-  visible: boolean;
-  dockedBesideRunSettings: boolean;
-} {
-  // The panel is chat-only, and the store survives navigation, so a stale open
+  settingsWidth,
+  sidebarWidth,
+  viewportWidth,
+}: FloatingMonitorDockState): FloatingMonitorLayout {
+  // The panel is chat-only and the store survives navigation, so a stale open
   // flag on another route must not move the monitor.
   const runSettingsVisible = isChatRoute && settingsPanelOpen;
-  const hiddenBehindMobileSettings = isOpen && isMobile && runSettingsVisible;
+  // Docking needs room for the sidebar, the monitor and the panel at once.
+  // At the 768 px breakpoint the default 280 px sidebar and 272 px panel leave
+  // less than the monitor's own width, and a docked monitor would cover the
+  // sidebar instead of the panel.
+  const dockable =
+    !isMobile &&
+    dockedMonitorFits({ viewportWidth, sidebarWidth, settingsWidth });
+  const suppressed = isOpen && runSettingsVisible && !dockable;
 
   return {
-    visible: isOpen && !hiddenBehindMobileSettings,
-    dockedBesideRunSettings: isOpen && !isMobile && runSettingsVisible,
+    visible: isOpen && !suppressed,
+    suppressed,
+    dockedBesideRunSettings: isOpen && runSettingsVisible && dockable,
   };
 }
 
+export function dockedMonitorFits({
+  viewportWidth,
+  sidebarWidth,
+  settingsWidth,
+}: {
+  viewportWidth: number;
+  sidebarWidth: number;
+  settingsWidth: number;
+}): boolean {
+  // An unmeasured window keeps the dock rather than hiding the monitor on a guess.
+  if (!(viewportWidth > 0)) {
+    return true;
+  }
+  const usable =
+    viewportWidth - Math.max(0, sidebarWidth) - Math.max(0, settingsWidth);
+  return usable >= FLOATING_MONITOR_WIDTH + 2 * FLOATING_MONITOR_EDGE_INSET;
+}
+
 /**
- * The inset the monitor takes from the viewport's right edge, in px.
- *
- * Docked, the container ends exactly where the panel begins, so the monitor
- * cannot overlap it at any width the panel can be dragged to. That width is the
- * panel's own live width (`useChatSettingsWidth`), not a constant: a fixed
- * offset is only correct at one panel width.
+ * The inset from the viewport's right edge, in px. Docked, the container ends
+ * where the panel begins, so the monitor clears it at every width the panel can
+ * be dragged to; a fixed offset is only correct at one width.
  */
 export function floatingMonitorRightInset({
   dockedBesideRunSettings,
@@ -64,10 +101,8 @@ export function floatingMonitorRightInset({
 }
 
 /**
- * The constraint container's inline style.
- *
- * Returned as an object rather than written inline so the geometry a reviewer
- * checks is the geometry the browser applies, byte for byte.
+ * The constraint container's inline style. Returned as an object so the
+ * geometry a reviewer checks is the geometry the browser applies.
  */
 export function floatingMonitorConstraintStyle({
   zIndex,
@@ -80,6 +115,9 @@ export function floatingMonitorConstraintStyle({
 }): { zIndex: number; right: number } {
   return {
     zIndex,
-    right: floatingMonitorRightInset({ dockedBesideRunSettings, settingsWidth }),
+    right: floatingMonitorRightInset({
+      dockedBesideRunSettings,
+      settingsWidth,
+    }),
   };
 }

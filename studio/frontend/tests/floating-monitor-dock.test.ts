@@ -30,6 +30,7 @@ import test from "node:test";
 import {
   FLOATING_MONITOR_EDGE_INSET,
   FLOATING_MONITOR_WIDTH,
+  dockedMonitorFits,
   floatingMonitorConstraintStyle,
   getFloatingMonitorLayout,
 } from "../src/components/floating-monitor-layout.ts";
@@ -61,8 +62,11 @@ test("closed monitor stays hidden", () => {
       isMobile: false,
       isChatRoute: true,
       settingsPanelOpen: true,
+      settingsWidth: 272,
+      sidebarWidth: 280,
+      viewportWidth: VIEWPORT_WIDTH,
     }),
-    { visible: false, dockedBesideRunSettings: false },
+    { visible: false, dockedBesideRunSettings: false, suppressed: false },
   );
 });
 
@@ -73,8 +77,11 @@ test("desktop monitor docks beside open run settings", () => {
       isMobile: false,
       isChatRoute: true,
       settingsPanelOpen: true,
+      settingsWidth: 272,
+      sidebarWidth: 280,
+      viewportWidth: VIEWPORT_WIDTH,
     }),
-    { visible: true, dockedBesideRunSettings: true },
+    { visible: true, dockedBesideRunSettings: true, suppressed: false },
   );
 });
 
@@ -85,8 +92,11 @@ test("mobile monitor yields to the run-settings sheet", () => {
       isMobile: true,
       isChatRoute: true,
       settingsPanelOpen: true,
+      settingsWidth: 272,
+      sidebarWidth: 280,
+      viewportWidth: VIEWPORT_WIDTH,
     }),
-    { visible: false, dockedBesideRunSettings: false },
+    { visible: false, dockedBesideRunSettings: false, suppressed: true },
   );
 });
 
@@ -97,8 +107,11 @@ test("monitor remains visible when run settings are closed", () => {
       isMobile: true,
       isChatRoute: true,
       settingsPanelOpen: false,
+      settingsWidth: 272,
+      sidebarWidth: 280,
+      viewportWidth: VIEWPORT_WIDTH,
     }),
-    { visible: true, dockedBesideRunSettings: false },
+    { visible: true, dockedBesideRunSettings: false, suppressed: false },
   );
 });
 
@@ -109,8 +122,11 @@ test("stale chat settings state does not dock the monitor off-route", () => {
       isMobile: false,
       isChatRoute: false,
       settingsPanelOpen: true,
+      settingsWidth: 272,
+      sidebarWidth: 280,
+      viewportWidth: VIEWPORT_WIDTH,
     }),
-    { visible: true, dockedBesideRunSettings: false },
+    { visible: true, dockedBesideRunSettings: false, suppressed: false },
   );
 });
 
@@ -120,7 +136,10 @@ test("an undocked monitor keeps the resting inset", () => {
     dockedBesideRunSettings: false,
     settingsWidth: 560,
   });
-  assert.deepEqual(style, { zIndex: Z_INDEX, right: FLOATING_MONITOR_EDGE_INSET });
+  assert.deepEqual(style, {
+    zIndex: Z_INDEX,
+    right: FLOATING_MONITOR_EDGE_INSET,
+  });
 });
 
 test("the docked constraint clears the panel at every draggable width", () => {
@@ -238,8 +257,8 @@ test("the docked offset comes from the panel's own width", () => {
   );
   assert.match(
     source,
-    /const \{ width: settingsWidth \} = useChatSettingsWidth\(\)/,
-    "the monitor must bind the hook's live width",
+    /const \{ width: committedSettingsWidth \} = useChatSettingsWidth\(\)/,
+    "the monitor must bind the hook's committed width",
   );
   assert.match(
     source,
@@ -257,4 +276,89 @@ test("docking does not remount the panel", () => {
     /key=\{`\$\{panelKey\}-/,
     "the panel key must not change with the dock state",
   );
+});
+
+test("the docked inset follows the panel while its edge is dragged", () => {
+  // The resize handle paints --chat-settings-width every frame and commits to
+  // the store only on pointer up, so a monitor driven by the store alone trails
+  // the panel and overlaps it while the panel grows.
+  assert.match(source, /data-slot="chat-settings-panel"/);
+  assert.match(
+    source,
+    /new ResizeObserver\(measure\)[\s\S]*observer\.observe\(panel\)/,
+    "the painted width must be observed, not sampled once",
+  );
+  assert.match(
+    source,
+    /paintedSettingsWidth > 0 \? paintedSettingsWidth : committedSettingsWidth/,
+    "the painted width must win over the stale committed one",
+  );
+});
+
+test("a monitor with nowhere to dock yields instead of covering the sidebar", () => {
+  // 768 px breakpoint, default 280 px sidebar and 272 px panel: no room for the
+  // monitor. Docking there would cover the sidebar, which the panel does not.
+  const narrow = {
+    isOpen: true,
+    isMobile: false,
+    isChatRoute: true,
+    settingsPanelOpen: true,
+    settingsWidth: 272,
+    sidebarWidth: 280,
+    viewportWidth: 768,
+  };
+  assert.equal(dockedMonitorFits(narrow), false);
+  assert.deepEqual(getFloatingMonitorLayout(narrow), {
+    visible: false,
+    suppressed: true,
+    dockedBesideRunSettings: false,
+  });
+  const wide = { ...narrow, settingsWidth: 560, viewportWidth: 1440 };
+  assert.equal(dockedMonitorFits(wide), true);
+  assert.equal(getFloatingMonitorLayout(wide).dockedBesideRunSettings, true);
+  assert.match(source, /sidebarWidth: pinned \? sidebarWidth : 0/);
+});
+
+test("undocking restores where the user dragged the monitor", () => {
+  // Docking narrows the container, so a monitor dragged near its right edge is
+  // clamped left; place() keeps the clamped position, leaving a gap until the
+  // next drag. The chosen position is replayed once, unless the user dragged
+  // while docked, which is a newer choice.
+  assert.match(
+    source,
+    /if \(!narrowedRef\.current && hasDraggedRef\.current\) \{/,
+  );
+  assert.match(source, /restoreLeftRef\.current = chosenLeftRef\.current/);
+  assert.match(
+    source,
+    /useLayoutEffect\(\(\) => \{\s*if \(narrowedRef\.current === narrowed\)/,
+    "the transition must settle before the next observation",
+  );
+  assert.match(
+    source,
+    /const restoreTo = restoreLeftRef\.current;/,
+    "the restored left has to replace place() for one pass",
+  );
+});
+
+test("the settings panel hides the monitor without dropping its geometry", () => {
+  const hidden = getFloatingMonitorLayout({
+    isOpen: true,
+    isMobile: true,
+    isChatRoute: true,
+    settingsPanelOpen: true,
+    settingsWidth: 272,
+    sidebarWidth: 0,
+    viewportWidth: 480,
+  });
+  assert.deepEqual(hidden, {
+    visible: false,
+    suppressed: true,
+    dockedBesideRunSettings: false,
+  });
+  // Suppressed keeps the panel mounted: the sheet is an overlay, so unmounting
+  // would cost the dragged position and the browser-owned resize dimensions.
+  assert.match(source, /\(visible \|\| suppressed\) &&/);
+  assert.match(source, /suppressed=\{suppressed\}/);
+  assert.match(source, /suppressed && "invisible"/);
 });

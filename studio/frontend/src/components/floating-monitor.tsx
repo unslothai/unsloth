@@ -14,6 +14,8 @@ import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
 import { useChatSettingsWidth } from "@/hooks/use-chat-settings-width";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import {
@@ -109,7 +111,10 @@ function naturalWidth(monitor: HTMLDivElement): number {
   return width;
 }
 
-function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
+function useMonitorLayout(
+  constraintsElement: HTMLDivElement | null,
+  narrowed: boolean,
+) {
   // This panel's claim on the shared frame. Reopening the monitor mid-exit
   // mounts the replacement while the old panel is still animating out, and the
   // old one unmounts last, so its cleanup must only clear its own frame.
@@ -123,6 +128,11 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
   const preferredWidthRef = useRef<number | null>(null);
   const preferredHeightRef = useRef<number | null>(null);
   const surfaceWidthRef = useRef(0);
+  const narrowedRef = useRef(narrowed);
+  // The user's own placement while the container is at full width. Cleared when
+  // they drag while it is narrowed, which is a newer choice, not a clamp.
+  const chosenLeftRef = useRef<number | null>(null);
+  const restoreLeftRef = useRef<number | null>(null);
   const remeasureRef = useRef(0);
   const [layout, setLayout] = useState<MonitorLayout | null>(null);
 
@@ -182,7 +192,17 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       const maxTop = Math.max(0, constraintsBox.height - height);
       const currentLeft = monitorBox.left - constraintsBox.left;
       const currentTop = monitorBox.top - constraintsBox.top;
-      const left = place(hasDraggedRef.current, currentLeft, maxLeft);
+      // A restored position is a deliberate left the constraint had clamped
+      // away, so it replaces `place()` for exactly one pass.
+      const restoreTo = restoreLeftRef.current;
+      const left =
+        restoreTo === null
+          ? place(hasDraggedRef.current, currentLeft, maxLeft)
+          : clamp(restoreTo, 0, maxLeft);
+      restoreLeftRef.current = null;
+      if (!narrowedRef.current && hasDraggedRef.current) {
+        chosenLeftRef.current = left;
+      }
       const top = place(hasDraggedRef.current, currentTop, maxTop);
 
       const session = dragSessionRef.current;
@@ -244,6 +264,19 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     };
   }, [constraintsElement, publisher]);
 
+  // Narrowing clamps the monitor left, and `place()` keeps the clamped spot.
+  // The position the user did drag to is put back when the container widens.
+  // Settled in a layout effect, before the next observation can reconcile.
+  useLayoutEffect(() => {
+    if (narrowedRef.current === narrowed) {
+      return;
+    }
+    narrowedRef.current = narrowed;
+    if (!narrowed) {
+      restoreLeftRef.current = chosenLeftRef.current;
+    }
+  }, [narrowed]);
+
   // ResizeObserver never fires for a position-only change, so dragging alone would leave the
   // published frame at the monitor's old corner and the overlay stack dodging where it used to be.
   // Re-publish once each layout is committed, which after a drag is on release: the frames in
@@ -276,6 +309,9 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     const left = monitorBox.left - constraintsBox.left;
     const top = monitorBox.top - constraintsBox.top;
     hasDraggedRef.current = true;
+    if (narrowedRef.current) {
+      chosenLeftRef.current = null;
+    }
 
     // Native resize records attempted inline dimensions even when max-width
     // or max-height hides them. Normalize only hidden dimensions so an
@@ -429,6 +465,7 @@ interface FloatingMonitorPanelProps {
   dockedBesideRunSettings: boolean;
   onClose: () => void;
   settingsWidth: number;
+  suppressed: boolean;
   systemInfo: ReturnType<typeof useSystemInfo>;
 }
 
@@ -436,6 +473,7 @@ function FloatingMonitorPanel({
   dockedBesideRunSettings,
   onClose,
   settingsWidth,
+  suppressed,
   systemInfo,
 }: FloatingMonitorPanelProps) {
   const t = useT();
@@ -449,7 +487,10 @@ function FloatingMonitorPanel({
     startDrag,
     updateDrag,
     finishDrag,
-  } = useMonitorLayout(constraintsElement);
+  } = useMonitorLayout(
+    constraintsElement,
+    dockedBesideRunSettings || suppressed,
+  );
 
   const zIndex = useFloatingPanelZIndex("resource-monitor");
   const raisePanel = useFloatingPanelOrderStore((state) => state.raise);
@@ -506,8 +547,14 @@ function FloatingMonitorPanel({
   return (
     <div
       ref={setConstraintsElement}
+      // The panel stays mounted while suppressed: the settings sheet is a
+      // temporary overlay, and unmounting would throw away the position and the
+      // browser-owned resize dimensions the user set. `invisible` keeps the box
+      // (and the observers watching it) while taking it off the screen.
+      aria-hidden={suppressed || undefined}
       className={cn(
         "pointer-events-none fixed inset-y-4 left-4",
+        suppressed && "invisible",
         dockedBesideRunSettings ? undefined : "right-4",
       )}
       style={floatingMonitorConstraintStyle({
@@ -697,19 +744,58 @@ export function FloatingMonitor() {
   const isMobile = useIsMobile();
   // The panel's own rendered width: it is user-resizable from 248 to 560 px, so the
   // docked offset has to come from the same value the panel paints at.
-  const { width: settingsWidth } = useChatSettingsWidth();
-  const { visible, dockedBesideRunSettings } = getFloatingMonitorLayout({
-    isOpen,
-    isMobile,
-    isChatRoute: pathname === "/chat",
-    settingsPanelOpen,
-  });
+  const { width: committedSettingsWidth } = useChatSettingsWidth();
+  const { pinned } = useSidebarPin();
+  const { width: sidebarWidth } = useSidebarWidth();
+  const isChatRoute = pathname === "/chat";
+
+  // Dragging the panel's edge paints `--chat-settings-width` straight onto the
+  // <aside> and commits to the store only on pointer up, so the store trails the
+  // panel by a whole drag. The monitor has to clear what is on screen, so it
+  // follows the painted width and falls back to the committed one.
+  const [paintedSettingsWidth, setPaintedSettingsWidth] = useState(0);
+  useEffect(() => {
+    if (!(isChatRoute && settingsPanelOpen)) {
+      setPaintedSettingsWidth(0);
+      return;
+    }
+    const panel = document.querySelector('[data-slot="chat-settings-panel"]');
+    if (!panel) {
+      setPaintedSettingsWidth(0);
+      return;
+    }
+    const measure = () => {
+      if (panel.isConnected) {
+        setPaintedSettingsWidth(panel.getBoundingClientRect().width);
+      }
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [isChatRoute, settingsPanelOpen]);
+
+  const settingsWidth =
+    paintedSettingsWidth > 0 ? paintedSettingsWidth : committedSettingsWidth;
+  const { visible, suppressed, dockedBesideRunSettings } =
+    getFloatingMonitorLayout({
+      isOpen,
+      isMobile,
+      isChatRoute,
+      settingsPanelOpen,
+      settingsWidth,
+      // A pinned sidebar holds its column; an unpinned one overlays the content
+      // or collapses to an icon rail, so neither takes the monitor's room.
+      sidebarWidth: pinned ? sidebarWidth : 0,
+      viewportWidth: typeof window === "undefined" ? 0 : window.innerWidth,
+    });
   const systemInfo = useSystemInfo({ enabled: visible, pollMs: 5000 });
   const [panelKey, setPanelKey] = useState(0);
   const wasOpenRef = useRef(isOpen);
 
   // Each visible panel owns native inline resize state. Advance the key on
   // close so reopening during the exit animation still mounts fresh geometry.
+  // Docking and the mobile yield are not closes, so they do not advance it.
   useEffect(() => {
     if (wasOpenRef.current && !isOpen) {
       setPanelKey((current) => current + 1);
@@ -719,9 +805,13 @@ export function FloatingMonitor() {
 
   return (
     <AnimatePresence>
-      {visible && (
+      {(visible || suppressed) && (
         <FloatingMonitorPanel
           key={panelKey}
+          // The mobile sheet covers the panel rather than closing it, so the
+          // panel is kept mounted and invisible: the position and the size the
+          // user set survive the sheet being opened and closed.
+          suppressed={suppressed}
           dockedBesideRunSettings={dockedBesideRunSettings}
           settingsWidth={settingsWidth}
           systemInfo={systemInfo}
