@@ -86,6 +86,8 @@ __all__ = [
     "is_moe_model",
     "get_moe_target_parameters",
     "get_moe_target_modules",
+    "get_moe_expert_submodule_leaves",
+    "moe_expert_submodule_regex",
     "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
     "EMBEDDING_MODULES",
@@ -770,6 +772,30 @@ def _declares_flex_support(model_class):
     return None
 
 
+def _model_class_supports_flash_attention(model_class):
+    """Whether the installed transformers will let this class dispatch flash attention.
+
+    transformers renamed the class flag from `_supports_flash_attn_2` to `_supports_flash_attn`,
+    and `_flash_attn_can_dispatch` reads only the new name, so remote code written against the
+    old layout (`_supports_flash_attn_2 = True` and nothing else) is refused with
+    "does not support Flash Attention 2 yet" the moment flash_attention_2 is requested. Ask for
+    the flag the installed transformers dispatches on; the old name only counts where the base
+    class still knows it."""
+    if model_class is None:
+        return False
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        PreTrainedModel = None
+    new_flag_dispatched = PreTrainedModel is not None and hasattr(PreTrainedModel, "_supports_flash_attn")
+    if new_flag_dispatched:
+        return bool(getattr(model_class, "_supports_flash_attn", False))
+    return bool(
+        getattr(model_class, "_supports_flash_attn_2", False)
+        or getattr(model_class, "_supports_flash_attn", False)
+    )
+
+
 def _enable_flex_attention_support(model_class, model_type = ""):
     """Set `_supports_flex_attn` on an interface-based architecture that leaves it unset (qwen3_5,
     qwen3_5_moe). Returns True when flex is now permitted."""
@@ -1084,7 +1110,52 @@ def _set_attn_impl(config, impl):
     return impl
 
 
+def _resolve_remote_model_class(auto_model, config):
+    """The class `auto_model.from_pretrained(..., trust_remote_code = True)` instantiates for a
+    remote-code config, or None when the model is native.
+
+    transformers' auto mapping is keyed by config class name, so a remote config that reuses a
+    native name (`NemotronHConfig` on the Nemotron-H hub checkpoints) resolves to the native
+    model class, whose `_supports_*` flags then decide the attention implementation of a class
+    that is never built. Only a config that itself came out of `transformers_modules` and names
+    the requested auto class in `auto_map` is remote; everything else stays native."""
+    auto_name = getattr(auto_model, "__name__", None)
+    auto_map = getattr(config, "auto_map", None)
+    if not auto_name or not isinstance(auto_map, dict) or auto_name not in auto_map:
+        return None
+    if not str(getattr(type(config), "__module__", "")).startswith("transformers_modules"):
+        return None
+    class_ref = auto_map[auto_name]
+    if not isinstance(class_ref, str) or "." not in class_ref:
+        return None
+    repo_id = getattr(config, "_name_or_path", None) or getattr(config, "name_or_path", None)
+    if "--" in class_ref:
+        repo_id, class_ref = class_ref.split("--", 1)
+    module_name, class_name = class_ref.rsplit(".", 1)
+    # The config module is already materialised; its modeling sibling usually is too.
+    config_module = str(type(config).__module__)
+    try:
+        import importlib
+        sibling = importlib.import_module(f"{config_module.rsplit('.', 1)[0]}.{module_name}")
+        klass = getattr(sibling, class_name, None)
+        if isinstance(klass, type):
+            return klass
+    except Exception:
+        pass
+    if not repo_id:
+        return None
+    try:
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+        klass = get_class_from_dynamic_module(class_ref, repo_id)
+        return klass if isinstance(klass, type) else None
+    except Exception:
+        return None
+
+
 def resolve_model_class(auto_model, config):
+    remote_class = _resolve_remote_model_class(auto_model, config)
+    if remote_class is not None:
+        return remote_class
     mapping = getattr(auto_model, "_model_mapping", {})
     try:
         result = mapping[config.__class__]
@@ -1213,11 +1284,7 @@ def resolve_attention_implementation(
     if _is_sdpa_excluded(model_type):
         supports_sdpa = False
     supports_flash_attention = (
-        model_class is not None
-        and (
-            getattr(model_class, "_supports_flash_attn_2", False)
-            or getattr(model_class, "_supports_flash_attn", False)
-        )
+        _model_class_supports_flash_attention(model_class)
         and not _is_flash_excluded(model_type)
     )
     supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
@@ -4921,6 +4988,69 @@ def get_moe_target_modules(model, target_modules = None) -> List[str]:
             targets.add(f"{leaf}.{expert_index}")
 
     return sorted(targets)
+
+
+_EXPERT_SUBMODULE_PATTERN = re.compile(r"(?:^|\.)(?:experts\.\d+|shared_experts?)\.([A-Za-z_]\w*)$")
+
+
+def get_moe_expert_submodule_leaves(model, target_modules = None) -> List[str]:
+    """Leaf names of the requested MLP projections that live one level down inside an expert
+    submodule: ``mixer.experts.<i>.up_proj`` / ``mixer.shared_experts.up_proj`` (the Nemotron-H
+    hub checkpoints, transformers 4.x Qwen2-MoE and DeepSeek). PEFT reaches these from a leaf
+    list by suffix, but the regex ``get_peft_regex`` builds for a text-only model only reaches a
+    leaf directly under the block (``layers.<n>.mixer.up_proj``), so the routed experts were
+    silently left frozen while the same layout inside a vision-language wrapper (whose name
+    carries the ``language`` tag) was trained. Returns [] for non-MoE models, fused-parameter
+    experts, per-expert Linear ModuleLists (``get_moe_target_modules``), or a request that omits
+    the MLP experts."""
+    if not is_moe_model(model):
+        return []
+    if target_modules is None or not hasattr(model, "named_modules"):
+        return []
+    if isinstance(target_modules, str):
+        target_set = _moe_target_set_from_string(target_modules)
+    else:
+        target_set = {
+            target
+            for target in target_modules or ()
+            if (isinstance(target, str) and "." not in target and target in _MOE_BROAD_MLP_TARGETS)
+        }
+    if not (target_set & _MOE_BROAD_MLP_TARGETS):
+        return []
+    want_gate_up = bool(target_set & {"gate_proj", "up_proj", "gate_up_proj"})
+    want_down = "down_proj" in target_set
+
+    leaves = set()
+    for name, module in model.named_modules():
+        matched = _EXPERT_SUBMODULE_PATTERN.search(name)
+        if matched is None:
+            continue
+        if not (
+            isinstance(module, torch.nn.Linear)
+            or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+        ):
+            continue
+        leaf = matched.group(1)
+        leaf_lower = leaf.lower()
+        is_down = "down" in leaf_lower
+        is_gate_up = (not is_down) and ("gate" in leaf_lower or "up" in leaf_lower)
+        if is_down and not want_down:
+            continue
+        if is_gate_up and not want_gate_up:
+            continue
+        if not (is_down or is_gate_up):
+            continue
+        leaves.add(leaf)
+    return sorted(leaves)
+
+
+def moe_expert_submodule_regex(leaves) -> str:
+    """The regex alternative that reaches ``experts.<i>.<leaf>`` and ``shared_experts.<leaf>``."""
+    return (
+        r".*\.(?:experts\.\d+|shared_experts?)\.(?:"
+        + "|".join(re.escape(leaf) for leaf in leaves)
+        + r")"
+    )
 
 
 def warn_if_zoo_cannot_merge_moe_experts():
