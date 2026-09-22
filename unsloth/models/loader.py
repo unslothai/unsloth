@@ -208,17 +208,11 @@ def _loaded_skip_modules(model_config):
 
 
 def _config_uses_remote_code(config):
-    """Whether this config resolves to model code that lives outside transformers.
-
-    `trust_remote_code = True` only matters when the checkpoint ships its own
-    modeling files: an `auto_map` on the config (or one of its sub-configs), or a
-    config class loaded out of `transformers_modules`. Passing the flag for an
-    architecture transformers itself ships (a habit, and what most notebooks do)
-    changes nothing about where the code comes from, so the compiler can still
-    read and rewrite it. Skipping the compiler in that case silently drops the
-    fast LoRA forward, the fused loss and the compiled norms, which is where the
-    speed is. Unknown (no config) keeps the old, conservative answer.
-    """
+    """Whether the model code lives outside transformers: an `auto_map` naming a model or
+    config class, on this config or a sub-config, or a config class out of
+    `transformers_modules`. The flag alone does not mean remote code, and skipping the
+    compiler for a native architecture costs the fast LoRA forward, the fused loss and the
+    compiled norms. No config keeps the old, conservative answer."""
     if config is None:
         return True
 
@@ -230,10 +224,7 @@ def _config_uses_remote_code(config):
             auto_map = cfg.get("auto_map", auto_map)
         if not auto_map:
             return False
-        # Only model or config classes are code the compiler would have to
-        # trace. A checkpoint can ship a custom tokenizer, processor or feature
-        # extractor through auto_map while its model is a native architecture;
-        # that must not switch the optimizations off.
+        # A custom tokenizer, processor or feature extractor is not code the compiler traces.
         return any(str(k).startswith(("AutoModel", "AutoConfig")) for k in auto_map)
 
     if _remote(config):
@@ -1840,8 +1831,7 @@ class FastModel(FastBaseModel):
                 import_from_cache = False,
                 disable = False,
                 return_logits = return_logits,
-                # Only real remote code is untraceable. A native architecture loaded
-                # with trust_remote_code = True keeps every optimization.
+                # Only real remote code is untraceable; a native architecture keeps every optimization.
                 trust_remote_code = trust_remote_code and _config_uses_remote_code(model_config),
                 unsloth_force_compile = unsloth_force_compile,
             )
