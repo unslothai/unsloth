@@ -2054,7 +2054,13 @@ class SdCppDiffusionBackend:
     # build they just resolved implements it. The router's answer does not travel: it clears its own
     # local variables, and this class resolves sd-server and sd-cli again, independently, and can
     # end up on the OTHER one when a server fails to start.
-    _loading_family: Any = None
+    #
+    # Thread-local for the same reason as _loading_card: begin_load sets it BEFORE taking _lock to
+    # reject a concurrent load, so on shared state a request that is refused a line later would
+    # still have replaced the family the running worker validates its binaries against, and refuse
+    # a good build or accept an incapable one. Class-level default answers before any load ran.
+    _loading_families = None
+    _loading_family_default: Any = None
 
     def __init__(self, engine: Optional[SdCppEngine] = None) -> None:
         self._lock = threading.Lock()
@@ -2120,6 +2126,27 @@ class SdCppDiffusionBackend:
         except AttributeError:
             pass
 
+    def _loading_family_store(self) -> threading.local:
+        """Lazily, so an instance built with ``__new__`` (the unit-test seam) still answers."""
+        store = getattr(self, "_loading_families", None)
+        if store is None:
+            store = threading.local()
+            self._loading_families = store
+        return store
+
+    @property
+    def _loading_family(self) -> Any:
+        """The family THIS worker is loading. Off a load thread, the last one begun."""
+        return getattr(self._loading_family_store(), "family", self._loading_family_default)
+
+    @_loading_family.setter
+    def _loading_family(self, value: Any) -> None:
+        self._loading_family_store().family = value
+        # Per-INSTANCE (shadows the class default), for an off-thread reader that never ran
+        # begin_load. A rejected concurrent load can still move this one, which is why the worker
+        # reads its thread-local first and never this.
+        self._loading_family_default = value
+
     def _reserve_stop(self, count: int = 1) -> None:
         """Claim ``count`` pending stops. MUST be called under ``_lock`` in the same block that
         unpublishes the servers: incrementing afterwards leaves a gap in which _state,
@@ -2159,6 +2186,15 @@ class SdCppDiffusionBackend:
     def _resolve_engine(self) -> SdCppEngine:
         """The SdCppEngine, installing the binary on first use. Raises if unusable."""
         if self._engine is not None and self._engine.is_available():
+            # Checked on the CACHED engine too. It outlives the load that resolved it (nothing ever
+            # clears _engine), so an sd-cli cached by an older family's one-shot load would other-
+            # wise be committed for a family it cannot run and die on the first generation, which
+            # is the failure this gate exists to prevent. Only when it names a path: an engine with
+            # no binary is the injected test seam, and a None there reads as "carries no marker"
+            # and would refuse every marked family.
+            cached_binary = getattr(self._engine, "binary", None)
+            if cached_binary:
+                self._refuse_incapable_build(cached_binary, "sd-cli")
             return self._engine
         # The accelerator this host resolves to, never the "cpu" default: this is also the one-shot FALLBACK path (a
         # GPU sd-server that would not start lands here), and asking for the CPU build there would reinstall the plain
