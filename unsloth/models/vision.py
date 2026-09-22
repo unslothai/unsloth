@@ -1450,6 +1450,21 @@ def _carry_loader_state_to_core(model, core, name):
                 carried[key[len(prefix) :]] = device
         if carried:
             core.hf_device_map = carried
+    # The checkpoint identity: PEFT copies `name_or_path` into the adapter's
+    # base_model_name_or_path, and a child built from a sub-config carries none.
+    wrapper_name = getattr(model, "name_or_path", None) or getattr(getattr(model, "config", None), "_name_or_path", None)
+    if wrapper_name:
+        if not getattr(core, "name_or_path", None):
+            try:
+                core.name_or_path = wrapper_name
+            except Exception:
+                pass
+        _core_cfg = getattr(core, "config", None)
+        if _core_cfg is not None and not getattr(_core_cfg, "_name_or_path", None):
+            try:
+                _core_cfg._name_or_path = wrapper_name
+            except Exception:
+                pass
     wrapper_config = getattr(model, "config", None)
     core_config = getattr(core, "config", None)
     quantization_config = getattr(wrapper_config, "quantization_config", None)

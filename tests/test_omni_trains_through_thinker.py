@@ -135,3 +135,21 @@ def test_a_multimodal_load_keeps_the_composition_for_generation(capsys):
     assert _text_trainable_core(model, text_intent = False) is model
     assert hasattr(model, "talker")
     assert "text_only = True" in capsys.readouterr().out
+
+
+def test_the_thinker_carries_the_checkpoint_identity():
+    """PEFT writes name_or_path into the adapter's base_model_name_or_path; a thinker built
+    from thinker_config has none of its own, so it takes the wrapper's."""
+    from types import SimpleNamespace
+    from unsloth.models.vision import _carry_loader_state_to_core
+
+    core = torch.nn.Module()
+    core.config = SimpleNamespace(_name_or_path = "")
+    core.name_or_path = ""
+    model = torch.nn.Module()
+    model.config = SimpleNamespace(_name_or_path = "Qwen/Qwen3-Omni-30B-A3B-Instruct")
+    model.name_or_path = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+    model.thinker = core
+    _carry_loader_state_to_core(model, core, "thinker")
+    assert core.name_or_path == "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+    assert core.config._name_or_path == "Qwen/Qwen3-Omni-30B-A3B-Instruct"
