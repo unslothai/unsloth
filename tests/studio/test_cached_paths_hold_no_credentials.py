@@ -178,6 +178,38 @@ def _env_of(job, doc):
     return env
 
 
+def _step_envs(job):
+    """Every step-level `env:` block in the job, one dict each.
+
+    Setting the credential home on the step that runs the tool is the natural way to
+    write it, and reading only workflow- and job-level `env:` missed that spelling
+    entirely: a job whose cached directory was named by the very step writing into it
+    passed this guard. Each is merged over the job's env, which is the precedence
+    Actions applies.
+    """
+    out = []
+    for step in _steps(job):
+        source = step.get("env")
+        if isinstance(source, dict):
+            out.append({str(k): str(v) for k, v in source.items()})
+    return out
+
+
+def _expand(value: str, env: dict) -> str:
+    """Substitute `${{ env.X }}` from the job's environment before comparing paths.
+
+    `_normalise` deletes expressions wholesale, so `path: ${{ env.HF_HOME }}` reduced to
+    the empty string and `_inside` refuses an empty operand. A job that cached exactly
+    its own credential home, spelled through the variable rather than repeated
+    literally, was therefore silently exempt from the rule aimed at it.
+    """
+    return re.sub(
+        r"\$\{\{\s*env\.([A-Za-z_]\w*)\s*\}\}",
+        lambda m: env.get(m.group(1), ""),
+        value,
+    )
+
+
 def _persisted_paths(job):
     """Every path this job writes to a cache or an artifact."""
     out = []
@@ -220,14 +252,17 @@ def _offending_jobs():
     """(label, var, path, home_value) for every job caching its own credential home."""
     for path, doc in _docs():
         for jid, job in _jobs(doc):
-            env = _env_of(job, doc)
-            homes = {v: env[v] for v in CREDENTIAL_HOMES if v in env}
-            if not homes:
-                continue
-            for persisted, _step in _persisted_paths(job):
-                for var, home in homes.items():
-                    if _inside(home, persisted):
-                        yield f"{path.name}:{jid}", var, persisted, home
+            job_env = _env_of(job, doc)
+            for scope in [job_env] + _step_envs(job):
+                env = {**job_env, **scope}
+                homes = {v: env[v] for v in CREDENTIAL_HOMES if v in env}
+                if not homes:
+                    continue
+                for persisted, _step in _persisted_paths(job):
+                    persisted = _expand(persisted, env)
+                    for var, home in homes.items():
+                        if _inside(_expand(home, env), persisted):
+                            yield f"{path.name}:{jid}", var, persisted, home
 
 
 def test_the_scan_finds_the_jobs_it_claims_to():
@@ -301,6 +336,61 @@ def test_a_job_that_caches_its_credential_home_performs_no_login(label, var, per
     )
 
 
+def test_expanding_an_env_reference_finds_the_path_the_expression_names():
+    """`path: ${{ env.HF_HOME }}` has to resolve, or the rule cannot see its own case.
+
+    `_normalise` deletes expressions, so an unexpanded reference reduces to the empty
+    string and `_inside` refuses an empty operand. A job caching exactly its own
+    credential home, spelled through the variable instead of repeated literally, was
+    therefore exempt from the rule written for it.
+    """
+    env = {"HF_HOME": "${{ github.workspace }}/hf-cache"}
+    assert _expand("${{ env.HF_HOME }}", env) == "${{ github.workspace }}/hf-cache"
+    assert _inside(_expand("${{ env.HF_HOME }}", env), "hf-cache") is True
+    # An undefined name expands to empty, which is what Actions itself does.
+    assert _expand("${{ env.NOT_SET }}", env) == ""
+    # Nothing else is touched, so `github.workspace` is still normalised away later.
+    assert _expand("hf-cache", env) == "hf-cache"
+
+
+def test_a_subdirectory_of_a_credential_home_is_not_a_finding():
+    """Caching `~/.cache/huggingface/hub` is the RECOMMENDED arrangement, not a hazard.
+
+    huggingface_hub keeps the token at `~/.cache/huggingface/token`, a SIBLING of `hub`,
+    so a cache of the `hub` subdirectory holds the model blobs and no credential. An
+    earlier version of the check compared containment in both directions and rejected
+    it, which is the kind of false failure that gets a security guard switched off.
+    """
+    assert _inside("~/.cache/huggingface/hub", "~/.cache/huggingface") is True
+    assert _inside("~/.cache/huggingface", "~/.cache/huggingface/hub") is False
+    home = "~/.cache/huggingface"
+    flagged = [p for p in ("~/.cache/huggingface/hub", "~/.cache", home) if _inside(home, p)]
+    assert flagged == ["~/.cache", home], (
+        "only a persisted path CONTAINING the credential home is a finding; the hub "
+        f"subdirectory must not be, and the set flagged was {flagged}"
+    )
+
+
+def test_a_credential_home_set_on_a_step_is_seen():
+    """Step-level `env:` is where a credential home is most naturally written.
+
+    Reading only workflow- and job-level `env:` missed it, so a job whose cached
+    directory was named by the very step writing into it passed this guard.
+    """
+    job = {"steps": [
+        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+        {"run": "python probe.py", "env": {"HF_HOME": "hf-cache"}},
+    ]}
+    scopes = _step_envs(job)
+    assert {"HF_HOME": "hf-cache"} in scopes, f"step env not collected: {scopes}"
+    assert _env_of(job, {}) == {}, "the job itself sets nothing, which is the point"
+    assert any(
+        _inside(scope["HF_HOME"], persisted)
+        for scope in scopes if "HF_HOME" in scope
+        for persisted, _step in _persisted_paths(job)
+    ), "the step-scoped credential home is inside the cached path and must be a finding"
+
+
 def test_no_job_persists_a_default_credential_home():
     """The spelling that needs no variable set, and so reads as harmless.
 
@@ -313,13 +403,20 @@ def test_no_job_persists_a_default_credential_home():
 
     Nothing here does it today. The test exists so the next model cache is written the
     same way.
+
+    Only the credential home being INSIDE the persisted path counts. Comparing both
+    directions was wrong and rejected the recommended arrangement: caching
+    `~/.cache/huggingface/hub` persists the model blobs while the token stays a SIBLING
+    at `~/.cache/huggingface/token`, outside the cache entirely.
     """
     offenders = []
     for path, doc in _docs():
         for jid, job in _jobs(doc):
+            env = _env_of(job, doc)
             for persisted, _step in _persisted_paths(job):
+                persisted = _expand(persisted, env)
                 for default, creds in DEFAULT_CREDENTIAL_HOMES.items():
-                    if _inside(default, persisted) or _inside(persisted, default):
+                    if _inside(default, persisted):
                         offenders.append(
                             f"{path.name}:{jid}: caches {persisted!r}, a default "
                             f"credential home ({creds})"

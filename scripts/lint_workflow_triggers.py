@@ -78,6 +78,12 @@ def _extract_restore_key_prefixes(path: Path) -> list[str]:
     cache written under a completely different key without the two strings ever being
     equal. Handles the block-scalar form, which is how every use in this repo is
     written, and the inline form.
+
+    A blank line does NOT end the block. A YAML block scalar runs until the indentation
+    drops, blank lines included, and actions/cache reads the value as a newline-delimited
+    list and skips empty entries. So `safe-`, a blank line, then `shared-` really does
+    offer `shared-`; treating the blank line as the end silently dropped every prefix
+    after it, which is the half a reviewer is least likely to have looked at.
     """
     text = path.read_text(encoding = "utf-8")
     prefixes: list[str] = []
@@ -90,7 +96,7 @@ def _extract_restore_key_prefixes(path: Path) -> list[str]:
         rest = text[m.end() :]
         for line in rest.split("\n"):
             if not line.strip():
-                break
+                continue
             leading = len(line) - len(line.lstrip())
             if leading <= len(indent):
                 break
@@ -150,7 +156,7 @@ def _prefix_compatible(pr_head: str, publish_prefix: str) -> bool:
     return pr_head.startswith(publish_prefix) or publish_prefix.startswith(pr_head)
 
 
-def _shell_built_key_prefixes(text: str) -> list[str]:
+def _shell_built_key_prefixes(text: str, inputs: set | None = None) -> list[str]:
     """Literal key heads assembled in a composite action's shell, not in its YAML.
 
     The pip and uv caches build their key in a `run:` step and expose it as an output, so
@@ -158,6 +164,10 @@ def _shell_built_key_prefixes(text: str) -> list[str]:
     all. Reading YAML alone therefore learned nothing about the very composites this
     check exists to cover: pip-cache-restore's real namespace is the `pip-v2-` in
     `prefix="pip-v2-${name}-..."`, several lines away from any `key:`.
+
+    `inputs` are the values callers actually pass for the first shell variable in such a
+    prefix, which keeps the recorded namespace as narrow as the real one. See
+    `_local_action_inputs` for why a broader one is not the safe direction.
 
     Only `key`-ish and `prefix`-ish variables are read. Taking every shell assignment
     would invent namespaces that no cache uses, and each invented one is a potential
@@ -176,8 +186,35 @@ def _shell_built_key_prefixes(text: str) -> list[str]:
         r"""echo\s+["']?(?:key|prefix)=([A-Za-z0-9][A-Za-z0-9._-]*?-)(?=\$|\{)""", text
     ):
         heads.append(m.group(1))
+    if inputs:
+        return [f"{h}{v}-" for h in heads for v in sorted(inputs)]
     return heads
 
+
+
+def _local_action_inputs(pr_paths: list, action_dir: str) -> set:
+    """The `name:`-style values PR workflows actually pass to a local action.
+
+    Read off the `with:` block of each `uses: ./...<action_dir>` call site. Needed because
+    a namespace recorded more broadly than the real one is a false rejection: this repo's
+    pip cache builds `prefix="pip-${name}-..."`, so reading the shell alone records the
+    bare head `pip-`, which then collides with any publish prefix beginning `pip-`
+    including a properly partitioned `pip-release-` that no pull request can write.
+    Substituting the values callers pass gives `pip-mlx-`, `pip-collect-` and so on.
+    """
+    values: set = set()
+    pattern = re.compile(
+        r"uses:\s*['\"]?\./[\w./-]*" + re.escape(action_dir) + r"[^\n]*\n((?:[ \t]+[^\n]*\n)*)"
+    )
+    for pth in pr_paths:
+        try:
+            text = pth.read_text(encoding = "utf-8")
+        except OSError:
+            continue
+        for m in pattern.finditer(text):
+            for nm in re.finditer(r"^\s+name:\s*['\"]?([A-Za-z0-9][\w.-]*)", m.group(1), re.M):
+                values.add(nm.group(1))
+    return values
 
 def _pr_reachable_action_dirs(workflows_dir: Path, pr_paths: list) -> set:
     """Composite actions a PR-triggered workflow actually uses.
@@ -186,6 +223,12 @@ def _pr_reachable_action_dirs(workflows_dir: Path, pr_paths: list) -> set:
     as a namespace pull requests write, so a publish workflow restoring its OWN action's
     prefix was rejected as PR-poisonable. That is a false failure on a safe
     configuration, and a security lint that cries wolf gets switched off.
+
+    Local reusable WORKFLOWS are followed too, not just composite actions. A job-level
+    `uses: ./.github/workflows/shared.yml` names the workflow file itself, so probing
+    only for an `action.yml` beneath the reference found nothing and the keys that
+    workflow declares stayed outside the comparison entirely -- reachable from a pull
+    request in fact, invisible to the check.
     """
     root = workflows_dir.parent
     dirs: set = set()
@@ -203,6 +246,12 @@ def _pr_reachable_action_dirs(workflows_dir: Path, pr_paths: list) -> set:
         for m in re.finditer(r"uses:\s*['\"]?(\./[\w./-]+)", text):
             rel = m.group(1)[2:]
             cand = root.parent / rel
+            # A local reusable workflow reference names the .yml file itself rather than a
+            # directory containing an action.yml, so it has to be followed on its own.
+            if cand.is_file() and cand.suffix in (".yml", ".yaml"):
+                dirs.add(cand)
+                queue.append(cand)
+                continue
             for action in (cand / "action.yml", cand / "action.yaml"):
                 if action.is_file():
                     dirs.add(action)
@@ -549,9 +598,18 @@ def main() -> int:
     composite_keys: list[str] = []
     for action_path in sorted(_pr_reachable_action_dirs(workflows_dir, pr_workflow_paths)):
         composite_keys.extend(_extract_cache_keys(action_path))
-        composite_keys.extend(_shell_built_key_prefixes(action_path.read_text()))
+        composite_keys.extend(
+            _shell_built_key_prefixes(
+                action_path.read_text(),
+                _local_action_inputs(pr_workflow_paths, action_path.parent.name),
+            )
+        )
 
-    pr_keys = {key for _, keys in pr_triggered for key in keys}
+    # Composite keys belong in the exact comparison as well, not only the prefix one. A
+    # PR-reachable action declaring `key: shared-key`, against a publish workflow using
+    # that same key and no restore-keys at all, is the original cache-poisoning shape, and
+    # it was invisible while this set held workflow-declared keys only.
+    pr_keys = {key for _, keys in pr_triggered for key in keys} | set(composite_keys)
     for pub_path, pub_keys in publish_triggered:
         for k in pub_keys:
             if k in pr_keys:

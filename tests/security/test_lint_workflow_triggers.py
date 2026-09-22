@@ -1282,3 +1282,191 @@ def test_a_publish_only_composite_is_not_treated_as_a_pr_namespace(tmp_path):
     assert proc.returncode == 0, (
         f"a publish-only composite was treated as a PR namespace:\n" f"{proc.stdout}\n{proc.stderr}"
     )
+
+
+def test_a_restore_keys_prefix_after_a_blank_line_is_still_read(tmp_path):
+    """A blank line inside the block scalar used to truncate the list silently.
+
+    A YAML block scalar runs until the indentation drops, blank lines included, and
+    actions/cache reads the value as a newline-delimited list and skips empty entries. So
+    `safe-`, a blank line, then `shared-` really does offer `shared-` at runtime, while
+    the reader stopped at the blank line and never compared it. That is a bypass anyone
+    can reach by formatting a long restore-keys block for readability, and the dropped
+    entries are exactly the ones furthest from the eye.
+    """
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "pr-build.yml").write_text(_pr_workflow("shared-${{ runner.os }}-abc"))
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys(
+            "release-only-${{ runner.os }}",
+            "            release-only-\n"
+            "\n"
+            "            shared-\n",
+        )
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"a prefix after a blank line in the block was dropped, so the collision was "
+        f"never compared:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "shared-" in proc.stderr
+
+
+def test_a_cache_key_in_a_local_reusable_workflow_is_seen(tmp_path):
+    """`uses: ./.github/workflows/x.yml` names the file, not a directory with action.yml.
+
+    Probing only for `action.yml` beneath the reference found nothing, so a reusable
+    workflow called from a pull request declared keys that stayed outside the comparison
+    entirely: reachable from a pull request in fact, invisible to the check. The
+    composite-action case was already covered, which is what made this one easy to miss.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "shared-build.yml").write_text(
+        "name: shared-build\n"
+        "on:\n"
+        "  workflow_call:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n"
+        "          path: wheels\n"
+        "          key: reuse-v1-${{ runner.os }}-abc\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  call:\n"
+        "    uses: ./.github/workflows/shared-build.yml\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("reuse-v1-pub-${{ runner.os }}", "            reuse-v1-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the reusable workflow's reuse-v1- key was not seen, so the publish prefix "
+        f"matched nothing:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "reuse-v1-" in proc.stderr
+
+
+def test_a_composite_key_equal_to_a_publish_key_is_caught(tmp_path):
+    """An EQUAL key, not a prefix, and declared in a composite action rather than a workflow.
+
+    Composite keys reached the prefix comparison but not the exact one, so a publish
+    workflow sharing a literal key with a PR-reachable action and carrying no
+    restore-keys at all passed. That is the original cache-poisoning shape, and it was
+    the one route through this check with nothing watching it.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "shared-cache"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: shared cache\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: actions/cache@v4\n"
+        "      with:\n"
+        "        path: wheels\n"
+        "        key: wheels-shared-key\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/shared-cache\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  publish:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n"
+        "          path: wheels\n"
+        "          key: wheels-shared-key\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"a composite action's literal key equal to the publish key was accepted:\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+    assert "wheels-shared-key" in proc.stderr
+
+
+def test_a_shell_built_namespace_is_narrowed_by_the_inputs_callers_pass(tmp_path):
+    """Recording a namespace more broadly than the real one is a false rejection.
+
+    The pip cache builds `prefix="pip-${name}-..."`, so reading the shell alone records
+    the bare head `pip-`, which then collides with any publish prefix beginning `pip-`
+    including a properly partitioned `pip-release-` that no pull request can write.
+    Substituting the `name:` values callers actually pass gives `pip-mlx-`, which does
+    not.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "pip-cache-restore"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: pip cache restore\n"
+        "inputs:\n"
+        "  name:\n"
+        "    required: true\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - id: probe\n"
+        "      shell: bash\n"
+        "      run: |\n"
+        "        name=\"${{ inputs.name }}\"\n"
+        "        prefix=\"pip-${name}-${{ runner.os }}-\"\n"
+        "        echo \"key=${prefix}abc\" >> \"$GITHUB_OUTPUT\"\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/pip-cache-restore\n"
+        "        with:\n"
+        "          name: mlx\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("pip-release-pub-${{ runner.os }}", "            pip-release-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"`pip-release-` cannot be written by a pull request whose only namespace is "
+        f"`pip-mlx-`, so this must pass:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+    # And the narrowed namespace still has teeth: a publish prefix over `pip-mlx-` fails.
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("pip-mlx-pub-${{ runner.os }}", "            pip-mlx-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"a publish prefix over the PR's real `pip-mlx-` namespace must still be "
+        f"rejected:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "pip-mlx-" in proc.stderr
