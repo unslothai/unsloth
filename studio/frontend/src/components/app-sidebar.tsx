@@ -1856,6 +1856,11 @@ export function AppSidebar() {
     if (effects.unpinProject && pinnedProjectIdSet.has(effects.unpinProject)) {
       toggleProjectPin(effects.unpinProject);
     }
+    // The sorts the drop was aimed under. A move lands later, so the switch to Manual is only
+    // ours to make if that list is still on the sort it was: a sort the user picked meanwhile is
+    // the newer intent and stands, and a closure reading its own drop-time value would overwrite
+    // it. Unchanged covers Manual too, which a plan only asks for from a sorted list.
+    const sortAtDrop = useSidebarOrganizationStore.getState();
     const applyOrders = (before?: Record<string, string[]>) => {
       for (const order of effects.orders) {
         setManualOrder(
@@ -1863,11 +1868,18 @@ export function AppSidebar() {
           before ? landedOrder(order, before[order.scope]) : order.ids,
         );
       }
-      if (effects.switchSort === "chats" && chatSort !== "manual") {
+      const sortNow = useSidebarOrganizationStore.getState();
+      if (
+        effects.switchSort === "chats" &&
+        sortNow.chatSort === sortAtDrop.chatSort
+      ) {
         setChatSort("manual");
         toast.info(t("shell.organize.switchedToManual"));
       }
-      if (effects.switchSort === "pinned" && pinnedSort !== "manual") {
+      if (
+        effects.switchSort === "pinned" &&
+        sortNow.pinnedSort === sortAtDrop.pinnedSort
+      ) {
         setPinnedSort("manual");
         toast.info(t("shell.organize.switchedToManual"));
       }

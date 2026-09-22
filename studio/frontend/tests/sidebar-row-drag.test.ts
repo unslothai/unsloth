@@ -1042,6 +1042,38 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
   );
 });
 
+// applyOrders runs after the move on that path, and it is a closure: a sort read from the render
+// it was made in is the drop-time one for good, so a sort the user picked while the move was in
+// flight would be overwritten with Manual.
+test("a sort picked while a move is in flight is not overwritten", () => {
+  const commit = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("function commitDrop("),
+    APP_SIDEBAR.indexOf("function dropCueClass("),
+  );
+  // Both ends read the store, so neither is the stale render value.
+  assert.match(
+    commit,
+    /const sortAtDrop = useSidebarOrganizationStore\.getState\(\);/,
+  );
+  assert.match(
+    commit,
+    /const sortNow = useSidebarOrganizationStore\.getState\(\);/,
+  );
+  // Unchanged since the drop, not merely non-Manual: the user's newer pick stands either way.
+  assert.match(
+    commit,
+    /effects\.switchSort === "chats" &&\n\s*sortNow\.chatSort === sortAtDrop\.chatSort/,
+  );
+  assert.match(
+    commit,
+    /effects\.switchSort === "pinned" &&\n\s*sortNow\.pinnedSort === sortAtDrop\.pinnedSort/,
+  );
+  assert.ok(
+    !/chatSort !== "manual"|pinnedSort !== "manual"/.test(commit),
+    "the switch still tests the render's own sort",
+  );
+});
+
 // A pointer resting on the edge of a long list sends no more moves, so scrolling driven off
 // pointermove alone took one step and stalled. The frame loop keeps it going, and re-aims: the
 // rows slide under a pointer that has not moved, so the cue would otherwise stay on the row that
