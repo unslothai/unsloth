@@ -1286,6 +1286,53 @@ def pipeline_class_requirement(pipeline_class: str) -> tuple[Optional[str], bool
 _UNRELEASED_MIN_DIFFUSERS = frozenset({"0.41.0"})
 
 
+_DIFFUSERS_MAIN_PIN = Path(__file__).resolve().parents[2] / "requirements" / "diffusers-main.txt"
+_DIFFUSERS_MAIN_COMMIT_RE = re.compile(
+    r"github\.com/(?P<repo>[^/\s]+/[^/@\s]+?)(?:\.git)?@(?P<commit>[0-9a-fA-F]{40})\b"
+)
+
+
+def _diffusers_main_archive_remedy() -> str:
+    """A remedy line a reader can actually run, naming the commit this build wants.
+
+    The old text said "re-run the installer, or pip install -r diffusers-main.txt". Both resolve
+    the same ``git+https`` requirement, so both fail for the one cause that produces this refusal
+    most often, a host with no working git, and the reader is sent round the loop that put them
+    here. The installer now falls back to the zip for that case, so re-running is once again real
+    advice, and the zip is quoted beside it because it is the fix that needs no git and no
+    installer run at all.
+
+    Read out of the pin file rather than hardcoded, so the commit in the message cannot drift from
+    the commit that is installed. An unreadable or unrecognised pin file degrades to advice that is
+    still true, just less specific, because a refusal that says nothing is worse than one that
+    cannot name the SHA.
+    """
+    generic = (
+        "Re-run the Unsloth installer (leaving UNSLOTH_DIFFUSERS_MAIN unset), which installs it "
+        "from a zip archive when git is missing."
+    )
+    try:
+        text = _DIFFUSERS_MAIN_PIN.read_text(encoding = "utf-8-sig")
+    except (OSError, ValueError):
+        return generic
+    for line in text.splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        found = _DIFFUSERS_MAIN_COMMIT_RE.search(stripped)
+        if found is None:
+            continue
+        url = (
+            f"https://github.com/{found.group('repo')}/archive/"
+            f"{found.group('commit').lower()}.zip"
+        )
+        return (
+            f"{generic} To install it by hand with no git at all: "
+            f'pip install "diffusers @ {url}"'
+        )
+    return generic
+
+
 def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> str:
     """The refusal text: what is missing, what is installed, and a remedy this interpreter can
     actually carry out."""
@@ -1296,12 +1343,13 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
             f"diffusers {installed}. Upgrade with: pip install -U diffusers."
         )
     if minimum in _UNRELEASED_MIN_DIFFUSERS:
+        remedy = _diffusers_main_archive_remedy()
         return (
             f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}), which has not been "
             f"released yet; this environment has diffusers {installed}. Unsloth installs a pinned "
-            "build of diffusers main for this, so re-run the Unsloth installer (and leave "
-            "UNSLOTH_DIFFUSERS_MAIN unset), or install it directly with: pip install -r "
-            "studio/backend/requirements/diffusers-main.txt"
+            "build of diffusers main for this and that build is not here, which almost always "
+            "means the install had no working git (run: git --version) or could not reach "
+            f"github.com. {remedy}"
         )
     remedy = f"Upgrade with: pip install -U 'diffusers>={minimum}'."
     if needs_py310:
