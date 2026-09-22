@@ -221,7 +221,12 @@ def _config_diff(config):
     return {}
 
 
-def _is_mistral_format_checkpoint(model_name, token = None, revision = None, local_files_only = False):
+def _is_mistral_format_checkpoint(
+    model_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+):
     """A repo that ships `params.json` and no `config.json` is a checkpoint in Mistral's own
     format (`library_name: vllm`, loaded through mistral-common), not a transformers one.
     Mistral-Large-3 is published that way and its card says transformers support did not
@@ -230,17 +235,16 @@ def _is_mistral_format_checkpoint(model_name, token = None, revision = None, loc
     any doubt, including offline, so the generic path is never hidden."""
     try:
         if os.path.isdir(model_name):
-            return (
-                os.path.isfile(os.path.join(model_name, "params.json"))
-                and not os.path.isfile(os.path.join(model_name, "config.json"))
+            return os.path.isfile(os.path.join(model_name, "params.json")) and not os.path.isfile(
+                os.path.join(model_name, "config.json")
             )
         if local_files_only:
             return False
         from huggingface_hub import file_exists
-        return (
-            file_exists(model_name, "params.json", revision = revision, token = token)
-            and not file_exists(model_name, "config.json", revision = revision, token = token)
-        )
+
+        return file_exists(
+            model_name, "params.json", revision = revision, token = token
+        ) and not file_exists(model_name, "config.json", revision = revision, token = token)
     except Exception:
         return False
 

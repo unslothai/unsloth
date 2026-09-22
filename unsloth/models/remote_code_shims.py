@@ -27,6 +27,7 @@ transformers' own, and the original behaviour stays reachable: the accessor
 still embeds when called with arguments, and a forward that does return a loss
 is left alone after one probe. Step-3.7-Flash is the case that surfaced both.
 """
+
 import functools
 import inspect
 
@@ -57,7 +58,11 @@ def accessor_requires_arguments(function):
 def _vocab_sizes(module):
     config = getattr(module, "config", None)
     sizes = set()
-    for holder in (config, getattr(config, "text_config", None), getattr(config, "get_text_config", lambda: None)()):
+    for holder in (
+        config,
+        getattr(config, "text_config", None),
+        getattr(config, "get_text_config", lambda: None)(),
+    ):
         size = getattr(holder, "vocab_size", None)
         if isinstance(size, int):
             sizes.add(size)
@@ -76,8 +81,11 @@ def find_embedding_module(module):
         if isinstance(child, torch.nn.Embedding):
             return child
     from transformers import PreTrainedModel
+
     for child in module.children():
-        if isinstance(child, PreTrainedModel) and not accessor_requires_arguments(type(child).get_input_embeddings):
+        if isinstance(child, PreTrainedModel) and not accessor_requires_arguments(
+            type(child).get_input_embeddings
+        ):
             try:
                 embedding = child.get_input_embeddings()
             except Exception:
@@ -136,7 +144,10 @@ def _repair_output_accessor(cls):
     resizes, ties or repairs the vocabulary then dereferences None.
     """
     original = cls.__dict__.get("get_output_embeddings")
-    if original is None or getattr(cls, "_unsloth_original_get_output_embeddings", None) is not None:
+    if (
+        original is None
+        or getattr(cls, "_unsloth_original_get_output_embeddings", None) is not None
+    ):
         return False
 
     @functools.wraps(original)
@@ -184,10 +195,17 @@ def _fill_missing_loss(cls):
     state = {"returns_loss": None}
 
     def _loss_from(output, labels, kwargs):
-        logits = output["logits"] if isinstance(output, dict) else output[0] if isinstance(output, tuple) else None
+        logits = (
+            output["logits"]
+            if isinstance(output, dict)
+            else output[0]
+            if isinstance(output, tuple)
+            else None
+        )
         if logits is None:
             return None
         from transformers.loss.loss_utils import ForCausalLMLoss
+
         return ForCausalLMLoss(
             logits = logits,
             labels = labels,
@@ -243,12 +261,14 @@ def _rebind_accelerate_hook(model):
     if "_old_forward" not in vars(model):
         return
     import types
+
     model._old_forward = types.MethodType(type(model).forward, model)
 
 
 def apply_remote_code_shims(model):
     """Repair the checkpoint-defined classes in `model`. Returns the repaired class names."""
     from transformers import PreTrainedModel
+
     repaired = []
     # Deepest first, so a parent's accessor can delegate to an already repaired child.
     modules = [m for m in model.modules() if isinstance(m, PreTrainedModel)]

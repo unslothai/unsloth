@@ -5,6 +5,7 @@ PEFT's dense LoRA layer adds `lora_B(lora_A(x))` of shape
 `(..., n_groups, out_per_group)`, which fails with
 `The size of tensor a (1024) must match the size of tensor b (8192)`.
 """
+
 import pytest
 import torch
 
@@ -39,9 +40,12 @@ class Block(torch.nn.Module):
 
 def _peft_model(register):
     from peft import LoraConfig, get_peft_model
+
     torch.manual_seed(0)
     model = Block()
-    config = LoraConfig(r = 4, lora_alpha = 8, target_modules = ["o_a_proj", "o_b_proj"], init_lora_weights = False)
+    config = LoraConfig(
+        r = 4, lora_alpha = 8, target_modules = ["o_a_proj", "o_b_proj"], init_lora_weights = False
+    )
     if register:
         from unsloth.models.grouped_linear_lora import register_grouped_linear_lora
         assert register_grouped_linear_lora(config, model) == [GroupedLinear]
@@ -50,6 +54,7 @@ def _peft_model(register):
 
 def test_is_grouped_linear_wants_n_groups_and_an_overridden_forward():
     from unsloth.models.grouped_linear_lora import is_grouped_linear
+
     assert is_grouped_linear(GroupedLinear(16, 32, 4))
     assert not is_grouped_linear(torch.nn.Linear(16, 32))
     plain = torch.nn.Linear(16, 32)

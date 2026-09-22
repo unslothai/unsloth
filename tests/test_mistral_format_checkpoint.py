@@ -6,6 +6,7 @@ mistral-common, and its card says transformers support did not make it in.
 AutoConfig and PeftConfig both fail on it, and the old message pointed the user
 at upgrading transformers, which cannot help.
 """
+
 import json
 import os
 
@@ -32,11 +33,15 @@ def test_a_config_json_next_to_params_json_is_a_transformers_repo(tmp_path):
 def test_an_empty_or_unknown_directory_is_not_claimed(tmp_path):
     from unsloth.models.loader import _is_mistral_format_checkpoint
     assert _is_mistral_format_checkpoint(str(tmp_path)) is False
-    assert _is_mistral_format_checkpoint(str(tmp_path / "does-not-exist"), local_files_only = True) is False
+    assert (
+        _is_mistral_format_checkpoint(str(tmp_path / "does-not-exist"), local_files_only = True)
+        is False
+    )
 
 
 def test_the_message_names_the_file_and_the_route():
     from unsloth.models.loader import _mistral_format_error
+
     text = _mistral_format_error("mistralai/Mistral-Large-3-675B-Instruct-2512")
     assert "params.json" in text and "config.json" in text
     assert "vLLM" in text and "mistral-common" in text
@@ -48,6 +53,7 @@ def test_loader_raises_the_specific_message(tmp_path):
     """The arm that fails on main: the loader used to raise the generic message."""
     import unsloth  # noqa: F401
     from unsloth import FastLanguageModel
+
     path = _write(tmp_path, ["params.json"])
     with pytest.raises(RuntimeError) as info:
         FastLanguageModel.from_pretrained(path, max_seq_length = 64)

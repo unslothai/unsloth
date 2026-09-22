@@ -29,6 +29,7 @@ changes the forward: group g reads rows `g * out_per_group : (g + 1) * out_per_g
 of `lora_B`, which is exactly the block that merging `lora_B @ lora_A` into the
 weight would add to that group.
 """
+
 import torch
 
 __all__ = [
@@ -57,7 +58,6 @@ def grouped_linear_classes(model):
 
 def _grouped_lora_layer():
     from peft.tuners.lora.layer import Linear as LoraLinear
-
     class GroupedLinearLoRA(LoraLinear):
         """PEFT's dense LoRA layer with a block-diagonal LoRA forward."""
 
@@ -69,7 +69,9 @@ def _grouped_lora_layer():
                     self.unmerge()
                 return self.base_layer(x, *args, **kwargs)
             if adapter_names is not None:
-                raise NotImplementedError("Unsloth: mixed adapter batches are not supported on grouped linears.")
+                raise NotImplementedError(
+                    "Unsloth: mixed adapter batches are not supported on grouped linears."
+                )
             if self.merged:
                 return self.base_layer(x, *args, **kwargs)
 
