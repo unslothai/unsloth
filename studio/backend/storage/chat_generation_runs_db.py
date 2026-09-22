@@ -140,12 +140,20 @@ def _live_entries_locked() -> list[_PoolEntry]:
     return live
 
 
-def _unregister_locked(entry: _PoolEntry) -> None:
-    """Drop ``entry`` from the registry. Caller holds ``_pool_lock``."""
-    for index, ref in enumerate(_pool_registry):
-        if ref() is entry:
-            del _pool_registry[index]
-            break
+def _unregister_locked(entry: _PoolEntry | None) -> None:
+    """Drop ``entry`` from the registry, and any reference whose thread has gone with it.
+
+    Pruning here and on insert is what keeps the list bounded. A weakref callback would be the
+    other way to do it, but those fire during garbage collection at an arbitrary point, including
+    while this thread already holds ``_pool_lock``, and the lock is not reentrant. Caller holds it.
+    """
+    surviving: list[weakref.ref[_PoolEntry]] = []
+    for ref in _pool_registry:
+        alive = ref()
+        if alive is None or alive is entry:
+            continue
+        surviving.append(ref)
+    _pool_registry[:] = surviving
 
 
 def _discard_pooled() -> None:
@@ -274,6 +282,10 @@ def _connect() -> sqlite3.Connection:
             if _pool_generation == generation_before:
                 entry = _PoolEntry(key, conn, _schema_ready, generation_before)
                 _pool.entry = entry
+                # Drops references left by threads that have since exited, so a server that
+                # reconciles on a fresh daemon thread every minute does not grow this list without
+                # bound and make every later scan longer.
+                _unregister_locked(None)
                 _pool_registry.append(weakref.ref(entry))
                 return _Borrowed(conn, key)
     return conn

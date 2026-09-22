@@ -392,3 +392,24 @@ def test_a_handle_prepared_across_an_invalidation_is_not_pooled():
     assert runs_db._pool_registry == [], "a handle raced by invalidation must not be pooled"
     with pytest.raises(sqlite3.ProgrammingError):
         underlying.execute("SELECT 1")
+
+
+def test_the_registry_does_not_grow_with_every_short_lived_thread():
+    """The sweeper adds a pooled entry per account per minute on a fresh daemon thread. The entry
+    itself is collected, but a dead weakref left behind would accumulate for the life of the
+    process and lengthen every later scan. Insert and unregister prune."""
+    runs_db.reset_connection_pool_for_tests()
+
+    def park():
+        conn = runs_db._connect()
+        conn.close()
+
+    for _ in range(25):
+        worker = threading.Thread(target = park)
+        worker.start()
+        worker.join(timeout = 30)
+
+    gc.collect()
+    with runs_db._pool_lock:
+        depth = len(runs_db._pool_registry)
+    assert depth <= 2, f"registry grew to {depth} entries across 25 short-lived threads"
