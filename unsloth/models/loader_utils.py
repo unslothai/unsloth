@@ -1212,7 +1212,9 @@ def _load_fp8_weight_map(
 
     # transformers' _add_variant puts the variant before the last suffix:
     # model.<variant>.safetensors and model.safetensors.index.<variant>.json.
-    index_file = f"model.safetensors.index.{variant}.json" if variant else "model.safetensors.index.json"
+    index_file = (
+        f"model.safetensors.index.{variant}.json" if variant else "model.safetensors.index.json"
+    )
     single_file = f"model.{variant}.safetensors" if variant else "model.safetensors"
     is_local = os.path.isdir(model_name)
 

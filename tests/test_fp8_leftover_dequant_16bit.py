@@ -454,5 +454,9 @@ def test_a_variant_index_uses_transformers_naming(tmp_path):
     import json
     from unsloth.models.loader_utils import _load_fp8_weight_map
 
-    (tmp_path / "model.safetensors.index.fp8.json").write_text(json.dumps({"weight_map": {"a.weight": "model-fp8-00001.safetensors"}}))
-    assert _load_fp8_weight_map(str(tmp_path), True, None, variant = "fp8") == {"a.weight": "model-fp8-00001.safetensors"}
+    (tmp_path / "model.safetensors.index.fp8.json").write_text(
+        json.dumps({"weight_map": {"a.weight": "model-fp8-00001.safetensors"}})
+    )
+    assert _load_fp8_weight_map(str(tmp_path), True, None, variant = "fp8") == {
+        "a.weight": "model-fp8-00001.safetensors"
+    }
