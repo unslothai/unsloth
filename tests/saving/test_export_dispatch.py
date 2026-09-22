@@ -210,7 +210,10 @@ def test_non_peft_gguf_uses_checkpoint_as_input_not_output(
     assert tokenizer.saved_to == [str(checkpoint)]
 
 
-def test_full_finetune_gguf_writes_trained_weights_not_source_checkpoint(monkeypatch, tmp_path):
+@pytest.mark.parametrize("state_dict", [None, {"lm_head.weight": "consolidated"}])
+def test_full_finetune_gguf_writes_trained_weights_not_source_checkpoint(
+    monkeypatch, tmp_path, state_dict
+):
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
     requested = tmp_path / "export" / "model"
@@ -227,7 +230,9 @@ def test_full_finetune_gguf_writes_trained_weights_not_source_checkpoint(monkeyp
     )()
     model._unsloth_full_finetuning = True
     model.saved_to = []
-    model.save_pretrained = lambda path: model.saved_to.append(path)
+    model.save_pretrained = lambda path, **kwargs: model.saved_to.append(
+        (path, kwargs.get("state_dict"))
+    )
     tokenizer = _FakeTokenizer()
     seen = {}
 
@@ -252,10 +257,11 @@ def test_full_finetune_gguf_writes_trained_weights_not_source_checkpoint(monkeyp
         str(requested),
         tokenizer = tokenizer,
         quantization_method = "f16",
+        state_dict = state_dict,
     )
 
     assert seen["model_directory"] == str(requested)
-    assert model.saved_to == [str(requested)]
+    assert model.saved_to == [(str(requested), state_dict)]
     assert tokenizer.saved_to == [str(requested)]
     assert os.listdir(checkpoint) == []
     assert save_mod._gguf_writes_16bit_checkpoint(model) is True

@@ -1937,7 +1937,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
 
         source = inspect.getsource(S.unsloth_save_pretrained_gguf)
         fallback = source.split("Saving directly without LoRA merge")[1]
-        assert "self.save_pretrained(save_directory)" in fallback
+        assert "self.save_pretrained(save_directory" in fallback
         assert "merge_and_overwrite_lora" not in fallback
 
     def test_an_export_writing_no_merge_is_not_charged_the_reserve(self, split):
