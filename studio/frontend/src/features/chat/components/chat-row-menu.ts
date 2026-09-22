@@ -77,37 +77,20 @@ export function canForkChatRow(item: SidebarItem): boolean {
  * so an edit still in the debounce would be left out and the copy would open on the older modes.
  */
 export async function forkChatRow(item: SidebarItem) {
-  const { forkChatThread, getActiveGenerations } = await import(
-    "../api/chat-api"
-  );
+  const { forkChatThread } = await import("../api/chat-api");
   const { settleThreadScopedSettingsForCopy } = await import(
     "../stores/chat-runtime-store"
   );
-  const messages = await listStoredChatMessages(item.id);
-  const last = messages[messages.length - 1];
-  if (!last) throw new Error("This chat has no messages to fork.");
-  // The menu item is disabled off `runningByThreadId`, but that map is this tab's memory: empty
-  // after a reload and blind to a second tab. Asked after the read, not before it, so it covers
-  // the read that chose the tip: a generation another tab starts between the two would
-  // otherwise append a prompt this fork would end on. The route refuses too, which is what
-  // closes the gap between here and the POST.
-  let generating = false;
-  try {
-    const active = await getActiveGenerations();
-    generating = (active.thread_ids ?? []).includes(item.id);
-  } catch {
-    // Backend unreachable or an older build: the route is the guard that matters.
-  }
-  if (generating) throw forkRefused();
   await settleThreadScopedSettingsForCopy(item.id);
   try {
+    // No messageId: the route picks the tip itself, after its own check that nothing is
+    // generating. Reading it here instead put a round trip between the read and the check,
+    // and either order left a window where the tip chosen was one still being written.
     return await forkChatThread(item.id, {
-      messageId: last.id,
       newThreadId: crypto.randomUUID(),
       createdAt: Date.now(),
     });
   } catch (error) {
-    // The route's own 409, when a generation started after the check above.
     const message = error instanceof Error ? error.message : "";
     if (message.includes("still generating")) throw forkRefused();
     throw error;

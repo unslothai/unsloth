@@ -210,10 +210,14 @@ test("a chat row forks from its own menu", async () => {
   // The fork carries the settings on screen, not the ones the row was last written with.
   assert.match(
     ROW_MENU,
-    /await settleThreadScopedSettingsForCopy\(item\.id\);\n\s*try \{\n\s*return await forkChatThread\(item\.id, \{/,
+    /await settleThreadScopedSettingsForCopy\(item\.id\);\n\s*try \{/,
   );
-  // Same last-message tip the thread's own Fork uses, and the copy is opened.
-  assert.match(ROW_MENU, /const last = messages\[messages\.length - 1\];/);
+  // No messageId: the route resolves the tip, so the copy is opened on what it chose.
+  assert.ok(!ROW_MENU.includes("messages[messages.length - 1]"));
+  assert.match(
+    ROW_MENU,
+    /return await forkChatThread\(item\.id, \{\n\s*newThreadId: crypto\.randomUUID\(\),/,
+  );
   assert.match(
     APP_SIDEBAR,
     /setActiveThreadId\(result\.thread\.id\);\n\s*navigate\(\{ to: "\/chat", search: \{ thread: result\.thread\.id \} \}\);/,
@@ -241,33 +245,30 @@ test("a row being generated into cannot be forked", async () => {
   assert.match(STORE, /export const useForkInFlight = create</);
 });
 
-// runningByThreadId is this tab's memory: empty after a reload and blind to a second tab, so a
-// chat generating in either case would pass the disabled check and fork to a prompt or a
-// half-written reply. The backend snapshot is authoritative, and chat-api says so.
-test("a fork asks the backend whether the chat is still generating", async () => {
+// A client cannot pick the tip safely. Check before the read and another tab can append a
+// prompt in between; check after and a generation that finishes in between is missed, leaving
+// the same dangling prompt. The route reads the tip itself, after its own check, with no round
+// trip in the middle.
+test("the route picks the fork tip, not the client", async () => {
   const ROW_MENU = await readSrcAsync(
     "features/chat/components/chat-row-menu.ts",
   );
-  const CHAT_API = await readSrcAsync("features/chat/api/chat-api.ts");
-  assert.match(CHAT_API, /Authoritative where `runningByThreadId` is not/);
-  assert.match(
-    ROW_MENU,
-    /const active = await getActiveGenerations\(\);\n\s*generating = \(active\.thread_ids \?\? \[\]\)\.includes\(item\.id\);/,
+  const ROUTE = await readSrcAsync(
+    "../../backend/routes/chat_history.py",
   );
-  // Asked after the read that chose the tip, so a prompt appended between the two is caught,
-  // and an unreachable backend falls back rather than blocking every fork.
+  // The client names no message and never reads one for the fork.
+  assert.ok(!ROW_MENU.includes("getActiveGenerations"));
+  assert.ok(!/forkChatThread\([^)]*messageId/.test(ROW_MENU));
+  // The route refuses while generating, and only then resolves the tip.
+  const fork = ROUTE.slice(ROUTE.indexOf("def fork_thread("), ROUTE.indexOf("base_title = "));
   assert.ok(
-    ROW_MENU.indexOf("const last = messages[messages.length - 1];") <
-      ROW_MENU.indexOf("getActiveGenerations()"),
+    fork.indexOf("active_thread_ids(") < fork.indexOf("list_chat_messages(thread_id)"),
+    "the tip must not be read before the generation check",
   );
-  assert.ok(
-    ROW_MENU.indexOf("getActiveGenerations()") <
-      ROW_MENU.indexOf("settleThreadScopedSettingsForCopy(item.id)"),
-  );
-  assert.match(ROW_MENU, /\} catch \{\n\s*\/\/ Backend unreachable or an older build/);
-  // The route refuses too, which is what closes the gap between the check and the POST.
+  assert.match(fork, /status_code = 409/);
+  assert.match(fork, /branch_message_id = tip\[-1\]\["id"\]/);
+  // Its 409 is a refusal, not a failure.
   assert.match(ROW_MENU, /if \(message\.includes\("still generating"\)\) throw forkRefused\(\);/);
-  // A refusal, not a failure: the toast says so without the alarm.
   assert.match(ROW_MENU, /\{ unslothForkRefused: true \}/);
   assert.match(APP_SIDEBAR, /\?\.unslothForkRefused\) \{\n\s*toast\.info\(/);
 });

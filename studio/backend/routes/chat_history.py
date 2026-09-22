@@ -1599,7 +1599,9 @@ def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_cur
 
 
 class ChatForkRequest(BaseModel):
-    messageId: str
+    # Omitted means the tip. The route resolves it below, after the generation check, so no
+    # ordering of client reads can pick a message that is still being written.
+    messageId: Optional[str] = None
     newThreadId: str
     createdAt: int
 
@@ -1648,17 +1650,26 @@ def fork_thread(
             status_code = 409,
             detail = "This chat is still generating. Fork it once it finishes.",
         )
-    if get_chat_message(thread_id, payload.messageId) is None:
+    branch_message_id = payload.messageId
+    if branch_message_id is None:
+        tip = list_chat_messages(thread_id)
+        if not tip:
+            raise HTTPException(
+                status_code = 404,
+                detail = f"Thread {thread_id} has no messages to fork",
+            )
+        branch_message_id = tip[-1]["id"]
+    if get_chat_message(thread_id, branch_message_id) is None:
         raise HTTPException(
             status_code = 404,
-            detail = f"Message {payload.messageId} not found in thread {thread_id}",
+            detail = f"Message {branch_message_id} not found in thread {thread_id}",
         )
     base_title = source.get("title") or "New Chat"
     new_title = f"fork · {base_title}"
     try:
         forked = fork_chat_thread(
             source_thread_id = thread_id,
-            branch_message_id = payload.messageId,
+            branch_message_id = branch_message_id,
             new_thread_id = payload.newThreadId,
             new_title = new_title,
             created_at = payload.createdAt,
