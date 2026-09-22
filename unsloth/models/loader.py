@@ -1903,7 +1903,9 @@ class FastModel(FastBaseModel):
                     auto_model = AutoModelForVision2Seq
                     # AutoModelForVision2Seq covers image-text models. An omni checkpoint carrying audio as well can be registered under a different auto class entirely (Qwen3-Omni is only in AutoModelForTextToWaveform), and picking a class with no mapping raises "Unrecognized configuration class" before the weights are touched. Only consulted when the chosen class really has no mapping, so anything that resolves today is unchanged.
                     if resolve_model_class(auto_model, model_config) is None:
-                        auto_model = _resolve_omni_auto_model(model_config, architectures) or auto_model
+                        auto_model = (
+                            _resolve_omni_auto_model(model_config, architectures) or auto_model
+                        )
             else:
                 auto_model = AutoModelForCausalLM
 

@@ -42,6 +42,7 @@ def _embeddings_or_none(model, getter):
     except Exception:
         return None
 
+
 def _multimodal_auto_classes():
     """Auto classes whose models need a processor rather than a tokenizer.
 
@@ -53,16 +54,22 @@ def _multimodal_auto_classes():
     differs across the supported transformers range.
     """
     import transformers
+
     # AutoModelForImageTextToText is only bound above on transformers 5, so it
     # is looked up rather than referenced: naming it directly would raise
     # NameError on 4.x, where the other branch ran.
     classes = [AutoModelForVision2Seq]
-    for name in ("AutoModelForImageTextToText", "AutoModelForTextToWaveform",
-                 "AutoModelForSpeechSeq2Seq"):
+    for name in (
+        "AutoModelForImageTextToText",
+        "AutoModelForTextToWaveform",
+        "AutoModelForSpeechSeq2Seq",
+    ):
         extra = getattr(transformers, name, None)
         if extra is not None and extra not in classes:
             classes.append(extra)
     return classes
+
+
 from ..kernels import (
     post_patch_loss_function,
 )
