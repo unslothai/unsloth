@@ -181,6 +181,7 @@ def saving(monkeypatch, tmp_path):
         # safe_serialization=None mean, which is what several tests below assert on.
         "_normalize_safe_serialization",
         "_is_adapter_save_method",
+        "_honours_safe_serialization",
     }
     nodes = []
     for node in tree.body:
@@ -620,3 +621,33 @@ def test_the_pull_requests_own_url_is_preferred_when_the_hub_returns_one(saving,
     )
     printed = capsys.readouterr().out
     assert "Saved model to https://huggingface.co/owner/model/discussions/7\n" in printed, printed
+
+
+def test_a_pickle_request_this_transformers_cannot_honour_is_reported(saving):
+    """transformers 5 removed `safe_serialization`, so `False` silently yields safetensors."""
+    env, records, _ = saving
+    said = []
+    env["logger"] = SimpleNamespace(warning_once = lambda message, *a, **kw: said.append(message))
+
+    class NoSafeSerialization(FullModel):
+        """transformers 5's shape: `**kwargs` absorbs the request, nothing honours it."""
+
+        def save_pretrained(self, directory, **kwargs):
+            super().save_pretrained(directory)
+
+    class HonoursIt(FullModel):
+        def save_pretrained(self, directory, safe_serialization = True, **kwargs):
+            super().save_pretrained(directory)
+
+    assert env["_honours_safe_serialization"](NoSafeSerialization().save_pretrained) is False
+    assert env["_honours_safe_serialization"](HonoursIt().save_pretrained) is True
+
+    def push(model, **kwargs):
+        said.clear()
+        env["unsloth_generic_push_to_hub_merged"](model, "owner/model", token = "fixture", **kwargs)
+        return [message for message in said if "not a pickle" in message]
+
+    assert push(NoSafeSerialization(), safe_serialization = False)
+    # A transformers that still takes it, and the default `True`, are never reported.
+    assert push(HonoursIt(), safe_serialization = False) == []
+    assert push(NoSafeSerialization()) == []

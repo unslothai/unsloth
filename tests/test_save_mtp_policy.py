@@ -279,6 +279,10 @@ def test_the_written_tensor_names_reach_the_reconciler(save_module_any, monkeypa
     names, so a `safe_serialization = False` export reconciles against "unknown" and keeps an
     `mtp_num_hidden_layers` the weights do not carry. Whenever a state dict was built it IS the
     thing being written, so passing its keys costs nothing and removes the blind spot.
+
+    The names must be read BEFORE the write: transformers 5 pops each tensor out of the supplied
+    dict as it writes the shard holding it, so reading afterwards reports an export carrying no
+    tensors at all and strips a declaration the weights really do back.
     """
     import torch
 
@@ -292,6 +296,10 @@ def test_the_written_tensor_names_reach_the_reconciler(save_module_any, monkeypa
 
         def save_pretrained(self, directory, **kwargs):
             os.makedirs(directory, exist_ok = True)
+            # What transformers 5 does: "remove it from state_dict to avoid keeping the ref",
+            # one pop per tensor as its shard is written, leaving the caller's dict empty.
+            for name in list(kwargs.get("state_dict") or ()):
+                kwargs["state_dict"].pop(name)
 
     from unsloth_zoo import saving_utils
 

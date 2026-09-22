@@ -278,6 +278,22 @@ def _filter_push_to_hub_kwargs(push_fn, kwargs):
     return kept
 
 
+def _honours_safe_serialization(save_fn):
+    """Does this `save_pretrained` still take `safe_serialization`?
+
+    transformers 5 removed the parameter and always writes safetensors, so an explicit `False`
+    is absorbed by `**kwargs` and the export is silently not the pickle that was asked for.
+    Probed from the signature, not a version, like `_filter_push_to_hub_kwargs`.
+    """
+    import inspect
+
+    try:
+        return "safe_serialization" in inspect.signature(save_fn).parameters
+    except (TypeError, ValueError):
+        # Unreadable signature: say nothing rather than warn about a guess.
+        return True
+
+
 def _is_adapter_save_method(save_method):
     """Is `save_method` the adapter-only save, i.e. "do not merge anything"?
 
@@ -5453,6 +5469,14 @@ def unsloth_generic_save(
             max_shard_size = max_shard_size,
             variant = variant,
         )
+        # Asked for a pickle and this transformers cannot give one: say so, rather than upload a
+        # format the caller explicitly declined. The same report `_filter_push_to_hub_kwargs`
+        # makes for the adapter path, which never reaches this branch.
+        if safe_serialization is False and not _honours_safe_serialization(model.save_pretrained):
+            logger.warning_once(
+                "Unsloth: this transformers always writes safetensors, so "
+                "`safe_serialization = False` was not applied and the export is not a pickle."
+            )
         is_qwen3_5_vlm = _is_qwen3_5_vlm(model)
         if ("16bit" in save_method or is_qwen3_5_vlm) and state_dict is None:
             state_dict = model.state_dict()
@@ -5467,6 +5491,12 @@ def unsloth_generic_save(
         if state_dict is not None:
             _save_kwargs["state_dict"] = state_dict
 
+        # BEFORE the write: transformers 5 pops each tensor out of a supplied state dict as it
+        # writes the shard holding it ("remove it from state_dict to avoid keeping the ref",
+        # modeling_utils.py), so reading the keys afterwards reports an export with no tensors
+        # at all and would strip an `mtp_num_hidden_layers` the weights really do carry.
+        _written_tensor_names = list(state_dict.keys()) if state_dict is not None else None
+
         print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
         model.save_pretrained(save_directory, **_save_kwargs)
         # Guarded: an older zoo must not raise once the weights are already on disk.
@@ -5477,10 +5507,7 @@ def unsloth_generic_save(
             # unpickle an unindexed `pytorch_model.bin`, so a `safe_serialization = False` export
             # would otherwise read back "unknown" and keep an `mtp_num_hidden_layers` the weights
             # do not carry. Free here -- this state dict is already materialised.
-            reconcile_mtp_config(
-                save_directory,
-                tensor_names = list(state_dict.keys()) if state_dict is not None else None,
-            )
+            reconcile_mtp_config(save_directory, tensor_names = _written_tensor_names)
         except ImportError:
             pass
         if tokenizer is not None:
