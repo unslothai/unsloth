@@ -249,6 +249,7 @@ from .import_fixes import (
     fix_transformers_fully_masked_rows,
     fix_transformers_rope_scaling_drops_theta,
     fix_transformers_validate_rope_ignore_keys,
+    fix_transformers_is_torch_fx_available,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
@@ -308,6 +309,7 @@ del check_transformers_prequantized_vlm_quant_state
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
 fix_transformers_validate_rope_ignore_keys()
+fix_transformers_is_torch_fx_available()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
 # BEFORE models/_utils.py imports xformers.ops.
@@ -360,6 +362,7 @@ patch_accelerate_recursively_apply()
 del fix_transformers5_bare_annotation_configs
 del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_validate_rope_ignore_keys
+del fix_transformers_is_torch_fx_available
 del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue

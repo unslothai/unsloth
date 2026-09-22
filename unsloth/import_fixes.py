@@ -1543,6 +1543,36 @@ def _transformers_rope_scaling_assignment_drops_theta():
         return False
 
 
+def fix_transformers_is_torch_fx_available():
+    """Give remote modeling code written against transformers 4.x the
+    ``transformers.utils.is_torch_fx_available`` it imports at module top.
+
+    transformers 5.0 removed the symbol (huggingface/transformers#44561, closed as not planned),
+    and hub modeling files that still import it (inclusionAI/Ling-2.6-flash's
+    ``modeling_bailing_moe_v2_5.py``) die on their first import. The 4.x definition returned
+    ``is_torch_available()``, which is what is restored, on ``transformers.utils`` and
+    ``transformers.utils.import_utils``. A build that still has it is left alone."""
+    try:
+        import transformers.utils as utils
+        import transformers.utils.import_utils as import_utils
+    except Exception:
+        return
+    if hasattr(import_utils, "is_torch_fx_available") and hasattr(utils, "is_torch_fx_available"):
+        return
+    is_torch_available = getattr(import_utils, "is_torch_available", None)
+    if is_torch_available is None:
+        return
+
+    def is_torch_fx_available():
+        return is_torch_available()
+
+    is_torch_fx_available._unsloth_restored = True
+    for module in (import_utils, utils):
+        if not hasattr(module, "is_torch_fx_available"):
+            module.is_torch_fx_available = is_torch_fx_available
+    logger.info("Unsloth: Restored transformers `is_torch_fx_available` for remote modeling code written against 4.x.")
+
+
 def fix_transformers_validate_rope_ignore_keys():
     """Let remote configuration code call ``validate_rope(ignore_keys = ...)`` on a transformers
     that dropped that parameter.
@@ -1574,6 +1604,10 @@ def fix_transformers_validate_rope_ignore_keys():
         ignore_keys = None,
         **kwargs,
     ):
+        # The 5.0 signature was (self, ignore_keys = None): one positional argument is that
+        # parameter and is dropped the same way; anything else is the validator's business.
+        if len(args) == 1 and not kwargs:
+            args = ()
         return original(self, *args, **kwargs)
 
     validate_rope._unsloth_ignore_keys = True

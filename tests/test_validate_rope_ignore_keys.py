@@ -21,7 +21,7 @@ import inspect
 import pytest
 
 transformers = pytest.importorskip("transformers")
-from unsloth.import_fixes import fix_transformers_validate_rope_ignore_keys
+from unsloth.import_fixes import fix_transformers_validate_rope_ignore_keys, fix_transformers_is_torch_fx_available
 
 
 def _mixin():
@@ -49,6 +49,7 @@ def test_validate_rope_accepts_ignore_keys_after_the_fix():
     )
     # what the 5.0-era remote code does
     config.validate_rope(ignore_keys = {"rope_type"})
+    config.validate_rope({"rope_type"})   # the 5.0 positional form
     config.validate_rope()
 
 
@@ -61,3 +62,31 @@ def test_the_fix_is_idempotent_and_keeps_the_original_reachable():
     original = getattr(first, "__wrapped__", None)
     if original is not None:
         assert "ignore_keys" not in inspect.signature(original).parameters
+
+
+def test_the_mlx_branch_installs_the_fix_too():
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "__init__.py").read_text()
+    mlx_branch = source[source.find("if _IS_MLX:"):]
+    assert "fix_transformers_validate_rope_ignore_keys" in mlx_branch
+
+
+def test_is_torch_fx_available_is_importable_from_transformers_utils_after_the_fix():
+    """Ling-2.6-flash's hub modeling file does `from transformers.utils import
+    is_torch_fx_available`; transformers 5 removed the symbol."""
+    fix_transformers_is_torch_fx_available()
+    from transformers.utils import is_torch_fx_available
+    import transformers.utils.import_utils as import_utils
+
+    assert is_torch_fx_available() is True
+    assert import_utils.is_torch_fx_available() is True
+    fix_transformers_is_torch_fx_available()  # idempotent
+    assert import_utils.is_torch_fx_available is import_utils.is_torch_fx_available
+
+
+def test_the_mlx_branch_installs_the_fx_shim_too():
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "__init__.py").read_text()
+    assert "fix_transformers_is_torch_fx_available" in source[source.find("if _IS_MLX:"):]
