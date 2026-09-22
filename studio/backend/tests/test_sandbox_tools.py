@@ -836,6 +836,24 @@ class TestNetworkTargetResolution:
                 "fetch(session=requests.Session())",
                 id = "client_passed_by_keyword",
             ),
+            pytest.param(
+                f"import paramiko\nclass T(paramiko.Transport):\n    pass\nT(('{_H}', 22))",
+                id = "transport_subclass",
+            ),
+            pytest.param(
+                f"from fabric import Connection\nclass C(Connection):\n    pass\nC('{_H}').run('id')",
+                id = "fabric_connection_subclass",
+            ),
+            pytest.param(
+                f"import httpx\nc = httpx.Client(transport=httpx.HTTPTransport(proxy='http://{_H}'))\n"
+                "c.get('https://pypi.org/')",
+                id = "httpx_transport_proxy",
+            ),
+            pytest.param(
+                "import httpx\nhttpx.Client(mounts={'all://': "
+                f"httpx.AsyncHTTPTransport(proxy='http://{_H}')}})",
+                id = "httpx_mounted_transport_proxy",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -951,6 +969,7 @@ class TestNetworkTargetResolution:
             "import requests\ndef fetch(s):\n    return s.get('https://pypi.org/')\nfetch(requests.Session())",
             "import requests\ndef fetch(s):\n    return s.get('http://203.0.113.5/')\nfetch({})",
             "import httpx\nhttpx.stream('GET', 'https://pypi.org/')",
+            "import httpx\nhttpx.Client(transport=httpx.HTTPTransport(retries=3)).get('https://pypi.org/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):

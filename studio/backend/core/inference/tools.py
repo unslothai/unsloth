@@ -16361,6 +16361,11 @@ def _check_signal_escape_patterns(code: str):
                 for module in ("urllib3", "urllib3.poolmanager")
             },
             "urllib3.contrib.socks.SOCKSProxyManager": (0, ("proxy_url",), "url"),
+            # A transport routes its client through `proxy =`, including one given in `mounts`.
+            **{
+                f"httpx.{transport}": (None, ("proxy",), "proxy")
+                for transport in ("HTTPTransport", "AsyncHTTPTransport")
+            },
             **{
                 f"{module}.{pool}": (0, ("host",), "host")
                 for module in ("urllib3", "urllib3.connectionpool")
@@ -17500,14 +17505,14 @@ def _check_signal_escape_patterns(code: str):
                 elif isinstance(value, ast.AST):
                     self.visit(value)
             if self.collecting and isinstance(node, ast.ClassDef):
-                # A local subclass of a client is that client: `class S(requests.Session)` then
-                # `S().get(url)` runs the inherited method.
+                # A local subclass of a client or connecting class is that class:
+                # `class S(requests.Session)` then `S().get(url)` runs the inherited method.
                 where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
                 inherited = {
                     c
                     for base in node.bases
                     for c in self._fq_candidates(base, where)
-                    if c in _CLIENT_CLASSES
+                    if c in _CLIENT_CLASSES or c in _NETWORK_DESTINATION_ARG
                 }
                 if inherited:
                     self.func_aliases.setdefault(node.name, set()).update(inherited)
