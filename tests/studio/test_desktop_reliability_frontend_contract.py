@@ -2529,9 +2529,9 @@ def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
     for path, utility, length, expected in _LENGTHS_THAT_MUST_KEEP_THE_SCALE:
         source = path.read_text(encoding = "utf-8")
         scaled = source.count(f"{utility}-[calc({length}*var(--ui-space-scale,1))]")
-        assert scaled == expected, (
-            f"{path.name} states {scaled} scaled {utility}-{length}, not {expected}"
-        )
-        assert f"{utility}-[{length}]" not in source, (
-            f"{path.name} has a bare {utility}-[{length}], which stays put while its text grows"
-        )
+        assert (
+            scaled == expected
+        ), f"{path.name} states {scaled} scaled {utility}-{length}, not {expected}"
+        assert (
+            f"{utility}-[{length}]" not in source
+        ), f"{path.name} has a bare {utility}-[{length}], which stays put while its text grows"
