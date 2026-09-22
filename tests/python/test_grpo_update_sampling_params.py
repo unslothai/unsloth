@@ -134,6 +134,14 @@ def test_trl_owned_fields_are_not_overridden(helper, use_set_kwargs):
 
 def test_repo_injects_the_local_helper():
     src = _read_source()
-    assert f"def {HELPER}(SamplingParams, generation_kwargs, vllm_sampling_params = None):" in src
+    node = next(
+        n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == HELPER
+    )
+    assert [a.arg for a in node.args.args] == [
+        "SamplingParams",
+        "generation_kwargs",
+        "vllm_sampling_params",
+    ]
+    assert [ast.literal_eval(d) for d in node.args.defaults] == [None]
     assert f'RL_REPLACEMENTS["{HELPER}"]' not in src
     assert f'RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource({HELPER}))' in src
