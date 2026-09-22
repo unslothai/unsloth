@@ -176,6 +176,84 @@ def _call_sites(path: Path, target: str) -> list[dict]:
     return sites
 
 
+
+_STEP_OUTPUT = re.compile(
+    r"\$\{\{\s*steps\.([A-Za-z_][\w-]*)\.outputs\.[A-Za-z_][\w-]*\s*\}\}"
+)
+
+
+def _producer_steps(path: Path) -> dict:
+    """{step id: was its key output actually recovered} for one document.
+
+    Per producer, because "some producer somewhere was readable" is not evidence about
+    THIS one. A side-wide flag let a workflow with one ordinary
+    `echo 'key=safe-key' >> "$GITHUB_OUTPUT"` vouch for a second step emitting
+    `printf 'key=%s\n' "shared-$GITHUB_SHA"`, whose namespace was never recovered: the
+    flag was true, the delegated key was dismissed, and a publish `restore-keys:
+    shared-` passed. One readable step is not a warrant for an unreadable one.
+    """
+    out: dict = {}
+    doc = _parse(path)
+    for mapping in _mappings(doc):
+        step_id = mapping.get("id")
+        if not isinstance(step_id, str):
+            continue
+        # A step that declares its own `key:` publishes it as an output
+        # (`cache-primary-key`), so the namespace is right there in the YAML. This is
+        # how `actions/cache/restore` steps hand a key onward, and reading only `run:`
+        # bodies and local composites declared them unreadable.
+        with_ = mapping.get("with")
+        if isinstance(with_, dict) and with_.get("key") is not None:
+            out[step_id] = True
+            continue
+        body = mapping.get("run")
+        if isinstance(body, str):
+            out[step_id] = bool(
+                _shell_built_key_prefixes(body) or _shell_output_keys(body)
+            )
+            continue
+        # A step may produce its output by CALLING a local action rather than by running
+        # a shell body -- which is how this repository's own pip-cache-restore works, and
+        # reading `run:` steps alone declared that producer unreadable and failed the
+        # live tree. The action's own shell is what has to be readable.
+        uses = mapping.get("uses")
+        if not isinstance(uses, str) or not uses.strip().startswith("./"):
+            continue
+        target = Path(uses.strip()[2:])
+        for candidate in (
+            path.parent.parent.parent / target / "action.yml",
+            path.parent.parent.parent / target / "action.yaml",
+            path.parent.parent.parent / target,
+        ):
+            if not candidate.is_file():
+                continue
+            text = candidate.read_text(ENC)
+            # YAML-declared keys count as recovered too, and are in fact the usual case:
+            # this repository's frontend-dist-restore hands out
+            # `steps.restore.outputs.cache-primary-key`, whose value is the `key:` the
+            # action declares. Requiring a SHELL-built key declared that producer
+            # unreadable and failed the live tree on a correct configuration.
+            out[step_id] = bool(
+                _extract_cache_keys(candidate)
+                or _shell_built_key_prefixes(text)
+                or _shell_output_keys(text)
+            )
+            break
+    return out
+
+
+def _delegation_is_read(expression: str, producers: dict) -> bool:
+    """Was the step this expression names one whose key output we could read?
+
+    An expression naming no step at all -- `${{ needs.build.outputs.key }}` -- is not
+    something this check can follow, so it is not evidence either.
+    """
+    match = _STEP_OUTPUT.search(expression or "")
+    if match is None:
+        return False
+    return bool(producers.get(match.group(1)))
+
+
 def _resolved_inputs(caller_paths: list, target: str) -> dict:
     """{input: (literal values, every call site resolved)} over all callers of `target`.
 
@@ -214,6 +292,7 @@ def _resolved_inputs(caller_paths: list, target: str) -> dict:
     names = {str(name) for site in sites for name in site}
     for name in names:
         literals: set = set()
+        delegated: set = set()
         omitted = 0
         dynamic = 0
         for site in sites:
@@ -226,13 +305,18 @@ def _resolved_inputs(caller_paths: list, target: str) -> dict:
             if re.fullmatch(r"[A-Za-z0-9][\w.-]*", literal):
                 literals.add(literal)
             elif _DELEGATED_KEY.fullmatch(literal):
-                pass
+                # Kept, not discarded. Which producer supplies the value decides
+                # whether the delegation settles anything, and that is only knowable
+                # from the expression the call site wrote.
+                delegated.add(literal)
             else:
                 # An explicit value this check cannot expand, such as
                 # `${{ matrix.cache_key }}`. No default can settle it, because the caller
                 # overrode the default with something unknown.
                 dynamic += 1
-        values[name] = (literals, dynamic == 0 and omitted == 0, omitted, dynamic)
+        values[name] = (
+            literals, dynamic == 0 and omitted == 0, omitted, dynamic, delegated,
+        )
     return values
 
 
@@ -444,13 +528,14 @@ def _namespaces_by_target(callers: list, targets: list) -> dict:
         # nothing else: a caller that explicitly passes `${{ matrix.cache_key }}` has
         # overridden the default with a value this check cannot expand.
         for field, value in _declared_defaults(target).items():
-            vals, _ok, _omitted, dynamic = resolved.get(field, (set(), True, 0, 0))
-            resolved[field] = (vals | {value}, dynamic == 0, 0, dynamic)
-        out[target] = {f: (p[0], p[1]) for f, p in resolved.items()}
+            entry = resolved.get(field, (set(), True, 0, 0, set()))
+            vals, _ok, _omitted, dynamic, delegated = entry
+            resolved[field] = (vals | {value}, dynamic == 0, 0, dynamic, delegated)
+        out[target] = {f: (p[0], p[1], p[4]) for f, p in resolved.items()}
     return out
 
 
-def _expand_key(key: str, namespaces: dict, producers_resolved: bool = True) -> tuple:
+def _expand_key(key: str, namespaces: dict, producers: dict | None = None) -> tuple:
     """(every literal key this can take, whether that list is complete).
 
     Substitutes each `${{ inputs.X }}` OCCURRENCE, rather than only a key that is
@@ -476,7 +561,9 @@ def _expand_key(key: str, namespaces: dict, producers_resolved: bool = True) -> 
             if match is None:
                 nxt.add(k)
                 continue
-            values, resolved = namespaces.get(match.group(1), (set(), False))
+            entry = namespaces.get(match.group(1), (set(), False, set()))
+            values, resolved = entry[0], entry[1]
+            delegated = entry[2] if len(entry) > 2 else set()
             if not values:
                 nxt.add(k)
                 # Resolved with NO literals means every call site delegates. Only
@@ -484,7 +571,10 @@ def _expand_key(key: str, namespaces: dict, producers_resolved: bool = True) -> 
                 # repository's own pip-cache-save, whose every caller passes
                 # `${{ steps.pip-cache.outputs.key }}`, against every publish key in the
                 # tree -- a false failure on a correct configuration.
-                if resolved and producers_resolved:
+                readable = bool(delegated) and all(
+                    _delegation_is_read(expr, producers or {}) for expr in delegated
+                )
+                if resolved and readable:
                     delegated_inputs.add(match.group(1))
                 else:
                     # Delegation only settles the key when the producer's namespace was
@@ -548,8 +638,9 @@ def _input_namespaces(callers: list, targets: list) -> dict:
         # entirely, which turned the fix for one false failure into a silent bypass.
         defaults = _declared_defaults(target)
         for field, value in defaults.items():
-            vals, _ok, _omitted, dynamic = resolved.get(field, (set(), True, 0, 0))
-            resolved[field] = (vals | {value}, dynamic == 0, 0, dynamic)
+            entry = resolved.get(field, (set(), True, 0, 0, set()))
+            vals, _ok, _omitted, dynamic = entry[0], entry[1], entry[2], entry[3]
+            resolved[field] = (vals | {value}, dynamic == 0, 0, dynamic, entry[4])
         for field, pair in resolved.items():
             vals, ok = merged.get(field, (set(), True))
             merged[field] = (vals | pair[0], ok and pair[1])
@@ -1047,7 +1138,9 @@ def main() -> int:
         text = pth.read_text(ENC)
         publish_shell.update(_shell_built_key_prefixes(text))
         publish_shell.update(_shell_output_keys(text))
-    publish_producers_resolved = bool(publish_shell)
+    publish_producers: dict = {}
+    for pth in publish_callers + publish_reachable:
+        publish_producers.update(_producer_steps(pth))
     # Each definition keeps its OWN inputs. See `_namespaces_by_target`.
     pr_by_target = _namespaces_by_target(pr_callers, pr_reachable)
     publish_by_target = _namespaces_by_target(publish_callers, publish_reachable)
@@ -1068,11 +1161,14 @@ def main() -> int:
     # PR keys whose value this check could not settle, with the literal head they are
     # known to start with. Only these can collide with a publish key unseen.
     pr_undecided: list = []
-    # Whether any producer on this side was actually read. With none, a delegated key
-    # names a value this check never saw, which is doubt rather than delegation.
-    pr_producers_resolved = bool(shell_built or shell_literals)
+    # Per producing STEP, not per side. One readable producer is not a warrant for an
+    # unreadable one, and a side-wide flag let an ordinary `echo key=...` vouch for a
+    # `printf` producer whose namespace was never recovered.
+    pr_producers: dict = {}
+    for pth in pr_workflow_paths + list(pr_reachable):
+        pr_producers.update(_producer_steps(pth))
     for namespace, key in pr_sites:
-        literals, complete = _expand_key(key, namespace, pr_producers_resolved)
+        literals, complete = _expand_key(key, namespace, pr_producers)
         pr_keys.update(k for k in literals if "${{" not in k)
         # Delegation is not indecision. A key that is nothing but
         # `${{ steps.probe.outputs.key }}` names a value assembled in a shell step, and
@@ -1080,7 +1176,8 @@ def main() -> int:
         # separately; counting it here as well reported every publish key in the tree
         # against it, which failed the live tree on a correct configuration.
         if not complete and not (
-            pr_producers_resolved and _DELEGATED_KEY.fullmatch(key.strip())
+            _DELEGATED_KEY.fullmatch(key.strip())
+            and _delegation_is_read(key.strip(), pr_producers)
         ):
             pr_undecided.append((key, _prefix_candidates(key)))
     pr_raw_unresolved = {raw.strip() for raw, _heads in pr_undecided}
@@ -1092,11 +1189,12 @@ def main() -> int:
         # `safe-key` and reported as colliding with a PR cache of that name.
         pub_ns = publish_by_target.get(pub_path, publish_namespaces)
         for raw in pub_keys:
-            literals, complete = _expand_key(raw, pub_ns, publish_producers_resolved)
+            literals, complete = _expand_key(raw, pub_ns, publish_producers)
             if _DELEGATED_KEY.fullmatch(raw.strip()):
                 # Compared as the heads its own shell produced, rather than skipped.
-                literals = sorted(publish_shell) or [raw.strip()]
-                complete = publish_producers_resolved
+                read = _delegation_is_read(raw.strip(), publish_producers)
+                literals = sorted(publish_shell) if read else [raw.strip()]
+                complete = read
             # Identical spellings first. Two keys written the same way around an
             # expression this check cannot expand -- `shared-${{ hashFiles('lock') }}`
             # on both sides -- resolve identically at run time, so a PR that leaves the
@@ -1123,8 +1221,8 @@ def main() -> int:
                     )
                     continue
                 if "${{" in k:
-                    if publish_producers_resolved and _DELEGATED_KEY.fullmatch(
-                        k.strip()
+                    if _DELEGATED_KEY.fullmatch(k.strip()) and _delegation_is_read(
+                        k.strip(), publish_producers
                     ):
                         # Delegated AND read. See the PR side above.
                         continue

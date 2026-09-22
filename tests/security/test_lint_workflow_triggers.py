@@ -2936,3 +2936,61 @@ def test_two_actions_sharing_a_directory_name_keep_their_call_sites(tmp_path):
         f"`shared` only ever reaches b/cache, which caches nothing, so no PR cache "
         f"writes `prefix-shared`:\n{proc.stdout}\n{proc.stderr}"
     )
+
+
+def test_one_readable_producer_does_not_vouch_for_an_unreadable_one(tmp_path):
+    """Resolution belongs to a producing STEP, not to a whole side of the comparison.
+
+    A side-wide flag let an ordinary `echo 'key=safe-key'` in one step certify a second
+    step emitting `printf 'key=%s\\n'`, whose namespace was never recovered: the flag was
+    true, the unread delegated key was dismissed, and a publish `restore-keys: shared-`
+    passed. The single-producer test could not see this, because there was nothing else
+    in the workflow to do the vouching.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        # readable, and entirely unrelated to the key that is actually used
+        "      - id: safe\n"
+        "        run: echo 'key=safe-key' >> \"$GITHUB_OUTPUT\"\n"
+        # unreadable spelling, and this is the one whose value reaches the cache
+        "      - id: make\n"
+        "        run: printf 'key=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: ${{ steps.make.outputs.key }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("shared-pub", "            shared-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the key in use comes from the step that could NOT be read, whatever the "
+        f"other step spells correctly:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_a_producer_that_declares_its_key_inline_is_readable():
+    """A step's own `key:` is its output, and a local action's is too.
+
+    Requiring a shell-built key as the evidence declared this repository's real
+    producers unreadable: `frontend-dist-restore` hands out
+    `steps.restore.outputs.cache-primary-key`, whose value is the `key:` the action
+    declares in YAML, and an `actions/cache/restore` step publishes the key written
+    beside it. Both failed the live tree before being recognised.
+    """
+    lint = _lint_module()
+    assert lint._delegation_is_read(
+        "${{ steps.probe.outputs.key }}", {"probe": True}
+    ) is True
+    assert lint._delegation_is_read(
+        "${{ steps.probe.outputs.key }}", {"probe": False}
+    ) is False
+    # A step this check never saw is not evidence of anything.
+    assert lint._delegation_is_read("${{ steps.other.outputs.key }}", {"probe": True}) is False
+    # Nor is a form that names no step at all.
+    assert lint._delegation_is_read("${{ needs.build.outputs.key }}", {"probe": True}) is False

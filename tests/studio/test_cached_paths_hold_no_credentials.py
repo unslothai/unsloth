@@ -678,6 +678,14 @@ def _glob_regex(pattern: str):
     pattern = pattern.replace("\\", "/")
     while i < len(pattern):
         ch = pattern[i]
+        if pattern.startswith("**/", i):
+            # Zero directories included. `hf-cache/**/token` matches
+            # `hf-cache/token`, and translating `**` to `.*` before escaping the
+            # following slash demanded a separator that need not be there, so a
+            # pattern that does persist the token read as though it did not.
+            out.append("(?:[^/]+/)*")
+            i += 3
+            continue
         if pattern.startswith("**", i):
             out.append(".*")
             i += 2
@@ -767,7 +775,21 @@ def _offending_jobs():
     for path, doc in _docs():
         for jid, job in _jobs(doc):
             for unit, unit_env, unit_inputs in _units(job, doc):
-                for scope in [unit_env] + _step_envs(unit):
+                # Through `_flat_steps`, so an env declared INSIDE a composite counts.
+                # `_step_envs` sees the calling job's own steps only, and a composite
+                # whose inner login step declares its own `HF_HOME` therefore produced
+                # no label at all -- so the parametrized guard was never handed the job,
+                # though `_login_offenders` detects it. Same shape as the reusable
+                # workflow gap, one level further in.
+                scopes = [unit_env]
+                for step, inherited, _si in _flat_steps(unit, unit_env, unit_inputs):
+                    own = step.get("env")
+                    scopes.append({
+                        **inherited,
+                        **({str(k): str(v) for k, v in own.items()}
+                           if isinstance(own, dict) else {}),
+                    })
+                for scope in scopes:
                     env = {**unit_env, **scope}
                     homes = {v: env[v] for v in CREDENTIAL_HOMES if v in env}
                     if "HF_TOKEN_PATH" in homes:
@@ -1948,3 +1970,78 @@ def test_hf_token_path_alone_moves_the_token_out_of_the_default_home():
     for default, owners in DEFAULT_OWNERS.items():
         for owner in owners:
             assert owner in CREDENTIAL_HOMES, f"{owner} for {default}"
+
+
+def test_a_globstar_matches_zero_directories():
+    """`hf-cache/**/token` includes `hf-cache/token`. GitHub's globstar may match none.
+
+    Translating `**` to `.*` and then escaping the slash after it demanded a separator
+    that need not be there, so a pattern which really does persist the token read as
+    though it did not, and a job could log in and upload it with neither guard firing.
+    """
+    hf = CREDENTIAL_FILES["HF_HOME"]
+    assert _inside("hf-cache", "hf-cache/**/token", hf) is True
+    assert _inside("hf-cache", "hf-cache/**/*", hf) is True
+    assert _inside("hf-cache", "hf-cache/**", hf) is True
+    # Depth beyond zero still matches.
+    assert _glob_captures("hf-cache/**/token", "hf-cache", hf) is True
+    # And the narrowing is not lost: a restrictive tail still excludes the token.
+    assert _inside("hf-cache", "hf-cache/**/*.bin", hf) is False
+
+    cargo = CREDENTIAL_FILES["CARGO_HOME"]
+    leaking = {
+        "env": {"CARGO_HOME": "cargo-home"},
+        "steps": [
+            {"run": "cargo login $TOKEN"},
+            {
+                "uses": "actions/upload-artifact@v4",
+                "with": {"path": "cargo-home/**/credentials.toml", "name": "c"},
+            },
+        ],
+    }
+    assert _inside("cargo-home", "cargo-home/**/credentials.toml", cargo) is True
+    assert _login_offenders({}, leaking), (
+        "the upload includes cargo-home/credentials.toml at depth zero"
+    )
+
+
+def test_the_discovery_scan_sees_an_env_declared_inside_a_composite(tmp_path, monkeypatch):
+    """A credential home set by a composite's own step has to activate the check.
+
+    The discovery generator read the calling job's direct step environments, so a
+    composite whose inner login step declares `HF_HOME` produced no label and the
+    parametrized guard was never handed the job -- though `_login_offenders` detects it.
+    The same shape as the reusable-workflow gap, one level further in.
+    """
+    import sys
+
+    module = sys.modules[__name__]
+    wf = tmp_path / ".github" / "workflows"
+    act = tmp_path / ".github" / "actions" / "inner-login"
+    wf.mkdir(parents = True)
+    act.mkdir(parents = True)
+    (act / "action.yml").write_text(
+        "name: inner login\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - run: hf auth login --token x\n"
+        "      shell: bash\n"
+        "      env:\n        HF_HOME: hf-cache\n"
+    )
+    (wf / "caller.yml").write_text(
+        "name: caller\n"
+        "on:\n  push:\n"
+        "jobs:\n  go:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/inner-login\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: hf-cache\n          key: k\n"
+    )
+    monkeypatch.setattr(module, "REPO", tmp_path)
+    monkeypatch.setattr(module, "WORKFLOWS", wf)
+    monkeypatch.setattr(module, "ACTIONS", tmp_path / ".github" / "actions")
+
+    found = [f for f in _offending_jobs() if "caller.yml" in str(f[0])]
+    assert found, (
+        "the env is declared inside the composite, and the scan has to reach it or the "
+        "guard is never instantiated for this job"
+    )
