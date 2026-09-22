@@ -16,6 +16,8 @@ import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { dismissCarveoutAdviceForModel, showCarveoutAdvice } from "@/features/igpu-carveout";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
+// eslint-disable-next-line no-restricted-imports
+import { checkDiskSpace } from "@/features/settings/low-disk-check";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import {
   type ModelRuntime,
@@ -286,25 +288,43 @@ export async function loadModel(
     options?.runtime ?? "chat",
     payload.model_path ?? null,
     async () => {
-      const response = await authFetch("/api/inference/load", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...payload,
-          hf_token: preparedToken.token,
-          native_path_lease: payload.nativePathLease ?? null,
-          nativePathLease: undefined,
-        }),
-        signal: options?.signal,
-      });
-      const loaded = await parseJsonOrThrow<LoadModelResponse>(response, "Model load");
-      // Unconditional: absent on nearly every load, anything malformed is ignored,
-      // and the model is already resident by the time this runs. Both identities are
-      // passed -- a cached Hub candidate is requested by its loadId while the runtime
-      // keeps `loaded.model`, and the unload is issued with the second.
-      showCarveoutAdvice(loaded.carveout_advice, loaded.model, payload.model_path);
-      showLoadWarning(loaded.memory_warning);
-      return loaded;
+      // The other way bytes reach the cache. The Hub download manager funnels its transfers
+      // through requestStart, but an uncached model selected here is fetched by the BACKEND
+      // inside this one request, by _maybe_auto_download_model in routes/inference.py, so it
+      // passes no funnel on this side. Without this a load is free to fill the disk between
+      // the mount reading and the next Hub operation, which is the case the notice is for.
+      // Throttled like every other caller, so picking through several models costs one read.
+      void checkDiskSpace();
+      try {
+        const response = await authFetch("/api/inference/load", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...payload,
+            hf_token: preparedToken.token,
+            native_path_lease: payload.nativePathLease ?? null,
+            nativePathLease: undefined,
+          }),
+          signal: options?.signal,
+        });
+        const loaded = await parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+        // Unconditional: absent on nearly every load, anything malformed is ignored,
+        // and the model is already resident by the time this runs. Both identities are
+        // passed -- a cached Hub candidate is requested by its loadId while the runtime
+        // keeps `loaded.model`, and the unload is issued with the second.
+        showCarveoutAdvice(loaded.carveout_advice, loaded.model, payload.model_path);
+        showLoadWarning(loaded.memory_warning);
+        return loaded;
+      } finally {
+        // force, for the same reason the download manager's finalize does it: the reading has
+        // to be taken AFTER the write, and unforced it would be swallowed by the interval or
+        // handed the pre-load figure it exists to correct.
+        //
+        // finally, not after the await: a load that FAILED is the likeliest one to have filled
+        // the disk on the way, and telling the user their disk is full is most of the answer
+        // to why it failed. Never a gate, so a rejected load still rejects.
+        void checkDiskSpace({ force: true });
+      }
     },
   );
 }

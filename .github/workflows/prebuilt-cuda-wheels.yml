@@ -297,9 +297,13 @@ jobs:
           "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --upgrade pip
           "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --no-cache-dir \
             "torch==${MATRIX_TORCH}" --index-url https://download.pytorch.org/whl/cu130
-          # --no-deps: causal-conv1d and mamba-ssm declare each other and transformers, none of
-          # which has anything to do with whether this .so loads, and all of which would drag a
-          # second torch resolution into the venv.
+          # The pure-Python modules the three packages import at module load: flash-attn and
+          # mamba-ssm both `from einops import ...` on import, torch wants numpy for its tensor
+          # conversions, and packaging is read by the version checks. None of these can pull a
+          # second torch into the venv, which is what --no-deps on the wheel itself is for:
+          # causal-conv1d and mamba-ssm declare each other and transformers, none of which has
+          # anything to do with whether this .so loads.
+          "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet einops numpy packaging
           "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --no-deps \
             "src/dist/${WHEEL_NAME}"
           for name in $IMPORT_NAMES; do

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,6 +23,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
 HUB_README = REPO_ROOT / "docker" / "DOCKERHUB.md"
 REPO_README = REPO_ROOT / "README.md"
+
+# The stand-in for DOCKER_API_KEY, named so an assertion can look for it.
+DEFAULT_SECRET = "not-a-secret"
 
 
 def test_the_hub_readme_describes_the_shipped_images():
@@ -139,12 +143,12 @@ def test_the_sync_runs_only_when_latest_moved(sync_job: dict):
 
 
 def _run_sync(
-    step: str,
+    step: dict,
     tmp_path: Path,
     *,
     live_after_patch: str,
     token: str = "tok",
-    secret: str = "not-a-secret",
+    secret: str = DEFAULT_SECRET,
 ):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -156,15 +160,13 @@ def _run_sync(
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {log}\n"
-        # The auth body goes to curl on STDIN (`--data-binary @-`) so the key is never a
-        # command-line argument. A stub that logs only "$*" therefore cannot see the
-        # identifier at all, and the assertion that the token authenticates as the ORG
-        # passed vacuously until the body moved off argv, then failed with nothing wrong.
-        # Capture the body too, and only when curl was actually told to read stdin: the
-        # PATCH passes its body as an argument and has no stdin to drain.
-        'case "$*" in\n'
-        f"  *--data-binary\\ @-*) cat >> {log} ;;\n"
-        "esac\n"
+        # The request body does not always travel in argv. #11511 moved the token
+        # request onto stdin (`--data-binary @-`) so the org secret stops showing up
+        # in the process list, and a stub that logs only "$*" then records a call
+        # whose payload is simply absent: every assertion about what was SENT passes
+        # vacuously or fails for the wrong reason. Read it where it actually is, and
+        # only when the arguments say there is one, since `cat` with no stdin hangs.
+        f"case \"$*\" in *'--data-binary @-'*) cat >> {log} ;; esac\n"
         'case "$*" in\n'
         f'  *auth/token*) printf \'{{"access_token": "{token}"}}\' ;;\n'
         "  *-X\\ PATCH*) out=''; while [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=$2; shift; done; : > \"$out\"; printf '200' ;;\n"
@@ -175,21 +177,33 @@ def _run_sync(
     (bin_dir / "curl").chmod(0o755)
     (tmp_path / "docker").mkdir()
     shutil.copy(HUB_README, tmp_path / "docker" / "DOCKERHUB.md")
-    script = step.replace("${{ secrets.DOCKER_API_KEY }}", secret).replace(
-        "${{ env.REGISTRY_USERNAME }}", "unsloth"
+    script = (
+        step["run"]
+        .replace("${{ secrets.DOCKER_API_KEY }}", secret)
+        .replace("${{ env.REGISTRY_USERNAME }}", "unsloth")
     )
     assert "${{" not in script, "unexpanded expression in the sync step"
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env["REGISTRY_USERNAME"] = "unsloth"
     env["IMAGE_NAME"] = "unsloth/unsloth"
-    # The key reaches the script through the step's `env:` block, not through a `${{ }}`
-    # inside the `run:`, so the replace above matches nothing and only this line supplies
-    # it. Without it the body builder dies with KeyError, curl is handed an empty request,
-    # and the step still exits 0 because the failure is inside a pipeline. The env block is
-    # pinned by test_the_step_env_is_what_this_harness_supplies so a rename cannot put it
-    # back to silently sending no credential at all.
-    env["DOCKER_API_KEY"] = secret
+    # Whatever the step declares in its own `env:`, bound here too. The secret used to
+    # be written inline in the run body, where substituting the expression was enough;
+    # #11511 moved it to `env: DOCKER_API_KEY` and read it with `os.environ`, so a
+    # harness that only rewrites the body hands the script an environment it cannot
+    # run in. That does not fail loudly: the body builder raises, the pipeline keeps
+    # the exit status of its last command, and the request goes out empty.
+    # Only the secret this step is supposed to read is expanded. Standing in for any
+    # `secrets.*` would make the harness agree with a workflow that names the wrong
+    # one: `${{ secrets.TYPO }}` would still produce a valid payload here, while
+    # Actions would hand the real step an empty value. Anything else is left for the
+    # assertion below to reject by name.
+    for name, value in (step.get("env") or {}).items():
+        env[name] = re.sub(r"\$\{\{\s*secrets\.DOCKER_API_KEY\s*\}\}", secret, str(value))
+        assert "${{" not in env[name], (
+            f"the step's env {name} reads {value!r}, which is not the secret this "
+            f"harness knows how to supply"
+        )
     res = subprocess.run(
         ["bash", "-e", "-c", script],
         capture_output = True,
@@ -201,32 +215,18 @@ def _run_sync(
     return res, log.read_text(encoding = "utf-8") if log.exists() else ""
 
 
-def test_the_step_env_is_what_this_harness_supplies(sync_job: dict):
-    """The harness hands the script its credential; this pins that it hands the RIGHT one.
-
-    The secret moved out of the `run:` body into the step's `env:` so it is never a command
-    line argument. That is a real improvement, but it also means a `.replace()` on the body
-    silently stops supplying anything, and the step exits 0 regardless because the builder
-    fails inside a pipeline. Renaming the variable must fail here, loudly, rather than
-    downgrading the assertions below to statements about an empty request.
-    """
-    env = sync_job["steps"][-1].get("env") or {}
-    assert "DOCKER_API_KEY" in env, (
-        f"the sync step no longer takes DOCKER_API_KEY from `env:` (it declares {sorted(env)}). "
-        f"_run_sync supplies that exact name; update both together."
-    )
-    assert "secrets.DOCKER_API_KEY" in env["DOCKER_API_KEY"]
-    assert (
-        "${{" not in sync_job["steps"][-1]["run"]
-    ), "the credential is back in the `run:` body, where it becomes a command-line argument"
-
-
 def test_the_sync_patches_the_readme_and_confirms_it(sync_job: dict, tmp_path: Path):
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     res, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
     assert res.returncode == 0, res.stdout + res.stderr
     assert "-X PATCH https://hub.docker.com/v2/namespaces/unsloth/repositories/unsloth" in log
     assert "Authorization: Bearer tok" in log
+    # The body, wherever curl was handed it. Asserted as a non-empty payload first:
+    # an empty request logs no identifier either, so the bare `in log` check below
+    # cannot tell "authenticated as someone else" from "sent nothing at all".
+    assert (
+        f'"secret": "{DEFAULT_SECRET}"' in log
+    ), "the token request carried no body, so this proves nothing about who it authenticates as"
     assert '"identifier": "unsloth"' in log, "the organization token authenticates as the org"
 
 
@@ -235,7 +235,7 @@ def test_the_sync_never_touches_the_legacy_repository_route(sync_job: dict, tmp_
     /v2/repositories/{owner}/{repo}/ with 403 "token issued from organization access
     token is not allowed", whatever its scopes; only the namespace-scoped route
     accepts it. That 403 failed the sync on every publish before this test existed."""
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     _, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
     assert "/v2/repositories/" not in log
     assert "/v2/namespaces/unsloth/repositories/unsloth" in log
@@ -244,14 +244,14 @@ def test_the_sync_never_touches_the_legacy_repository_route(sync_job: dict, tmp_
 def test_the_sync_fails_when_the_page_did_not_change(sync_job: dict, tmp_path: Path):
     """A 200 from PATCH is not proof. The page is read back and compared, so a token
     without description rights cannot leave the job green and the page stale."""
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     res, _ = _run_sync(step, tmp_path, live_after_patch = "# the old page")
     assert res.returncode != 0, "the sync reported success while the page stayed stale"
     assert "does not match" in res.stdout + res.stderr
 
 
 def test_the_sync_fails_without_a_token(sync_job: dict, tmp_path: Path):
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     res, log = _run_sync(step, tmp_path, live_after_patch = "", token = "")
     assert res.returncode != 0
     assert "PATCH" not in log, "a PATCH was attempted with an empty token"
