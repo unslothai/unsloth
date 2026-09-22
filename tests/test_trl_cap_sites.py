@@ -451,6 +451,29 @@ def test_an_unreachable_guard_is_caught(tmp_path, monkeypatch) -> None:
     assert "99.0.0" in str(raised.value)
 
 
+# The spellings an `if:` uses to name a non-Windows runner. `linux` is here because a matrix
+# leg is as often keyed on an artifact or label (`startsWith(matrix.artifact, 'linux-')`) as on
+# the image name, and reading only `ubuntu` missed those and reported a Linux-only apt step as
+# a PowerShell offender.
+_NON_WINDOWS_TOKENS = ("ubuntu", "linux", "macos", "darwin", "mac-", "'mac'")
+
+
+def _gated_off_windows(condition: str) -> bool:
+    """Whether an `if:` keeps its step off the Windows leg.
+
+    Naming a non-Windows OS is only a Windows exclusion when the test is POSITIVE:
+    `matrix.os == 'ubuntu-latest'` skips Windows, `matrix.os != 'ubuntu-latest'` is precisely
+    the condition that RUNS there. Treating the two alike would hide the bug this file exists
+    to catch, so a negated condition is deliberately reported as still exposed rather than
+    guessed at -- `!runner.os` forms are rare, and a false alarm here costs a `shell: bash`
+    while a false clear costs a silently different Windows command.
+    """
+    lowered = condition.lower()
+    if not any(token in lowered for token in _NON_WINDOWS_TOKENS):
+        return False
+    return "!=" not in lowered and "!" not in lowered
+
+
 def _steps_exposed_to_the_powershell_default(workflows: Path) -> list[tuple[str, str, str]]:
     """Every `run:` step a Windows runner hands to PowerShell, GitHub's default there. A
     step escapes only via `shell:` on itself, its job or the workflow; steps an `if:`
@@ -481,8 +504,7 @@ def _steps_exposed_to_the_powershell_default(workflows: Path) -> list[tuple[str,
                     continue
                 if step.get("shell") or job_shell or workflow_shell:
                     continue
-                condition = str(step.get("if", ""))
-                if "ubuntu" in condition or "macos" in condition or "darwin" in condition:
+                if _gated_off_windows(str(step.get("if", ""))):
                     continue
                 name = step.get("name", f"step {index}")
                 exposed.append((path.name, job_name, name, body))
@@ -513,6 +535,26 @@ def test_no_windows_step_uses_a_bash_line_continuation() -> None:
         "Linux one: " + "; ".join(offenders) + ". Put the command on one line or set "
         "`shell: bash` on the step."
     )
+
+
+@pytest.mark.parametrize(
+    "condition,gated",
+    [
+        ("", False),
+        ("startsWith(matrix.artifact, 'linux-')", True),
+        ("runner.os == 'Linux'", True),
+        ("matrix.os == 'ubuntu-latest'", True),
+        ("runner.os == 'macOS'", True),
+        # The negated forms run ON Windows, so naming a non-Windows OS must not clear them.
+        ("matrix.os != 'ubuntu-latest'", False),
+        ("!startsWith(matrix.artifact, 'linux-')", False),
+        # Nothing about an OS at all: still exposed.
+        ("github.event_name == 'pull_request'", False),
+    ],
+)
+def test_only_a_positive_non_windows_guard_clears_a_step(condition: str, gated: bool) -> None:
+    """The `!=` case is the one that matters: it is how a step lands on Windows."""
+    assert _gated_off_windows(condition) is gated
 
 
 def test_the_powershell_continuation_check_can_fail(tmp_path, monkeypatch) -> None:

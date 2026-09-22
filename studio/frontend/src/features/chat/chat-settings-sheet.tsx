@@ -216,7 +216,7 @@ export function ParamSlider({
     );
   }
   return (
-    <div className="space-y-3.5">
+    <div className="space-y-2">
       <div className="flex min-h-8 items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -328,7 +328,7 @@ function CollapsibleSection({
   return (
     <div
       className={cn(
-        !first && "border-t border-black/[0.13] dark:border-white/[0.09]",
+        !first && "border-t border-[rgb(0_0_0_/_calc(0.13*var(--contrast-edge-gain,1)))] dark:border-[rgb(255_255_255_/_calc(0.09*var(--contrast-edge-gain,1)))]",
       )}
     >
       {labelHref ? (
@@ -1081,7 +1081,7 @@ export function ChatSettingsPanel({
       <div className="hint-on-hover flex h-full min-h-0 flex-col">
       {/* Header is outside the scroll area so the scrollbar never shifts the close button.
           Reuse the chat header metrics so the toggle stays put when the panel opens. */}
-      <div className="flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[18px] pt-[var(--studio-chat-header-padding-top,11px)]">
+      <div className="flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start gap-2 bg-panel-surface pl-[calc(18px*var(--ui-space-scale,1))] pr-[calc(18px*var(--ui-space-scale,1))] pt-[var(--studio-chat-header-padding-top,11px)]">
         {isMobile ? (
           <span className="flex h-[var(--studio-chat-control-height,34px)] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
             Run settings
@@ -1096,7 +1096,7 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label="Close run settings"
                 >
                   <HugeiconsIcon
@@ -1122,10 +1122,10 @@ export function ChatSettingsPanel({
         ref={settingsScrollRef}
         className="run-settings-scroll relative min-h-0 flex-1 overflow-y-auto"
       >
-      <div className="px-[18px] pt-3">
+      <div className="px-[calc(18px*var(--ui-space-scale,1))] pt-3">
         {(hasModelContent || modelConfig) && (
               <CollapsibleSection label="Model" defaultOpen={true} first={true}>
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-5">
               {modelConfig}
               {showSpecFallback && (
                 <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
@@ -1197,7 +1197,7 @@ export function ChatSettingsPanel({
           defaultOpen={true}
           first={!hasModelContent && !modelConfig}
         >
-          <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2">
             <DropdownMenu>
                   <DropdownMenuTrigger asChild={true}>
                 <div
@@ -1272,13 +1272,14 @@ export function ChatSettingsPanel({
                     </DropdownMenuItem>
                     {index === BUILTIN_PRESETS.length - 1 &&
                       presets.length > BUILTIN_PRESETS.length && (
-                        <DropdownMenuSeparator className="mx-3 my-1.5 h-px bg-black/8 dark:bg-white/8" />
+                        <DropdownMenuSeparator className="mx-3 my-1.5 h-px bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]" />
                       )}
                   </Fragment>
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
-            <div className="grid grid-cols-2 gap-3">
+            {/* Each pill is as wide as its label, not half the panel. */}
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 type="button"
                 onClick={() => savePresetWithName(presetNameInput)}
@@ -1288,7 +1289,7 @@ export function ChatSettingsPanel({
                     }
                 size="sm"
                 className={cn(
-                  "h-9 w-full rounded-full text-ui-13 font-medium tracking-nav",
+                  "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav",
                   presetSaveState.isSaveReady &&
                     "bg-primary text-primary-foreground hover:bg-primary/90",
                 )}
@@ -1303,7 +1304,7 @@ export function ChatSettingsPanel({
                 disabled={!(settingsHydrated && activeCustomPreset)}
                 variant="outline"
                 size="sm"
-                className="h-9 w-full rounded-full text-ui-13 font-medium tracking-nav text-muted-foreground"
+                className="h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav text-muted-foreground"
                 title={
                   activeCustomPreset
                     ? activeBuiltinPreset
@@ -1343,7 +1344,7 @@ export function ChatSettingsPanel({
               />
             </div>
             {showPromptCacheTtlControl && promptCachingEnabled ? (
-              <div className="flex min-h-8 items-center justify-between gap-3 pt-3.5">
+              <div className="flex min-h-8 items-center justify-between gap-3 pt-5">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Cache TTL
@@ -1367,7 +1368,10 @@ export function ChatSettingsPanel({
                   }}
                 >
                   <SelectTrigger
-                    className="panel-select-trigger h-8 shrink-0"
+                    size="sm"
+                    icon={ChevronDownStandardIcon}
+                    iconClassName="size-3.5"
+                    className="panel-select-trigger shrink-0"
                     aria-label="Prompt cache TTL"
                   >
                     <SelectValue />
@@ -1380,7 +1384,7 @@ export function ChatSettingsPanel({
               </div>
             ) : null}
             {showFastModeControl ? (
-              <div className="flex min-h-8 items-center justify-between gap-3 pt-3.5">
+              <div className="flex min-h-8 items-center justify-between gap-3 pt-5">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Fast mode
@@ -1449,7 +1453,7 @@ export function ChatSettingsPanel({
           {/* Rounded wrapper clips overflowing text and the scrollbar. */}
           <div
             className={cn(
-              "panel-text-surface -mt-1 h-20 w-full overflow-hidden corner-squircle",
+              "panel-text-surface h-20 w-full overflow-hidden corner-squircle",
               systemPromptOverflows && "cursor-pointer",
             )}
           >
@@ -1516,9 +1520,9 @@ export function ChatSettingsPanel({
               />
             ) : null}
             {showMinP ? (
-              <div className="space-y-3">
+              <div className="space-y-5">
                 {isVllm ? (
-                  <div className="space-y-2">
+                  <div className="space-y-1">
                     <Select
                       value={effectiveMinPMode(params)}
                       onValueChange={(value) => {
@@ -1619,35 +1623,34 @@ export function ChatSettingsPanel({
                     are batched and that moves the result.
                   </InfoHint>
                 </div>
-                <InputGroup className="panel-input-group w-[8.5rem] shrink-0">
-                  <InputGroupInput
-                    id="inference-seed"
-                    // A TEXT input: type="number" reports an unreadable entry as "", clearing the pin.
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={
-                      seedDraft ??
-                      (params.seed == null ? "" : String(params.seed))
-                    }
-                    onChange={(e) =>
-                      setSeedDraft(e.target.value.replace(/\D/g, ""))
-                    }
-                    onBlur={() => {
-                      if (seedDraft === null) return;
-                      setSeedDraft(null);
-                      setSeed(committedSeed);
-                    }}
-                    onKeyDown={(e) => {
-                      // Blur is the only commit, so Enter has to reach it.
-                      if (e.key === "Enter") e.currentTarget.blur();
-                    }}
-                    placeholder="Random"
-                    aria-label="Seed"
-                    className="!h-9 min-h-0 min-w-0 self-stretch !px-3 py-0 text-ui-13 font-medium leading-9 text-nav-fg md:text-ui-13"
-                  />
-                </InputGroup>
+                {/* A plain field, sized like the model rows': the input group
+                    it used to sit in is 36px and full width. */}
+                <input
+                  id="inference-seed"
+                  // A TEXT input: type="number" reports an unreadable entry as "", clearing the pin.
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={
+                    seedDraft ?? (params.seed == null ? "" : String(params.seed))
+                  }
+                  onChange={(e) =>
+                    setSeedDraft(e.target.value.replace(/\D/g, ""))
+                  }
+                  onBlur={() => {
+                    if (seedDraft === null) return;
+                    setSeedDraft(null);
+                    setSeed(committedSeed);
+                  }}
+                  onKeyDown={(e) => {
+                    // Blur is the only commit, so Enter has to reach it.
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                  placeholder="Random"
+                  aria-label="Seed"
+                  className="panel-field h-8 w-[84px] shrink-0"
+                />
               </div>
             ) : null}
           </div>
@@ -1772,14 +1775,18 @@ export function ChatSettingsPanel({
                 )}
               </div>
             ) : null}
-            <Textarea
-              value={systemPromptDraft}
-              onChange={(event) => setSystemPromptDraft(event.target.value)}
-              placeholder="You are a helpful assistant..."
-              fieldSizing="fixed"
-              className="min-h-[20rem] max-h-[48dvh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
-              rows={14}
-            />
+            {/* Squircle on the wrapper: Chrome leaves a scroll area's own
+                corners square. */}
+            <div className="corner-squircle overflow-hidden rounded-xl">
+              <Textarea
+                value={systemPromptDraft}
+                onChange={(event) => setSystemPromptDraft(event.target.value)}
+                placeholder="You are a helpful assistant..."
+                fieldSizing="fixed"
+                className="min-h-[20rem] max-h-[48dvh] overflow-y-auto rounded-none border-0 text-sm leading-6 focus-visible:ring-0"
+                rows={14}
+              />
+            </div>
           </div>
           <DialogFooter className="flex-wrap gap-2 sm:justify-between">
             <Button

@@ -569,3 +569,25 @@ def test_the_matrix_starts_at_the_declared_floor(tag: str) -> None:
         f"{tag} sits below the declared floor {declared}, so the matrix is checking a "
         f"release no supported install can resolve"
     )
+
+
+def test_trainer_training_step_model_train_call_is_standalone(tag: str):
+    """unsloth#11238 rewrites the FIRST `model.train()` inside Trainer.training_step into
+    `_unsloth_train_if_needed(model)`. A release that wrote `self.model.train()` earlier in that
+    method would turn the same replace into `self._unsloth_train_if_needed(model)`, and every
+    training step would die with AttributeError. Nothing else in the rewrite guards that."""
+    candidates = ["src/transformers/trainer.py", "src/transformers/trainer/__init__.py"]
+    hit = first_match("huggingface/transformers", tag, candidates)
+    assert hit is not None
+    _, src = hit
+    m = re.search(r"\n    def training_step\(.*?\n    def ", src, re.DOTALL)
+    if m is None:
+        pytest.skip(f"{tag}: Trainer.training_step not found")
+    body = m.group(0)
+    idx = body.find("model.train()")
+    if idx < 0:
+        pytest.skip(f"{tag}: Trainer.training_step no longer calls model.train()")
+    assert body[max(0, idx - 11) : idx] != "self.model.", (
+        f"{tag}: the first `model.train()` in Trainer.training_step is `self.model.train()`; "
+        f"unsloth/models/_utils.py would rewrite it into `self._unsloth_train_if_needed(model)`"
+    )

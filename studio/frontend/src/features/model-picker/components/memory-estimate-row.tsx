@@ -105,7 +105,7 @@ function MemoryFigure({
             ref={buttonRef}
             type="button"
             aria-label={`${label}: ${value}`}
-            className={`relative inline-flex h-8 w-auto min-w-[64px] max-w-full shrink-0 cursor-default! items-center justify-center overflow-hidden rounded-full border-transparent bg-black/[0.04] px-3.5 text-ui-13 font-medium leading-none tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 dark:bg-white/[0.05] ${tone ?? "text-nav-fg"}`}
+            className={`relative inline-flex h-8 w-auto min-w-[64px] max-w-full shrink-0 cursor-default! items-center justify-center overflow-hidden rounded-full border-transparent bg-[var(--panel-input-surface)] px-3.5 text-ui-13 font-medium leading-none tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${tone ?? "text-nav-fg"}`}
           >
             <span aria-hidden="true" className="min-w-0 truncate">
               {candidates[displayIndex] ?? value}
@@ -230,7 +230,7 @@ export function MemoryEstimateRow({
     estimate.drafterRuntimeBytes,
   );
   return (
-    <div className="flex flex-col border-b border-border/60 pb-3.5">
+    <div className="flex flex-col border-b border-border/60 pb-5">
       <button
         type="button"
         onClick={() => onExpandedChange(!expanded)}
@@ -243,7 +243,7 @@ export function MemoryEstimateRow({
           <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             Estimated Memory Usage
           </span>
-          <span className="shrink-0 rounded-md bg-black/[0.04] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-white/[0.06]">
+          <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
             Beta
           </span>
         </span>
