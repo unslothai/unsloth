@@ -1160,6 +1160,63 @@ def _get_total_transformer_layers(model):
     return None
 
 
+def _cast_unquantized_floats(model, dtype):
+    """Cast every floating parameter and buffer that is not a quantized weight."""
+    for tensor in list(model.parameters()) + list(model.buffers()):
+        if not tensor.is_floating_point() or tensor.dtype == dtype:
+            continue
+        # bitsandbytes keeps its packed weights in Params4bit / Int8Params with a
+        # quant_state (or CB/SCB); those must not move.
+        if hasattr(tensor, "quant_state") or hasattr(tensor, "SCB") or \
+                type(tensor).__name__ in ("Params4bit", "Int8Params"):
+            continue
+        tensor.data = tensor.data.to(dtype)
+    return model
+
+
+@contextlib.contextmanager
+def _tolerate_dtype_cast_on_quantized_model(enabled):
+    """Let a remote-code from_pretrained finish its own model.to(dtype) on a
+    bitsandbytes model.
+
+    Some checkpoints override from_pretrained and end with `model.to(dtype)`
+    (Phi-4-reasoning-vision does, with the model's own dtype, so it is a no-op),
+    and transformers refuses any dtype cast on a bitsandbytes model, whatever
+    the dtype. Inside this context that call casts only the floating parameters
+    that are not quantized weights, which is what the checkpoint author meant
+    and what the 16-bit load already does, and a device move is passed through
+    untouched. Scoped to the load call; a cast anywhere else keeps refusing.
+    """
+    if not enabled:
+        yield
+        return
+    from transformers.modeling_utils import PreTrainedModel
+    original_to = PreTrainedModel.to
+
+    def to(self, *args, **kwargs):
+        quantized = getattr(self, "quantization_method", None) is not None or \
+            getattr(self, "is_quantized", False)
+        dtype = kwargs.pop("dtype", None)
+        rest = []
+        for arg in args:
+            if isinstance(arg, torch.dtype) and dtype is None:
+                dtype = arg
+            else:
+                rest.append(arg)
+        if not quantized or dtype is None:
+            return original_to(self, *args, **kwargs)
+        _cast_unquantized_floats(self, dtype)
+        if rest or kwargs:
+            return original_to(self, *rest, **kwargs)
+        return self
+
+    PreTrainedModel.to = to
+    try:
+        yield
+    finally:
+        PreTrainedModel.to = original_to
+
+
 class FastBaseModel:
     @staticmethod
     @_offline_aware_load
@@ -1690,14 +1747,20 @@ class FastBaseModel:
                 _cfg_val = kwargs.pop("max_position_embeddings", None)
                 if _cfg_val is not None:
                     setattr(model_config, "max_position_embeddings", _cfg_val)
-                model = auto_model.from_pretrained(
-                    model_name,
-                    config = model_config,
-                    device_map = device_map,
-                    token = token,
-                    trust_remote_code = trust_remote_code,
-                    **kwargs,
-                )
+                # A remote-code from_pretrained may end with model.to(dtype), which
+                # transformers refuses on a bitsandbytes model even when the dtype
+                # is the one the model already has. Tolerate it for the load only.
+                with _tolerate_dtype_cast_on_quantized_model(
+                    bool(trust_remote_code) and (load_in_4bit or load_in_8bit)
+                ):
+                    model = auto_model.from_pretrained(
+                        model_name,
+                        config = model_config,
+                        device_map = device_map,
+                        token = token,
+                        trust_remote_code = trust_remote_code,
+                        **kwargs,
+                    )
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
                 offload_embedding = _resolve_offload_embedding(
                     model,
