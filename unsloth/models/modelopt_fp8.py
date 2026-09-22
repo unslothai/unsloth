@@ -104,6 +104,12 @@ def modelopt_fp8_plan(config) -> Optional[dict]:
             return None
         if not all(_group_is_fp8(group) for group in groups.values()):
             return None
+        # The fp8 form converts every Linear outside the ignore list, so only groups that
+        # target every Linear map onto it; narrower targets would convert unscaled layers.
+        if not all(
+            list(group.get("targets") or ["Linear"]) == ["Linear"] for group in groups.values()
+        ):
+            return None
         inputs = [group.get("input_activations") for group in groups.values()]
         if all(x is None for x in inputs):
             activation_scheme = None

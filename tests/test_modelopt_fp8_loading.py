@@ -100,6 +100,15 @@ def test_plan_declines_everything_else():
             }
         ),
         "no groups": _sarvam_quant(config_groups = {}),
+        "targets narrower than every Linear": _sarvam_quant(
+            config_groups = {
+                "g": {
+                    "weights": {"num_bits": 8, "type": "float"},
+                    "input_activations": {"num_bits": 8, "type": "float"},
+                    "targets": ["re:.*mlp.*"],
+                }
+            }
+        ),
     }
     for name, quant in cases.items():
         assert modelopt_fp8_plan(SimpleNamespace(quantization_config = quant)) is None, name
