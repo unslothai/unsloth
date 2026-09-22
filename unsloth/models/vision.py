@@ -1755,9 +1755,10 @@ class FastBaseModel:
                     trust_remote_code = trust_remote_code,
                     **kwargs,
                 )
-                # Remote code that embeds in get_input_embeddings or forgets to return a loss.
-                apply_remote_code_shims(model)
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
+                # Before it, repair remote code that embeds in get_input_embeddings or forgets to
+                # return a loss, so the offload decision below reads the real input embeddings.
+                apply_remote_code_shims(model)
                 offload_embedding = _resolve_offload_embedding(
                     model,
                     offload_embedding,
