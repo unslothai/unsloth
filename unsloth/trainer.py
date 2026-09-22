@@ -1116,6 +1116,30 @@ def _patch_sft_trainer_auto_packing(trl_module):
             else:
                 raise
 
+        # A string `model=` (or one built by `model_init`) has no forward to read before TRL
+        # materializes it, so the gate above fails open on it. `self.model` exists now, so ask
+        # for real -- and then re-run `__init__`, because by this point TRL has built its
+        # collator from `padding_free=True` and, under packing, already transformed the
+        # dataset. Clearing the flags alone would leave those in place while skipping the
+        # wrapper that names the sequence boundaries, turning a loud TypeError into silent
+        # training across them. Same retry the auto-padding-free branch above uses, and it
+        # cannot recurse: the second pass runs `original_init`, not this wrapper.
+        if _packing_gate_deferred and not _forward_accepts_packing_kwargs(
+            getattr(self, "model", None)
+        ):
+            if packing_active or getattr(config_arg, "padding_free", False):
+                logger.info(
+                    "Unsloth: Packing and padding-free disabled; %s's forward cannot take "
+                    "packed_seq_lengths. Rebuilding the trainer without them.",
+                    type(getattr(self, "model", None)).__name__,
+                )
+                _disable_sample_packing(config_arg)
+                _disable_padding_free(config_arg)
+                packing_active = False
+                auto_padding_free_active = False
+                blocked = True
+                original_init(self, *args, **kwargs)
+
         trainer_args = getattr(self, "args", None)
         trainer_packing = bool(trainer_args and getattr(trainer_args, "packing", False))
         trainer_padding_free = bool(trainer_args and getattr(trainer_args, "padding_free", False))
@@ -1124,31 +1148,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
             # Mirror the block on the trainer args to avoid re-enabling later
             setattr(trainer_args, "packing", False)
             setattr(trainer_args, "padding_free", False)
-
-        # A string `model=` has no forward to read before TRL materializes it, so the gate above
-        # fails open on it. `self.model` exists now, and this is the last point before either
-        # branch below installs a collator wrapper, which is what injects `packed_seq_lengths`.
-        # Both branches inject it, so both have to be turned off, exactly as `blocked` does
-        # up front. Restricted to the inputs the up-front check could not answer: re-asking for
-        # a model object that already passed would read a trainer-side wrapper rather than the
-        # checkpoint and could disable packing on a setup that works today.
-        if (
-            (trainer_padding_free or trainer_packing)
-            and _packing_gate_deferred
-            and not _forward_accepts_packing_kwargs(getattr(self, "model", None))
-        ):
-            trainer_padding_free = False
-            trainer_packing = False
-            packing_active = False
-            auto_padding_free_active = False
-            for _target in (config_arg, trainer_args):
-                _disable_padding_free(_target)
-                _disable_sample_packing(_target)
-            logger.info(
-                "Unsloth: Packing and padding-free disabled; %s's forward cannot take "
-                "packed_seq_lengths.",
-                type(getattr(self, "model", None)).__name__,
-            )
 
         if not blocked and trainer_packing and (packing_active or _should_pack(trainer_args)):
             enable_sample_packing(self.model, self)
