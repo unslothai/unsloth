@@ -974,3 +974,35 @@ test("a drop that moves writes its slot and takes the pin off after the move", (
     /\): Promise<boolean> \{\n\s*if \(item\.projectId === projectId\) return true;/,
   );
 });
+
+// A pointer resting on the edge of a long list sends no more moves, so scrolling driven off
+// pointermove alone took one step and stalled. The frame loop keeps it going, and re-aims: the
+// rows slide under a pointer that has not moved, so the cue would otherwise stay on the row that
+// left.
+test("the edge keeps scrolling while the pointer rests on it", () => {
+  assert.match(HOOK, /const onFrame = \(\) => \{[^]*?frame = requestAnimationFrame\(onFrame\);\n\s*if \(edgeScroll\(at\.y\)\) track\(at\.x, at\.y\);/);
+  // Started with the drag and cancelled with it, and it stops itself if the drag is gone.
+  assert.match(HOOK, /setDrag\(item\);\n\s*frame = requestAnimationFrame\(onFrame\);/);
+  assert.match(HOOK, /if \(frame\) cancelAnimationFrame\(frame\);/);
+  assert.match(HOOK, /if \(!sidebarDragSource\(\)\) \{\n\s*frame = 0;\n\s*return;\n\s*\}/);
+  // track no longer scrolls: one driver, or a move and a frame would both step the list.
+  assert.ok(!/const track = useCallback\(\n\s*\(x: number, y: number\) => \{\n\s*(auto|edge)Scroll/.test(HOOK));
+});
+
+// The window hears every pointer, not just the one that pressed the row. Without this a finger
+// could drive, and drop, a drag the mouse started, which is exactly what touch is kept out of.
+test("only the pointer that started the drag drives it", () => {
+  for (const handler of [
+    /function onMove\(moved: PointerEvent\) \{\n\s*if \(moved\.pointerId !== pointerId\) return;/,
+    /function onUp\(released: PointerEvent\) \{\n\s*if \(released\.pointerId !== pointerId\) return;/,
+    /function onCancel\(cancelled: PointerEvent\) \{\n\s*if \(cancelled\.pointerId !== pointerId\) return;/,
+  ]) {
+    assert.match(HOOK, handler);
+  }
+  assert.match(HOOK, /if \(!event\.isPrimary\) return;/);
+  // One gesture at a time, and a stale one is abandoned rather than left to block every later
+  // drag: a release the window never saw would strand it otherwise.
+  assert.match(HOOK, /press\.current\?\.end\(\);/);
+  assert.match(HOOK, /end: \(\) => \{\n\s*detach\(\);\n\s*if \(started\) clear\(\);/);
+  assert.match(HOOK, /if \(press\.current === self\) press\.current = null;/);
+});

@@ -138,6 +138,8 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
   });
   const spring = useRef<{ key: string; timer: number } | null>(null);
   const scroller = useRef<HTMLElement | null>(null);
+  /** The gesture in flight, so a second pointer cannot start another over the top of it. */
+  const press = useRef<{ end: () => void } | null>(null);
 
   const cancelSpring = useCallback(() => {
     if (spring.current) {
@@ -188,19 +190,20 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
     [],
   );
 
-  /** Scrolls the list when the row is carried to either end. A native drag got this free. */
-  const autoScroll = useCallback((y: number) => {
+  /** One step of the edge scroll, true when the list actually moved. Driven by the frame loop,
+   *  not by pointermove: a pointer resting on the edge sends no moves and would stall. */
+  const edgeScroll = useCallback((y: number): boolean => {
     const list = scroller.current;
-    if (!list) return;
+    if (!list) return false;
     const rect = list.getBoundingClientRect();
+    const before = list.scrollTop;
     if (y < rect.top + EDGE_PX) list.scrollTop -= EDGE_STEP_PX;
     else if (y > rect.bottom - EDGE_PX) list.scrollTop += EDGE_STEP_PX;
+    return list.scrollTop !== before;
   }, []);
 
   const track = useCallback(
     (x: number, y: number) => {
-      autoScroll(y);
-
       const aimed = aim(x, y);
       if (!aimed || aimed.outcome === STAY) {
         // Nothing here, or the row is already in this slot: nothing to paint either way.
@@ -228,7 +231,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
         }, SPRING_OPEN_DELAY_MS),
       };
     },
-    [aim, autoScroll, cancelSpring, showPlan],
+    [aim, cancelSpring, showPlan],
   );
 
   const dragHandleProps = useCallback(
@@ -237,17 +240,26 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
         // Touch scrolls the list and keeps Move up and Move down. The right button opens the
         // row menu, and a control with its own press keeps it.
         if (event.button !== 0 || event.pointerType === "touch") return;
+        if (!event.isPrimary) return;
         if ((event.target as Element | null)?.closest?.(NO_DRAG_SELECTOR)) {
           return;
         }
+        // Abandoned rather than refused: a release the window never saw would otherwise leave a
+        // gesture in flight for good and block every drag after it.
+        press.current?.end();
 
         const startX = event.clientX;
         const startY = event.clientY;
         const row = event.currentTarget as HTMLElement;
         const pointerId = event.pointerId;
+        const at = { x: startX, y: startY };
         let started = false;
+        let frame = 0;
 
         const detach = () => {
+          if (press.current === self) press.current = null;
+          if (frame) cancelAnimationFrame(frame);
+          frame = 0;
           window.removeEventListener("pointermove", onMove);
           window.removeEventListener("pointerup", onUp);
           window.removeEventListener("pointercancel", onCancel);
@@ -257,6 +269,26 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
             document.body.releasePointerCapture(pointerId);
           }
         };
+        // Scrolling moves the rows, not the pointer, so the frame that scrolls re-aims too or
+        // the cue would sit on whichever row has slid out from under the pointer.
+        const onFrame = () => {
+          // Self-terminating, so an unmount mid-drag cannot leave the loop running.
+          if (!sidebarDragSource()) {
+            frame = 0;
+            return;
+          }
+          frame = requestAnimationFrame(onFrame);
+          if (edgeScroll(at.y)) track(at.x, at.y);
+        };
+        // Abandons this gesture whole, for a drop that never came: the same as a cancel.
+        const self = {
+          end: () => {
+            detach();
+            if (started) clear();
+          },
+        };
+        press.current = self;
+
         // Swallow the click the release would otherwise fire on the row it landed on.
         const swallowClick = () => {
           const stop = (clicked: MouseEvent) => {
@@ -269,7 +301,12 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           }, 0);
         };
 
+        // Every window handler answers only the pointer that started the gesture. A second
+        // pointer, a finger on a touch screen above all, is not this drag.
         function onMove(moved: PointerEvent) {
+          if (moved.pointerId !== pointerId) return;
+          at.x = moved.clientX;
+          at.y = moved.clientY;
           if (!started) {
             if (
               Math.abs(moved.clientX - startX) < DRAG_THRESHOLD_PX &&
@@ -289,6 +326,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
             }
             setSidebarDragSource(item);
             setDrag(item);
+            frame = requestAnimationFrame(onFrame);
           }
           // Held by the window, so the row keeps following the pointer outside the sidebar.
           moved.preventDefault();
@@ -296,6 +334,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
         }
 
         function onUp(released: PointerEvent) {
+          if (released.pointerId !== pointerId) return;
           detach();
           if (!started) return;
           swallowClick();
@@ -307,7 +346,8 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           }
         }
 
-        function onCancel() {
+        function onCancel(cancelled: PointerEvent) {
+          if (cancelled.pointerId !== pointerId) return;
           detach();
           if (started) clear();
         }
@@ -327,7 +367,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
         window.addEventListener("keydown", onKey, true);
       },
     }),
-    [aim, clear, track],
+    [aim, clear, edgeScroll, track],
   );
 
   const dropZoneProps = useCallback(
