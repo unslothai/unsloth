@@ -1187,8 +1187,9 @@ def _load_fp8_weight_map(
     revision = None,
     subfolder = None,
     cache_dir = None,
+    variant = None,
 ):
-    """The checkpoint's tensor->file map, using the same snapshot the load used. Prefers the sharded `model.safetensors.index.json`, falling back to a single `model.safetensors` so unsharded checkpoints are covered too."""
+    """The checkpoint's tensor->file map, using the same snapshot the load used. Prefers the sharded `model.safetensors.index.json`, falling back to a single `model.safetensors` so unsharded checkpoints are covered too. A `variant` names the files the way transformers does (`model.<variant>.safetensors`)."""
 
     def _local_path(filename):
         return (
@@ -1209,8 +1210,9 @@ def _load_fp8_weight_map(
             token = token,
         )
 
-    index_file = "model.safetensors.index.json"
-    single_file = "model.safetensors"
+    stem = f"model.{variant}" if variant else "model"
+    index_file = f"{stem}.safetensors.index.json"
+    single_file = f"{stem}.safetensors"
     is_local = os.path.isdir(model_name)
 
     if is_local and os.path.exists(_local_path(index_file)):
@@ -1481,6 +1483,21 @@ class FP8LeftoverOffloadedError(RuntimeError):
     """A leftover fp8 tensor is disk-offloaded, so the 16bit load cannot be finished in place."""
 
 
+def _restore_parked_fp8(module, attr, device):
+    """Pass 1 parked a stack on the CPU to free its device bytes. If pass 2 could not finish
+    it, put it back where the device map planned it: a parameter left on the CPU turns the
+    fp8 dtype error into a device mismatch on the first forward and breaks anything that
+    assumes the planned placement."""
+    try:
+        stranded = module._parameters.get(attr)
+        if isinstance(stranded, torch.Tensor) and stranded.device != device and stranded.device.type == "cpu":
+            module._parameters[attr] = torch.nn.Parameter(
+                stranded.data.to(device), requires_grad = bool(stranded.requires_grad)
+            )
+    except Exception:
+        pass
+
+
 def _dequantize_leftover_fp8_params(
     model,
     model_name,
@@ -1495,7 +1512,7 @@ def _dequantize_leftover_fp8_params(
 ):
     """Finish a 16bit load of an fp8 checkpoint that transformers left half done. With `dequantize = True` transformers folds `weight_scale_inv` into every `nn.Linear` weight it has a converter for, but a static per-tensor checkpoint such as Mistral-Small-4 ships its MoE stacks as `experts.gate_up_proj` / `experts.gate_up_proj_scale_inv` (no `.weight` suffix, so no converter matches) and the raw fp8 values land in the plain module with the scale dropped as an unexpected key; the first forward then feeds float8 into `torch._grouped_mm`. For every fp8 parameter whose module carries no scale of its own (a converted `FP8Linear` / `FP8Experts` keeps its scale and its fp8 forward, so it is left alone), read the checkpoint scale and replace the parameter with its `dtype` dequantization. Returns (dequantized, skipped)."""
     try:
-        if not _FP8_DTYPES or variant:
+        if not _FP8_DTYPES:
             return (0, 0)
         leftover = [
             name
@@ -1505,7 +1522,8 @@ def _dequantize_leftover_fp8_params(
         if not leftover:
             return (0, 0)
         weight_map = _load_fp8_weight_map(
-            model_name, local_files_only, token, revision, subfolder, cache_dir
+            model_name, local_files_only, token, revision, subfolder, cache_dir,
+            variant = variant,
         )
         if not weight_map:
             return (0, 0)
@@ -1633,6 +1651,7 @@ def _dequantize_leftover_fp8_params(
                 if out is None:
                     failed += 1
                     last_error = f"{weight_key}: scale {tuple(scale.shape)} does not tile {tuple(param.shape)}"
+                    _restore_parked_fp8(module, attr, device)
                     continue
                 _empty_device_cache(device)
                 module._parameters[attr] = torch.nn.Parameter(out.to(device), requires_grad = trainable)
@@ -1642,22 +1661,7 @@ def _dequantize_leftover_fp8_params(
             except Exception as e:
                 failed += 1
                 last_error = f"{weight_key}: {type(e).__name__}: {e}"
-                # Pass 1 parked this stack on the CPU to free its device bytes. If pass 2 could
-                # not finish it, put it back where the device map planned it: a parameter left
-                # on the CPU turns the fp8 dtype error into a device mismatch on the first
-                # forward and breaks anything that assumes the planned placement.
-                try:
-                    stranded = module._parameters.get(attr)
-                    if (
-                        isinstance(stranded, torch.Tensor)
-                        and stranded.device != device
-                        and stranded.device.type == "cpu"
-                    ):
-                        module._parameters[attr] = torch.nn.Parameter(
-                            stranded.data.to(device), requires_grad = bool(stranded.requires_grad)
-                        )
-                except Exception:
-                    pass
+                _restore_parked_fp8(module, attr, device)
                 continue
         for shard_file in shard_cache.values():
             close = getattr(shard_file, "__exit__", None)
