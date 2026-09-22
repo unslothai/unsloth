@@ -1452,7 +1452,9 @@ def _carry_loader_state_to_core(model, core, name):
             core.hf_device_map = carried
     # The checkpoint identity: PEFT copies `name_or_path` into the adapter's
     # base_model_name_or_path, and a child built from a sub-config carries none.
-    wrapper_name = getattr(model, "name_or_path", None) or getattr(getattr(model, "config", None), "_name_or_path", None)
+    wrapper_name = getattr(model, "name_or_path", None) or getattr(
+        getattr(model, "config", None), "_name_or_path", None
+    )
     if wrapper_name:
         if not getattr(core, "name_or_path", None):
             try:
