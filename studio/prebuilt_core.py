@@ -39,13 +39,11 @@ import shutil
 import socket
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,11 +59,25 @@ else:
         sys.path.insert(0, _STUDIO_DIR)
     from backend.utils.auth_safe import AuthSafeRedirectHandler
 
-try:
-    from filelock import FileLock, Timeout as FileLockTimeout
-except ImportError:
-    FileLock = None
-    FileLockTimeout = None
+_FILELOCK_CLASSES: tuple[Any, Any] | None = None
+
+
+def filelock_classes() -> tuple[Any, Any]:
+    """``(FileLock, Timeout)``, or ``(None, None)`` when filelock is not installed.
+
+    First use, not import: filelock pulls in asyncio and costs ~25 ms, and only
+    ``install_lock`` needs it. Cached because repeating an ImportError is not cheap.
+    """
+    global _FILELOCK_CLASSES
+    if _FILELOCK_CLASSES is None:
+        try:
+            from filelock import FileLock, Timeout as FileLockTimeout
+        except ImportError:
+            _FILELOCK_CLASSES = (None, None)
+        else:
+            _FILELOCK_CLASSES = (FileLock, FileLockTimeout)
+    return _FILELOCK_CLASSES
+
 
 # Fresh spawned interpreter, and this standalone module cannot import backend
 # modules, so the gate is pasted from native_tls.py's inline_gate_source().
@@ -1101,6 +1113,9 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
         return normalized, resolved
 
     def extract_zip_safely(source: Path, base: Path) -> None:
+        # Local: only an install that unpacks an archive needs these, and every CLI
+        # command imports this module.
+        import zipfile
         with zipfile.ZipFile(source) as archive:
             for member in archive.infolist():
                 target = safe_extract_path(base, member.filename)
@@ -1117,6 +1132,8 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
                     shutil.copyfileobj(src, dst)
 
     def extract_tar_safely(source: Path, base: Path) -> None:
+        import tarfile
+
         pending_links: list[tuple[tarfile.TarInfo, Path]] = []
         archive_names: set[str] = set()
         with tarfile.open(source, "r:gz") as archive:
@@ -1188,6 +1205,8 @@ def restore_tar_exec_bits(archive_path: Path, destination: Path) -> None:
     server binaries must stay executable on Unix."""
     if os.name == "nt" or not archive_path.name.endswith(".tar.gz"):
         return
+    import tarfile
+
     with tarfile.open(archive_path, "r:gz") as archive:
         for member in archive.getmembers():
             if not (member.isfile() and member.mode & 0o111):
@@ -1204,7 +1223,8 @@ def install_lock(lock_path: Path, *, timeout: float | None = None) -> Iterator[N
     seconds = INSTALL_LOCK_TIMEOUT_SECONDS if timeout is None else timeout
     lock_path.parent.mkdir(parents = True, exist_ok = True)
 
-    if FileLock is None:
+    file_lock, file_lock_timeout = filelock_classes()
+    if file_lock is None:
         # Fallback lock: exclusive file creation, writing our PID so stale locks
         # from crashed processes can be detected.
         fd: int | None = None
@@ -1264,9 +1284,9 @@ def install_lock(lock_path: Path, *, timeout: float | None = None) -> Iterator[N
         return
 
     try:
-        with FileLock(lock_path, timeout = seconds):
+        with file_lock(lock_path, timeout = seconds):
             yield
-    except FileLockTimeout as exc:
+    except file_lock_timeout as exc:
         raise BusyInstallConflict(
             f"timed out after {seconds}s waiting for concurrent install lock: {lock_path}"
         ) from exc

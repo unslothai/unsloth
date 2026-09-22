@@ -116,7 +116,7 @@ export function EditProjectDialog({
           </DialogDescription>
         </DialogHeader>
         {/* The same name field the create dialog uses. */}
-        <div className="flex items-stretch overflow-hidden rounded-[16px] border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-white/[0.06]">
+        <div className="flex items-stretch overflow-hidden rounded-[16px] border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
           <span className="flex w-10 shrink-0 items-center justify-center pl-1 text-muted-foreground">
             <HugeiconsIcon
               icon={Folder02Icon}
@@ -126,7 +126,7 @@ export function EditProjectDialog({
           </span>
           {/* The rule that separates the icon from the field. The container drops its border in
               dark mode, where --border goes with it, so the rule carries its own tint there. */}
-          <span aria-hidden="true" className="my-3 w-px bg-border dark:bg-white/10" />
+          <span aria-hidden="true" className="my-3 w-px bg-border dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]" />
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}

@@ -1131,7 +1131,7 @@ export const ko = {
       custom: {
         chatWidth: {
           label: "채팅 너비",
-          description: "메시지와 입력창의 너비를 설정합니다. 전체 너비는 사이드바 사이의 공간을 사용합니다.",
+          description: "메시지와 입력창의 너비입니다.",
           standard: "표준",
           wide: "넓게",
           full: "전체 너비",
@@ -1204,7 +1204,6 @@ export const ko = {
         },
         contrast: {
           label: "대비",
-          description: "테두리와 보조 텍스트의 강도입니다.",
         },
         reduceMotion: {
           label: "동작 줄이기",
@@ -1234,7 +1233,7 @@ export const ko = {
       sidebarNav: {
         title: "사이드바 탐색",
         description:
-          "사이드바 탭을 고정하고 순서를 바꿉니다. 고정하지 않은 탭은 ‘더 보기’ 메뉴에 모입니다. 고정하지 않은 탭이 하나뿐이면 항목이 하나뿐인 메뉴를 만들지 않고 그 탭을 숨깁니다. 새 채팅은 항상 고정됩니다.",
+          "사이드바 탭을 고정하고 순서를 바꿉니다. 고정하지 않은 탭은 ‘더 보기’ 메뉴로 들어갑니다.",
         dragToReorder: "끌어서 순서 변경",
         pinToSidebar: "{name}을(를) 사이드바에 고정",
         moreHolds: "더 보기({count})",
@@ -1242,7 +1241,7 @@ export const ko = {
       sidebarMenu: {
         title: "사이드바 메뉴",
         description:
-          "사이드바 프로필 메뉴의 항목을 표시하거나 숨기고 순서를 바꿉니다. 설정, 도움말, 로그아웃, 종료는 고정됩니다.",
+          "프로필 메뉴의 바로가기를 고르고 순서를 바꿉니다.",
         darkModeToggle: "다크 모드 전환",
         dragToReorder: "끌어서 순서 변경",
       },
@@ -1382,6 +1381,54 @@ export const ko = {
         copied: "경로가 복사되었습니다",
         openError: "폴더를 열지 못했습니다",
         copyError: "경로를 복사하지 못했습니다",
+        caches: {
+          label: "캐시 파일",
+          description:
+            "캐시에 {size}이(가) 있으며 그중 {reclaimable}을(를) 지금 정리할 수 있습니다.",
+          hint: "패키지 다운로드, 컴파일된 커널, 전송 캐시로 Unsloth가 필요할 때 다시 만듭니다. 다운로드한 모델, 프로젝트, 채팅, 설정, Hugging Face 토큰은 여기서 절대 삭제되지 않습니다.",
+          keywords:
+            "캐시 정리 삭제 비우기 청소 여유 공간 디스크 임시 컴파일 cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "캐시 크기를 측정하는 중...",
+          measureFailed: "캐시를 측정하지 못했습니다",
+          empty: "캐시 파일이 없습니다.",
+          detailsAction: "자세히",
+          recheckAction: "다시 확인",
+          hideDetailsAction: "자세히 숨기기",
+          clearAction: "캐시 정리",
+          clearOneAction: "정리",
+          clearingAction: "정리하는 중...",
+          confirmTitle: "캐시 파일을 정리할까요?",
+          confirmDescription: "약 {size}의 공간이 확보됩니다.",
+          confirmOneTitle: "{name}을(를) 정리할까요?",
+          safety:
+            "Unsloth는 다음에 필요할 때 캐시를 다시 만듭니다. 다운로드한 모델, 프로젝트, 채팅, 설정, Hugging Face 토큰은 그대로 유지됩니다.",
+          hubCost:
+            "모델 캐시입니다. 정리하면 다음에 사용할 때 해당 모델을 다시 다운로드합니다.",
+          datasetsCost:
+            "정리하면 다음에 사용할 때 해당 데이터셋을 다시 다운로드합니다.",
+          blocked: "정리되지 않음: {reason}",
+          cleared: "{size} 정리함",
+          partial: "일부 캐시 파일을 삭제하지 못했습니다",
+          clearFailed: "캐시를 정리하지 못했습니다",
+          names: {
+            uv: "uv 패키지 캐시",
+            pip: "pip 다운로드 캐시",
+            npm: "npm 패키지 캐시",
+            bun: "Bun 패키지 캐시",
+            torchInductor: "Torch Inductor 컴파일 캐시",
+            torchExtensions: "Torch 확장 빌드",
+            triton: "Triton 커널 캐시",
+            cuda: "CUDA 커널 캐시",
+            numba: "Numba 컴파일 캐시",
+            matplotlib: "Matplotlib 폰트 캐시",
+            vllm: "vLLM 캐시",
+            unslothCompiled: "Unsloth 컴파일된 모듈",
+            hfXet: "Hugging Face 전송 캐시",
+            hfAssets: "Hugging Face 에셋 캐시",
+            hfDatasets: "Hugging Face 데이터셋 캐시",
+            hfHub: "Hugging Face 모델 캐시",
+          },
+        },
         futureDownloads: "새 다운로드만",
         environmentManaged: "{variable} 환경 변수로 관리됩니다.",
         locationFree: "{free} 남음",
