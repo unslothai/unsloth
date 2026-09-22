@@ -2540,9 +2540,7 @@ _CLASS_STARTS = r"(?:(?<=[\s\"'`])|^)"
 # `border-foreground/10` is satisfied by either the scaled spelling or a literal
 # `border-foreground/10` that has lost the gain and stopped responding to the contrast
 # setting. The reader cannot tell them apart by design, so the gain is stated here.
-_COLOURS_THAT_MUST_KEEP_THEIR_GAIN = (
-    (IMAGES_PAGE, "border", "--foreground", "10", "edge", 1),
-)
+_COLOURS_THAT_MUST_KEEP_THEIR_GAIN = ((IMAGES_PAGE, "border", "--foreground", "10", "edge", 1),)
 
 
 def test_the_colours_these_contracts_read_still_carry_their_gain():
@@ -2558,9 +2556,9 @@ def test_the_colours_these_contracts_read_still_carry_their_gain():
             f"not {expected}"
         )
         bare = f"{utility}-{colour.removeprefix('--')}/{amount}"
-        assert not re.search(_CLASS_STARTS + re.escape(bare), source), (
-            f"{path.name} has a bare {bare}, which stops following the contrast setting"
-        )
+        assert not re.search(
+            _CLASS_STARTS + re.escape(bare), source
+        ), f"{path.name} has a bare {bare}, which stops following the contrast setting"
 
 
 def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
@@ -2574,9 +2572,7 @@ def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
                 source,
             )
         )
-        assert (
-            scaled == expected
-        ), f"{path.name} states {scaled} scaled {named}, not {expected}"
+        assert scaled == expected, f"{path.name} states {scaled} scaled {named}, not {expected}"
         assert not re.search(
             _CLASS_STARTS + re.escape(f"{variant}{utility}-[{length}]"), source
         ), f"{path.name} has a bare {named}, which stays put while its text grows"
