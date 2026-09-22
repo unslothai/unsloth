@@ -7,8 +7,10 @@ import argparse
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from _playwright_robust import stop_process
 
@@ -24,8 +26,21 @@ def main():
     output = (root / args.output).resolve()
     output.relative_to(root)
     output.mkdir(parents = True, exist_ok = True)
-    temp = root / "temp/queue-validation/tmp"
-    temp.mkdir(parents = True, exist_ok = True)
+    temp = browser_tmpdir()
+    try:
+        return _run(args, root, output, temp)
+    finally:
+        shutil.rmtree(temp, ignore_errors = True)
+
+
+def browser_tmpdir() -> Path:
+    """A fresh TMPDIR in the system temp dir, not under the checkout: branded Chrome and Edge put
+    a unix socket there and abort once its path passes 107 bytes, and a checkout path can be
+    arbitrarily deep."""
+    return Path(tempfile.mkdtemp(prefix = "uqv-"))
+
+
+def _run(args, root: Path, output: Path, temp: Path) -> int:
     env = {**os.environ, "TMPDIR": str(temp), "TMP": str(temp), "TEMP": str(temp)}
     verdicts = []
     for browser in args.browsers:
