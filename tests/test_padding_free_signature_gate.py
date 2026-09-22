@@ -566,6 +566,49 @@ def test_a_resolver_that_explodes_falls_back_to_the_backstop(monkeypatch):
         module.SFTTrainer(model = "microsoft/Phi-4-reasoning-vision-15B", args = config)
 
 
+def test_a_mixed_adapter_wrapper_is_unwrapped_to_the_checkpoint():
+    """`PeftMixedModel` has no `get_base_model`, so the PEFT unwrap stops on it.
+
+    Its own forward is `(*args, **kwargs)` and merely delegates, so reading it said
+    yes for a checkpoint that says no, padding-free stayed on, and training died on
+    the first step -- the exact failure this gate exists to prevent. Driven through
+    real PEFT rather than a stand-in, because the whole point is which attribute the
+    real wrapper exposes.
+    """
+    peft = pytest.importorskip("peft")
+    transformers = pytest.importorskip("transformers")
+
+    from unsloth.trainer import _forward_accepts_packing_kwargs as gate
+
+    def _config():
+        return transformers.LlamaConfig(
+            hidden_size = 32,
+            intermediate_size = 64,
+            num_hidden_layers = 1,
+            num_attention_heads = 4,
+            num_key_value_heads = 4,
+            vocab_size = 64,
+        )
+
+    class _NarrowLlama(transformers.LlamaForCausalLM):
+        def forward(self, input_ids = None, attention_mask = None, labels = None):
+            return super().forward(
+                input_ids = input_ids, attention_mask = attention_mask, labels = labels
+            )
+
+    lora = peft.LoraConfig(target_modules = ["q_proj"])
+    mixed_narrow = peft.get_peft_model(_NarrowLlama(_config()), lora, mixed = True)
+    mixed_stock = peft.get_peft_model(transformers.LlamaForCausalLM(_config()), lora, mixed = True)
+
+    # the wrapper really is the shape described above, so this test cannot quietly
+    # stop testing anything if PEFT changes
+    assert type(mixed_narrow).__name__ == "PeftMixedModel"
+    assert not hasattr(mixed_narrow, "get_base_model")
+
+    assert gate(mixed_narrow) is False, "must see through to the narrow checkpoint"
+    assert gate(mixed_stock) is True, "and must not cost a stock checkpoint its padding-free"
+
+
 def test_every_delegating_wrapper_is_unwrapped():
     """Their forward is variadic, so they answer yes for anything they hold.
 

@@ -313,6 +313,35 @@ def _delegating_module_wrappers():
 _DELEGATING_MODULE_WRAPPERS = _delegating_module_wrappers()
 
 
+def _mixed_adapter_wrappers():
+    """PEFT's mixed-adapter wrapper, and the path to the checkpoint under it.
+
+    `get_peft_model(..., mixed = True)` returns a `PeftMixedModel`, which
+    deliberately has no `get_base_model()`, so the PEFT unwrap below cannot reach
+    through it, while its own forward is `(*args, **kwargs)` and so answers yes for
+    whatever it holds. PEFT's own accessor is `self.base_model.model` for every
+    config that is not prompt-learning, and mixed adapters cannot be prompt-learning,
+    so that path is the checkpoint. Resolved tolerantly: peft is optional here.
+    """
+    try:
+        from peft import PeftMixedModel
+
+        return ((PeftMixedModel, ("base_model", "model")),)
+    except Exception:
+        return ()
+
+
+_MIXED_ADAPTER_WRAPPERS = _mixed_adapter_wrappers()
+
+
+def _attribute_path(obj, path):
+    for attribute in path:
+        obj = getattr(obj, attribute, None)
+        if obj is None:
+            return None
+    return obj
+
+
 def _forward_accepts_packing_kwargs(model) -> bool:
     """Can this model's forward be handed the packing metadata at all?
 
@@ -352,6 +381,22 @@ def _forward_accepts_packing_kwargs(model) -> bool:
         )
         if inner is not None:
             target = inner
+            continue
+        # `PeftMixedModel` next: it has no `get_base_model`, so the unwrap below stops
+        # on a variadic forward that merely delegates. Exact isinstance, and the path
+        # is PEFT's own accessor, so this reaches the checkpoint rather than a decoder.
+        mixed = next(
+            (
+                held
+                for wrapper, path in _MIXED_ADAPTER_WRAPPERS
+                if isinstance(target, wrapper)
+                for held in (_attribute_path(target, path),)
+                if held is not None and held is not target
+            ),
+            None,
+        )
+        if mixed is not None:
+            target = mixed
             continue
         # PEFT's own unwrap only. `PreTrainedModel.base_model` is a property
         # returning the inner decoder, whose forward usually does take
