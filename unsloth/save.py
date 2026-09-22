@@ -5372,7 +5372,22 @@ def _push_merged_to_hub_revision(save_kwargs):
             ),
             commit_description = save_kwargs["commit_description"],
         )
-        print(f"Saved model to https://huggingface.co/{repo_id}")
+        # Where the files ACTUALLY landed: a branch or a pull request is not the repository
+        # page, which for a fresh PR upload holds no model files at all.
+        destination = getattr(commit, "pr_url", None)
+        if destination is None:
+            destination = f"https://huggingface.co/{repo_id}"
+            # A pull request is checked first: with `create_pr` the files are in the PR, not on
+            # `revision`, which is only the branch it was opened against.
+            if save_kwargs["create_pr"]:
+                destination += "/discussions"
+            elif revision is not None:
+                destination += (
+                    f"/discussions/{revision.rsplit('/', 1)[-1]}"
+                    if revision.startswith("refs/pr/")
+                    else f"/tree/{revision}"
+                )
+        print(f"Saved model to {destination}")
         return commit
 
 

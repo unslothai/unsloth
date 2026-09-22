@@ -140,7 +140,9 @@ def saving(monkeypatch, tmp_path):
             records["uploads"].append({**kwargs, "files": files, "token": self.token})
             if records.get("fail_upload"):
                 raise OSError("upload failed")
-            return "commit-info"
+            # Overridable so a test can hand back a real-shaped CommitInfo, whose `pr_url` is
+            # the only place the pull request's own address exists.
+            return records.get("commit_info", "commit-info")
 
     env = dict(
         os = os,
@@ -578,3 +580,43 @@ def test_the_push_names_the_destination_and_not_the_staging_folder(saving, capsy
     printed = capsys.readouterr().out
     assert "owner/model" in printed
     assert "https://huggingface.co/owner/model" in printed
+
+
+@pytest.mark.parametrize(
+    "kwargs,expected",
+    [
+        ({}, "https://huggingface.co/owner/model"),
+        # A branch upload is not on the repository's default branch.
+        ({"revision": "my-branch"}, "https://huggingface.co/owner/model/tree/my-branch"),
+        # An existing pull request, addressed the way the Hub spells it.
+        ({"revision": "refs/pr/3"}, "https://huggingface.co/owner/model/discussions/3"),
+        # A fresh pull request: the repository page can hold no model files at all.
+        ({"create_pr": True}, "https://huggingface.co/owner/model/discussions"),
+        # `create_pr` wins over the branch it was opened against.
+        (
+            {"create_pr": True, "revision": "my-branch"},
+            "https://huggingface.co/owner/model/discussions",
+        ),
+    ],
+)
+def test_the_printed_destination_is_where_the_files_landed(saving, capsys, kwargs, expected):
+    """A branch or pull-request upload does not appear on the repository page."""
+    env, records, _ = saving
+    env["unsloth_generic_push_to_hub_merged"](
+        FullModel(), "owner/model", token = "fixture", **kwargs
+    )
+    printed = capsys.readouterr().out
+    assert f"Saved model to {expected}\n" in printed, printed
+
+
+def test_the_pull_requests_own_url_is_preferred_when_the_hub_returns_one(saving, capsys):
+    """`CommitInfo.pr_url` names the exact pull request; nothing local can reconstruct it."""
+    env, records, _ = saving
+    records["commit_info"] = SimpleNamespace(
+        pr_url = "https://huggingface.co/owner/model/discussions/7"
+    )
+    env["unsloth_generic_push_to_hub_merged"](
+        FullModel(), "owner/model", token = "fixture", create_pr = True
+    )
+    printed = capsys.readouterr().out
+    assert "Saved model to https://huggingface.co/owner/model/discussions/7\n" in printed, printed
