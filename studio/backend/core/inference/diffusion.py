@@ -5714,13 +5714,16 @@ class DiffusionBackend:
                         clear_gpu_cache()
 
         logger.info(
-            "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s reasons=%s",
+            # The estimates too: the verdict alone cannot be checked from a user's log, and a None among these terms
+            # is itself the explanation for a tier the planner skipped.
+            "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s reasons=%s estimates=%s",
             repo_id,
             base,
             device,
             effective_policy,
             effective_tiling,
             "; ".join(plan.reasons),
+            plan.estimates,
         )
         return self.status()
 
@@ -6277,6 +6280,7 @@ class DiffusionBackend:
                 # A local fp8 mirror never string-matches base_repo, so detect fp8 from the shard headers (a local nf4
                 # mirror stays compressed).
                 is_narrow_base = ideogram4_repo_is_fp8(repo_id)
+            table = None
             if is_narrow_base:
                 table = family_bf16_components_gb(fam, fam.base_repo)
                 if table is not None:
@@ -6286,10 +6290,24 @@ class DiffusionBackend:
                     model_dense_mib = (
                         table_mib if model_dense_mib is None else max(model_dense_mib, table_mib)
                     )
-            companion_mib = None
-            # No companion total on this branch (the whole repo IS the model), so there is no split to hand the
-            # planner either. None, not a guess: it reproduces the old decision.
-            text_encoder_mib = None
+            # The whole repo is the model, but its companions still sit in their own subfolders, so the same walk the
+            # GGUF/single-file branch uses splits them out here too. Without the split both group tiers fail on None
+            # and a pipeline that does not fit resident can only ever reach whole-module offload.
+            companion = self._companion_cache_bytes(fetch_base or base, base_local_dir)
+            companion_mib = int(companion // (1024 * 1024)) if companion else None
+            text_encoder = self._text_encoder_cache_bytes(fetch_base or base, base_local_dir)
+            text_encoder_mib = int(text_encoder // (1024 * 1024)) if text_encoder else None
+            if is_narrow_base and table is not None:
+                # model_dense_mib was raised to the bf16 table above; the companions upcast with it, so take their
+                # share from the same table rather than leaving a narrow on-disk figure beside a bf16 total.
+                companion_mib = int(sum(table[1:]) * (1000.0**3) / (1024.0 * 1024.0))
+                text_encoder_mib = int(table[1] * (1000.0**3) / (1024.0 * 1024.0))
+            if companion_mib is not None and model_dense_mib is not None:
+                # The two terms come from different merges over the cache roots, so a repo only one of them can see
+                # must not report companions larger than the model.
+                companion_mib = min(companion_mib, model_dense_mib)
+                if text_encoder_mib is not None:
+                    text_encoder_mib = min(text_encoder_mib, companion_mib)
         else:
             if transformer_resident_override_mib is not None:
                 # Planning the dense-quant candidate: the auto-policy estimate replaces the file-size derivation.
