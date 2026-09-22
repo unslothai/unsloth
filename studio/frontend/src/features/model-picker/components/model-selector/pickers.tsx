@@ -167,6 +167,7 @@ import {
   curatedRowLabelFor,
   curatedSizeBytesFor,
   curatedTotalParamsFor,
+  recommendedQuantForDevice,
   groupForRepoId,
 } from "./model-catalog";
 import { curatedArtifactIsOfferable } from "./host-artifact-policy";
@@ -1838,31 +1839,19 @@ function GgufVariantExpander({
     [variantGroups, defaultVariant],
   );
 
-  // Each workflow gets its own recommendation: if its preferred variant is OOM use the largest
-  // that can run, and if all are OOM the smallest.
+  // Each workflow gets its own recommendation: the largest quant the device runs with room to
+  // spare, else the largest that runs at all, else the smallest. The repo default only decides it
+  // when nothing has been measured, so a big machine is not held at the default's size.
   const effectiveRecommendedByGroup = useMemo(() => {
     const recommended = new Map<string, string>();
     for (const group of variantGroups) {
-      const preferred = preferredByGroup.get(group.key) ?? null;
       if (!anyBudgetGb && !budgetKnown) {
+        const preferred = preferredByGroup.get(group.key) ?? null;
         if (preferred) recommended.set(group.key, preferred.quant);
         continue;
       }
-      if (preferred && getGgufFit(preferred.size_bytes) !== "oom") {
-        recommended.set(group.key, preferred.quant);
-        continue;
-      }
-      const fitting = group.variants
-        .filter((variant) => getGgufFit(variant.size_bytes) !== "oom")
-        .sort((left, right) => right.size_bytes - left.size_bytes);
-      if (fitting[0]) {
-        recommended.set(group.key, fitting[0].quant);
-        continue;
-      }
-      const smallest = [...group.variants].sort(
-        (left, right) => left.size_bytes - right.size_bytes,
-      )[0];
-      if (smallest) recommended.set(group.key, smallest.quant);
+      const best = recommendedQuantForDevice(group.variants, getGgufFit);
+      if (best) recommended.set(group.key, best.quant);
     }
     return recommended;
   }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit]);

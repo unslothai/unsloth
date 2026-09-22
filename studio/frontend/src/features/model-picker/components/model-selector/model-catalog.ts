@@ -1106,6 +1106,30 @@ export function ggufFitRuns(fit: GgufFitClass): boolean {
   return fit !== "oom";
 }
 
+/** Whether a verdict loads with room to spare. `fits` clears the VRAM budget and `ram` the RAM
+ *  one, both of which already hold a reserve back; `marginal` and `partial` run at the edge. */
+export function ggufFitIsComfortable(fit: GgufFitClass): boolean {
+  return fit === "fits" || fit === "ram";
+}
+
+/** What to recommend on a device whose budget is known: the largest quant that runs with room to
+ *  spare, else the largest that runs at all, else the smallest. Quality the machine can actually
+ *  hold, rather than whatever size the repo defaults to. */
+export function recommendedQuantForDevice<T extends { size_bytes: number }>(
+  variants: readonly T[],
+  fitOf: (sizeBytes: number) => GgufFitClass,
+): T | null {
+  if (variants.length === 0) return null;
+  const bySizeDesc = [...variants].sort(
+    (left, right) => right.size_bytes - left.size_bytes,
+  );
+  return (
+    bySizeDesc.find((variant) => ggufFitIsComfortable(fitOf(variant.size_bytes))) ??
+    bySizeDesc.find((variant) => fitOf(variant.size_bytes) !== "oom") ??
+    bySizeDesc[bySizeDesc.length - 1]
+  );
+}
+
 export interface QuantVariant {
   quant: string;
   filename: string;
