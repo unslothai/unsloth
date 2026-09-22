@@ -73,7 +73,9 @@ function parseHttpEndpointHost(
 function isOpenAIManagedEndpoint(input: string | null | undefined): boolean {
   const host = parseHttpEndpointHost(input);
   return (
-    host === "api.openai.com" || host?.endsWith(".openai.azure.com") === true
+    host === "api.openai.com" ||
+    host?.endsWith(".openai.azure.com") === true ||
+    host?.endsWith(".services.ai.azure.com") === true
   );
 }
 

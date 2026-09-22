@@ -137,12 +137,17 @@ def _append_provider_path(base_url: str, endpoint: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
+def _is_azure_openai_host(host: str) -> bool:
+    return host.endswith((".openai.azure.com", ".services.ai.azure.com"))
+
+
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry. Anchored to the URL
     host so a path/subdomain like ``https://api.openai.com.attacker.com/v1`` cannot bypass it
     (CodeQL py/incomplete-url-substring-sanitization). Scopes cloud-only Responses-API extensions
     that 400 on non-cloud OAI-compat servers. Azure Foundry resources live at
-    ``<resource>.openai.azure.com``; the leading dot on `endswith` stops the apex from matching."""
+    ``<resource>.openai.azure.com`` and ``<resource>.services.ai.azure.com``; the leading
+    dots on `endswith` stop the apexes from matching."""
     if not base_url:
         return False
     try:
@@ -151,7 +156,7 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
         return False
     if not host:
         return False
-    return host == "api.openai.com" or host.endswith(".openai.azure.com")
+    return host == "api.openai.com" or _is_azure_openai_host(host)
 
 
 # Claude Opus 4.7 and every Claude 5 family removed temperature/top_p/top_k, as did Mythos Preview; the API 400s with
@@ -1308,7 +1313,7 @@ class ExternalProviderClient:
         azure_custom_responses = (
             self.provider_type == "custom"
             and self.api_type == "responses"
-            and (urlparse(self.base_url).hostname or "").lower().endswith(".openai.azure.com")
+            and _is_azure_openai_host((urlparse(self.base_url).hostname or "").lower())
         )
         if azure_custom_responses and self.api_key:
             if self.api_key[:7].lower() == "bearer ":
@@ -5290,10 +5295,13 @@ class ExternalProviderClient:
             "input": input_items,
             "stream": stream,
         }
-        # Hosted reasoning models reject temperature/top_p even when configured through a custom Responses row.
-        # Other custom endpoints (including gateways carrying the same model id) still receive both controls.
+        # Azure model ids are deployment names, which need not reveal a fixed-sampling model behind them.
+        # Omit both controls for Azure; on direct OpenAI cloud, use the model family. Gateways still receive them.
+        is_azure_openai = _is_azure_openai_host(
+            (urlparse(self.base_url).hostname or "").lower()
+        )
         forward_custom_sampling = self.provider_type == "custom" and not (
-            is_openai_cloud and _openai_fixed_sampling_model(model)
+            is_azure_openai or (is_openai_cloud and _openai_fixed_sampling_model(model))
         )
         if forward_custom_sampling:
             if temperature is not None:

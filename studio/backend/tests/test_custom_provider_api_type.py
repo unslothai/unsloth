@@ -165,6 +165,12 @@ def test_endpoint_and_payload_translation(monkeypatch, provider_type, api_type, 
             {"api-key": "azure-resource-key"},
         ),
         (
+            "https://resource.services.ai.azure.com/openai/v1",
+            "responses",
+            "azure-resource-key",
+            {"api-key": "azure-resource-key"},
+        ),
+        (
             "https://resource.openai.azure.com/openai/v1",
             "responses",
             "eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJvcGVuYWkifQ.signature",
@@ -206,6 +212,12 @@ def test_endpoint_and_payload_translation(monkeypatch, provider_type, api_type, 
             "gateway-key",
             {"Authorization": "Bearer gateway-key"},
         ),
+        (
+            "https://resource.services.ai.azure.com.attacker.example/openai/v1",
+            "responses",
+            "gateway-key",
+            {"Authorization": "Bearer gateway-key"},
+        ),
     ],
 )
 def test_custom_azure_responses_auth_mode_is_scoped_to_resource_host(
@@ -223,8 +235,10 @@ def test_custom_azure_responses_auth_mode_is_scoped_to_resource_host(
     [
         ("https://api.openai.com/v1", "responses", True),
         ("https://resource.openai.azure.com/openai/v1", "responses", True),
+        ("https://resource.services.ai.azure.com/openai/v1", "responses", True),
         ("https://gateway.example/v1", "responses", False),
         ("https://api.openai.com.attacker.example/v1", "responses", False),
+        ("https://resource.services.ai.azure.com.attacker.example/openai/v1", "responses", False),
         ("https://resource.openai.azure.com/openai/v1", "chat_completions", False),
     ],
 )
@@ -261,7 +275,10 @@ def test_only_managed_custom_responses_preserve_literal_control_markup(
 
     asyncio.run(run())
     assert len(requests) == 1
-    if base_url == "https://resource.openai.azure.com/openai/v1" and api_type == "responses":
+    if base_url in (
+        "https://resource.openai.azure.com/openai/v1",
+        "https://resource.services.ai.azure.com/openai/v1",
+    ) and api_type == "responses":
         assert requests[0].headers["api-key"] == "test-key"
         assert "authorization" not in requests[0].headers
     body = json.loads(requests[0].content)
@@ -286,15 +303,20 @@ def test_only_managed_custom_responses_preserve_literal_control_markup(
         ("https://api.openai.com/v1", "gpt-5.5", True),
         ("https://resource.openai.azure.com/openai/v1", "gpt-6-astra", True),
         ("https://resource.openai.azure.com/openai/v1", "o3-mini", True),
+        ("https://resource.openai.azure.com/openai/v1", "prod-reasoner", True),
+        ("https://resource.services.ai.azure.com/openai/v1", "prod-reasoner", True),
+        ("https://resource.openai.azure.com/openai/v1", "gpt-4o", True),
         ("https://api.openai.com/v1", "gpt-4.5", True),
         ("https://api.openai.com/v1", "codex-mini-latest", True),
         ("https://api.openai.com/v1", "gpt-5-chat", False),
         ("https://api.openai.com/v1", "gpt-4o", False),
         ("https://gateway.example/v1", "gpt-5.5", False),
         ("https://api.openai.com.attacker.example/v1", "gpt-6-astra", False),
+        ("https://resource.openai.azure.com.attacker.example/openai/v1", "prod-reasoner", False),
+        ("https://resource.services.ai.azure.com.attacker.example/openai/v1", "prod-reasoner", False),
     ],
 )
-def test_custom_responses_sampling_omits_only_managed_fixed_models(
+def test_custom_responses_sampling_respects_managed_host_and_deployment(
     monkeypatch, base_url, model, omits_sampling
 ):
     requests = []
@@ -331,6 +353,49 @@ def test_custom_responses_sampling_omits_only_managed_fixed_models(
     else:
         assert body["temperature"] == 0.23
         assert body["top_p"] == 0.61
+
+
+@pytest.mark.parametrize(
+    "base_url,is_managed",
+    [
+        ("https://resource.openai.azure.com/openai/v1", True),
+        ("https://resource.services.ai.azure.com/openai/v1", True),
+        ("https://resource.services.ai.azure.com.attacker.example/openai/v1", False),
+    ],
+)
+def test_azure_responses_hosted_features_use_exact_managed_host(
+    monkeypatch, base_url, is_managed
+):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            text = 'data: {"type":"response.completed","response":{"id":"resp_test"}}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            client = ExternalProviderClient(
+                "custom", base_url, "test-key", api_type = "responses"
+            )
+            return [
+                line async for line in client.stream_chat_completion(
+                    messages = [{"role": "user", "content": "Hi"}],
+                    model = "prod-reasoner",
+                    enabled_tools = ["code_execution"],
+                    compaction_threshold = 250_000,
+                )
+            ]
+
+    asyncio.run(run())
+    assert len(requests) == 1
+    body = json.loads(requests[0].content)
+    assert ("context_management" in body) is is_managed
+    assert any(tool["type"] == "shell" for tool in body.get("tools", [])) is is_managed
 
 
 def test_responses_non_streaming_translation(monkeypatch):

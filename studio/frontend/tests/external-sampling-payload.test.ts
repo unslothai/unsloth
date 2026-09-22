@@ -178,10 +178,22 @@ test("managed OpenAI fixed-sampling models hide and omit sampling fields", () =>
     assert.ok(!("temperature" in bodyFor("custom", PARAMS, "responses", model, managed)), model);
     assert.ok(!("top_p" in bodyFor("custom", PARAMS, "responses", model, managed)), model);
   }
-  assert.equal(
-    getProviderCapabilities("custom", "responses", "gpt-5.5", "https://team.openai.azure.com/openai/v1")?.temperature,
-    false,
-  );
+});
+
+test("Azure deployments hide sampling even when their model name is opaque", () => {
+  for (const azure of [
+    "https://team.openai.azure.com/openai/v1",
+    "https://team.services.ai.azure.com/openai/v1",
+  ]) {
+    for (const model of ["prod-reasoner", "gpt-4.1", "gpt-5.1-chat-latest"]) {
+      const caps = getProviderCapabilities("custom", "responses", model, azure);
+      assert.equal(caps?.temperature, false, `${model} at ${azure}`);
+      assert.equal(caps?.topP, false, `${model} at ${azure}`);
+      const body = bodyFor("custom", PARAMS, "responses", model, azure);
+      assert.ok(!("temperature" in body), `${model} at ${azure}`);
+      assert.ok(!("top_p" in body), `${model} at ${azure}`);
+    }
+  }
 });
 
 test("sampling remains available on generic gateways and managed sampling models", () => {
@@ -189,9 +201,11 @@ test("sampling remains available on generic gateways and managed sampling models
     ["gpt-5.5", "https://gateway.example/v1"],
     ["gpt-5.5", "https://api.openai.com.attacker.example/v1"],
     ["gpt-5.5", "https://evilopenai.azure.com/openai/v1"],
+    ["gpt-5.5", "https://team.services.ai.azure.com.attacker.example/v1"],
+    ["gpt-5.5", "https://attacker.example/team.services.ai.azure.com/v1"],
+    ["gpt-5.5", "https://team.services.ai.azure.com@attacker.example/v1"],
     ["gpt-4.1", "https://api.openai.com/v1"],
     ["gpt-5-chat-latest", "https://api.openai.com/v1"],
-    ["gpt-5.1-chat-latest", "https://team.openai.azure.com/openai/v1"],
   ]) {
     const caps = getProviderCapabilities("custom", "responses", model, baseUrl);
     assert.equal(caps?.temperature, true, `${model} at ${baseUrl}`);

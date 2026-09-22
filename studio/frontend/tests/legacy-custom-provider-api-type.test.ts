@@ -33,6 +33,13 @@ test("legacy OpenAI rows require built-in labels and preserve managed endpoints"
       "custom",
       "openai",
     ],
+    [
+      "Team Foundry",
+      "https://team.services.ai.azure.com/openai/v1",
+      "custom",
+      "openai",
+    ],
+    ["vLLM", "https://team.services.ai.azure.com.attacker.example/v1", undefined, "vllm"],
     ["vLLM", "https://gateway.example/v1", undefined, "vllm"],
     ["Custom", "https://gateway.example/v1", undefined, "custom"],
     ["OpenAI", "https://gateway.example/v1", undefined, "openai"],

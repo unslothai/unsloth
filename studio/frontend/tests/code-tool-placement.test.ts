@@ -66,6 +66,7 @@ test("unsupported models on managed custom Responses never fall back to local co
   for (const baseUrl of [
     "https://api.openai.com/v1",
     "https://team.openai.azure.com/openai/v1",
+    "https://team.services.ai.azure.com/openai/v1",
   ]) {
     const hostedCodeExecutionForThisTurn = providerSupportsBuiltinCodeExecution(
       "custom", "gpt-4.1", baseUrl, "responses",
@@ -99,6 +100,7 @@ test("unsupported models on managed custom Responses never fall back to local co
     ["https://api.openai.com/v1", "chat_completions"],
     ["https://gateway.example/v1", "responses"],
     ["https://api.openai.com.attacker.example/v1", "responses"],
+    ["https://team.services.ai.azure.com.attacker.example/v1", "responses"],
   ] as const) {
     const providerHasSandbox = providerHostsCodeExecution("custom", baseUrl, apiType);
     assert.equal(providerHasSandbox, false, `${baseUrl} ${apiType}`);

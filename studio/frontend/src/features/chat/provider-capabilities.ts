@@ -467,11 +467,27 @@ const OPENAI_CODE_EXECUTION_MODEL_PREFIXES = [
 
 /** Strict check for OpenAI managed cloud or Azure Foundry, not a custom OpenAI-compat
  *  backend: shell and image-generation tools 400 elsewhere. Mirrors _is_openai_family_cloud. */
+function isAzureOpenAICloudHost(host: string): boolean {
+  return (
+    host.endsWith(".openai.azure.com") ||
+    host.endsWith(".services.ai.azure.com")
+  );
+}
+
 function isOpenAICloudBaseUrl(baseUrl: string | null | undefined): boolean {
   if (!baseUrl) return true; // No override → uses the default openai.com base.
   try {
     const host = new URL(baseUrl).hostname.toLowerCase();
-    return host === "api.openai.com" || host.endsWith(".openai.azure.com");
+    return host === "api.openai.com" || isAzureOpenAICloudHost(host);
+  } catch {
+    return false;
+  }
+}
+
+function isAzureOpenAICloudBaseUrl(baseUrl: string | null | undefined): boolean {
+  if (!baseUrl) return false;
+  try {
+    return isAzureOpenAICloudHost(new URL(baseUrl).hostname.toLowerCase());
   } catch {
     return false;
   }
@@ -746,13 +762,15 @@ export function getProviderCapabilities(
 ): ProviderCapabilities | null {
   if (!providerType) return null;
   if (providerType === "custom" && apiType === "responses") {
-    // Custom gateways may accept sampling for these same model IDs. Only known
-    // fixed-sampling models on managed OpenAI hosts get the native restriction.
+    // Azure deployment names may not reveal the underlying model. Suppress sampling
+    // there; on api.openai.com only known fixed-sampling models need that restriction.
+    // Custom gateways may accept sampling even for those same model IDs.
     const model = modelId?.trim().toLowerCase() ?? "";
     if (
       usesOpenAIHostedResponses(providerType, baseUrl, apiType) &&
-      !OPENAI_NON_REASONING_CHAT_ALIAS.test(model) &&
-      OPENAI_RESPONSES_FIXED_SAMPLING_MODEL.test(model)
+      (isAzureOpenAICloudBaseUrl(baseUrl) ||
+        (!OPENAI_NON_REASONING_CHAT_ALIAS.test(model) &&
+          OPENAI_RESPONSES_FIXED_SAMPLING_MODEL.test(model)))
     ) {
       return PROVIDER_CAPABILITIES.openai;
     }

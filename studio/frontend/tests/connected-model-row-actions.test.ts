@@ -148,12 +148,20 @@ test("custom Responses rows expose image generation only on managed OpenAI hosts
       true,
     );
     assert.equal(
+      marksFor("https://team.services.ai.azure.com/openai/v1", "responses"),
+      true,
+    );
+    assert.equal(
       marksFor("https://api.openai.com/v1", "chat_completions"),
       false,
     );
     assert.equal(marksFor("https://gateway.example/v1", "responses"), false);
     assert.equal(
       marksFor("https://api.openai.com.attacker.example/v1", "responses"),
+      false,
+    );
+    assert.equal(
+      marksFor("https://team.services.ai.azure.com.attacker.example/v1", "responses"),
       false,
     );
   } finally {

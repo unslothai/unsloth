@@ -60,7 +60,9 @@ def _migrate_legacy_custom_provider_types(conn: sqlite3.Connection) -> None:
 
         # A display name is user-editable metadata. Never let it turn an OpenAI-managed
         # endpoint into a custom connection, even if it happens to equal a preset label.
-        if host == "api.openai.com" or host.endswith(".openai.azure.com"):
+        if host == "api.openai.com" or host.endswith(
+            (".openai.azure.com", ".services.ai.azure.com")
+        ):
             continue
 
         migrated_type = _LEGACY_CUSTOM_PRESET_TYPES.get(label)

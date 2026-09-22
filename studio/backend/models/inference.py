@@ -2452,7 +2452,7 @@ class ChatCompletionRequest(BaseModel):
             "header. The upstream floor is 50k; `_stream_anthropic` clamps "
             "lower values up.\n"
             "  - OpenAI cloud (api.openai.com) and Azure OpenAI Foundry "
-            "(*.openai.azure.com): attaches "
+            "(*.openai.azure.com, *.services.ai.azure.com): attaches "
             "`context_management:[{type:'compaction', compact_threshold:N}]` "
             "to /v1/responses. Effective floor is around 200k (OpenAI's "
             "canonical example); values below it surface "
