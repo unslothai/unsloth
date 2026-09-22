@@ -6034,6 +6034,104 @@ def test_delete_variant_unlinks_unshared_blob(monkeypatch, tmp_path):
     assert q8.is_symlink() and q8.exists()
 
 
+_SHARED_XET_HASH = "ab" + "cd" * 31
+
+
+def _share_variant_blob(hub_cache, repo_dir, blob_name, xet_hash = _SHARED_XET_HASH):
+    pytest.importorskip("huggingface_hub.utils._shared_blobs")
+    store = hub_cache / "blobs"
+    store.mkdir(exist_ok = True)
+    (store / ".huggingface-shared-blobs").write_text("1\n")
+    payload = store / xet_hash[:2] / xet_hash
+    payload.parent.mkdir(exist_ok = True)
+    blob = repo_dir / "blobs" / blob_name
+    if payload.exists():
+        blob.unlink()
+    else:
+        blob.replace(payload)
+    with payload.with_name(f"{xet_hash}.refs").open("a") as refs:
+        refs.write(f"{repo_dir.name}/blobs/{blob_name}\n")
+    blob.symlink_to(os.path.relpath(payload, blob.parent))
+    return payload
+
+
+def test_delete_variant_sweeps_shared_xet_blob(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    repo = _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200, "q8blob": b"y" * 300},
+        snapshot_links = [
+            ("rev1", "model-Q4_K_M.gguf", "q4blob"),
+            ("rev1", "model-Q8_0.gguf", "q8blob"),
+        ],
+    )
+    payload = _share_variant_blob(tmp_path, repo_dir, "q4blob")
+    _shared_setup_13(monkeypatch, repo, tmp_path)
+
+    result = deletion._delete_cached_model_blocking("Org/Repo-GGUF", "Q4_K_M", None)
+
+    assert result["status"] == "deleted"
+    assert not (repo_dir / "blobs" / "q4blob").is_symlink()
+    assert not payload.exists()
+    assert not payload.with_name(f"{payload.name}.refs").exists()
+    assert (repo_dir / "blobs" / "q8blob").exists()
+    q8 = repo_dir / "snapshots" / "rev1" / "model-Q8_0.gguf"
+    assert q8.is_symlink() and q8.exists()
+
+
+def test_delete_variant_keeps_shared_xet_blob_referenced_by_other_repo(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    repo = _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200},
+        snapshot_links = [("rev1", "model-Q4_K_M.gguf", "q4blob")],
+    )
+    payload = _share_variant_blob(tmp_path, repo_dir, "q4blob")
+    other_dir = tmp_path / "models--Org--Other-GGUF"
+    _build_variant_cache_repo(
+        other_dir,
+        blob_specs = {"q4blob": b"x" * 200},
+        snapshot_links = [("rev1", "model-Q4_K_M.gguf", "q4blob")],
+    )
+    _share_variant_blob(tmp_path, other_dir, "q4blob")
+    _shared_setup_13(monkeypatch, repo, tmp_path)
+
+    result = deletion._delete_cached_model_blocking("Org/Repo-GGUF", "Q4_K_M", None)
+
+    assert result["status"] == "deleted"
+    assert not (repo_dir / "blobs" / "q4blob").is_symlink()
+    assert payload.exists()
+    other = other_dir / "snapshots" / "rev1" / "model-Q4_K_M.gguf"
+    assert other.is_symlink() and other.exists()
+    assert payload.with_name(f"{payload.name}.refs").read_text() == (
+        "models--Org--Other-GGUF/blobs/q4blob\n"
+    )
+
+
+def test_reclaim_replaced_variant_sweeps_shared_xet_blob(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    repo = _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200, "q8blob": b"y" * 300},
+        snapshot_links = [
+            ("rev1", "model-Q4_K_M.gguf", "q4blob"),
+            ("rev1", "model-Q8_0.gguf", "q8blob"),
+        ],
+    )
+    payload = _share_variant_blob(tmp_path, repo_dir, "q4blob")
+    _shared_setup_13(monkeypatch, repo, tmp_path)
+
+    result = deletion.reclaim_replaced_gguf_variant(
+        "Org/Repo-GGUF", "Q4_K_M", frozenset({"newq4blob"}), None, hub_cache = tmp_path
+    )
+
+    assert result["status"] == "reclaimed"
+    assert result["deleted_blobs"] == 1
+    assert not (repo_dir / "blobs" / "q4blob").is_symlink()
+    assert not payload.exists()
+    assert (repo_dir / "blobs" / "q8blob").exists()
+
+
 def test_delete_variant_surfaces_locked_file_as_conflict(monkeypatch, tmp_path):
     """A blob unlink that fails (e.g. a Windows file lock on a loaded model)
     must raise a clear 409, not report a misleading success."""

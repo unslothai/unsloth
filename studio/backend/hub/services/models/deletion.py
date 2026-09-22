@@ -12,6 +12,12 @@ import errno
 from pathlib import Path
 from typing import Optional
 
+try:
+    from huggingface_hub.utils._shared_blobs import shared_blob_target, sweep_shared_blob
+except ImportError:
+    shared_blob_target = None
+    sweep_shared_blob = None
+
 from fastapi import HTTPException
 from loggers import get_logger
 
@@ -80,6 +86,18 @@ def _blob_hash_from_path(blob: Path) -> Optional[str]:
     if not name or name.endswith(INCOMPLETE_SUFFIX):
         return None
     return name
+
+
+def _unlink_variant_blob(blob: Path, cache_dir: Optional[Path]) -> int:
+    shared_target = None
+    if shared_blob_target is not None and cache_dir is not None:
+        shared_target = shared_blob_target(blob, cache_dir)
+    if shared_target is None:
+        freed = blob.stat().st_size
+        blob.unlink()
+        return freed
+    blob.unlink()
+    return sweep_shared_blob(shared_target, cache_dir = cache_dir)
 
 
 def _path_exists_or_symlink(path: Path) -> bool:
@@ -279,6 +297,9 @@ def _delete_gguf_variant_from_repos(
                     failures.append(f"{name}: {e}")
 
         ref_counts = _snapshot_blob_reference_counts(repo_dir)
+        cache_dir = root
+        if cache_dir is None and repo_dir is not None:
+            cache_dir = repo_dir.parent
         seen_blobs: set[Path] = set()
         for _snap, blob, name in [*matched, *companion_matches]:
             if blob is None:
@@ -297,8 +318,7 @@ def _delete_gguf_variant_from_repos(
                 continue
             try:
                 if blob.exists():
-                    deleted_bytes += blob.stat().st_size
-                    blob.unlink()
+                    deleted_bytes += _unlink_variant_blob(blob, cache_dir)
                     deleted_blobs += 1
             except OSError as e:
                 failures.append(f"{name}: {e}")
@@ -503,8 +523,7 @@ def reclaim_replaced_gguf_variant(
                 continue
             try:
                 if blob.exists():
-                    deleted_bytes += blob.stat().st_size
-                    blob.unlink()
+                    deleted_bytes += _unlink_variant_blob(blob, target_hub_cache)
                     deleted_blobs += 1
             except OSError as e:
                 failures.append(f"{name}: {e}")
