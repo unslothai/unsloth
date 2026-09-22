@@ -523,6 +523,11 @@ MEASURE = """
     toggle: clip(toggle, surface),
     snooze: clip(snooze, surface),
     copy: clip(copy, surface),
+    // The same three unclipped, so a control the card has cut DOWN is as visible
+    // here as one it cut away. Half a button is not the button the card promises.
+    toggleWhole: rect(toggle),
+    snoozeWhole: rect(snooze),
+    copyWhole: rect(copy),
     footer: rect(footer),
     llamaText: llama ? (llama.innerText || '') : '',
     // pointer-events-none costs the rail its scrollbar, so it may only be
@@ -747,6 +752,21 @@ def measure(page, label: str) -> dict:
             f"{label}: the card does not clip its own {name} away",
             box is not None and box["height"] > 1.0 and box["width"] > 1.0,
             f"{name}={box}",
+        )
+    # Clipped to nothing is the loud version. A control the card has cut DOWN is the same
+    # defect one viewport earlier: at the 20px setting the card's floor was a constant that
+    # stopped covering its own content, so the action row overflowed and the last button was
+    # sliced before it disappeared. Asking only that something is left lets the slicing
+    # through, and the slicing is what says the floor is wrong.
+    for name in ("toggle", "snooze", "copy"):
+        box, whole = facts[name], facts[f"{name}Whole"]
+        check(
+            f"{label}: the card shows all of its own {name}",
+            box is not None
+            and whole is not None
+            and box["height"] >= whole["height"] - 1.0
+            and box["width"] >= whole["width"] - 1.0,
+            f"{name}={box} whole={whole}",
         )
     return facts
 

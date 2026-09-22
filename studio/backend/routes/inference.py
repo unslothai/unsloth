@@ -15204,6 +15204,19 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
     ) == (request.chat_template_override or None)
 
 
+def _inherit_resident_load_in_4bit(backend, request, model_identifier: str) -> None:
+    """An omitted load_in_4bit keeps the resident precision, not the 4-bit default."""
+    if "load_in_4bit" in (getattr(request, "model_fields_set", set()) or set()):
+        return
+    if not _same_loaded_identifier(backend.active_model_name, model_identifier):
+        return
+    resident = (backend.models.get(backend.active_model_name, {}) or {}).get(
+        "load_in_4bit_requested"
+    )
+    if resident is not None:
+        request.load_in_4bit = bool(resident)
+
+
 def _non_gguf_runtime_settings_match(backend, request) -> bool:
     """Whether the resident non-GGUF model already runs the request's load settings.
 
@@ -15938,6 +15951,7 @@ async def _load_model_impl(
                     await asyncio.to_thread(acquire_for_request, CHAT)
                 return reused
         if not (request.gguf_variant or is_direct_gguf_request):
+            _inherit_resident_load_in_4bit(backend, request, model_identifier)
             if (
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
                 and _mlx_runtime_settings_match(backend, request)
