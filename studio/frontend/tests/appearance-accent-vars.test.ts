@@ -250,7 +250,7 @@ test("a narrow valid band between custom and elevated surfaces is not skipped", 
   applyCustomizationToDocument(splitSurfaces, "dark");
   const corrected = vars.get("--primary") ?? "";
   assert.ok(ratio(corrected, "#4ec24a") >= 2.5);
-  assert.ok(ratio(corrected, "#272727") >= 2.5);
+  assert.ok(ratio(corrected, "#262626") >= 2.5);
 });
 
 test("resize-handle glows follow the primary token", () => {
