@@ -121,6 +121,7 @@ def _repair_env() -> dict[str, str]:
 
 def _run_repair() -> None:
     global _installed
+    from utils.child_stdio import utf8_child_env
     from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid, terminate_pid
 
     kwargs = child_popen_kwargs()
@@ -129,10 +130,11 @@ def _run_repair() -> None:
     try:
         proc = subprocess.Popen(
             [sys.executable, str(_INSTALLER), "--repair-diffusers-main"],
-            env = _repair_env(),
+            env = utf8_child_env(_repair_env()),
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            encoding = "utf-8",
             errors = "replace",
             **kwargs,
         )
@@ -183,6 +185,12 @@ def start_diffusers_autorepair_if_needed() -> bool:
         DISABLE_ENV_VAR,
     )
     return True
+
+
+IN_FLIGHT_MESSAGE = (
+    "Unsloth is installing the pinned diffusers build in the background, which takes a few "
+    "minutes on the first start after an update. Try again shortly."
+)
 
 
 def diffusers_repair_in_flight() -> bool:

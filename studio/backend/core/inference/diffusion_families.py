@@ -1440,16 +1440,13 @@ def assert_pipeline_class_available(
 
     if "diffusers" not in sys.modules:
         try:
-            from utils.diffusers_repair import diffusers_repair_in_flight
+            from utils.diffusers_repair import IN_FLIGHT_MESSAGE, diffusers_repair_in_flight
             repairing = diffusers_repair_in_flight()
         except Exception:  # noqa: BLE001 - no self-heal module is no repair
             repairing = False
         # Importing now would read files the install is replacing, and pin the release for the session.
         if repairing:
-            raise ValueError(
-                "Unsloth is installing the pinned diffusers build in the background, which takes a "
-                "few minutes on the first start after an update. Try again shortly."
-            )
+            raise ValueError(IN_FLIGHT_MESSAGE)
 
     try:
         import diffusers

@@ -182,6 +182,59 @@ def test_the_load_gate_waits_for_a_running_repair(monkeypatch):
         fam.assert_pipeline_class_available("QwenImage21Pipeline", "qwen-image-2.1")
 
 
+def test_minimax_music3_is_refused_before_eviction_while_the_repair_runs(monkeypatch):
+    """Its worker is a separate process that imports diffusers and never sees this one's repair."""
+    import asyncio
+    import types
+
+    from fastapi import HTTPException
+
+    import routes.inference as ri
+
+    monkeypatch.setattr(dr, "diffusers_repair_in_flight", lambda: True)
+    config = types.SimpleNamespace(audio_type = "minimax_music3", is_lora = False, identifier = "x/y")
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            ri._preflight_native_audio_placement(
+                config,
+                types.SimpleNamespace(audio_device = None),
+                types.SimpleNamespace(requested_gpu_ids = None),
+            )
+        )
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail == dr.IN_FLIGHT_MESSAGE
+
+
+def test_the_repair_is_decided_before_the_socket_binds():
+    """The lifespan yields, and the server accepts requests, before the post-warm thread runs, so a
+    repair started there leaves a window where a load imports the release being replaced. Checked on
+    the source because running the real lifespan brings up the whole backend."""
+    import ast
+
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    def first_call(function, name):
+        lines = [
+            node.lineno
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == name
+        ]
+        return min(lines) if lines else None
+
+    lifespan = functions["lifespan"]
+    start = first_call(lifespan, "start_diffusers_autorepair_if_needed")
+    assert start is not None
+    assert start < first_call(lifespan, "_start_post_warm_thread")
+    assert start < min(n.lineno for n in ast.walk(lifespan) if isinstance(n, ast.Yield))
+    post_warm = functions["_post_warm_background_work"]
+    assert first_call(post_warm, "start_diffusers_autorepair_if_needed") is None
+
+
 def test_a_finished_repair_behind_a_loaded_release_asks_for_a_restart(monkeypatch):
     from core.inference import diffusion_families as fam
 

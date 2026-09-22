@@ -616,14 +616,6 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     runtime before the socket bound; joining first keeps that optional probe out of the login-screen
     critical path. Linked-folder startup only loads embeddings when a queued sync has real ingestion
     work."""
-    # Before the join: a metadata read, then a thread, and the install itself takes minutes.
-    try:
-        from utils.diffusers_repair import start_diffusers_autorepair_if_needed
-        start_diffusers_autorepair_if_needed()
-    except Exception as _diffusers_exc:  # noqa: BLE001 -- a self-heal must never end the worker
-        import structlog as _structlog
-        _structlog.get_logger(__name__).warning("diffusers autorepair skipped: %s", _diffusers_exc)
-
     # No-op when the warm never started, so this is safe under the kill switch.
     join_background_warm()
 
@@ -889,6 +881,14 @@ async def lifespan(app: FastAPI):
             )
             + "\n"
         )
+
+    # Before the socket binds, or a first diffusion load can import the release the repair is replacing.
+    # A metadata read and a thread start; the install itself runs on that thread.
+    try:
+        from utils.diffusers_repair import start_diffusers_autorepair_if_needed
+        start_diffusers_autorepair_if_needed()
+    except Exception as _diffusers_exc:  # noqa: BLE001 -- a self-heal must never block startup
+        _lifespan_log.warning("diffusers autorepair skipped: %s", _diffusers_exc)
 
     # Last, so it never contends for the GIL: the socket binds as soon as this returns, so the login
     # screen is up while torch/transformers/datasets load.
