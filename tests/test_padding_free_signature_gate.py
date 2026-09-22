@@ -254,7 +254,6 @@ def test_a_string_model_that_can_take_the_metadata_is_left_alone(monkeypatch):
 def _fake_config():
     """A config just real enough for the model-type lookup the wrapper does first."""
     from types import SimpleNamespace
-
     return SimpleNamespace(
         model_type = "llama",
         architectures = ["LlamaForCausalLM"],
@@ -294,6 +293,7 @@ def test_an_unresolvable_string_returns_none_rather_than_guessing():
     assert _resolve_string_model_class("any/name", None, None) is None
     # not a string
     assert _resolve_string_model_class(_NoKwargs(), LlamaConfig(), None) is None
+
     # an architecture name that is not in the transformers namespace, and a config class
     # that is in no auto mapping
     class _UnknownConfig:
@@ -315,7 +315,12 @@ def test_a_resolvable_string_is_blocked_silently_instead_of_raising(monkeypatch)
     import unsloth.trainer as trainer_module
 
     class _StubSFTTrainer:
-        def __init__(self, model = None, args = None, **kwargs):
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            **kwargs,
+        ):
             self.model = _NoKwargs() if isinstance(model, str) else model
             self.args = args
 
@@ -344,7 +349,12 @@ def test_a_resolvable_string_that_accepts_the_metadata_keeps_padding_free(monkey
     import unsloth.trainer as trainer_module
 
     class _StubSFTTrainer:
-        def __init__(self, model = None, args = None, **kwargs):
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            **kwargs,
+        ):
             self.model = _TakesKwargs() if isinstance(model, str) else model
             self.args = args
 
@@ -377,7 +387,12 @@ def test_the_warning_names_the_resolved_class_not_str(monkeypatch, caplog):
     import unsloth.trainer as trainer_module
 
     class _StubSFTTrainer:
-        def __init__(self, model = None, args = None, **kwargs):
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            **kwargs,
+        ):
             self.model = _NoKwargs() if isinstance(model, str) else model
             self.args = args
 
@@ -407,7 +422,12 @@ def test_a_resolver_that_explodes_falls_back_to_the_backstop(monkeypatch):
     import unsloth.trainer as trainer_module
 
     class _StubSFTTrainer:
-        def __init__(self, model = None, args = None, **kwargs):
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            **kwargs,
+        ):
             self.model = _NoKwargs() if isinstance(model, str) else model
             self.args = args
 

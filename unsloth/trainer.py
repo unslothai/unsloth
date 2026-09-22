@@ -436,7 +436,6 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
                 continue
             try:
                 from transformers.dynamic_module_utils import get_class_from_dynamic_module
-
                 return get_class_from_dynamic_module(reference, model_name, **forward)
             except Exception:
                 continue
@@ -445,7 +444,6 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     for architecture in getattr(model_config, "architectures", None) or ():
         try:
             import transformers
-
             resolved = getattr(transformers, architecture, None)
         except Exception:
             resolved = None
