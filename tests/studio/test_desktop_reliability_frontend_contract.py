@@ -965,20 +965,45 @@ def _button_classes(source: str, tag: str, variant: str) -> str | None:
 # lengths, so resolve the wrapper back to the length it scales. A real change to the length
 # still fails, which is the whole point of reading the value rather than the spelling.
 #
-# Only the four scales that actually default to 1 are read this way, and each only over the
-# kind of value it is defined for: the two UI scales over lengths, the two contrast gains
-# over colour amounts. Reading `var(--anything, 1)` instead would make a length that has been
-# hung off an unrelated property - or off a typo like `--ui-spcae-scale`, which resolves to
-# nothing and takes the fallback - normalise back to the literal this file asks about, so a
-# pane that no longer follows the interface font size would still satisfy its contract.
-_LENGTH_SCALES = r"--ui-space-scale|--ui-font-scale"
-_COLOUR_GAINS = r"--contrast-wash-gain|--contrast-edge-gain"
+# Only `--ui-space-scale` reads back as the length it wraps, and only it. `index.css:316`
+# declares `--ui-font-scale: 0.9375` and derives `--ui-space-scale` as the ratio of the two,
+# so the spacing scale is 1 by default while the font scale is not: a length respelled onto
+# `calc(48px * var(--ui-font-scale, 1))` renders at 45px. Reading the font scale, or
+# `var(--anything, 1)` at large, would hand a contract back the literal it asks about while
+# the pane had quietly stopped following the interface font size, or moved to a typo such as
+# `--ui-spcae-scale` that resolves to nothing and takes the fallback.
 _SCALED_LENGTH = re.compile(
-    rf"calc\(\s*(-?[\d.]+(?:px|rem|em))\s*\*\s*var\(\s*(?:{_LENGTH_SCALES})\s*,\s*1\s*\)\s*\)"
+    r"calc\(\s*(-?[\d.]+(?:px|rem|em))\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)"
 )
+
+# The gains are not declared at all: `appearance-custom-store.ts` sets them only away from
+# the default, so both take the `1` fallback here and a colour reads back as its own amount.
+# Which gain, though, is load-bearing. The store gives the edge and the wash different spans,
+# so a border scaled by the wash renders a colour its contract does not name as soon as the
+# contrast setting moves off default. Surfaces take the wash; borders, rings and outlines
+# take the edge; each is resolved only under the gain its own role is entitled to.
 _SCALED_AMOUNT = re.compile(
-    rf"calc\(\s*([\d.]+%?)\s*\*\s*var\(\s*(?:{_COLOUR_GAINS})\s*,\s*1\s*\)\s*\)"
+    r"calc\(\s*([\d.]+%?)\s*\*\s*var\(\s*--contrast-(edge|wash)-gain\s*,\s*1\s*\)\s*\)"
 )
+_COLOUR_ROLE = re.compile(
+    r"bg-|background(?:-color)?\s*:|border(?:-color)?\s*:"
+    r"|border-|ring-|outline-|--tw-ring-color\s*:"
+)
+
+
+def _gain_owed_to(preceding: str) -> str | None:
+    """The gain the colour written after *preceding* is entitled to, if that role is readable."""
+    roles = _COLOUR_ROLE.findall(preceding[-200:])
+    if not roles:
+        return None
+    return "wash" if roles[-1].startswith(("bg-", "background")) else "edge"
+
+
+def _resolve_amount(source: str, match: "re.Match[str]") -> str:
+    """A gain-scaled colour amount, read back only where the gain matches the colour's role."""
+    if _gain_owed_to(source[:match.start()]) != match.group(2):
+        return match.group(0)
+    return match.group(1)
 
 
 # The same move in colour. #11459 respelled the opacity shorthands as a colour function
@@ -994,7 +1019,8 @@ _WHITE_ALPHA = re.compile(r"\[rgb\(255_255_255_/_([\d.]+)\)\]")
 
 def _at_default_scale(source: str) -> str:
     """*source* with every scale-wrapped length and gain-wrapped colour read back as itself."""
-    resolved = _SCALED_AMOUNT.sub(r"\1", _SCALED_LENGTH.sub(r"\1", source))
+    resolved = _SCALED_LENGTH.sub(r"\1", source)
+    resolved = _SCALED_AMOUNT.sub(lambda m: _resolve_amount(resolved, m), resolved)
     resolved = _MIXED_TOKEN.sub(
         lambda m: f"{m.group(1)}/{m.group(2)[:-2] if m.group(2).endswith('.0') else m.group(2)}",
         resolved,

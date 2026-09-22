@@ -948,10 +948,14 @@ def test_notes_surface_is_borderless_and_lifts_in_dark_mode():
     # Lighter than the card behind it, rather than a darker inset. #11459 respelled the
     # shorthand as an rgb() whose alpha scales with --contrast-wash-gain, which is the same
     # 0.06 white at the default gain of 1, so read the white and the amount rather than one
-    # spelling. A darker inset, or a different amount, still fails.
+    # spelling. A darker inset, or a different amount, still fails. The class has to end
+    # there too: `dark:bg-[rgb(...)]-broken` names no utility at all and `dark:bg-[rgb(...)]/50`
+    # is a different lift, and both would otherwise satisfy a match that stopped at the
+    # closing bracket.
     assert re.search(
         r"dark:bg-(?:white/\[0\.06\]"
-        r"|\[rgb\(255_255_255_/_calc\(0\.06\*var\(--contrast-wash-gain,\s*1\)\)\)\])",
+        r"|\[rgb\(255_255_255_/_calc\(0\.06\*var\(--contrast-wash-gain,\s*1\)\)\)\])"
+        r"(?![\w/\[-])",
         layout,
     ), "the dark notes surface is no longer a 0.06 white lift"
     # Streamdown's mt-6 clips the first heading against the scroller edge.
