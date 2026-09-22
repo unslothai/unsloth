@@ -1,0 +1,100 @@
+"""LoRA on a block-diagonal grouped linear (DeepSeek-V4's `o_a_proj`).
+
+PEFT's dense LoRA layer adds `lora_B(lora_A(x))` of shape
+`(..., n_groups, n_groups * out_per_group)` to a base output of shape
+`(..., n_groups, out_per_group)`, which fails with
+`The size of tensor a (1024) must match the size of tensor b (8192)`.
+"""
+import pytest
+import torch
+
+peft = pytest.importorskip("peft")
+
+
+class GroupedLinear(torch.nn.Linear):
+    """The shape contract of `DeepseekV4GroupedLinear` and `FP8GroupedLinear`."""
+
+    def __init__(self, in_per_group, out_features, n_groups):
+        super().__init__(in_per_group, out_features, bias = False)
+        self.n_groups = n_groups
+
+    def forward(self, x):
+        input_shape = x.shape[:-2]
+        hidden_dim = x.shape[-1]
+        w = self.weight.view(self.n_groups, -1, hidden_dim).transpose(1, 2)
+        x = x.reshape(-1, self.n_groups, hidden_dim).transpose(0, 1)
+        y = torch.bmm(x, w).transpose(0, 1)
+        return y.reshape(*input_shape, self.n_groups, -1)
+
+
+class Block(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.o_a_proj = GroupedLinear(16, 4 * 8, 4)
+        self.o_b_proj = torch.nn.Linear(4 * 8, 16, bias = False)
+
+    def forward(self, x):
+        return self.o_b_proj(self.o_a_proj(x).flatten(2))
+
+
+def _peft_model(register):
+    from peft import LoraConfig, get_peft_model
+    torch.manual_seed(0)
+    model = Block()
+    config = LoraConfig(r = 4, lora_alpha = 8, target_modules = ["o_a_proj", "o_b_proj"], init_lora_weights = False)
+    if register:
+        from unsloth.models.grouped_linear_lora import register_grouped_linear_lora
+        assert register_grouped_linear_lora(config, model) == [GroupedLinear]
+    return get_peft_model(model, config)
+
+
+def test_is_grouped_linear_wants_n_groups_and_an_overridden_forward():
+    from unsloth.models.grouped_linear_lora import is_grouped_linear
+    assert is_grouped_linear(GroupedLinear(16, 32, 4))
+    assert not is_grouped_linear(torch.nn.Linear(16, 32))
+    plain = torch.nn.Linear(16, 32)
+    plain.n_groups = 4
+    assert not is_grouped_linear(plain)
+
+
+def test_dense_lora_fails_on_the_grouped_linear():
+    """The arm that fails on main."""
+    model = _peft_model(register = False)
+    with pytest.raises(RuntimeError, match = "must match the size"):
+        model(torch.randn(2, 5, 4, 16))
+
+
+def test_grouped_lora_trains_and_matches_the_merged_weight():
+    model = _peft_model(register = True)
+    x = torch.randn(2, 5, 4, 16)
+    out = model(x)
+    assert out.shape == (2, 5, 16)
+    out.sum().backward()
+    layer = model.base_model.model.o_a_proj
+    assert type(layer).__name__ == "GroupedLinearLoRA"
+    assert layer.lora_A["default"].weight.grad is not None
+    assert layer.lora_B["default"].weight.grad is not None
+    # Merging lora_B @ lora_A into the block-diagonal weight gives the same forward.
+    with torch.no_grad():
+        merged = model.merge_and_unload()
+        merged_out = merged(x)
+    torch.testing.assert_close(merged_out, out.detach(), atol = 1e-5, rtol = 1e-5)
+
+
+def test_grouped_lora_equals_the_diagonal_of_the_dense_delta():
+    model = _peft_model(register = True)
+    layer = model.base_model.model.o_a_proj
+    x = torch.randn(3, 4, 16)
+    with torch.no_grad():
+        base = layer.base_layer(x)
+        dense = layer.lora_B["default"](layer.lora_A["default"](x)) * layer.scaling["default"]
+        dense = dense.view(3, 4, 4, 8)
+        expected = base + torch.stack([dense[:, g, g] for g in range(4)], dim = 1)
+        torch.testing.assert_close(layer(x), expected, atol = 1e-5, rtol = 1e-5)
+
+
+def test_state_dict_is_a_plain_lora_checkpoint():
+    model = _peft_model(register = True)
+    state = peft.get_peft_model_state_dict(model)
+    assert state["base_model.model.o_a_proj.lora_A.weight"].shape == (4, 16)
+    assert state["base_model.model.o_a_proj.lora_B.weight"].shape == (32, 4)

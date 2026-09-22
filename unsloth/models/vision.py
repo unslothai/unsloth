@@ -84,6 +84,8 @@ from ._utils import (
 )
 from ._utils import *
 from ._custom_dtype import resolve_dtype, trusted_custom_dtype
+from .remote_code_shims import apply_remote_code_shims
+from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -1753,6 +1755,8 @@ class FastBaseModel:
                     trust_remote_code = trust_remote_code,
                     **kwargs,
                 )
+                # Remote code that embeds in get_input_embeddings or forgets to return a loss.
+                apply_remote_code_shims(model)
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
                 offload_embedding = _resolve_offload_embedding(
                     model,
@@ -2427,6 +2431,14 @@ class FastBaseModel:
         lora_config = LoraConfig(
             **{k: v for k, v in local_variables.items() if k in allowed_parameters},
         )
+        # Block-diagonal grouped linears (DeepSeek-V4's o_a_proj) need a LoRA forward that is grouped too.
+        _grouped_classes = register_grouped_linear_lora(lora_config, model)
+        if _grouped_classes:
+            print(
+                "Unsloth: Using a grouped LoRA forward on "
+                + ", ".join(cls.__name__ for cls in _grouped_classes)
+                + " (block-diagonal linears)."
+            )
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
