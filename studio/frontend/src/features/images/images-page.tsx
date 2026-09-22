@@ -2375,9 +2375,13 @@ export function ImagesPage({
     );
     if (quant) setTransformerQuant(quant);
     const encoder = resolvedSelectValue(record.text_encoder_quant, (v) =>
-      // A declined request runs dense: "off" (or "none", older backend) is the select's Default.
-      (["auto", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const).find(
-        (o) => o === v || (o === "auto" && (v === "none" || v === "off")),
+      // The engaged value spells the dense encoder "off"; the select's option for it is "none".
+      // It maps to Dense, NOT to Default: an unset request is already caught upstream by
+      // `source === "auto"`, so reaching here with "off" means dense was pinned or a scheme was
+      // declined. Folding it into Default would snap a pinned Dense back to Default, and the next
+      // reapply would omit the field and silently take the family's scheme instead.
+      (["auto", "none", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const).find(
+        (o) => o === v || (o === "none" && v === "off"),
       ) ?? null,
     );
     if (encoder) setTextEncoderQuant(encoder);
@@ -3775,12 +3779,15 @@ export function ImagesPage({
       )}
       <AdvancedSelect
         label="Text encoder precision"
-        hint="Lower precision reduces text-encoder memory but can change image quality. Supported modes depend on the GPU and model. Default keeps the existing encoder precision; the loaded build below reports what was applied."
+        hint="Lower precision reduces text-encoder memory but can change image quality. Supported modes depend on the GPU and model. Default lets the model choose, which on Qwen-Image 2.1 means its hosted FP8 encoder (8.75 GB rather than 16.3); pick Dense (bf16) to pin the released encoder. The loaded build below reports what was applied."
         badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
         value={textEncoderQuant}
         onValueChange={(v) => setTextEncoderQuant(v as typeof textEncoderQuant)}
         options={[
           ["auto", "Default"],
+          // The opt-out. Reachable only since a family default can pick a scheme on its own: with
+          // "Default" meaning bf16 everywhere, omitting the field WAS the dense request.
+          ["none", "Dense (bf16)"],
           ["fp8", "FP8 (storage)"],
           ["fp8_dynamic", "FP8 (compute)"],
           ["int8", "INT8"],

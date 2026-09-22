@@ -1711,6 +1711,408 @@ def fix_transformers_fully_masked_rows():
         logger.info(f"Unsloth: Failed patching sdpa_mask ({e})")
 
 
+_COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_patched_composite_prefix_renaming"
+
+# unsloth_zoo marks its own copy of this repair with this. Spelled as a literal rather than
+# imported, so a zoo too old to define it cannot turn a skipped repair into an ImportError.
+_ZOO_COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_zoo_patched_composite_prefix_renaming"
+
+# zoo's `temporary_patches/common.py:WRAPPER_INNER_ATTR`: the explicit link a wrapper on that
+# same function publishes to whatever it wrapped. Following it matters because zoo's MoE
+# wrapper (`temporary_patches/moe_utils_bnb4bit.py`) deliberately does NOT publish
+# `__wrapped__` -- zoo's re-scope unwraps `__wrapped__` to pick what to wrap, so a MoE wrapper
+# carrying one would be replaced rather than sat on top of, dropping its per-expert converters.
+# zoo registers the re-scope BEFORE the MoE patch, so the MoE wrapper is on top in the normal
+# case, and a `__wrapped__`-only walk stops there and reports no repair for one that is
+# running underneath. Spelled as a literal, like the flag above, so a zoo too old to define it
+# cannot turn a skipped repair into an ImportError.
+_ZOO_WRAPPER_INNER_ATTR = "_unsloth_wrapper_inner"
+
+
+def _next_in_wrapper_chain(function):
+    """The callable `function` wraps, by either link, or None at the end of the chain."""
+    return getattr(function, "__wrapped__", None) or getattr(
+        function, _ZOO_WRAPPER_INNER_ATTR, None
+    )
+
+
+def _composite_prefix_renaming_repaired():
+    """Is the live conversion mapping repaired, by either copy of the fix?
+
+    Ours and unsloth_zoo's are interchangeable here: whichever installed first, the mapping
+    is re-scoped and the downgrade advice would contradict it. The whole chain, by either
+    link, for the reason `_zoo_composite_prefix_renaming_installed` gives.
+    """
+    try:
+        from transformers import conversion_mapping
+    except Exception:
+        return False
+    function = getattr(conversion_mapping, "get_model_conversion_mapping", None)
+    seen = 0
+    while function is not None and seen < 8:
+        for flag in (_COMPOSITE_PREFIX_RENAMING_FLAG, _ZOO_COMPOSITE_PREFIX_RENAMING_FLAG):
+            if getattr(function, flag, False):
+                return True
+        function = _next_in_wrapper_chain(function)
+        seen += 1
+    return False
+
+
+def _own_composite_prefix_renaming_installed(function):
+    """Is THIS repair already somewhere in the chain hanging off `function`?
+
+    Through the chain rather than on the top object, because another library may have wrapped
+    us since we installed, and a top-only test would then stack a second copy of this repair
+    that walks every submodule again for nothing. Same bound as the zoo check.
+    """
+    seen = 0
+    while function is not None and seen < 8:
+        if getattr(function, _COMPOSITE_PREFIX_RENAMING_FLAG, False):
+            return True
+        function = _next_in_wrapper_chain(function)
+        seen += 1
+    return False
+
+
+def _zoo_composite_prefix_renaming_installed():
+    """Has unsloth_zoo's copy of this repair already wrapped the function?
+
+    The whole chain, following `__wrapped__` OR `_unsloth_wrapper_inner`, because zoo also
+    wraps the same function in `temporary_patches/moe_utils_bnb4bit.py` and that wrapper
+    publishes only the latter -- see `_ZOO_WRAPPER_INNER_ATTR`. Since zoo installs the repair
+    first, the MoE wrapper is normally on top, so a `__wrapped__`-only walk answers False for a
+    repair that is live and stacks a second wrapper for nothing. Bounded, so a malformed chain
+    cannot spin.
+    """
+    try:
+        from transformers import conversion_mapping
+    except Exception:
+        return False
+    function = getattr(conversion_mapping, "get_model_conversion_mapping", None)
+    seen = 0
+    while function is not None and seen < 8:
+        if getattr(function, _ZOO_COMPOSITE_PREFIX_RENAMING_FLAG, False):
+            return True
+        function = _next_in_wrapper_chain(function)
+        seen += 1
+    return False
+
+
+# How many of a submodule's own parameter names to try a renaming against. A prefix renaming
+# either matches every name under the submodule or none of them, so one would do; eight costs
+# nothing and covers a mapping that only rewrites some leaf names.
+_COMPOSITE_RENAMING_SAMPLE = 8
+
+
+def _renaming_signature(conversion):
+    """Identity of a renaming by VALUE, because the mapping is handed out as deep copies.
+
+    `get_checkpoint_conversion_mapping` returns `deepcopy(...)`, so the object this module
+    collects from a submodule is never the object that ended up in the parent's list, and
+    `is` can never match them. The patterns are what a renaming is, so compare those. The
+    unprocessed ones when they are kept (5.5+), since `__post_init__` rewrites the live ones.
+    """
+    source = getattr(conversion, "_original_source_patterns", None) or conversion.source_patterns
+    target = getattr(conversion, "_original_target_patterns", None) or conversion.target_patterns
+    return (type(conversion).__name__, tuple(source), tuple(target))
+
+
+def _sample_submodule_keys(submodule, prefix):
+    """A few of the submodule's real parameter names, spelled as the PARENT spells them."""
+    keys = []
+    try:
+        for name, _ in submodule.named_parameters(recurse = True):
+            keys.append(f"{prefix}.{name}")
+            if len(keys) >= _COMPOSITE_RENAMING_SAMPLE:
+                return keys
+        for name, _ in submodule.named_buffers(recurse = True):
+            keys.append(f"{prefix}.{name}")
+            if len(keys) >= _COMPOSITE_RENAMING_SAMPLE:
+                break
+    except Exception:
+        return []
+    return keys
+
+
+def _renaming_destroys_keys(conversion, sample_keys, model_keys):
+    """Does this renaming rewrite the model's OWN parameter names into names it does not have?
+
+    The whole discriminator, and a behaviour rather than a name: a renaming maps CHECKPOINT
+    keys onto MODEL keys, so one that fires on a real name and lands off the map drops that
+    weight. It separates the two directions of the same entry -- against the standalone text
+    model `^model.language_model.` -> `^model.` matches nothing, against the composite it
+    matches everything. One real landing answers False; a mapping doing its job wins.
+    """
+    destroys = False
+    for key in sample_keys:
+        try:
+            renamed, matched = conversion.rename_source_key(key)
+        except Exception:
+            return False
+        if matched is None or renamed == key:
+            continue
+        if renamed in model_keys:
+            return False
+        destroys = True
+    return destroys
+
+
+def _prefixed_pattern(pattern, prefix):
+    """Push a pattern down into `prefix`, keeping a start anchor anchored."""
+    if pattern.startswith("^"):
+        return f"^{prefix}.{pattern[1:]}"
+    return f"{prefix}.{pattern}"
+
+
+def _rescoped_renaming(conversion, prefix, sample_keys, model_keys):
+    """The same renaming, scoped to the submodule it came from, or None if that cannot be built.
+
+    What upstream's `PrefixChange.with_submodel_prefix` produces, for a transformers without
+    it: collected at `model.language_model`, `^model.language_model.` -> `^model.` becomes
+    `^model.language_model.model.language_model.` -> `model.language_model.model.`, which can
+    only fire on a doubled prefix. 5.6.2 builds the same pair for the same model.
+
+    Anchored patterns only, as upstream: prefixing an unanchored one means neither thing, so
+    answer None and let the caller drop an entry already shown to be destructive. Returned
+    only after checking the result is inert on this model's real names.
+    """
+    from transformers.core_model_loading import WeightRenaming
+
+    source = getattr(conversion, "_original_source_patterns", None) or conversion.source_patterns
+    target = getattr(conversion, "_original_target_patterns", None) or conversion.target_patterns
+    if not all(pattern.startswith("^") for pattern in source):
+        return None
+
+    patterns = {
+        "source_patterns": [_prefixed_pattern(p, prefix) for p in source],
+        "target_patterns": [_prefixed_pattern(p, prefix) for p in target],
+    }
+    try:
+        rescoped = type(conversion)(**patterns)
+    except Exception:
+        # A subclass whose __init__ takes something else entirely -- upstream's `PrefixChange`
+        # takes prefixes, not patterns. It is still a WeightRenaming, and a renaming is all
+        # this produces, so fall back to the base class rather than giving up.
+        try:
+            rescoped = WeightRenaming(**patterns)
+        except Exception:
+            return None
+    for key in sample_keys:
+        try:
+            renamed, matched = rescoped.rename_source_key(key)
+        except Exception:
+            return None
+        if matched is not None and renamed != key and renamed not in model_keys:
+            return None
+    return rescoped
+
+
+def _leaked_submodule_prefix_renamings(model):
+    """Which renamings did the recursion merge into `model`'s mapping where they do not belong?
+
+    Walks the submodules the way `get_model_conversion_mapping` walks them -- same order, same
+    "first model type wins" rule -- so the entries found here are the entries it collected.
+    A renaming that the parent registers for ITSELF is never considered, even if a submodule
+    registers the same one: re-scoping something the parent asked for by name would be a
+    different change from the one upstream made.
+
+    Returns `(signature -> (prefix, sample_keys), model_keys)`, empty when nothing leaked.
+    """
+    from transformers.conversion_mapping import extract_weight_conversions_for_model
+    from transformers.core_model_loading import WeightRenaming
+    from transformers.modeling_utils import PreTrainedModel
+
+    def extract(module, prefix):
+        # 5.6 to 5.9 take the submodule's dotted path as a second argument, everything else
+        # takes the module alone. Asked of the function rather than of a version.
+        try:
+            return extract_weight_conversions_for_model(module, prefix)
+        except TypeError:
+            return extract_weight_conversions_for_model(module)
+
+    model_keys = set()
+    for name, _ in model.named_parameters(remove_duplicate = False):
+        model_keys.add(name)
+    for name, _ in model.named_buffers(remove_duplicate = False):
+        model_keys.add(name)
+
+    own = set()
+    seen_model_types = set()
+    own_conversions = extract(model, "")
+    if own_conversions is not None:
+        seen_model_types.add(getattr(model.config, "model_type", None))
+        own.update(_renaming_signature(c) for c in own_conversions)
+
+    leaked = {}
+    for name, submodule in model.named_modules():
+        if submodule is model or not name or not isinstance(submodule, PreTrainedModel):
+            continue
+        model_type = getattr(getattr(submodule, "config", None), "model_type", None)
+        if model_type is None or model_type in seen_model_types:
+            continue
+        conversions = extract(submodule, name)
+        if conversions is None:
+            continue
+        seen_model_types.add(model_type)
+        sample_keys = _sample_submodule_keys(submodule, name)
+        if not sample_keys:
+            continue
+        for conversion in conversions:
+            if not isinstance(conversion, WeightRenaming):
+                continue
+            signature = _renaming_signature(conversion)
+            if signature in own or signature in leaked:
+                continue
+            if _renaming_destroys_keys(conversion, sample_keys, model_keys):
+                leaked[signature] = (name, sample_keys)
+    return leaked, model_keys
+
+
+def _rescope_conversions(model, conversions):
+    """Replace every leaked renaming in `conversions` with its scoped form, or drop it."""
+    from transformers.core_model_loading import WeightRenaming
+
+    leaked, model_keys = _leaked_submodule_prefix_renamings(model)
+    if not leaked:
+        return conversions
+
+    rescoped_conversions = []
+    fixed = 0
+    dropped = 0
+    for conversion in conversions:
+        scoped_by_transformers = isinstance(conversion, WeightRenaming) and (
+            getattr(conversion, "scope_prefix", None) is not None
+        )
+        entry = (
+            leaked.get(_renaming_signature(conversion))
+            if isinstance(conversion, WeightRenaming) and not scoped_by_transformers
+            else None
+        )
+        if entry is None:
+            rescoped_conversions.append(conversion)
+            continue
+        prefix, sample_keys = entry
+        replacement = _rescoped_renaming(conversion, prefix, sample_keys, model_keys)
+        if replacement is None:
+            dropped += 1
+            continue
+        rescoped_conversions.append(replacement)
+        fixed += 1
+
+    if fixed or dropped:
+        logger.info(
+            f"Unsloth: re-scoped {fixed} and dropped {dropped} checkpoint renaming(s) that "
+            f"transformers merged into {type(model).__name__}'s conversion mapping from a "
+            f"submodule, where they rewrite the model's own weight names into names it does "
+            f"not have (transformers PR #45567, released in 5.6.0)"
+        )
+    return rescoped_conversions
+
+
+def fix_transformers_composite_prefix_renaming():
+    """Stop a pre-quantized multimodal checkpoint loading with no quantization metadata.
+
+    transformers 5.4.0 (PR #44300) merges a submodule's conversion mapping into the parent's
+    without re-scoping it, so the text model's `^model.language_model.` -> `^model.` fires on
+    the composite model's own names, and every bitsandbytes sidecar renames onto a key that
+    does not exist and is dropped. 352 of 352 Linear4bit come back with `quant_state is None`
+    on `unsloth/qwen3.8-27b-unsloth-bnb-4bit` at 5.4.0 and 5.5.4 (Gemma 3n: 439 of 439), and
+    the first forward raises `ValueError: quant_state is required`. The checkpoints are fine.
+    Fixed upstream in 5.6.0 by PR #45567; a runtime repair because unsloth-zoo caps
+    transformers at 5.5.0 on Apple Silicon, putting those users inside the window.
+
+    Neither gate is a version: the probe above reads the API, and the wrapper only touches a
+    renaming that rewrites THIS model's own names into names it does not have.
+    """
+    if _transformers_rescopes_submodule_prefix_renamings():
+        return
+    # unsloth_zoo carries the same repair, in temporary_patches/conversion_mapping_rescope.py,
+    # because it owns the bitsandbytes Linear4bit patch that reports this failure and is
+    # importable without unsloth. When it installed first there is nothing left to do: a second
+    # wrapper is measurably inert -- the first pass leaves no leaked signature for the second to
+    # match -- but it is still a wrapper nobody needs, and one of the two has to yield. This one
+    # does, so the newer implementation wins on a stack where the two versions disagree.
+    if _zoo_composite_prefix_renaming_installed():
+        return
+    try:
+        from transformers import conversion_mapping
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the composite renaming fix ({e})")
+        return
+
+    original = getattr(conversion_mapping, "get_model_conversion_mapping", None)
+    if original is None:
+        return
+    # Through the chain, not the top object: another library may have wrapped us since, and a
+    # second copy walks every submodule again per load.
+    if _own_composite_prefix_renaming_installed(original):
+        return
+    # Wrap whatever is live, never `original.__wrapped__`: functools.wraps publishes that
+    # link, so unwrapping discards a third-party wrapper instead of one of ours.
+
+    @functools.wraps(original)
+    def get_model_conversion_mapping(*args, **kwargs):
+        conversions = original(*args, **kwargs)
+        try:
+            model = kwargs["model"] if "model" in kwargs else (args[0] if args else None)
+            if model is None or not conversions:
+                return conversions
+            return _rescope_conversions(model, conversions)
+        except Exception as e:
+            # A mapping we could not reason about is still the mapping transformers built.
+            logger.info(f"Unsloth: Could not re-scope the conversion mapping ({e})")
+            return conversions
+
+    # functools.wraps sets __wrapped__, but set it explicitly: the probe and the tests both
+    # read it, and a wraps-less edit must not make the patch un-probeable and un-undoable.
+    get_model_conversion_mapping.__wrapped__ = original
+    setattr(get_model_conversion_mapping, _COMPOSITE_PREFIX_RENAMING_FLAG, True)
+
+    try:
+        conversion_mapping.get_model_conversion_mapping = get_model_conversion_mapping
+        # `from ... import get_model_conversion_mapping` binds the object, not the attribute,
+        # so every holder needs rebinding: transformers.modeling_utils, transformers.
+        # integrations.peft, peft itself, and vllm's Transformers backend, which builds its
+        # WeightsMapper from it (vllm/model_executor/models/transformers/base.py).
+        owning_packages = ("transformers", "peft", "unsloth_zoo", "unsloth", "vllm")
+        upstream_module = getattr(conversion_mapping, "__name__", "transformers.conversion_mapping")
+        for module_name, module in list(sys.modules.items()):
+            if module is None or module is conversion_mapping:
+                continue
+            root = module_name.partition(".")[0]
+            if root not in owning_packages:
+                continue
+            namespace = getattr(module, "__dict__", None)
+            if not isinstance(namespace, dict):
+                continue
+            # `__dict__`, never `getattr`: transformers' lazy modules answer any name through
+            # `__getattr__` and print several hundred deprecation notices.
+            # Rebound only if it IS an alias of what we wrapped: `original` itself, upstream's
+            # own function (a module that imported the name before zoo wrapped it holds that,
+            # transformers.integrations.peft does), or zoo's marked wrapper. An identity test
+            # alone misses the first case; any-callable-by-name clobbers a package-local
+            # helper. Rebinding zoo's wrapper keeps its fix, since ours wraps it.
+            try:
+                bound = namespace.get("get_model_conversion_mapping", None)
+                if not callable(bound) or bound is get_model_conversion_mapping:
+                    continue
+                is_alias = (
+                    bound is original
+                    or getattr(bound, "__module__", None) == upstream_module
+                    or getattr(bound, "_unsloth_moe_patched", False)
+                )
+                if is_alias:
+                    module.get_model_conversion_mapping = get_model_conversion_mapping
+            except Exception:
+                continue
+        logger.info(
+            "Unsloth: Patching transformers `get_model_conversion_mapping` so a pre-quantized "
+            "multimodal checkpoint keeps its bitsandbytes quant_state (transformers PR #45567)"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching get_model_conversion_mapping ({e})")
+
+
 _ROPE_SCALING_PATCH_FLAG = "_unsloth_patched_rope_scaling_setter"
 
 
@@ -2832,10 +3234,22 @@ def patch_enable_input_require_grads():
             ):
                 continue
 
+            getter = module.get_input_embeddings
             try:
-                input_embeddings = module.get_input_embeddings()
+                inspect.signature(getter).bind()
+            except TypeError:
+                # Remote code may declare get_input_embeddings(self, input_ids)
+                # (stepfun-ai/Step-3.7-Flash). Asked by binding, not by calling: a
+                # TypeError from INSIDE a working getter must propagate, not cost the
+                # module its input-gradient hook.
+                continue
+            except (ValueError, AttributeError):
+                pass  # no introspectable signature; undecidable, so just call it
+
+            try:
+                input_embeddings = getter()
             except NotImplementedError:
-                # Vision models may not implement get_input_embeddings (GLM V4.6 skips only self.visual).
+                # transformers 5 gives every PreTrainedModel a base impl that raises.
                 continue
 
             if input_embeddings is None:
@@ -4077,6 +4491,111 @@ def check_triton_py_ssize_t_clean():
         f"also clears it. Affected file(s): "
         f"{', '.join(path for _, path in offenders)}. Set "
         f"UNSLOTH_SKIP_TRITON_SHIM_CHECK=1 to silence this."
+    )
+
+
+def _transformers_rescopes_submodule_prefix_renamings():
+    """True when this build scopes a nested submodule's conversions to where it lives.
+
+    A submodule's mapping is written against ITS OWN key space, so once
+    `get_model_conversion_mapping` merges it into the parent (transformers PR #44300) a
+    renaming anchored at the start of the key is meaningless; PR #45567 re-scoped them by
+    the submodule's dotted path. Three spellings since, any one of which counts: the
+    `model_prefix` argument of 5.6 to 5.9, `PrefixChange.with_submodel_prefix` over the
+    same range, `scope_prefix` on every transform from 5.10 on.
+
+    Every unknown answers True: a warning is worth nothing if it fires on builds nobody
+    can show are broken.
+    """
+    try:
+        from transformers import conversion_mapping
+    except Exception:
+        return True
+    extract = getattr(conversion_mapping, "extract_weight_conversions_for_model", None)
+    if extract is None:
+        # No per-submodule extraction, so no recursion to correct: every 5.x before 5.4.0.
+        return True
+    try:
+        from transformers import core_model_loading
+    except Exception:
+        # Separate import, allowed to fail: it needs torch, and the two spellings it carries
+        # are extra evidence. The signature check below has to stand on its own.
+        core_model_loading = None
+    if core_model_loading is not None:
+        transform = getattr(core_model_loading, "WeightTransform", None)
+        if transform is not None and hasattr(transform, "scope_prefix"):
+            return True
+        prefix_change = getattr(core_model_loading, "PrefixChange", None)
+        if prefix_change is not None and hasattr(prefix_change, "with_submodel_prefix"):
+            return True
+    try:
+        return "model_prefix" in inspect.signature(extract).parameters
+    except Exception:
+        return True
+
+
+def _transformers_drops_prequantized_vlm_quant_state():
+    """True when the installed transformers loses bnb-4bit quant_state on composite models.
+
+    The text model's `^model.language_model.` -> `^model.` renaming enters the composite
+    model's mapping and runs before the bitsandbytes converter, so `weight` loads as a raw
+    packed uint8 while `weight.absmax`, `weight.quant_map`, `weight.nested_absmax`,
+    `weight.nested_quant_map` and `weight.quant_state.bitsandbytes__nf4` rename to keys the
+    model does not have and are dropped as unexpected. Affected text config types:
+    `qwen3_5_text`, `qwen3_5_moe_text`, `gemma3n_text`; flat text-only checkpoints have no
+    such prefix, which is why the window went unnoticed.
+
+    Asked of the API and not of a version, because main reported `5.3.0.dev0` at the commit
+    that introduced the defect and `5.6.0.dev0` at the one that fixed it, so an interval is
+    wrong at both ends on a source install. Among releases it is 5.4.0 and 5.5.0 to 5.5.4.
+    """
+    return not _transformers_rescopes_submodule_prefix_renamings()
+
+
+def check_transformers_prequantized_vlm_quant_state():
+    """Warn when transformers will silently drop a pre-quantized VLM's quant_state.
+
+    unsloth #9867, #10010, #10017, #10276 all report `mat1 and mat2 shapes cannot be
+    multiplied`, which reads like a corrupt checkpoint and sent reporters off regenerating
+    good ones. Warns rather than raises: a run touching only text-only or unquantized
+    checkpoints is unaffected and must not break.
+    """
+    if os.environ.get("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", "0").lower() in (
+        "1",
+        "true",
+    ):
+        return
+    if not _transformers_drops_prequantized_vlm_quant_state():
+        return
+    try:
+        transformers_version = importlib_version("transformers")
+    except Exception:
+        transformers_version = "unknown"
+
+    # The runtime repair covers exactly these releases, and it is installed in the same
+    # import. Warning anyway would tell users to downgrade or upgrade away from a version
+    # that now works, which is worse than saying nothing: the advice contradicts the fix.
+    # Checked on the live attribute, so a repair that declined to install still warns.
+    # Either repair counts: when unsloth_zoo installed its copy first,
+    # `fix_transformers_composite_prefix_renaming` deliberately yields and the live function
+    # carries the zoo mark instead of ours, which is repaired all the same.
+    if _composite_prefix_renaming_repaired():
+        return
+
+    logger.warning(
+        f"Unsloth: transformers=={transformers_version} drops the bitsandbytes "
+        f"quant_state of pre-quantized multimodal checkpoints while loading them, so "
+        f"every quantized layer comes back unquantized and the first forward fails "
+        f"with\n"
+        f"    RuntimeError: mat1 and mat2 shapes cannot be multiplied (... and 1x...)\n"
+        f"The checkpoint is fine and must not be regenerated. This build scopes no "
+        f"submodule conversion mapping, which is the defect transformers PR #44300 "
+        f"introduced and PR #45567 fixed; among releases that is 5.4.0 and 5.5.0 to "
+        f"5.5.4. Move to a transformers that carries the fix, "
+        f'`pip install --no-deps "transformers>=5.6.0"` while unsloth still caps at '
+        f"5.5.0, or fall back to 5.3.0 or 4.57.6. Text-only checkpoints are "
+        f"unaffected. Set UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK=1 to silence "
+        f"this."
     )
 
 

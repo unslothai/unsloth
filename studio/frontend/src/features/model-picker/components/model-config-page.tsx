@@ -182,9 +182,9 @@ import {
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
-  "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
+  "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 const LABEL_CLASS_WRAP =
-  "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
+  "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 // Same surface token as the panel's fields and textareas.
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-[var(--panel-input-surface)] hover:bg-[var(--panel-input-surface-hover)] dark:bg-[var(--panel-input-surface)] dark:hover:bg-[var(--panel-input-surface-hover)]";
@@ -724,7 +724,7 @@ function VramBudgetRow() {
           type="button"
           disabled={locked}
           onClick={resetBudget}
-          className="text-ui-11 text-muted-foreground underline underline-offset-2 hover:text-nav-fg"
+          className="text-ui-11 text-muted-foreground underline underline-offset-2 hover:text-foreground"
         >
           Reset to the server default
         </button>
@@ -919,7 +919,7 @@ function GpuMemorySettings({
                 key={d.index}
                 className="flex items-center justify-between gap-3"
               >
-                <span className="min-w-0 truncate text-ui-12 text-nav-fg/80">
+                <span className="min-w-0 truncate text-ui-12 text-muted-foreground">
                   GPU {d.index}: {d.name}
                   {d.memoryTotalGb
                     ? ` · ${Math.round(d.memoryTotalGb)} GiB`
@@ -932,7 +932,7 @@ function GpuMemorySettings({
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
                       type="button"
-                      className="rounded px-1 text-ui-12 text-nav-fg/60 hover:text-nav-fg disabled:opacity-30"
+                      className="rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       aria-label={`Move GPU ${d.index} earlier`}
                       disabled={position === 0}
                       onClick={() => moveGpu(d.index, -1)}
@@ -941,7 +941,7 @@ function GpuMemorySettings({
                     </button>
                     <button
                       type="button"
-                      className="rounded px-1 text-ui-12 text-nav-fg/60 hover:text-nav-fg disabled:opacity-30"
+                      className="rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       aria-label={`Move GPU ${d.index} later`}
                       disabled={position >= orderedGpuIds.length - 1}
                       onClick={() => moveGpu(d.index, 1)}
@@ -976,7 +976,7 @@ function AdvancedSettingsToggle({
 }) {
   return (
     // Ruled off from the context controls above, matching the estimate row's divider.
-    <div className={`${ROW_CLASS} border-t border-border/60 pt-5`}>
+    <div className={`${ROW_CLASS} border-t border-border pt-5`}>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
           Advanced settings
@@ -1832,7 +1832,7 @@ function ExtraArgsRow({
             placeholder="--rope-scaling yarn --yarn-orig-ctx 32768"
             aria-label="Extra llama-server arguments"
             aria-describedby={diagnostics.length > 0 ? adviceId : undefined}
-            className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground"
+            className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
           />
         </div>
         {(tokenCount > 0 || diagnostics.length > 0) && (
@@ -3121,7 +3121,7 @@ export function ModelConfigPage({
             <div className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
               Run settings
             </div>
-            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-nav-fg">
+            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
               {target.displayName}
             </div>
           </div>
@@ -3296,8 +3296,8 @@ export function ModelConfigPage({
       <div
         className={
           variant === "sidebar"
-            ? "mt-5 flex flex-col gap-2 border-t border-border/60 pt-5"
-            : "mt-5 flex items-center justify-between gap-3 border-t border-border/60 pt-5"
+            ? "mt-5 flex flex-col gap-2 border-t border-border pt-5"
+            : "mt-5 flex items-center justify-between gap-3 border-t border-border pt-5"
         }
       >
         <div className="flex min-w-0 items-center gap-2">
@@ -3313,7 +3313,7 @@ export function ModelConfigPage({
           />
           <label
             htmlFor={rememberId}
-            className="cursor-pointer select-none truncate text-ui-13 text-nav-fg"
+            className="cursor-pointer select-none truncate text-ui-13 text-foreground"
           >
             Remember for this model
           </label>
