@@ -1848,3 +1848,22 @@ def test_a_discrete_rocm_card_is_never_given_a_host_backed_figure(monkeypatch):
         hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {"0000:03:00.0": (1.0, 24.0)}
     )
     assert hw._rocm_linux_shared_pool_host_gb_by_index(devices) == {}
+
+
+def test_a_partitioned_device_keeps_its_split_unknown(monkeypatch):
+    """sysfs reporting the whole card while torch reports one partition is a SCOPE
+    change, not a measurement of zero host-backed memory.
+
+    Publishing 0.0 there would call the whole partition dedicated and overstate
+    independent capacity, in the direction that admits a load.
+    `_rocm_system_wide_vram_by_index` already treats a mismatch over the same 10% as a
+    different scope in either direction.
+    """
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    devices = [{"index": 0, "total_gb": 24.0, "_rocm_known_unified": True}]
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    # sysfs reports the whole 192 GiB card, torch reports a 24 GiB partition.
+    monkeypatch.setattr(
+        hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {"0000:03:00.0": (1.0, 192.0)}
+    )
+    assert hw._rocm_linux_shared_pool_host_gb_by_index(devices) == {}

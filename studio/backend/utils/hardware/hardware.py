@@ -4209,6 +4209,14 @@ def _rocm_linux_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) -> D
         #
         # Not settled on hardware: neither AMD CI runner has a small BIOS carve-out, so
         # the in-band case was never measured, only reasoned about.
+        # sysfs far ABOVE torch is not a small disagreement, it is a different scope:
+        # a partitioned device where sysfs reports the whole card and torch reports one
+        # partition. `_rocm_system_wide_vram_by_index` treats a mismatch over the same
+        # 10% as a scope change in EITHER direction, and publishing 0.0 here would call
+        # the whole partition dedicated, overstating independent capacity in the
+        # direction that admits a load. Leave the index absent, which means unknown.
+        if -excess > 0.1 * torch_total:
+            continue
         shared[index] = round(excess, 2) if excess > 0.1 * torch_total else 0.0
     return shared
 
