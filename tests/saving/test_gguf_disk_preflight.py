@@ -1326,6 +1326,14 @@ class TestFallbackCheckpointDtype:
         model.config = type("cfg", (), {"_name_or_path": str(tmp_path)})()
         assert S._fallback_checkpoint_extra_bytes(model) == 0
 
+    def test_a_supplied_state_dict_is_what_gets_sized(self, sized_from_parameters, tmp_path):
+        torch = sized_from_parameters
+        model = torch.nn.Linear(8, 8, dtype = torch.bfloat16)
+        model.config = type("cfg", (), {"_name_or_path": str(tmp_path)})()
+        state_dict = {k: v.float() for k, v in model.state_dict().items()}
+        n_parameters = sum(p.numel() for p in model.parameters())
+        assert S._fallback_checkpoint_extra_bytes(model, state_dict) == n_parameters * 2
+
     def test_an_unmeasurable_model_adds_nothing(self):
         assert S._fallback_checkpoint_extra_bytes(_FakeModel()) == 0
 

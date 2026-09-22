@@ -3272,9 +3272,7 @@ def _fallback_checkpoint_extra_bytes(model, state_dict = None):
     if not _gguf_writes_16bit_checkpoint(model, state_dict):
         return 0
     try:
-        actual = 0
-        for parameter in model.parameters():
-            actual += parameter.numel() * parameter.element_size()
+        actual = _full_model_checkpoint_bytes(model, state_dict)
         return max(0, actual - model_16bit_bytes(model))
     except Exception:
         return 0
