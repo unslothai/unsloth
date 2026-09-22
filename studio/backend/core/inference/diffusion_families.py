@@ -1201,6 +1201,14 @@ def pipeline_class_requirement(pipeline_class: str) -> tuple[Optional[str], bool
     return minimum, _version_tuple(minimum) >= _version_tuple(_DIFFUSERS_DROPPED_PY39)
 
 
+# Minimums that name a release which does not EXIST yet. ``pip install -U 'diffusers>=0.41.0'`` has
+# no candidate today, so quoting it as the remedy sends someone to a command that cannot succeed.
+# Studio installs the pinned main build for exactly these classes (studio/backend/requirements/
+# diffusers-main.txt), so the remedy is to put that back, not to chase a release. Delete an entry
+# here the moment its version ships, which is the same moment diffusers-pin.txt moves to it.
+_UNRELEASED_MIN_DIFFUSERS = frozenset({"0.41.0"})
+
+
 def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> str:
     """The refusal text: what is missing, what is installed, and a remedy this interpreter can
     actually carry out."""
@@ -1209,6 +1217,14 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
         return (
             f"'{family_name}' needs a newer diffusers ({pipeline_class}); this environment has "
             f"diffusers {installed}. Upgrade with: pip install -U diffusers."
+        )
+    if minimum in _UNRELEASED_MIN_DIFFUSERS:
+        return (
+            f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}), which has not been "
+            f"released yet; this environment has diffusers {installed}. Unsloth installs a pinned "
+            "build of diffusers main for this, so re-run the Unsloth installer (and leave "
+            "UNSLOTH_DIFFUSERS_MAIN unset), or install it directly with: pip install -r "
+            "studio/backend/requirements/diffusers-main.txt"
         )
     remedy = f"Upgrade with: pip install -U 'diffusers>={minimum}'."
     if needs_py310:
