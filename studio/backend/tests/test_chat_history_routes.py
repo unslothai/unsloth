@@ -730,45 +730,40 @@ def test_fork_thread_404_when_branch_message_missing(monkeypatch):
     assert exc.value.status_code == 404
 
 
-def test_fork_thread_resolves_the_tip_when_no_message_is_given(monkeypatch):
-    """The route picks the tip, so no client read can choose one still being written.
+def test_fork_thread_resolves_the_tip_when_no_message_is_given():
+    from storage import studio_db
 
-    Resolved after the generation check, never before it.
-    """
-    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
-    monkeypatch.setattr(
-        chat_history,
-        "list_chat_messages",
-        lambda _t: [{"id": "m1"}, {"id": "m2"}, {"id": "tip"}],
+    studio_db.upsert_chat_thread(
+        {"id": "src", "title": "T", "modelType": "base", "modelId": "local", "createdAt": 1}
     )
-    seen = {}
+    for message_id, created_at in (("m1", 1), ("m2", 2), ("tip", 3)):
+        message = _message(message_id, "src").model_dump()
+        message["createdAt"] = created_at
+        studio_db.upsert_chat_message(message)
+    response = chat_history.fork_thread(
+        thread_id = "src",
+        payload = chat_history.ChatForkRequest(newThreadId = "new", createdAt = 4),
+        current_subject = "test-user",
+    )
+    assert response.thread.forkedFromMessageId == "tip"
+    assert len(response.messages) == 1
+    assert response.messages[0].content == [{"type": "text", "text": "hello"}]
 
-    def _get_message(_thread, message_id):
-        seen["branch"] = message_id
-        return None
 
-    monkeypatch.setattr(chat_history, "get_chat_message", _get_message)
+def test_fork_thread_404_when_the_thread_has_no_messages():
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": "src", "title": "T", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
     with pytest.raises(HTTPException) as exc:
         chat_history.fork_thread(
             thread_id = "src",
             payload = chat_history.ChatForkRequest(newThreadId = "new", createdAt = 1),
             current_subject = "test-user",
         )
-    assert seen["branch"] == "tip"
     assert exc.value.status_code == 404
-
-
-def test_fork_thread_404_when_the_thread_has_no_messages(monkeypatch):
-    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
-    monkeypatch.setattr(chat_history, "list_chat_messages", lambda _t: [])
-    with pytest.raises(HTTPException) as exc:
-        chat_history.fork_thread(
-            thread_id = "src",
-            payload = chat_history.ChatForkRequest(newThreadId = "new", createdAt = 1),
-            current_subject = "test-user",
-        )
-    assert exc.value.status_code == 404
-    assert "no messages" in str(exc.value.detail)
+    assert studio_db.get_chat_thread("new") is None
 
 
 def test_fork_thread_refuses_before_it_resolves_the_tip(monkeypatch):

@@ -180,7 +180,6 @@ import {
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { useT } from "@/i18n";
-import { create } from "zustand";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,

@@ -3906,9 +3906,13 @@ def _detach_research_message_json(
     )
 
 
+class ChatForkActiveGenerationError(RuntimeError):
+    """A durable generation prevents copying a settled chat."""
+
+
 def fork_chat_thread(
     source_thread_id: str,
-    branch_message_id: str,
+    branch_message_id: Optional[str],
     new_thread_id: str,
     new_title: str,
     created_at: int,
@@ -3929,13 +3933,26 @@ def fork_chat_thread(
         if src is None:
             conn.rollback()
             return None
-        branch_row = conn.execute(
-            "SELECT * FROM chat_messages WHERE thread_id = ? AND id = ?",
-            (source_thread_id, branch_message_id),
-        ).fetchone()
+        # admission and copying share the write lock, including the gap before supervisor registration.
+        if _active_chat_generation_run_ids(conn, {source_thread_id}):
+            raise ChatForkActiveGenerationError(
+                "This chat is still generating. Fork it once it finishes."
+            )
+        if branch_message_id is None:
+            branch_row = conn.execute(
+                """SELECT * FROM chat_messages WHERE thread_id = ?
+                   ORDER BY created_at DESC, id DESC LIMIT 1""",
+                (source_thread_id,),
+            ).fetchone()
+        else:
+            branch_row = conn.execute(
+                "SELECT * FROM chat_messages WHERE thread_id = ? AND id = ?",
+                (source_thread_id, branch_message_id),
+            ).fetchone()
         if branch_row is None:
             conn.rollback()
             return None
+        branch_message_id = branch_row["id"]
         ancestry: list[sqlite3.Row] = []
         cursor_row = branch_row
         seen: set[str] = set()

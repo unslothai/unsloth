@@ -259,14 +259,10 @@ test("the route picks the fork tip, not the client", async () => {
   // The client names no message and never reads one for the fork.
   assert.ok(!ROW_MENU.includes("getActiveGenerations"));
   assert.ok(!/forkChatThread\([^)]*messageId/.test(ROW_MENU));
-  // The route refuses while generating, and only then resolves the tip.
-  const fork = ROUTE.slice(ROUTE.indexOf("def fork_thread("), ROUTE.indexOf("base_title = "));
-  assert.ok(
-    fork.indexOf("active_thread_ids(") < fork.indexOf("list_chat_messages(thread_id)"),
-    "the tip must not be read before the generation check",
-  );
-  assert.match(fork, /status_code = 409/);
-  assert.match(fork, /branch_message_id = tip\[-1\]\["id"\]/);
+  // the transaction resolves the tip after checking durable runs.
+  const fork = ROUTE.slice(ROUTE.indexOf("def fork_thread("));
+  assert.match(fork, /branch_message_id = payload\.messageId/);
+  assert.match(fork, /except ChatForkActiveGenerationError/);
   // Its 409 is a refusal, not a failure.
   assert.match(ROW_MENU, /if \(message\.includes\("still generating"\)\) throw forkRefused\(\);/);
   assert.match(ROW_MENU, /\{ unslothForkRefused: true \}/);
