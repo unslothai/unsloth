@@ -263,9 +263,7 @@ def test_scan_checkpoints_lists_run_with_only_intermediate_checkpoints(tmp_path,
     (checkpoint_dir / "adapter_config.json").write_text(
         json.dumps({"base_model_name_or_path": "unsloth/X", "peft_type": "LORA", "r": 16})
     )
-    (checkpoint_dir / "trainer_state.json").write_text(
-        json.dumps({"log_history": [{"loss": 0.5}]})
-    )
+    (checkpoint_dir / "trainer_state.json").write_text(json.dumps({"log_history": [{"loss": 0.5}]}))
 
     models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
 
