@@ -789,6 +789,14 @@ class TestNetworkTargetResolution:
                 f"s.proxies.__setitem__('https', 'http://{_H}')\ns.get('https://pypi.org/')",
                 id = "proxy_mapping_setitem",
             ),
+            pytest.param(
+                f"from asyncssh.connection import connect\nconnect('{_H}')",
+                id = "asyncssh_defining_module",
+            ),
+            pytest.param(
+                f"import asyncssh\nasyncssh.create_connection(None, '{_H}')",
+                id = "asyncssh_create_connection",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -875,6 +883,11 @@ class TestNetworkTargetResolution:
             "import requests\nd = {}\nd.update({'https': 'http://203.0.113.5'})\nrequests.get('https://pypi.org/')",
             "import httpx\nc = httpx.Client()\nc.base_url = 'https://pypi.org'\nc.get('/')",
             "import requests\nd = {}\nd |= {'a': 'http://203.0.113.5'}\nrequests.get('https://pypi.org/')",
+            # Each client reads only its own destination attribute.
+            "import requests\ns = requests.Session()\ns.base_url = 'http://203.0.113.5'\n"
+            "s.get('https://pypi.org/')",
+            "import httpx\nc = httpx.Client()\nc.proxies = {'https': 'http://203.0.113.5'}\n"
+            "c.get('https://pypi.org/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):

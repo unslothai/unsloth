@@ -16226,6 +16226,7 @@ def _check_signal_escape_patterns(code: str):
             "fabric",
             "fabric.connection",
             "asyncssh",
+            "asyncssh.connection",
         }
     )
     _HTTP_VERBS = ("get", "post", "put", "delete", "patch", "head", "options")
@@ -16383,7 +16384,11 @@ def _check_signal_escape_patterns(code: str):
                 f"{module}.Connection": (0, ("host",), "host")
                 for module in ("fabric", "fabric.connection")
             },
-            "asyncssh.connect": (0, ("host",), "host"),
+            **{
+                f"{module}.{fn}": (index, ("host",), "host")
+                for module in ("asyncssh", "asyncssh.connection")
+                for fn, index in (("connect", 0), ("create_connection", 1))
+            },
         }
     )
     # Every call with a destination entry is recognised, on top of the prefixes above.
@@ -16396,8 +16401,20 @@ def _check_signal_escape_patterns(code: str):
     _NETWORK_ROOTS = frozenset(p.partition(".")[0] for p in _NETWORK_FQ_PREFIXES)
     # An explicit proxy is where the socket connects, whatever the request URL says.
     _PROXY_KEYWORDS = ("proxy", "proxies")
-    # Client attributes that decide where later calls on it connect.
-    _DESTINATION_ATTRS = (*_PROXY_KEYWORDS, "base_url")
+    # Client attributes that decide where later calls connect, and the clients that honour each:
+    # requests reads `Session.proxies` on every request, httpx `Client.base_url` is a settable
+    # property, and neither reads the other's attribute.
+    _DESTINATION_ATTRS = {
+        "proxies": frozenset(
+            (
+                "requests.Session",
+                "requests.sessions.Session",
+                "requests.session",
+                "requests.sessions.session",
+            )
+        ),
+        "base_url": frozenset(("httpx.Client", "httpx.AsyncClient")),
+    }
     _UPLOAD_HTTP_METHODS = (
         *(
             f"{owner}.{verb}"
@@ -17227,12 +17244,12 @@ def _check_signal_escape_patterns(code: str):
             self.instance_aliases: "dict[str, set[str]]" = {}
             # Receiver path -> every value stored in its `_DESTINATION_ATTRS`, including by
             # `update()`, `|=` and subscript.
-            self.receiver_destinations: "dict[str, list[ast.AST]]" = {}
+            self.receiver_destinations: "dict[str, list[tuple[str, ast.AST]]]" = {}
             # Receiver path -> the paths copied to or from it, which may be the same client: a
             # proxy set through `t` after `t = s` is used by `s.get(...)`.
             self.path_links: "dict[str, set[str]]" = {}
-            # Path -> the clients whose proxy mapping it names, after `p = s.proxies`.
-            self.proxy_owners: "dict[str, set[str]]" = {}
+            # Path -> the (client, attribute) whose mapping it names, after `p = s.proxies`.
+            self.proxy_owners: "dict[str, set[tuple[str, str]]]" = {}
             # Class id -> its family: the classes in this file joined through their base names.
             self.class_family: "dict[int, str]" = {}
             # Method id -> (first parameter, class family); `self_names` is the stack in effect.
@@ -17658,7 +17675,7 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(target, ast.Subscript):
                 target, mutated = target.value, True
             if isinstance(target, ast.Attribute) and target.attr in _DESTINATION_ATTRS:
-                owners = {self._receiver_path(target.value)}
+                owners = {(self._receiver_path(target.value), target.attr)}
             elif mutated and self._receiver_path(target) is not None:
                 owners = set().union(
                     *(
@@ -17668,9 +17685,9 @@ def _check_signal_escape_patterns(code: str):
                 )
             else:
                 return
-            for owner in owners:
+            for owner, attr in owners:
                 if owner is not None:
-                    self.receiver_destinations.setdefault(owner, []).append(value)
+                    self.receiver_destinations.setdefault(owner, []).append((attr, value))
 
         def visit_Assign(self, node):
             if not self.collecting:
@@ -17688,11 +17705,11 @@ def _check_signal_escape_patterns(code: str):
             for target, value, named in pairs:
                 self._record_proxy(target, value)
                 self._link(target, value)
-                if isinstance(value, ast.Attribute) and value.attr in _PROXY_KEYWORDS:
+                if isinstance(value, ast.Attribute) and value.attr in _DESTINATION_ATTRS:
                     owner = self._receiver_path(value.value)
                     alias = self._receiver_path(target)
                     if owner is not None and alias is not None:
-                        self.proxy_owners.setdefault(alias, set()).add(owner)
+                        self.proxy_owners.setdefault(alias, set()).add((owner, value.attr))
                 if self._register(target, named, node):
                     registered.add(target.id)
             self._rebind(node, exempt = registered)
@@ -17984,8 +18001,13 @@ def _check_signal_escape_patterns(code: str):
                 proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
                 if isinstance(node.func, ast.Attribute):
                     receiver = self._receiver_path(node.func.value)
+                    owners = {c.rpartition(".")[0] for c in recognised}
                     for path in self._linked_paths(receiver) if receiver else ():
-                        proxies.extend(self.receiver_destinations.get(path, ()))
+                        proxies.extend(
+                            value
+                            for attr, value in self.receiver_destinations.get(path, ())
+                            if owners & _DESTINATION_ATTRS[attr]
+                        )
                 for proxy in proxies:
                     if isinstance(proxy, ast.Dict):
                         if None in proxy.keys:
