@@ -1798,6 +1798,8 @@ class FastBaseModel:
             token = token,
             cache_dir = kwargs.get("cache_dir"),
             local_files_only = local_files_only,
+            force_download = kwargs.get("force_download", None),
+            trust_remote_code = trust_remote_code,
         )
         # Forced float32 loads in bfloat16 then casts to float16. Resolved here, not at the load, because attention resolution and the device-map planner both size the same dtype.
         torch_dtype = dtype

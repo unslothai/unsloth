@@ -1138,7 +1138,7 @@ def _set_attn_impl(config, impl):
     return impl
 
 
-_REMOTE_CODE_HUB_KWARGS = ("revision", "code_revision", "token", "cache_dir", "local_files_only")
+_REMOTE_CODE_HUB_KWARGS = ("revision", "code_revision", "token", "cache_dir", "local_files_only", "force_download")
 
 
 def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
@@ -1155,6 +1155,11 @@ def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
     model class, whose `_supports_*` flags then decide the attention implementation of a class
     that is never built. Only a config that itself came out of `transformers_modules` and names
     the requested auto class in `auto_map` is remote; everything else stays native."""
+    # The caller's trust decision comes first: a materialised remote config handed in with
+    # trust_remote_code = False must not have its modeling module imported here, before
+    # transformers gets to refuse the load.
+    if hub_kwargs.get("trust_remote_code", None) is False:
+        return None
     auto_name = getattr(auto_model, "__name__", None)
     auto_map = getattr(config, "auto_map", None)
     if not auto_name or not isinstance(auto_map, dict) or auto_name not in auto_map:
@@ -1170,7 +1175,9 @@ def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
     if cross_repo:
         _, class_ref = class_ref.split("--", 1)
     module_name, class_name = class_ref.rsplit(".", 1)
-    if not cross_repo:
+    # A forced download refreshes the repository, so an already imported sibling may be the
+    # implementation that is about to be replaced; go through transformers instead.
+    if not cross_repo and not hub_kwargs.get("force_download", False):
         # The config module is already materialised; its modeling sibling usually is too. A
         # `other/repo--module.Class` reference lives in another repository, so a same-named
         # module next to the config is not the class transformers will build.
