@@ -1447,6 +1447,12 @@ def _join_escaped_newlines(text: str) -> str:
     # opened no comment and the pair was joined away. Staying inside is the conservative direction.
     case_depth = 0
     case_depths: list[int] = []
+    # How many `${...}` parameter expansions are open, per substitution. A `)` inside one is part
+    # of the expansion, not the substitution's terminator: bash runs the `rm` in
+    # `"$(x=${v%)}; echo ok # comment \<newline>rm -f victim<newline>)"`, and reading that `)` as
+    # the close put the rest back in double quotes, where the `#` opened no comment.
+    brace_depth = 0
+    brace_depths: list[int] = []
     word = ""
     # Whether the word being read starts a command. `esac` CLOSES a case only there: in
     # `case esac in x) ...;; esac; ...` the first `esac` is the word being matched on, and
@@ -1475,21 +1481,32 @@ def _join_escaped_newlines(text: str) -> str:
                     at_command_position = True
                 elif not ch.isspace():
                     at_command_position = False
+        if not in_single and not in_comment and ch == "$" and text[i + 1 : i + 2] == "{":
+            brace_depth += 1
+            out.append("${")
+            i += 2
+            continue
+        if ch == "}" and brace_depth and not in_single and not in_comment:
+            brace_depth -= 1
+            out.append(ch)
+            i += 1
+            continue
         if not in_single and not in_comment and ch == "$" and text[i + 1 : i + 2] == "(":
             substitutions.append((in_single, in_double, in_comment))
             group_depths.append(group_depth)
             case_depths.append(case_depth)
-            group_depth = case_depth = 0
+            brace_depths.append(brace_depth)
+            group_depth = case_depth = brace_depth = 0
             in_single = in_double = in_comment = False
             out.append("$(")
             i += 2
             continue
-        if ch == "(" and not in_single and not in_double and not in_comment:
+        if ch == "(" and not in_single and not in_double and not in_comment and not brace_depth:
             group_depth += 1
             out.append(ch)
             i += 1
             continue
-        if ch == ")" and not in_single and not in_double and not in_comment:
+        if ch == ")" and not in_single and not in_double and not in_comment and not brace_depth:
             if group_depth:
                 group_depth -= 1
             elif case_depth:
@@ -1498,6 +1515,7 @@ def _join_escaped_newlines(text: str) -> str:
                 in_single, in_double, in_comment = substitutions.pop()
                 group_depth = group_depths.pop()
                 case_depth = case_depths.pop()
+                brace_depth = brace_depths.pop()
                 # A substitution's close stays INSIDE the surrounding word, unlike a subshell's or
                 # a control operator's, so a `#` right after it is ordinary text. Checked against
                 # bash 5.2.21: `echo $(printf x)#note \<newline>rm -rf victim` is one `echo` and

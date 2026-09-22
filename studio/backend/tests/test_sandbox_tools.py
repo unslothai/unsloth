@@ -3009,6 +3009,9 @@ class TestEscapedNewlineIsNotACommandBoundary:
             # is one `echo` and the file survives.
             pytest.param("echo '; A=1 rm -rf x'", id = "assignment_prefix_inside_quotes_is_data"),
             pytest.param("echo esac", id = "esac_as_an_ordinary_argument"),
+            pytest.param("echo ${HOME}", id = "an_ordinary_parameter_expansion"),
+            pytest.param("echo }", id = "a_closing_brace_on_its_own"),
+            pytest.param('echo "${x:-$(date)}"', id = "a_substitution_inside_an_expansion"),
             pytest.param(
                 'echo "$(case a in a) case b in b) echo x;; esac;; esac)"', id = "nested_case"
             ),
@@ -3106,6 +3109,18 @@ class TestEscapedNewlineIsNotACommandBoundary:
                 'echo "$(case esac in x) echo hi;; esac; echo ok # comment \\\nrm -f victim\n)"',
                 "rm",
                 id = "esac_as_the_case_operand",
+            ),
+            # A `)` inside `${...}` belongs to the parameter expansion, not the substitution.
+            # Checked against bash 5.2.21: both of these delete the file.
+            pytest.param(
+                "v='abc)'; echo \"$(x=${v%)}; echo ok # comment \\\nrm -f victim\n)\"",
+                "rm",
+                id = "paren_inside_a_parameter_expansion",
+            ),
+            pytest.param(
+                'echo "$(x=${a:-${b%)}}; echo ok # c \\\nrm -f victim\n)"',
+                "rm",
+                id = "paren_inside_a_nested_parameter_expansion",
             ),
         ],
     )
