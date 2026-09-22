@@ -272,9 +272,7 @@ def test_full_finetune_gguf_writes_trained_weights_not_source_checkpoint(
     assert tokenizer.saved_to == [str(requested)]
     assert os.listdir(checkpoint) == []
     assert save_mod._gguf_writes_16bit_checkpoint(model, state_dict) is True
-    assert save_mod._gguf_model_input_directory(model, str(requested), state_dict) == str(
-        requested
-    )
+    assert save_mod._gguf_model_input_directory(model, str(requested), state_dict) == str(requested)
 
 
 # The above rejection points users at push_to_hub_gguf(save_method='lora'), so that path has to work; it is only ever

@@ -3336,7 +3336,11 @@ def _gguf_conversion_directory(model_directory):
     return cwd if _directory_is_writable(cwd) else model_directory
 
 
-def _gguf_model_input_directory(model, save_directory, state_dict = None):
+def _gguf_model_input_directory(
+    model,
+    save_directory,
+    state_dict = None,
+):
     """The folder the converter reads, which is not always `save_directory`. A non-PEFT model that reuses its loaded checkpoint is converted from it, which `unsloth_save_pretrained_gguf` assigns to `save_directory` before calling `save_to_gguf`; the same condition `_gguf_writes_16bit_checkpoint` uses. It matters only in the unwritable-CWD fallback, where the intermediate GGUF lands beside the reused checkpoint rather than the requested output, and the two can be on different filesystems."""
     if _gguf_reuses_loaded_checkpoint(model, state_dict):
         return str(model.config._name_or_path)
