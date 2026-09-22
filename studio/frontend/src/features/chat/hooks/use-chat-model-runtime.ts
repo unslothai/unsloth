@@ -1566,6 +1566,9 @@ export function useChatModelRuntime() {
             );
             const validation = await validateModel({
               model_path: loadPath,
+              engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
+              engine_parallelism: stateBeforeUnload.params.engineParallelism ?? "tensor",
+              engine: isGguf ? "auto" : (stateBeforeUnload.params.engine ?? "auto"),
               nativePathLease: validateNativePathLease,
               hf_token: hfToken,
               max_seq_length: validateMaxSeqLength,

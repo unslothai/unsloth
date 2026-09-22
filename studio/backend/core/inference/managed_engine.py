@@ -40,11 +40,16 @@ def validate_load(engine: str, request) -> None:
             raise ValueError(f"GPU {gpu_id}: {reason}")
     if not installed(engine):
         raise ValueError(f"Install {engine} in Settings > System > Inference engines first.")
-    if request.gguf_variant or request.model_path.lower().endswith(".gguf") or request.is_lora:
+    # Also judges /validate requests, which carry no LoRA or template fields.
+    if (
+        request.gguf_variant
+        or request.model_path.lower().endswith(".gguf")
+        or getattr(request, "is_lora", False)
+    ):
         raise ValueError(
             "Optional engines require a full model checkpoint. GGUF files and LoRA adapters use Default."
         )
-    if request.chat_template_override:
+    if getattr(request, "chat_template_override", None):
         raise ValueError("Optional engines do not yet support template overrides.")
 
 

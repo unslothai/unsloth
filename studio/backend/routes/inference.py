@@ -15791,6 +15791,69 @@ def _require_resolved_base_access(config) -> None:
         account_access.require_model_access(base.strip())
 
 
+async def _managed_engine_request(request):
+    """Normalize an optional-engine request; /validate and /load must judge the same one."""
+    from core.inference.managed_engine import validate_load
+
+    try:
+        await asyncio.to_thread(validate_load, request.engine, request)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    precision = request.engine_precision
+    if (
+        "engine_precision" not in request.model_fields_set
+        and "load_in_4bit" in request.model_fields_set
+        and request.load_in_4bit
+    ):
+        precision = "int4"
+    return request.model_copy(
+        update = {
+            "load_in_4bit": False,
+            "gpu_ids": request.gpu_ids or [0],
+            "engine_precision": precision,
+        }
+    )
+
+
+def _reject_unsupported_managed_kind(request, config) -> None:
+    if not (config.is_gguf or config.is_lora or config.is_audio):
+        return
+    detected_kind = (
+        "GGUF"
+        if config.is_gguf
+        else "a LoRA adapter"
+        if config.is_lora
+        else "a vision model"
+        if config.is_vision
+        else "an audio model"
+    )
+    raise HTTPException(
+        status_code = 400,
+        detail = (
+            f"This model was detected as {detected_kind}. "
+            f"The Studio {request.engine} integration currently supports text and vision checkpoints. "
+            "Choose Default for this model, or select a supported text checkpoint."
+        ),
+    )
+
+
+async def _managed_engine_options(request, config, hf_token) -> dict:
+    """Metadata checks that must reject before the resident model is released."""
+    from core.inference.managed_engine import validate_model
+    try:
+        return await asyncio.to_thread(
+            validate_model,
+            config,
+            hf_token,
+            request.gpu_ids,
+            request.engine,
+            request.engine_precision,
+            request.engine_parallelism,
+        )
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
 async def _load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -15806,26 +15869,7 @@ async def _load_model_impl(
 ):
     engine_options = None
     if request.engine != "auto":
-        from core.inference.managed_engine import validate_load
-
-        try:
-            await asyncio.to_thread(validate_load, request.engine, request)
-        except ValueError as exc:
-            raise HTTPException(status_code = 400, detail = str(exc)) from exc
-        precision = request.engine_precision
-        if (
-            "engine_precision" not in request.model_fields_set
-            and "load_in_4bit" in request.model_fields_set
-            and request.load_in_4bit
-        ):
-            precision = "int4"
-        request = request.model_copy(
-            update = {
-                "load_in_4bit": False,
-                "gpu_ids": request.gpu_ids or [0],
-                "engine_precision": precision,
-            }
-        )
+        request = await _managed_engine_request(request)
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
@@ -16265,24 +16309,8 @@ async def _load_model_impl(
                     raise HTTPException(status_code = 400, detail = str(exc)) from exc
         gguf_intent: Optional[GgufLoadIntent] = None
         _tensor_intent_overall = False
-        if request.engine != "auto" and (config.is_gguf or config.is_lora or config.is_audio):
-            detected_kind = (
-                "GGUF"
-                if config.is_gguf
-                else "a LoRA adapter"
-                if config.is_lora
-                else "a vision model"
-                if config.is_vision
-                else "an audio model"
-            )
-            raise HTTPException(
-                status_code = 400,
-                detail = (
-                    f"This model was detected as {detected_kind}. "
-                    f"The Studio {request.engine} integration currently supports text and vision checkpoints. "
-                    "Choose Default for this model, or select a supported text checkpoint."
-                ),
-            )
+        if request.engine != "auto":
+            _reject_unsupported_managed_kind(request, config)
         if config.is_gguf:
             gguf_intent = _resolve_gguf_load_intent(
                 config,
@@ -16333,19 +16361,9 @@ async def _load_model_impl(
                 return reused
 
         if request.engine != "auto":
-            from core.inference.managed_engine import validate_model
-            try:
-                engine_options = await asyncio.to_thread(
-                    validate_model,
-                    config,
-                    False if anonymous_hf_access else request.hf_token,
-                    request.gpu_ids,
-                    request.engine,
-                    request.engine_precision,
-                    request.engine_parallelism,
-                )
-            except (ValueError, OSError) as exc:
-                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            engine_options = await _managed_engine_options(
+                request, config, False if anonymous_hf_access else request.hf_token
+            )
 
         # Config-resolved dedupe must run first: a duplicate must not refuse/cancel active chats.
         # Refusal is non-destructive; defer forced cancellation past every remaining rejection.
@@ -17263,6 +17281,8 @@ async def validate_model(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
+    if request.engine != "auto":
+        request = await _managed_engine_request(request)
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
@@ -17323,6 +17343,10 @@ async def validate_model(
                 status_code = 400,
                 detail = f"Invalid model identifier: {model_log_label}",
             )
+        if request.engine != "auto":
+            # The picker unloads the resident once this passes, so /load's engine checks run here too.
+            _reject_unsupported_managed_kind(request, config)
+            await _managed_engine_options(request, config, request.hf_token)
 
         # The caller's own list when it sent one, or the resolver hands back this
         # fourth argument unchanged and a --ctx-size the load is about to use would

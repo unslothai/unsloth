@@ -408,6 +408,42 @@ def test_managed_load_launches_the_validated_local_path(monkeypatch):
     assert args[args.index("--served-model-name") + 1] == "C:\\models\\foo"
 
 
+def test_validate_rejects_engine_settings_before_the_picker_unloads(monkeypatch, tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from core.inference import managed_engine
+    from models.inference import ValidateModelRequest
+    from routes import inference as route
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"quantization_config": {"quant_method": "awq"}})
+    )
+    config = SimpleNamespace(
+        identifier = str(tmp_path),
+        path = str(tmp_path),
+        display_name = "model",
+        is_local = True,
+        is_gguf = False,
+        is_lora = False,
+        is_audio = False,
+        is_vision = False,
+    )
+    monkeypatch.setattr(managed_engine, "support_reason", lambda *args: None)
+    monkeypatch.setattr(managed_engine, "installed", lambda engine: {"path": "/env"})
+    monkeypatch.setattr(
+        route,
+        "_resolve_model_identifier_for_request",
+        lambda *args, **kwargs: (str(tmp_path), str(tmp_path), False),
+    )
+    monkeypatch.setattr(route.ModelConfig, "from_identifier", lambda **kwargs: config)
+    request = ValidateModelRequest(model_path = str(tmp_path), engine = "vllm", engine_precision = "bf16")
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(route.validate_model(request, current_subject = "test-user"))
+    assert raised.value.status_code == 400
+    assert "already quantized" in raised.value.detail
+
+
 def test_busy_install_does_not_overwrite_another_job(isolated):
     job = {"state": "running", "phase": "installing", "message": "Downloading"}
     (isolated / "vllm.job.json").write_text(json.dumps(job))

@@ -369,6 +369,10 @@ export async function validateModel(
       native_path_lease: payload.nativePathLease ?? null,
       hf_token: preparedToken.token,
       gguf_variant: payload.gguf_variant ?? null,
+      // The picker unloads the resident once this passes, so engine checks must run here.
+      engine: payload.engine ?? "auto",
+      engine_precision: payload.engine_precision ?? "auto",
+      engine_parallelism: payload.engine_parallelism ?? "tensor",
       // Intended load settings so validate's preflight matches the follow-up /load.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
