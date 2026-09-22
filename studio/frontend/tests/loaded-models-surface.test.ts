@@ -5,21 +5,13 @@
 // do not. Read from the source: the node suite has no DOM to compute styles in.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const CSS = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-const INDICATOR = readFileSync(
-  new URL(
-    "../src/features/loaded-models/loaded-models-indicator.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const BANNER = readFileSync(
-  new URL("../src/components/llama-update-banner.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const CSS = readSrc("index.css");
+const INDICATOR = readSrc("features/loaded-models/loaded-models-indicator.tsx");
+const BANNER = readSrc("components/llama-update-banner.tsx");
 
 function surface(source: string, anchor: string): string {
   const at = source.indexOf(anchor);
@@ -89,10 +81,12 @@ test("the shared vars still match the update banner's shadow", () => {
 // The banner paints bg-white/dark:bg-card, the card bg-popover. Same colour in
 // every theme, so the surfaces match; this pins that they stay equal.
 test("popover and card resolve to the same colour in every theme", () => {
-  const popover = [...CSS.matchAll(/^\t*--popover:\s*([^;]+);/gm)].map((m) =>
-    m[1].trim(),
+  // Both are authored as -base and derived together through the contrast
+  // slider (index.css), so comparing the authored values compares the result.
+  const popover = [...CSS.matchAll(/^\t*--popover-base:\s*([^;]+);/gm)].map(
+    (m) => m[1].trim(),
   );
-  const card = [...CSS.matchAll(/^\t*--card:\s*([^;]+);/gm)].map((m) =>
+  const card = [...CSS.matchAll(/^\t*--card-base:\s*([^;]+);/gm)].map((m) =>
     m[1].trim(),
   );
   assert.ok(popover.length > 0);

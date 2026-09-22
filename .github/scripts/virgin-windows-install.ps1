@@ -80,7 +80,16 @@ if ($rc -ne 0) {
         & $venvPy -V
     }
     foreach ($cli in (Join-Path $venv 'Scripts\unsloth.exe'), (Join-Path $env:UNSLOTH_STUDIO_HOME 'bin\unsloth.exe')) {
-        if (Test-Path -LiteralPath $cli) { Write-Host "unsloth CLI: $cli" }
+        if (Test-Path -LiteralPath $cli) {
+            Write-Host "unsloth CLI: $cli"
+            # Present is not runnable: the console script imports the whole command
+            # tree, so a dependency missing under --no-deps surfaces here and nowhere
+            # else. This is the assertion the hosted Windows leg already makes.
+            & $cli --version
+            if ($LASTEXITCODE -ne 0) {
+                $failures += "unsloth CLI at $cli is on disk but does not run (exit $LASTEXITCODE)"
+            }
+        }
         else { $failures += "installer exited 0 but left no unsloth CLI at $cli" }
     }
     # issue #8490: the generated .exe launchers above are unsigned, so Application

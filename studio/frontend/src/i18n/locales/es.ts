@@ -5,6 +5,67 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const es = {
+  composerSettings: {
+    title: "Redacción de mensajes",
+    plainText: "Redactor de texto sin formato",
+    plainTextDescription: "Mantener el código, Markdown y los enlaces como texto literal. Desactívalo para mostrar una vista previa con formato.",
+    showContext: "Mostrar uso de la ventana de contexto",
+    sendShortcut: "Atajo para enviar",
+    sendDescription: "Elige si Intro envía un mensaje o inserta una línea nueva.",
+    followUp: "Mensajes de seguimiento",
+    followUpDescription: "Elige qué ocurre al enviar durante una respuesta. Pulsa {shortcut} para hacer lo contrario con un mensaje.",
+    queue: "En cola",
+    steer: "Redirigir",
+    steerDescription: "Redirigir detiene la respuesta actual y envía tu mensaje de seguimiento a continuación.",
+    settings: "Ajustes del redactor",
+    preview: "Vista previa con formato",
+  },
+  promptQueue: {
+    loading: "Cargando mensajes en cola",
+    listLabel: "Mensajes en cola",
+    regionLabel: "Cola de mensajes, {current} de {total}",
+    itemLabel: "Mensaje en cola {position} de {total}: {prompt}",
+    reorderInstructions: "Arrastra el controlador para reordenar. Con el controlador enfocado, usa Arriba o Abajo para mover una posición, o Inicio o Fin para moverlo al principio o al final.",
+    dragTooltip: "Arrastra para reordenar",
+    reorderLabel: "Reordenar el mensaje en cola {position} de {total}",
+    paused: "En pausa",
+    steer: "Redirigir",
+    steerTooltip: "Interrumpir la respuesta y enviar este mensaje a continuación",
+    steerLabel: "Redirigir con el mensaje en cola {position}",
+    removeTooltip: "Quitar de la cola",
+    removeLabel: "Quitar el mensaje en cola {position}",
+    moreTooltip: "Más opciones",
+    moreLabel: "Más opciones para el mensaje en cola {position}",
+    editItem: "Editar mensaje",
+    copyItem: "Copiar mensaje",
+    editLabel: "Editar el mensaje en cola {position}",
+    cancel: "Cancelar",
+    save: "Guardar",
+    turnOffQueueing: "Desactivar la cola",
+    turnOnQueueing: "Activar la cola",
+    resume: "Reanudar la cola",
+    queueButton: "Poner el mensaje en cola",
+    steerButton: "Redirigir la respuesta",
+    sendTooltip: "Enviar mensaje ({shortcut})",
+    sendLabel: "Enviar mensaje",
+    followUpTooltip: "{action} ({send}) · {opposite} para lo contrario",
+    announceUpdated: "Mensaje en cola actualizado.",
+    announceEditFailed: "Este mensaje ya no se puede editar porque la cola cambió.",
+    announceRemoved: "Mensaje quitado de la cola.",
+    announceSteered: "Este mensaje redirigirá la respuesta a continuación.",
+    announceSteerFailed: "Este mensaje no pudo redirigir la respuesta. Revisa la cola e inténtalo de nuevo.",
+    announceCopied: "Mensaje copiado.",
+    announceCopyFailed: "No se pudo copiar este mensaje. Inténtalo de nuevo.",
+    announceQueueingOn: "Los nuevos mensajes de seguimiento se pondrán en cola después de la respuesta actual.",
+    announceQueueingOff: "Los nuevos mensajes de seguimiento redirigirán la respuesta actual.",
+    announceMoved: "Mensaje movido a la posición {position} de {total}.",
+    announceMoveFailed: "La cola cambió antes de poder mover este mensaje. Inténtalo de nuevo.",
+    announceDragReset: "La cola cambió. Arrastra de nuevo para reordenar los mensajes restantes.",
+    editingHint: "Editando el mensaje",
+    queueingOffHint: "Los mensajes nuevos interrumpen y se ejecutan a continuación.",
+    queueingOnHint: "Los mensajes nuevos esperan su turno.",
+    queueingHintShared: "La cola se conserva.",
+  },
   picker: {
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",
@@ -103,6 +164,8 @@ export const es = {
       export: "Exportar",
       recents: "Recientes",
       noChatsYet: "Aún no hay chats",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Sin chats",
       showMore: "Mostrar más",
       showLess: "Mostrar menos",
       settings: "Configuración",
@@ -133,6 +196,7 @@ export const es = {
       unpinChats: "Dejar de fijar chats",
       archiveChats: "Archivar chats",
       markUnread: "Marcar como no leído",
+      markRead: "Marcar como leído",
       deleteChats: "Eliminar chats",
       deleteTitle: "Eliminar chats",
       deleteDescription: "¿Eliminar {count} chats? Esta acción no se puede deshacer.",
@@ -151,11 +215,19 @@ export const es = {
       priority: "Prioridad",
       lastUpdated: "Última actualización",
       manualOrder: "Orden manual",
-      moveUp: "Subir",
-      moveDown: "Bajar",
+      switchedToManual: "Orden manual: arrastra las filas para reordenarlas",
       organizeChats: "Organizar chats",
       organizeProjects: "Organizar proyectos",
       sortPinnedChats: "Ordenar chats fijados",
+      moveUp: "Subir",
+      moveDown: "Bajar",
+    },
+    drag: {
+      reorder: "Reordenar",
+      pin: "Fijar",
+      unpin: "Desfijar",
+      moveTo: "Mover a {name}",
+      moveToRecents: "Mover a Recientes",
     },
     dialog: {
       deleteChat: {
@@ -185,6 +257,44 @@ export const es = {
     },
   },
   settings: {
+    accounts: {
+      title: "Cuentas",
+      description: "Crea cuentas privadas de Unsloth. Los nuevos usuarios inician sesión con un código de configuración de un solo uso y eligen una contraseña.",
+      username: "Nombre de usuario",
+      create: "Crear cuenta",
+      createDescription: "Comparte un código de configuración para que elija su propia contraseña.",
+      actionsFor: "Gestionar {username}",
+      actions: "Acciones",
+      search: "Buscar cuentas",
+      noResults: "No hay cuentas coincidentes",
+      created: "Creada",
+      status: "Estado",
+      loginHint: "Inicia sesión como {username} con este código como contraseña y luego elige una nueva.",
+      privateAccount: "Cuenta privada",
+      empty: "Aún no hay otras cuentas",
+      setupCode: "Código de configuración",
+      setupFor: "Código de configuración para {username}",
+      shownOnce: "Copia este código ahora y compártelo con el titular de la cuenta. Solo se muestra aquí y puede usarse una vez en un plazo de 60 minutos.",
+      expires: "Caduca {expiry}",
+      copy: "Copiar código de configuración",
+      copied: "Copiado",
+      copyFailed: "No se pudo copiar. Selecciona y copia el código de configuración de arriba.",
+      dismiss: "Listo",
+      owner: "Propietario de la instalación",
+      active: "Activada",
+      inactive: "Desactivada",
+      regenerate: "Regenerar código de configuración",
+      resetTitle: "¿Restablecer la contraseña de {username}?",
+      resetDescription: "Regenerar el código de configuración sustituye la contraseña de {username}, cierra sus sesiones y revoca sus claves de API. Dale el código nuevo para que elija otra contraseña.",
+      deactivate: "Desactivar",
+      reactivate: "Activar",
+      delete: "Eliminar cuenta",
+      deleteTitle: "¿Eliminar {username}?",
+      deleteDescription: "Esto revoca las sesiones de {username} y cancela su trabajo. Sus chats, ajustes, credenciales, subidas, conjuntos de datos, entrenamientos, resultados, exportaciones, galerías, entornos aislados, proyectos y archivos temporales se retiran. Los directorios se renombran aparte, nunca se eliminan. Crear de nuevo este nombre de usuario inicia una cuenta nueva sin estos datos.",
+      cancel: "Cancelar",
+      retry: "Actualizar cuentas",
+      failed: "La solicitud de cuenta falló.",
+    },
     title: "Configuración",
     dialog: {
       title: "Configuración",
@@ -196,6 +306,7 @@ export const es = {
       panelReload: "Recargar",
     },
     tabs: {
+      accounts: "Cuentas",
       general: "General",
       profile: "Perfil",
       appearance: "Apariencia",
@@ -213,9 +324,10 @@ export const es = {
     },
     keyboardShortcuts: {
       title: "Atajos de teclado",
-      description:
-        "Cambia cualquier atajo, o bórralo para liberar la combinación para el navegador o el sistema.",
       searchPlaceholder: "Buscar atajos…",
+      keystrokePlaceholder: "Pulsa un atajo para buscar",
+      searchByKeystrokes: "Buscar por pulsación",
+      searchByName: "Buscar por nombre",
       noResults: "Ningún atajo coincide con esa búsqueda.",
       unassigned: "Sin asignar",
       recording: "Pulsa las teclas…",
@@ -412,6 +524,14 @@ export const es = {
           label: "Enviar mensaje",
           description: "Enviar lo que hay en el redactor",
         },
+        queueMessage: {
+          label: "Poner el mensaje en cola",
+          description: "Enviar el borrador al final de la cola",
+        },
+        steerMessage: {
+          label: "Dirigir la respuesta",
+          description: "Detener la respuesta actual y enviar el borrador a continuación",
+        },
         cycleReasoningEffort: {
           label: "Alternar esfuerzo de razonamiento",
           description: "Recorrer los niveles de esfuerzo de razonamiento",
@@ -452,7 +572,16 @@ export const es = {
       sourceHint: "Los ejecutores de modelos escriben sus propios registros, así que un fallo al cargar o al generar suele explicarse ahí y no en el registro del servidor.",
       path: "Ubicación",
       pathCopy: "Copiar ruta",
-      refreshSection: "Actualización",
+      currentSession: "Actual",
+      statusLive: "En vivo",
+      statusPaused: "En pausa",
+      statusStale: "Obsoleto",
+      filterPlaceholder: "Filtrar líneas",
+      lineCount: "{count} líneas",
+      filteredLineCount: "{shown} de {total} líneas",
+      wrapLines: "Ajustar líneas",
+      jumpToLatest: "Ir al final",
+      noMatches: "Ninguna línea coincide con el filtro.",
       mode: "Modo",
       modeLive: "En vivo",
       modeInterval: "Cada 3 segundos",
@@ -468,6 +597,17 @@ export const es = {
       droppedNotice: "Se omitieron algunas líneas: el registro se escribió más rápido de lo que se podía leer.",
       morePending: "Aun se estan leyendo mas lineas; llegaran en la proxima actualizacion.",
       staleSession: "El registro en archivo esta desactivado, por lo que esta es una sesion anterior y no se actualizara.",
+      downloadAllLogs: "Descargar todos los registros (.zip)",
+      downloadingAllLogs: "Empaquetando los registros...",
+      exportMaskedNote: "Las credenciales se enmascaran en los archivos exportados. Los registros muy grandes conservan solo sus líneas más recientes y algunos pueden quedar fuera por completo; consulta EXPORT_WARNINGS.txt en el archivo.",
+      downloadedTo: "Guardado en {path}",
+      downloadedToBrowser: "Descarga iniciada.",
+      showInFolder: "Mostrar en la carpeta",
+      openLogsFolder: "Abrir la carpeta de registros",
+      openLogsFolderFailed: "No se pudo abrir la carpeta de registros.",
+      exportFailed: "No se pudieron descargar los registros.",
+      exportTooOld: "El backend de Unsloth en ejecución es demasiado antiguo para exportar los registros. Actualízalo y reinícialo.",
+      exportForbidden: "Para descargar todos los registros hace falta una sesión de Unsloth iniciada. Una clave de API no basta.",
       keywords: "depuracion depurar registro registros log logs error errores fallo traza diagnostico solucion de problemas debug",
     },
     voice: {
@@ -772,6 +912,18 @@ export const es = {
         revoked: "Todos los enlaces de vista previa revocados",
         revokeError: "No se pudieron revocar los enlaces de vista previa",
       },
+      managedProviderUrls: {
+        sectionTitle: "Cuentas gestionadas",
+        enableLabel: "Conexiones locales y de red",
+        enableDescription:
+          "Permite que las cuentas gestionadas apunten sus conexiones a direcciones locales o de red, como un servidor Ollama o llama.cpp en este equipo o en tu red local. Desactivado de forma predeterminada, porque permite a esas cuentas alcanzar servicios que se ejecutan en tu equipo y en tu red.",
+        lockedByEnvironment:
+          "Definido por UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 en este servidor, que rechaza las direcciones privadas para todas las cuentas.",
+        loadError:
+          "No se pudo cargar la configuración de conexiones de las cuentas gestionadas.",
+        saveError:
+          "No se pudo guardar la configuración de conexiones de las cuentas gestionadas.",
+      },
       notifications: {
         sectionTitle: "Notificaciones",
         showLlamaUpdates: "Notificaciones de actualización de llama.cpp",
@@ -780,6 +932,9 @@ export const es = {
         showLoadedModels: "Indicador de modelos cargados",
         showLoadedModelsDescription:
           "Muestra una pequeña tarjeta en la esquina inferior derecha con todos los modelos actualmente en memoria (chat, voz, imagen, vídeo), con un botón para expulsar cada uno.",
+        showWhisperUpdates: "Notificaciones de actualización de whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Avisa cuando haya una compilación más reciente de whisper.cpp para los modelos de voz a texto. Desactívalo si nunca transcribes audio.",
       },
       startup: {
         sectionTitle: "Inicio",
@@ -940,7 +1095,11 @@ export const es = {
         currentStreak: "Racha actual",
         longestStreak: "Racha más larga",
         activityTitle: "Actividad de tokens",
-        activityDescription: "Período: {weeks} · {total}",
+        activityDescription: {
+          daily: "Período: {weeks} · {total}",
+          weekly: "Semana pico {total} · últimas {weeks}",
+          cumulative: "{total} acumulados en las últimas {weeks}",
+        },
         mode: {
           daily: "Diaria",
           weekly: "Semanal",
@@ -1004,6 +1163,13 @@ export const es = {
         minimal: "Minimalista",
       },
       custom: {
+        chatWidth: {
+          label: "Ancho del chat",
+          description: "Ancho de los mensajes y del cuadro de texto.",
+          standard: "Estándar",
+          wide: "Amplio",
+          full: "Ancho completo",
+        },
         reset: "Restablecer",
         resetAll: "Restablecer la personalización",
         preferencesTitle: "Preferencias",
@@ -1054,6 +1220,10 @@ export const es = {
             "No hay suficiente almacenamiento local para esta fuente. Quita antes una fuente importada.",
           errorFailed: "No se pudo cargar este archivo de fuente.",
         },
+        interfaceScale: {
+          label: "Escala de la interfaz",
+          description: "Cambia el tamaño de todos los elementos de la interfaz.",
+        },
         uiFontSize: {
           label: "Tamaño de fuente de la interfaz",
           description: "Ajusta el tamaño base usado en la interfaz de Unsloth.",
@@ -1068,7 +1238,6 @@ export const es = {
         },
         contrast: {
           label: "Contraste",
-          description: "Intensidad de los bordes y del texto secundario.",
         },
         reduceMotion: {
           label: "Reducir el movimiento",
@@ -1098,7 +1267,7 @@ export const es = {
       sidebarNav: {
         title: "Navegación de la barra lateral",
         description:
-          "Fija y reordena las pestañas de la barra lateral. Las pestañas sin fijar se agrupan en el menú «Más»; si solo queda una pestaña sin fijar, se oculta en lugar de crear un menú de un único elemento. «Nuevo chat» queda fijo.",
+          "Fija y reordena las pestañas de la barra lateral. Las que no fijes pasan al menú «Más».",
         dragToReorder: "Arrastra para reordenar",
         pinToSidebar: "Fijar {name} en la barra lateral",
         moreHolds: "Más ({count})",
@@ -1106,7 +1275,7 @@ export const es = {
       sidebarMenu: {
         title: "Menú de la barra lateral",
         description:
-          "Muestra, oculta y reordena los elementos del menú de perfil de la barra lateral. Configuración, Ayuda, Cerrar sesión y Apagar quedan fijos.",
+          "Elige y reordena los accesos del menú de perfil.",
         darkModeToggle: "Modo oscuro",
         dragToReorder: "Arrastra para reordenar",
       },
@@ -1140,7 +1309,11 @@ export const es = {
       },
       gpu: {
         title: "Dispositivos GPU",
-        ggufInference: "Inferencia GGUF",
+        memory: "Memoria GPU",
+        sharedWithSystemRam: "Compartida con la RAM del sistema",
+        estimatedAvailable: "Disponible estimado: {value}",
+        sharedEstimatedAvailable: "RAM compartida del sistema: disponibilidad estimada de {value}",
+        ggufInference: "Memoria para modelos GGUF",
         unavailable: "No disponible",
         detecting: "Buscando GPU...",
         unreadable: "No se pudo leer el hardware de este servidor.",
@@ -1206,6 +1379,8 @@ export const es = {
           sourceBuild: "Este llama.cpp se compiló desde el código fuente, así que su backend no se puede cambiar desde aquí.",
           customPath: "Hay una carpeta personalizada de llama.cpp seleccionada. Su compilación determina el backend de cómputo.",
           unresolved: "No se pudieron consultar los backends disponibles. Revisa tu conexión e inténtalo de nuevo.",
+          updateChecksDisabled:
+            "Las comprobaciones de actualizaciones están desactivadas (UNSLOTH_DISABLE_UPDATE_CHECK=1), así que no se consultan los backends disponibles.",
         },
         // No se muestra: términos adicionales para la búsqueda de ajustes.
         llamaBackendKeywords:
@@ -1217,8 +1392,8 @@ export const es = {
         keepResidentDescription: "Permanece en la VRAM entre mensajes.",
         keepResidentHint: "No devuelve los pesos a la RAM del sistema mientras el modelo siga cargado. Desactiva la descarga automática por inactividad y, cuando los pesos sí residen en la RAM del host (memoria unificada o descarga parcial a la GPU), también pasa --mlock para que el sistema operativo no los pagine ni los vuelva a subir en tu siguiente mensaje.",
         noRamReserve: "No reservar RAM del sistema para el modelo",
-        noRamReserveDescription: "No mantiene una copia completa en la RAM.",
-        noRamReserveHint: "Transfiere los pesos a la VRAM en lugar de mantener una copia completa en la RAM. Conserva la carga mapeada en memoria de llama.cpp y elimina --no-mmap y --mlock.",
+        noRamReserveDescription: "Reduce la RAM ocupada por los pesos del modelo.",
+        noRamReserveHint: "Omite la carga mapeada en memoria en las compilaciones de Windows compatibles cuando el modelo está totalmente descargado en la GPU, de modo que sus páginas no quedan residentes. En caso contrario conserva la carga mapeada en memoria. Los búferes de CPU necesarios pueden seguir usando RAM. Elimina --no-mmap y --mlock.",
         mlockVetoed: "--mlock permanece desactivado: fijar el modelo reservaría RAM para todo él. La descarga automática por inactividad sigue desactivada.",
         memlockCapped: "Este sistema limita la memoria bloqueada a {limit}. Un modelo mayor no quedará fijado por completo; aumenta el límite con ulimit -l.",
         reloadRequired: "Vuelve a cargar el modelo para aplicar las nuevas opciones de memoria.",
@@ -1243,6 +1418,54 @@ export const es = {
         copied: "Ruta copiada",
         openError: "No se pudo abrir la carpeta",
         copyError: "No se pudo copiar la ruta",
+        caches: {
+          label: "Archivos de caché",
+          description:
+            "{size} en cachés, de los cuales {reclaimable} se pueden borrar ahora.",
+          hint: "Descargas de paquetes, kernels compilados y cachés de transferencia que Unsloth vuelve a crear cuando los necesita. Los modelos descargados, los proyectos, los chats, los ajustes y tu token de Hugging Face nunca se borran aquí.",
+          keywords:
+            "caché cachés borrar limpiar vaciar purgar liberar espacio disco temporal compilado cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Midiendo el tamaño de las cachés...",
+          measureFailed: "No se pudieron medir las cachés",
+          empty: "No se encontraron archivos de caché.",
+          detailsAction: "Detalles",
+          recheckAction: "Volver a comprobar",
+          hideDetailsAction: "Ocultar detalles",
+          clearAction: "Borrar cachés",
+          clearOneAction: "Borrar",
+          clearingAction: "Borrando...",
+          confirmTitle: "¿Borrar los archivos en caché?",
+          confirmDescription: "Esto libera unos {size}.",
+          confirmOneTitle: "¿Borrar {name}?",
+          safety:
+            "Unsloth vuelve a crear una caché la próxima vez que la necesita. Los modelos descargados, los proyectos, los chats, los ajustes y tu token de Hugging Face no se tocan.",
+          hubCost:
+            "Esta es la caché de modelos. Si la borras, esos modelos se descargarán de nuevo la próxima vez que los uses.",
+          datasetsCost:
+            "Si borras esto, esos conjuntos de datos se descargarán de nuevo la próxima vez que los uses.",
+          blocked: "No se borró: {reason}",
+          cleared: "Se borraron {size}",
+          partial: "Algunos archivos de caché no se pudieron eliminar",
+          clearFailed: "No se pudieron borrar las cachés",
+          names: {
+            uv: "Caché de paquetes de uv",
+            pip: "Caché de descargas de pip",
+            npm: "Caché de paquetes de npm",
+            bun: "Caché de paquetes de Bun",
+            torchInductor: "Caché de compilación de Torch Inductor",
+            torchExtensions: "Compilaciones de extensiones de Torch",
+            triton: "Caché de kernels de Triton",
+            cuda: "Caché de kernels de CUDA",
+            numba: "Caché de compilación de Numba",
+            matplotlib: "Caché de fuentes de Matplotlib",
+            vllm: "Caché de vLLM",
+            unslothCompiled: "Módulos compilados de Unsloth",
+            hfXet: "Caché de transferencia de Hugging Face",
+            hfAssets: "Caché de recursos de Hugging Face",
+            hfDatasets: "Caché de conjuntos de datos de Hugging Face",
+            hfHub: "Caché de modelos de Hugging Face",
+          },
+        },
         futureDownloads: "Solo las descargas nuevas",
         environmentManaged: "Gestionado por la variable de entorno {variable}.",
         locationFree: "{free} libres",
@@ -1278,6 +1501,7 @@ export const es = {
       copy: "Copiar",
       copied: "Copiado",
       commandBuilder: "Generador de comandos",
+      commandShell: "Shell para todos los comandos",
       agent: "Agente de programación",
       model: "Modelo",
       searchModels: "Buscar modelos GGUF...",
@@ -1295,9 +1519,8 @@ export const es = {
       docs: "Documentación",
       agentDocs: "Abrir la documentación de configuración de {agent}",
       copyGeneratedCommand: "Copiar el comando generado",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1365,9 +1588,9 @@ export const es = {
           "Omite las solicitudes de aprobación. Úsalo solo en entornos de confianza.",
       },
       remote: {
-        title: "Conectar con un Unsloth Studio remoto",
+        title: "Conectar con un Unsloth remoto",
         description:
-          "Apunta unsloth start a un Unsloth Studio que se ejecuta en otro lugar definiendo estas variables antes de iniciar el agente (o pasa --api-key directamente):",
+          "Apunta unsloth start a un Unsloth que se ejecuta en otro lugar definiendo estas variables antes de iniciar el agente (o pasa --api-key directamente):",
       },
       passthrough: {
         title: "Pasar argumentos al agente",
@@ -1381,6 +1604,25 @@ export const es = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversaciones" },
+        files: { title: "Archivos y pegado" },
+        display: { title: "Visualización" },
+        composer: { title: "Cuadro de mensaje" },
+        menu: { title: "Menú del chat" },
+        advanced: { title: "Avanzado" },
+        contextTitle: "Contexto",
+      },
+      projectAttachmentsHint:
+        "Cambia este ajuste para cada chat desde su menú de archivos adjuntos.",
+      rememberParamsPerModelHint:
+        "Al desactivarlo, todos los modelos usan los mismos ajustes.",
+      autoCompactHint:
+        "Solo chats GGUF locales. Los turnos expulsados se indexan para que el modelo pueda recuperarlos, y un reinicio cita palabra por palabra las instrucciones permanentes que quepan, dando prioridad a las más antiguas y a las más recientes frente a las intermedias. Archivar requiere un chat guardado y el índice vectorial; sin ellos, los turnos antiguos se descartan. Usa la longitud de contexto configurada, no la VRAM disponible.",
+      pastedTextShortDescription:
+        "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt. El texto más corto queda en el cuadro de mensaje.",
+      pastedTextOffDescription:
+        "Todo el texto pegado queda en el cuadro de mensaje, sin importar su longitud.",
       projectsSection: "Mostrar la sección Proyectos",
       projectsSectionDescription:
         "Agrupa los chats de proyecto bajo un encabezado Proyectos. Desactívalo para listarlos en Recientes.",
@@ -1404,12 +1646,14 @@ export const es = {
           "Fija elementos en el menú lateral «+» del chat. Los demás pasarán a «Más».",
         chatWithFiles: "Chat con archivos (RAG)",
         mcp: "MCP",
+        skills: "Habilidades",
         savedPrompts: "Prompts guardados",
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",
       },
       pastedTextThreshold: "Condensar pegados largos",
-      pastedTextThresholdDescription: "El texto pegado más largo que esto se convierte en un adjunto .txt en lugar de llenar el cuadro de mensaje. Pulsa {shortcut} para pegar en el cuadro de mensaje de todos modos.",
+      pastedTextThresholdDescription:
+        "Pulsa {shortcut} para pegar directamente en el cuadro de mensaje.",
       pastedTextThresholdOff: "Desactivado",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
@@ -1419,32 +1663,26 @@ export const es = {
         'Muestra "Los LLM pueden cometer errores" bajo el cuadro de chat.',
       projectAttachments: "Compartir archivos en todo el proyecto",
       projectAttachmentsDescription:
-        "Valor predeterminado para los archivos adjuntos en un chat que pertenece a un proyecto: indexarlos para todo el proyecto para que cualquier chat pueda usarlos. Cada chat puede cambiarlo desde el menú de adjuntos.",
+        "Comparte los nuevos archivos adjuntos con todos los chats del proyecto.",
       rememberParamsPerModel: "Recordar los ajustes por modelo",
       rememberParamsPerModelDescription:
-        "Al cambiar de modelo se restauran la temperatura, el prompt y los demás ajustes que usaste por última vez con ese modelo. Desactivado, se mantiene un único conjunto de ajustes para todos los modelos.",
+        "Restaura el último prompt, la temperatura y los demás ajustes usados con cada modelo.",
       autoCompact: "Compactar automáticamente chats largos",
       autoCompactDescription:
-        "Cuando un chat GGUF local alcance la longitud de contexto configurada, descarta los turnos antiguos en vez de devolver un error. Esto no depende de la VRAM libre.",
-      compactionStyle: "Cuando se llena el contexto",
-      compactionStyleDescription:
-        "Usar el valor del servidor conserva UNSLOTH_CONTEXT_POLICY. Restablecer la conversación mantiene el último turno y las instrucciones permanentes. Una ventana deslizante descarta los turnos más antiguos y puede conservar más historial reciente.",
-      compactionStyleInherit: "Usar valor del servidor",
-      compactionStyleCheckpoint: "Restablecer conversación",
-      compactionStyleRollingDefault:
-        "Descartar turnos antiguos (~25% de espacio extra)",
-      compactionStyleRolling10:
-        "Descartar turnos antiguos (~10% de espacio extra)",
-      compactionStyleRolling5:
-        "Descartar turnos antiguos (~5% de espacio extra)",
-      compactionStyleRollingNone:
-        "Descartar turnos antiguos (sin recorte adicional)",
+        "Los turnos antiguos pasan a un archivo consultable al llenarse el contexto de un chat.",
       autoCompactKeywords:
-        "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen compaction rolling headroom",
+        "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen archivo recuperación búsqueda compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Contraído",
+        auto: "Expandir mientras se ejecuta",
+        expanded: "Siempre expandido",
+      },
+      visibilityKeywords:
+        "contraer contraído expandir expandido abierto cerrado razonamiento pensamiento llamadas de herramientas actividad agrupar streaming",
       thinking: {
-        collapseByDefault: "Contraer el razonamiento de forma predeterminada",
-        collapseByDefaultDescription:
-          "Mantén el razonamiento contraído mientras el modelo piensa, en lugar de abrirlo automáticamente. Expande cualquier bloque para leerlo.",
+        visibility: "Razonamiento",
+        visibilityDescription:
+          "Cómo se abre el razonamiento. Puedes expandir o contraer cualquier bloque por tu cuenta.",
       },
       currentDate: {
         label: "Indicar al modelo la fecha de hoy",
@@ -1454,15 +1692,20 @@ export const es = {
         saveError: "No se pudieron actualizar los ajustes de fecha actual",
       },
       tools: {
-        collapseByDefault: "Contraer la actividad de herramientas por defecto",
-        collapseByDefaultDescription:
-          "Mantén contraídas las entradas y salidas de las herramientas mientras se ejecutan. Expande cualquier fila para inspeccionarla.",
+        visibility: "Llamadas de herramientas",
+        visibilityDescription:
+          "Cómo se abre la actividad de herramientas. Puedes expandir o contraer cualquier llamada por tu cuenta.",
+        foldIntoThinking: "Agrupar las llamadas de herramientas en Razonamiento",
+        foldIntoThinkingDescription:
+          "Muestra las llamadas de herramientas de un turno dentro de su bloque de Razonamiento en lugar de en filas propias.",
+        foldIntoThinkingBlocked:
+          "No disponible mientras las llamadas de herramientas estén en «Siempre expandido», que las mantiene en filas propias.",
       },
       webSearch: {
         title: "Búsqueda web",
         images: "Mostrar imágenes de la búsqueda web",
         imagesDescription:
-          "Permite que la búsqueda web devuelva imágenes y obtiene una por cada elemento que enumera una respuesta. Unsloth descarga y redimensiona las miniaturas, así que el navegador nunca contacta con los servidores de imágenes.",
+          "Incluye imágenes en los resultados de búsqueda.",
       },
       artifacts: {
         title: "Canvas",
@@ -1497,7 +1740,7 @@ export const es = {
       exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
-        "Importa una exportación de Open WebUI, JSONL, NDJSON o CSV a Recientes.",
+        "Importa archivos JSON, JSONL, NDJSON o CSV a Recientes.",
       importChatsAction: "Importar",
       importNoConversations: "No se encontraron conversaciones en el archivo.",
       importedOneChat: "Se importó 1 conversación a Recientes.",
@@ -1543,6 +1786,80 @@ export const es = {
       failedToClearChats: "No se pudieron borrar los chats",
     },
     data: {
+      library: {
+        defaultSort: "Predeterminado",
+        updated: "Actualización",
+        created: "Creación",
+        oldest: "Más antiguos primero",
+        alphabetical: "Orden alfabético",
+        allChats: "Todos los chats",
+        singleChats: "Chats individuales",
+        compareChats: "Chats de comparación",
+        allProjects: "Todos los proyectos",
+        noProject: "Sin proyecto",
+        unavailableProject: "Proyecto no disponible",
+        filterSort: "Filtrar y ordenar",
+        sort: "Ordenar",
+        type: "Tipo",
+        sortBy: "Ordenar por",
+        filterProject: "Filtrar por proyecto",
+        searchProjects: "Buscar proyectos",
+        noProjects: "No se encontraron proyectos.",
+        untitled: "Sin título",
+        oneChat: "1 chat",
+        chatCount: "{count} chats",
+        searchChats: "Buscar chats o proyectos",
+        searchArchivedChats: "Buscar chats archivados o proyectos",
+        searchImages: "Buscar imágenes archivadas",
+        searchVideos: "Buscar vídeos archivados",
+        searchAudio: "Buscar audio archivado",
+        unarchive: "Desarchivar",
+        unarchiveAll: "Desarchivar todo",
+        unarchiveResults: "Desarchivar resultados",
+        deleteResults: "Eliminar resultados",
+        noChats: "Ningún chat coincide con tu búsqueda.",
+        noArchivedChats: "No hay chats archivados.",
+        noArchivedMatches: "Ningún chat archivado coincide con tu búsqueda.",
+        noMedia: "No hay elementos archivados.",
+        noMediaMatches: "Ningún elemento archivado coincide con tu búsqueda.",
+        itemCount: "Elementos: {count}",
+        incompleteSearch: "La búsqueda está incompleta. Reintenta cargar los elementos restantes.",
+        searchingRemaining: "Buscando los elementos restantes ({count} cargados)...",
+        noLoadedMatches: "No hay coincidencias entre los elementos cargados hasta ahora.",
+        deleteItem: "Eliminar: {title}",
+        unarchiveItem: "Desarchivar: {title}",
+        deleteItemsTitle: "Eliminar elementos archivados ({count})",
+        unarchiveItemsTitle: "Desarchivar elementos ({count})",
+        deleteFilesWarning: "Estos archivos se eliminarán permanentemente. Esta acción no se puede deshacer.",
+        restoreWarning: "Estos elementos volverán a la galería.",
+        working: "Procesando...",
+        loadFailed: "No se pudieron cargar los elementos archivados",
+        loadMoreFailed: "No se pudieron cargar más elementos archivados",
+        restoreFailed: "No se pudieron desarchivar los elementos seleccionados",
+        deleteFailed: "No se pudieron eliminar los elementos seleccionados",
+        projectsFailed: "No se pudieron cargar los proyectos archivados",
+        pageStalled: "La página del archivo no avanzó. Inténtalo de nuevo.",
+        pageChanged: "El archivo cambió durante la carga. Inténtalo de nuevo.",
+        selectAll: "Seleccionar todos los chats visibles",
+        selectItem: "Seleccionar \"{title}\"",
+        selectedChats: "Chats seleccionados: {count}",
+        move: "Mover",
+        pin: "Fijar",
+        unpin: "Desfijar",
+        archive: "Archivar",
+        deletedChats: "Chats eliminados: {count}",
+        restoredChats: "Chats desarchivados: {count}",
+        pinnedChats: "Chats fijados: {count}",
+        unpinnedChats: "Chats desfijados: {count}",
+        movedChatsToProject: "Chats movidos a {project}: {count}",
+        movedChatsToRecents: "Chats movidos a Recientes: {count}",
+        moveFailed: "No se pudieron mover los chats",
+        deleteChatsTitle: "Eliminar chats ({count})",
+        deleteChatsWarning: "¿Eliminar los chats seleccionados ({count})? Esta acción no se puede deshacer.",
+        deleteArchivedTitle: "Eliminar {count} chats archivados",
+        deleteArchivedWarning: "¿Eliminar los chats archivados seleccionados ({count})? Esta acción no se puede deshacer.",
+        deleting: "Eliminando...",
+      },
       title: "Datos",
       backToData: "Volver a Datos",
       exportFailed: "No se pudieron exportar los chats",
@@ -1587,6 +1904,27 @@ export const es = {
       alwaysDeleteFiles: "Eliminar siempre los archivos",
       alwaysDeleteFilesDescription:
         "Al eliminar un chat también se quita del disco su carpeta de entorno aislado. Los archivos que haya escrito dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
+      chatsSection: "Chats y archivos",
+      transferSection: "Importar y exportar",
+      deletionSection: "Eliminación",
+      archives: "Archivos",
+      archiveChatsLabel: "Chats",
+      archiveVideosLabel: "Vídeos",
+      exportFormatsSummary:
+        "Exporta los chats de Recientes y proyectos en el formato que prefieras.",
+      trainingSummary: "Convierte tus chats en un conjunto de datos para ajuste fino.",
+      confirmDeletionSummary: "Pedir confirmación antes de eliminar chats individuales.",
+      sandboxFiles: "Archivos del entorno aislado",
+      sandboxFilesDescription: "Acción predeterminada al eliminar un chat.",
+      keepSandboxFiles: "Conservar archivos del entorno",
+      deleteSandboxFiles: "Eliminar archivos del entorno",
+      projectFilesKept:
+        "Los entornos aislados son carpetas creadas para cada chat. Se conservan los archivos guardados en los espacios de trabajo de los proyectos.",
+      deleteAllAction: "Eliminar todo",
+      deleteChatsOnly: "Eliminar solo los chats…",
+      deleteChatsAndSandboxes: "Eliminar chats y entornos aislados…",
+      deleteSandboxFilesDescription:
+        "Elimina también la carpeta del entorno aislado de cada chat y sus archivos. Se conservan los archivos de los espacios de trabajo de los proyectos.",
       filesSection: "Archivos",
       uploadedFiles: "Archivos subidos",
       uploadedFilesDescription:
@@ -1745,9 +2083,9 @@ export const es = {
         desktopAvailable:
           "La versión {version} de la app de escritorio está disponible",
         desktopAvailableDescription:
-          "Actualiza ahora para prepararla en segundo plano. Puedes seguir trabajando y reiniciar cuando esté lista.",
+          "Actualiza ahora y la app de escritorio se reiniciará cuando termine.",
         desktopExternalServer:
-          "Ejecuta `unsloth studio update` desde el terminal que inició el servidor.",
+          "La aplicación se conectó a un servidor de Studio que ya estaba en ejecución y no puede actualizarlo. Detén ese servidor, cierra la aplicación de escritorio y vuelve a abrirla para actualizar.",
         desktopManualInstall:
           "Abre la página de versiones para instalar el paquete más reciente para Linux.",
         desktopCheckFailed: "No se pudo buscar actualizaciones",
@@ -1756,20 +2094,11 @@ export const es = {
         desktopCurrent: "La app de escritorio está actualizada",
         desktopCurrentDescription:
           "Unsloth seguirá buscando actualizaciones automáticamente.",
-        desktopPreparingDescription:
-          "La actualización se está preparando en segundo plano. Puedes seguir trabajando.",
-        desktopReadyToRestartDescription:
-          "Todo está listo. Reinicia para terminar de instalar la actualización.",
-        desktopReadyToInstallDescription:
-          "La actualización de la aplicación se descargó. Completa la actualización del backend para instalarla.",
         checkForUpdates: "Buscar actualizaciones",
         checkAgain: "Buscar de nuevo",
         retryCheck: "Intentarlo de nuevo",
         checking: "Buscando...",
-        preparing: "Preparando...",
         updateNow: "Actualizar ahora",
-        restartToUpdate: "Reiniciar para actualizar",
-        finishUpdate: "Finalizar actualización",
         openReleasePage: "Abrir la página de versiones",
         unknownInstall:
           "No se pudo detectar cómo se instaló Unsloth. Para instalaciones con el instalador o desde PyPI, usa los comandos anteriores.",
@@ -1937,6 +2266,7 @@ export const es = {
       sourceHfCache: "Caché de HF",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "Carpeta personalizada",
       sourceLocalModel: "Modelo local",
       vramOomBadge: "OOM",
@@ -2193,6 +2523,7 @@ export const es = {
       memoryEfficient: "Eficiente en memoria",
       weightDecomposed: "Pesos descompuestos",
       notSupportedAppleSilicon: "No compatible con Apple Silicon",
+      doraNeedsVisionLayersOff: "Desactiva el entrenamiento de las capas de visión para usar DoRA",
       optimization: "Optimización",
       schedule: "Programación",
       memory: "Memoria",
@@ -2510,5 +2841,23 @@ export const es = {
     kvRate: "KV reservado, ~{rate}/token",
     oomLikely: "Con la configuración actual es probable un error de memoria",
     tooLarge: "Más grande que la VRAM, se descargará a la CPU. Una cuantización más pequeña es más rápida",
+  },
+  skills: {
+    title: "Habilidades",
+    description: "Las habilidades se detectan en tus carpetas de agentes estándar. Actívalas aquí y luego escribe @ en el chat para mencionar una.",
+    precedence: "~/.agents/skills tiene prioridad sobre ~/.claude/skills.",
+    refresh: "Actualizar",
+    empty: "No se encontraron habilidades. Añade una carpeta con SKILL.md en ~/.agents/skills o ~/.claude/skills y actualiza.",
+    sourceAgents: "Agents",
+    sourceClaude: "Claude",
+    sourceBundled: "Incluida",
+    shadowed: "Oculta",
+    invalid: "No válida",
+    compatibility: "Compatibilidad: {value}",
+    shadowedBy: "Otra habilidad ({source}) con este nombre tiene prioridad.",
+    enable: "Activar {name}",
+    disable: "Desactivar {name}",
+    updateError: "No se pudo actualizar la habilidad",
+    mentions: "Habilidades",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

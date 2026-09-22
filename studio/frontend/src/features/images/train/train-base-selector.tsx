@@ -46,7 +46,7 @@ export function TrainBaseSelector({
         <button
           type="button"
           aria-label="Training base model"
-          className="unsloth-model-selector-trigger flex h-[34px] min-w-0 max-w-[320px] items-center gap-2 rounded-full pl-4 pr-2 text-sm transition-colors hover:bg-accent"
+          className="unsloth-model-selector-trigger flex h-[calc(34px*var(--ui-space-scale,1))] min-w-0 max-w-[320px] items-center gap-2 rounded-full pl-4 pr-2 text-sm transition-colors hover:bg-accent"
         >
           <span className="min-w-0 truncate font-medium">{label}</span>
           {family && (

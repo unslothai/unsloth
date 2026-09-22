@@ -30,7 +30,7 @@ import {
 import { PanelResizeHandle } from "@/components/ui/panel-resize-handle"
 import { PANEL_RESIZE_SCOPED_VARS_ENABLED } from "@/components/ui/panel-resize-recalc-flags"
 import { useT } from "@/i18n"
-import { useIsMobile } from "@/hooks/use-mobile"
+import { useIsMobileShell } from "@/hooks/use-mobile"
 import {
   SIDEBAR_WIDTH_DEFAULT,
   SIDEBAR_WIDTH_MIN,
@@ -57,6 +57,9 @@ type SidebarContextProps = {
   pinned: boolean
   setPinned: (value: boolean) => void
   togglePinned: () => void
+  /** The unpinned sidebar is held out over the content, from the window edge. */
+  peeking: boolean
+  setPeeking: (value: boolean) => void
   width: number
   storedWidth: number
   maxWidth: number
@@ -94,7 +97,9 @@ function SidebarProvider({
   setPinned?: (value: boolean) => void
   togglePinned?: () => void
 }) {
-  const isMobile = useIsMobile()
+  // The shell decision, not the viewport: a narrowed desktop window keeps the
+  // desktop sidebar. Panels with only room to overlay still read useIsMobile.
+  const isMobile = useIsMobileShell()
   const [openMobile, setOpenMobile] = React.useState(false)
   const {
     width,
@@ -149,17 +154,36 @@ function SidebarProvider({
     return setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile, hasPinMode, togglePinnedProp])
 
-  // Chord comes from the shortcuts store, so Settings -> Shortcuts can rebind
-  // or clear it.
+  // Chord comes from the shortcuts store, so Settings -> Shortcuts can rebind or clear it.
   useShortcut("toggleSidebar", toggleSidebar)
-
-  // We add a state so that we can do data-state="expanded" or "collapsed".
-  // This makes it easier to style the sidebar with Tailwind classes.
-  const state = open ? "expanded" : "collapsed"
 
   const pinned = pinnedProp ?? false
   const setPinned = setPinnedProp ?? noop
   const togglePinned = togglePinnedProp ?? noop
+
+  // Reaches a collapsed sidebar from the window edge without pinning it.
+  const [peeking, setPeekingState] = React.useState(false)
+  const retractRef = React.useRef<number | undefined>(undefined)
+  // Deferred so the handoff from the edge strip to the panel cannot flicker.
+  const setPeeking = React.useCallback((next: boolean) => {
+    window.clearTimeout(retractRef.current)
+    if (next) {
+      setPeekingState(true)
+      return
+    }
+    retractRef.current = window.setTimeout(() => setPeekingState(false), 120)
+  }, [])
+  React.useEffect(() => () => window.clearTimeout(retractRef.current), [])
+  // Nothing to hold out once it is pinned, or once it is a mobile sheet.
+  React.useEffect(() => {
+    if (pinned || isMobile) setPeekingState(false)
+  }, [pinned, isMobile])
+
+  // We add a state so that we can do data-state="expanded" or "collapsed".
+  // This makes it easier to style the sidebar with Tailwind classes. Held out
+  // counts as expanded: the panel is on screen, so the rows it renders are the
+  // ones its tooltips, disclosures and chat chords should see.
+  const state = open || peeking ? "expanded" : "collapsed"
 
   const contextValue = React.useMemo<SidebarContextProps>(
     () => ({
@@ -174,13 +198,15 @@ function SidebarProvider({
       pinned,
       setPinned,
       togglePinned,
+      peeking,
+      setPeeking,
       width,
       storedWidth,
       maxWidth,
       setWidth,
       resetWidth,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, width, storedWidth, maxWidth, setWidth, resetWidth]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, peeking, setPeeking, width, storedWidth, maxWidth, setWidth, resetWidth]
   )
 
   return (
@@ -189,12 +215,11 @@ function SidebarProvider({
         data-slot="sidebar-wrapper"
         style={
           {
-            // The drag handle writes this same property live while resizing.
-            // Under PANEL_RESIZE_SCOPED_VARS_ENABLED it moves DOWN to
-            // [data-slot="sidebar"], which holds every consumer, and cannot
-            // also stay here: this wrapper is an ancestor of the chat thread,
-            // so a declaration left behind would keep restyling the thread on
-            // every render even once the drag-time write had moved.
+            // The drag handle writes this same property live while resizing. Under
+            // PANEL_RESIZE_SCOPED_VARS_ENABLED it moves DOWN to [data-slot="sidebar"], which holds
+            // every consumer, and cannot also stay here: this wrapper is an ancestor of the chat
+            // thread, so a declaration left behind would keep restyling the thread on every render
+            // even once the drag-time write had moved.
             ...(PANEL_RESIZE_SCOPED_VARS_ENABLED
               ? null
               : { "--sidebar-width": `${width}px` }),
@@ -204,14 +229,12 @@ function SidebarProvider({
         }
         className={cn(
           // `has-[>...]`, not `has-[...]`, and the combinator is the whole point.
-          //
           // This wrapper is an ancestor of the chat thread, as the note on
           // --sidebar-width above already says. A `:has()` whose argument is a
           // DESCENDANT selector has to be re-checked whenever anything is
           // inserted or removed anywhere in the subject's subtree, and
           // answering it means WALKING that subtree. On an ancestor of the
           // thread that walk is the whole thread, on every mutation.
-          //
           // It is a traversal, NOT a restyle, and the difference matters
           // because it is why containment does not help. Blink's own
           // `UpdateLayoutTree.elementCount` for one inserted span is 1 with
@@ -223,7 +246,6 @@ function SidebarProvider({
           // help. `content-visibility: auto` on the message roots does not
           // help either, measured at -7%: the argument re-check walks skipped
           // content too.
-          //
           // Measured at the 500K rung, corpus 23cd2464, on a 357,843-element
           // thread: appending one EMPTY span inside a message cost 17.5 and
           // 18.6 ms in two concurrent arms with this rule in place, 8.7 ms with
@@ -231,7 +253,6 @@ function SidebarProvider({
           // chat-page.tsx deleted. Deleting the other eleven `:has()` rules
           // that survived the bisect changed nothing (17.2 / 19.2 ms), and the
           // same span appended to <body> costs 0.10 ms either way.
-          //
           // CHROMIUM ONLY. On a synthetic thread carrying this same ancestor
           // chain and the built Unsloth stylesheet, at 300,464 elements, one
           // inserted span costs 1.20 ms plain / 1.29 ms child / 5.63 ms one
@@ -240,7 +261,6 @@ function SidebarProvider({
           // Firefox: flat in both, within noise of each other. So this change
           // is free where it does not help and it does not regress the engine
           // Unsloth uses on Linux.
-          //
           // The child combinator is not a weakening. `data-variant` is rendered
           // on the root element of `Sidebar` below, and `Sidebar` is a direct
           // child of this wrapper (AppSidebar returns it inside a Fragment,
@@ -273,8 +293,11 @@ function Sidebar({
   collapsible?: "offcanvas" | "icon" | "none"
   collapseToZero?: boolean
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, width } =
+  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, peeking, setPeeking, width } =
     useSidebar()
+  // Only a sidebar that collapses to nothing has an edge to be held out from.
+  const holdsOut = hasPinMode && !pinned && collapseToZero
+  const heldOut = holdsOut && peeking
 
   // The scoped home for --sidebar-width: every consumer (this element,
   // sidebar-gap, sidebar-container) is inside it and the chat thread is not.
@@ -343,8 +366,9 @@ function Sidebar({
       data-side={side}
       data-slot="sidebar"
       style={scopedWidthStyle}
-      aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}
-      inert={(hasPinMode && !pinned && collapseToZero) || undefined}
+      // Held out, it is on screen and must answer the pointer again.
+      aria-hidden={(holdsOut && !heldOut) || undefined}
+      inert={(holdsOut && !heldOut) || undefined}
     >
       {/* This is what handles the sidebar gap on desktop */}
       <div
@@ -376,6 +400,16 @@ function Sidebar({
       <div
         data-slot="sidebar-container"
         data-side={side}
+        data-held-out={heldOut || undefined}
+        // A hover state of the panel as much as of the edge: the pointer
+        // crosses between them, and only leaving both retracts it.
+        onPointerEnter={holdsOut ? () => setPeeking(true) : undefined}
+        onPointerLeave={holdsOut ? () => setPeeking(false) : undefined}
+        // The same for focus, which arrives by Shift+Tab off the edge strip.
+        // Without it the strip's own blur retracts the panel around the focus
+        // that just landed in it, and going inert drops that focus entirely.
+        onFocus={holdsOut ? () => setPeeking(true) : undefined}
+        onBlur={holdsOut ? () => setPeeking(false) : undefined}
         className={cn(
           hasPinMode
             ? cn(
@@ -384,7 +418,17 @@ function Sidebar({
                 pinned
                   ? "w-(--sidebar-width)"
                   : collapseToZero
-                    ? "w-0 overflow-hidden"
+                    ? cn(
+                        // Full width all along, parked off-screen: animating a
+                        // width reflows the panel's contents every frame, a
+                        // transform does not.
+                        "w-(--sidebar-width)",
+                        // The transition rides on the held-out class alone, so
+                        // collapsing a pinned sidebar still goes instantly.
+                        heldOut
+                          ? "z-[45] translate-x-0 transition-transform duration-200 ease-out"
+                          : "-translate-x-full pointer-events-none",
+                      )
                     : "w-(--sidebar-width-icon)",
               )
             : cn(
@@ -409,7 +453,15 @@ function Sidebar({
         >
           {children}
         </div>
-        {(!collapseToZero || pinned) && <SidebarResizeHandle side={side} />}
+        {(!collapseToZero || pinned) && (
+          <SidebarResizeHandle
+            side={side}
+            // The shared handle hides itself below `sm`, a viewport rule that
+            // does not hold for a desktop window the user narrowed: there the
+            // sidebar is still the desktop one and still resizable.
+            className={collapseToZero ? "block" : undefined}
+          />
+        )}
       </div>
     </div>
   )

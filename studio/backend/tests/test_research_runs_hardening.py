@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -15,10 +16,18 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi import HTTPException
 
 from core import research_runs
 from core.research.citations import (
+    _PLACEHOLDER,
+    _PLACEHOLDER_KINDS,
     _citation_title,
+    _mask_code,
+    _restore_placeholders,
+    _validate_masked_document_sources,
+    _validate_masked_sources,
+    _validate_report,
     _validate_report_document_sources,
     _validate_report_sources,
 )
@@ -35,8 +44,25 @@ from core.research_runs import (
     _estimate_prompt_tokens,
     _resolve_max_tokens,
     _synthesis_length_limit_error,
+    _synthesis_max_tokens,
 )
 from routes.research_runs import CreateResearchRun, _is_sensitive_key, _sanitize_config
+
+
+def _shared_setup_1():
+    supervisor = _make_supervisor(_noop_check_active)
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 30.0)
+    return started
+
+
+def _shared_setup_2():
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 1.0)
 
 
 def test_sanitize_query_redacts_payment_card():
@@ -326,6 +352,481 @@ def test_a_saved_connection_run_is_not_blamed_on_the_loaded_context(monkeypatch)
     assert "output limit" in message
 
 
+def test_resolve_max_tokens_honours_a_budget_above_the_old_ceiling(monkeypatch):
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda *a, **k: None)
+    assert _resolve_max_tokens(32_768, {}, [{"role": "user", "content": "x"}]) == 32_768
+
+
+def test_resolve_max_tokens_still_caps_a_thread_setting_at_8192(monkeypatch):
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda *a, **k: None)
+    messages = [{"role": "user", "content": "x"}]
+    assert _resolve_max_tokens(None, {"maxTokens": 100_000}, messages) == 8_192
+    assert _resolve_max_tokens(None, {}, messages) == 4_096
+
+
+def test_a_saved_connection_budget_ignores_the_resident_local_model(monkeypatch):
+    """A connection generates on the provider's hardware; the local window bounds nothing."""
+    # Model _loaded_context_length's contract, not a flat value, or the stub itself clamps.
+    monkeypatch.setattr(
+        research_runs,
+        "_loaded_context_length",
+        lambda _inf = None: None if (_inf or {}).get("providerType") else 8_192,
+    )
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 32_768}
+    messages = [{"role": "user", "content": "x" * 30_000}]
+    assert _resolve_max_tokens(32_768, inference, messages) == 32_768
+
+
+def test_a_local_run_still_clamps_to_the_loaded_context(monkeypatch):
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 8_192)
+    messages = [{"role": "user", "content": "x" * 30_000}]
+    assert _resolve_max_tokens(16_384, {}, messages) < 16_384
+
+
+def test_a_lowered_connection_cap_bounds_a_stale_client_ceiling(monkeypatch):
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 20_000}
+    )
+    inference = {
+        "providerType": "gemini",
+        "providerId": "p1",
+        "externalModel": "gemini-3.6-flash",
+        "maxOutputTokens": 65_536,
+    }
+    assert _synthesis_max_tokens(inference) == 20_000
+
+
+def test_a_client_ceiling_stands_when_the_connection_has_no_cap(monkeypatch):
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 65_536}
+    assert _synthesis_max_tokens(inference) == 65_536
+
+
+def test_a_saved_cap_cannot_drop_a_connection_below_its_provider_floor(monkeypatch):
+    """Kimi truncates a thinking answer below 16k, so the chat path never asks for less."""
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_000}
+    )
+    inference = {"providerType": "kimi", "providerId": "p1", "maxOutputTokens": 32_768}
+    # The report floor gets there first; the provider floor holds a lower published limit.
+    assert _synthesis_max_tokens(inference) == 16_384
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    published_low = {
+        **inference,
+        "maxOutputTokens": 4_096,
+        "maxOutputTokensPublished": 4_096,
+    }
+    assert _synthesis_max_tokens(published_low) == 16_000
+
+
+def test_a_saved_cap_below_the_previous_default_does_not_shorten_the_report(monkeypatch):
+    """A cap set for chat cost may not shorten a report the user was already getting.
+
+    The override arrives ALREADY FOLDED into maxOutputTokens, so 8_192 here is what the client
+    really sends for a 65_536 model on a connection capped at 8_192, not a hypothetical.
+    """
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_192}
+    )
+    inference = {
+        "providerType": "gemini",
+        "providerId": "p1",
+        "externalModel": "gemini-3.6-flash",
+        "maxOutputTokens": 8_192,
+        "maxOutputTokensPublished": 65_536,
+        "maxOutputTokensFromSavedCap": False,
+    }
+    assert _synthesis_max_tokens(inference, 900) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_a_model_that_genuinely_stops_low_still_lowers_the_report(monkeypatch):
+    """Asking a 4_096-token model for 16_384 is refused, so the floor cannot be blind to it."""
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {
+        "providerType": "openai",
+        "providerId": "p1",
+        "externalModel": "gpt-4-turbo",
+        "maxOutputTokens": 4_096,
+        "maxOutputTokensPublished": 4_096,
+        "maxOutputTokensFromSavedCap": False,
+    }
+    assert _synthesis_max_tokens(inference, 900) == 4_096
+
+
+def test_an_undocumented_model_capped_low_keeps_the_old_floor(monkeypatch):
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_000}
+    )
+    inference = {
+        "providerType": "custom",
+        "providerId": "p1",
+        "externalModel": "some-self-hosted-model",
+        "maxOutputTokens": 8_000,
+        "maxOutputTokensFromSavedCap": True,
+    }
+    assert _synthesis_max_tokens(inference, 900) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_a_cap_between_the_floor_and_the_ceiling_still_binds(monkeypatch):
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 20_000}
+    )
+    inference = {
+        "providerType": "gemini",
+        "providerId": "p1",
+        "externalModel": "gemini-3.6-flash",
+        "maxOutputTokens": 32_768,
+        "maxOutputTokensPublished": 65_536,
+        "maxOutputTokensFromSavedCap": False,
+    }
+    assert _synthesis_max_tokens(inference, 900) == 20_000
+
+
+def test_clearing_the_saved_cap_invalidates_a_ceiling_only_it_grounded(monkeypatch):
+    """Blanking the Max Tokens limit is what that field is FOR on an undocumented model.
+
+    It was the only thing holding the ceiling up, so once cleared this run must stop asking
+    for a number a run created now would not ask for either.
+    """
+    inference = {
+        "providerType": "custom",
+        "providerId": "p1",
+        "externalModel": "some-self-hosted-model",
+        "maxOutputTokens": 30_000,
+        "maxOutputTokensFromSavedCap": True,
+    }
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 30_000}
+    )
+    assert _synthesis_max_tokens(inference, 900) == 30_000
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    assert _synthesis_max_tokens(inference, 900) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_clearing_the_saved_cap_leaves_a_published_ceiling_standing(monkeypatch):
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {
+        "providerType": "gemini",
+        "providerId": "p1",
+        "externalModel": "gemini-3.6-flash",
+        "maxOutputTokens": 32_768,
+        "maxOutputTokensFromSavedCap": False,
+    }
+    assert _synthesis_max_tokens(inference, 900) == 32_768
+
+
+def test_a_run_created_before_the_grounding_flag_is_unchanged(monkeypatch):
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {
+        "providerType": "custom",
+        "providerId": "p1",
+        "externalModel": "some-self-hosted-model",
+        "maxOutputTokens": 30_000,
+    }
+    assert _synthesis_max_tokens(inference, 900) == 30_000
+
+
+def test_a_client_ceiling_below_the_default_still_lowers_the_budget(monkeypatch):
+    """A published limit is the model's own, not a preference: asking past it is refused.
+
+    It has to be the PUBLISHED one; maxOutputTokens alone cannot say which of the two it is.
+    """
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {
+        "providerType": "openai",
+        "providerId": "p1",
+        "maxOutputTokens": 8_192,
+        "maxOutputTokensPublished": 8_192,
+    }
+    assert _synthesis_max_tokens(inference) == 8_192
+
+
+def test_an_unreadable_cap_does_not_let_a_stale_client_ceiling_through(monkeypatch):
+    def explode(_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(research_runs, "_CAP_LOOKUP_RETRY_SECONDS", 0)
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", explode)
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 65_536}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_an_unreadable_cap_still_honours_a_lower_client_ceiling(monkeypatch):
+    def explode(_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(research_runs, "_CAP_LOOKUP_RETRY_SECONDS", 0)
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", explode)
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 4_096}
+    assert _synthesis_max_tokens(inference) == 4_096
+
+
+def test_a_transient_cap_lookup_failure_is_retried(monkeypatch):
+    calls = {"n": 0}
+
+    def flaky(_id):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise sqlite3.OperationalError("database is locked")
+        return {"max_output_tokens": 65_536}
+
+    monkeypatch.setattr(research_runs, "_CAP_LOOKUP_RETRY_SECONDS", 0)
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", flaky)
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 65_536}
+    assert _synthesis_max_tokens(inference) == 65_536
+    assert calls["n"] == 2
+
+
+def test_an_external_truncation_is_not_blamed_on_the_local_context(monkeypatch):
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 8_192)
+    usage = {"prompt_tokens": 5_000, "completion_tokens": 4_000, "total_tokens": 9_000}
+    notice = _synthesis_length_limit_error(
+        usage,
+        requested_max_tokens = 32_768,
+        inference = {"providerType": "gemini", "providerId": "p1"},
+    )
+    assert "Context Length" not in notice
+    assert "Local model" not in notice
+
+
+def test_a_local_truncation_still_names_the_context_window(monkeypatch):
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 8_192)
+    usage = {"prompt_tokens": 5_000, "completion_tokens": 4_000, "total_tokens": 9_000}
+    notice = _synthesis_length_limit_error(usage, requested_max_tokens = 16_384)
+    assert "Context Length" in notice
+
+
+def test_a_local_run_keeps_the_default_report_budget():
+    assert _synthesis_max_tokens({"model": "local-model"}) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_a_client_resolved_ceiling_is_used_verbatim(monkeypatch):
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {
+        "providerType": "gemini",
+        "providerId": "p1",
+        "externalModel": "gemini-3.6-flash",
+        "maxOutputTokens": 65_536,
+    }
+    assert _synthesis_max_tokens(inference) == 65_536
+
+
+def test_a_ceiling_below_the_default_is_respected(monkeypatch):
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {
+        "providerType": "openai",
+        "providerId": "p1",
+        "maxOutputTokens": 8_192,
+        "maxOutputTokensPublished": 8_192,
+    }
+    assert _synthesis_max_tokens(inference) == 8_192
+
+
+def test_a_legacy_ceiling_below_the_default_keeps_the_old_budget(monkeypatch):
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {"providerType": "openai", "providerId": "p1", "maxOutputTokens": 8_192}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_the_provider_floor_table_matches_the_client_one_it_mirrors():
+    """A hand copy of the client's table, in another language, with nothing tying them together.
+
+    Drift is silent: the report would ask for a budget the provider truncates a thinking answer
+    below, which is what the floor exists to prevent.
+    """
+    import re
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "frontend"
+        / "src"
+        / "features"
+        / "chat"
+        / "provider-capabilities.ts"
+    ).read_text(encoding = "utf-8")
+    table = re.search(
+        r"const EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER: Record<string, number> = \{(.*?)\};",
+        source,
+        re.S,
+    )
+    assert table, "the client table was renamed; the copy in research_runs.py needs the same"
+    assert research_runs._EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER == {
+        name: int(value.replace("_", ""))
+        for name, value in re.findall(r"(\w+)\s*:\s*([\d_]+)", table.group(1))
+    }
+    default = re.search(
+        r"export function getExternalMinOutputTokens\(.*?\)\s*:\s*number\s*\{.*?"
+        r"if \(!providerType\) return (\d+);",
+        source,
+        re.S,
+    )
+    assert default and research_runs._EXTERNAL_MIN_OUTPUT_TOKENS == int(default.group(1))
+
+
+def test_a_local_run_ignores_a_stray_ceiling():
+    assert _synthesis_max_tokens({"maxOutputTokens": 65_536}) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_a_budget_the_run_cannot_stream_in_time_is_bounded_by_its_wall_clock(monkeypatch):
+    """A wall-clock stop loses the report; running out of budget only truncates it.
+
+    _stream_completion re-raises without returning the text it already streamed.
+    """
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {"providerType": "deepseek", "providerId": "p1", "maxOutputTokens": 384_000}
+    assert _synthesis_max_tokens(inference, 900) == 900 * research_runs._SYNTHESIS_TOKENS_PER_SECOND
+    # Never below what the run would have got anyway.
+    assert _synthesis_max_tokens(inference, 60) == research_runs._SYNTHESIS_MAX_TOKENS
+    assert _synthesis_max_tokens({**inference, "maxOutputTokens": 32_768}, 120) == 16_384
+
+
+def test_a_ceiling_bounds_a_budget_even_without_a_wall_clock(monkeypatch):
+    """0 is unlimited in the budgets schema, and a documented cap can still be wrong."""
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {"providerType": "deepseek", "providerId": "p1", "maxOutputTokens": 384_000}
+    for unlimited in (0, None):
+        assert _synthesis_max_tokens(inference, unlimited) == (
+            research_runs._SYNTHESIS_MAX_TOKENS_CEILING
+        )
+
+
+def test_an_absurd_saved_ceiling_cannot_reach_the_provider(monkeypatch):
+    """The route accepts up to MAX_JSON_SAFE_INTEGER, and nothing downstream bounds it."""
+    monkeypatch.setattr(
+        research_runs.providers_db,
+        "get_provider",
+        lambda _id: {"max_output_tokens": 9_007_199_254_740_991},
+    )
+    inference = {
+        "providerType": "openai",
+        "providerId": "p1",
+        "maxOutputTokens": 9_007_199_254_740_991,
+    }
+    assert _synthesis_max_tokens(inference, 900) <= research_runs._SYNTHESIS_MAX_TOKENS_CEILING
+
+
+def test_the_report_budget_never_falls_below_what_a_run_used_to_get(monkeypatch):
+    for saved in (None, 64, 8_000, 16_384, 32_768, 256_000):
+        monkeypatch.setattr(
+            research_runs.providers_db,
+            "get_provider",
+            lambda _id, cap = saved: {"max_output_tokens": cap} if cap else None,
+        )
+        for client in (None, 32_768, 65_536, 384_000):
+            inference = {"providerType": "gemini", "providerId": "p1"}
+            if client:
+                inference["maxOutputTokens"] = client
+            budget = _synthesis_max_tokens(inference, 900)
+            assert budget >= research_runs._SYNTHESIS_MAX_TOKENS, (saved, client, budget)
+            assert budget <= research_runs._SYNTHESIS_MAX_TOKENS_CEILING, (saved, client, budget)
+
+
+def test_a_cap_lowered_mid_run_bounds_the_request_that_actually_goes_out(monkeypatch):
+    """Recovery and every retry rebuild the request later, so the cap is re-read at build."""
+    caps = iter([65_536, 32_768])
+    monkeypatch.setattr(
+        research_runs.providers_db,
+        "get_provider",
+        lambda _id: {"max_output_tokens": next(caps, 32_768)},
+    )
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 65_536}
+    assert _synthesis_max_tokens(inference, 0) == 65_536
+    # The second call is the one the retry loop makes.
+    assert _synthesis_max_tokens(inference, 0) == 32_768
+
+
+def test_the_flush_triggers_scale_from_the_same_written_length():
+    """Both arms must start scaling together, or the character one never binds.
+
+    A time arm whose knee sits at the END of the unlocked range leaves the row rewritten four
+    times a second through the shared writer for an entire 65_536-token report.
+    """
+    knee = int(
+        research_runs._PROGRESS_FLUSH_SECONDS * research_runs._PROGRESS_FLUSH_CHARS_PER_SECOND
+    )
+    assert knee == research_runs._PROGRESS_FLUSH_CHARS * 64
+    # A 65_536-token report is roughly 262_144 chars; the arm must scale well before it.
+    assert knee < 262_144 // 2
+    assert max(research_runs._PROGRESS_FLUSH_CHARS, 1_000 // 64) == 512
+    assert (
+        max(
+            research_runs._PROGRESS_FLUSH_SECONDS,
+            1_000 / research_runs._PROGRESS_FLUSH_CHARS_PER_SECOND,
+        )
+        == 0.25
+    )
+
+
+def test_an_explicit_zero_budget_is_never_put_on_the_wire(monkeypatch):
+    """main's `max_tokens or ...` made 0 impossible; the route rejects a request for one."""
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda *a, **k: None)
+    assert _resolve_max_tokens(0, {}, [{"role": "user", "content": "x"}]) == 1
+    assert _resolve_max_tokens(-5, {}, [{"role": "user", "content": "x"}]) == 1
+
+
+def test_a_saved_connection_cap_does_not_shorten_a_legacy_run(monkeypatch):
+    monkeypatch.setattr(
+        research_runs.providers_db,
+        "get_provider",
+        lambda _id: {"max_output_tokens": 8_192},
+    )
+    inference = {"providerType": "ollama", "providerId": "p1", "externalModel": "glm-5.3-flash"}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_a_saved_cap_above_the_default_does_not_raise_a_legacy_run(monkeypatch):
+    monkeypatch.setattr(
+        research_runs.providers_db,
+        "get_provider",
+        lambda _id: {"max_output_tokens": 32_768},
+    )
+    inference = {"providerType": "ollama", "providerId": "p1", "externalModel": "glm-5.3-flash"}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_a_client_ceiling_is_what_actually_raises_the_report_budget(monkeypatch):
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {
+        "providerType": "ollama",
+        "providerId": "p1",
+        "externalModel": "glm-5.3-flash",
+        "maxOutputTokens": 32_768,
+    }
+    assert _synthesis_max_tokens(inference) == 32_768
+
+
+def test_a_legacy_run_keeps_the_default_rather_than_guessing_upwards(monkeypatch):
+    """The saved cap is connection-wide, so for this run's model it is a guess: claude-opus-4-1
+    stops at 32_000 while its connection may be saved at 32_768."""
+    monkeypatch.setattr(
+        research_runs.providers_db,
+        "get_provider",
+        lambda _id: {"max_output_tokens": 256_000},
+    )
+    inference = {"providerType": "gemini", "providerId": "p1", "externalModel": "gemini-3.6-flash"}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+@pytest.mark.parametrize(
+    "provider",
+    [None, {}, {"max_output_tokens": None}, {"max_output_tokens": 0}],
+    ids = ["missing", "unset", "null", "zero"],
+)
+def test_a_connection_without_a_saved_cap_keeps_the_default(monkeypatch, provider):
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: provider)
+    inference = {"providerType": "ollama", "providerId": "p1"}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_an_unreadable_provider_row_does_not_fail_the_run(monkeypatch):
+    def explode(_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", explode)
+    inference = {"providerType": "ollama", "providerId": "p1"}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
 def test_completion_hit_context_wall_matches_live_probe():
     usage = {
         "prompt_tokens": 11_032,
@@ -488,6 +989,43 @@ def test_budgets_reject_a_boolean_instead_of_reading_it_as_unlimited():
     }
 
 
+def test_sanitize_config_rejects_a_non_integer_report_ceiling():
+    for bad in (True, 64.9, float("inf"), float("nan"), "32768"):
+        with pytest.raises(HTTPException):
+            _sanitize_config(
+                _make_payload(inferenceRequest = {"model": "m", "maxOutputTokens": bad}),
+                {"modelId": "m"},
+            )
+
+
+def test_sanitize_config_keeps_a_strict_integer_report_ceiling():
+    config = _sanitize_config(
+        _make_payload(inferenceRequest = {"model": "m", "maxOutputTokens": 32_768}),
+        {"modelId": "m"},
+    )
+    assert config["inferenceRequest"]["maxOutputTokens"] == 32_768
+
+
+def test_sanitize_config_keeps_the_grounding_flag_and_refuses_a_non_boolean():
+    config = _sanitize_config(
+        _make_payload(
+            inferenceRequest = {
+                "model": "m",
+                "maxOutputTokens": 32_768,
+                "maxOutputTokensFromSavedCap": True,
+            }
+        ),
+        {"modelId": "m"},
+    )
+    assert config["inferenceRequest"]["maxOutputTokensFromSavedCap"] is True
+    for bad in (1, 0, "true", None, []):
+        with pytest.raises(HTTPException):
+            _sanitize_config(
+                _make_payload(inferenceRequest = {"model": "m", "maxOutputTokensFromSavedCap": bad}),
+                {"modelId": "m"},
+            )
+
+
 def test_sanitize_config_rejects_nested_inference_credential():
     payload = _make_payload(inferenceRequest = {"model": {"api_key": "sk-should-not-persist"}})
     with pytest.raises(Exception):
@@ -613,6 +1151,66 @@ def test_dropped_raw_url_does_not_unbalance_prose():
     # An uncataloged URL is still removed, but the paren it swallowed belongs to the prose.
     out = _validate_report_sources("Claim (https://nope.com/x) here.", [])
     assert out == "Claim () here."
+
+
+def test_code_keeps_its_urls_and_brackets():
+    sources = [{"url": "https://a.com", "title": "A"}, {"url": "https://b.com", "title": "B"}]
+    code = (
+        "```bash\n"
+        "git clone https://github.com/unslothai/unsloth\n"
+        "pip install torch --index-url https://download.pytorch.org/whl/cu121\n"
+        "curl http://localhost:8888/api/health\n"
+        "```\n"
+        "~~~python\n"
+        'client = OpenAI(base_url = "http://localhost:8888/v1")\n'
+        "print(x.shape[1], [2](https://nope.com))\n"
+        "~~~"
+    )
+    report = (
+        f"{code}\n\n"
+        'Run `sys.argv[1]` or ``OpenAI(base_url="http://localhost:8888/v1")`` '
+        "as shown [1], not https://nope.com/x."
+    )
+    out = _validate_report_sources(report, sources)
+    assert out == (
+        f"{code}\n\n"
+        'Run `sys.argv[1]` or ``OpenAI(base_url="http://localhost:8888/v1")`` '
+        "as shown [A](https://a.com), not ."
+    )
+
+
+def test_unterminated_code_fence_keeps_its_urls():
+    report = "Install it:\n\n```bash\npip install torch --index-url https://download.pytorch.org/whl/cu121"
+    assert _validate_report_sources(report, []) == report
+
+
+def test_sources_heading_inside_code_does_not_cut_the_report():
+    code = "```markdown\n## Sources\n- https://example.com\n```"
+    report = f"Template:\n\n{code}\n\nMore [1].\n\n## Sources\n- [A](https://a.com)"
+    out = _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}])
+    assert out == f"Template:\n\n{code}\n\nMore [A](https://a.com)."
+
+
+def test_prose_citations_without_code_are_unchanged():
+    sources = [
+        {"url": "https://a.com", "title": "A"},
+        {"url": "https://b.com/x_(y)", "title": "[PDF] B"},
+    ]
+    report = (
+        "## Findings\n\n"
+        "Claim one [1] and two [2], bad [9], footnote [^1].\n"
+        "Linked [label](https://a.com) and [fake](https://nope.example/z).\n"
+        "Auto <https://b.com/x_(y)> and <https://nope.example/q>.\n"
+        "Raw (https://a.com). Raw https://nope.example/r, then https://b.com/x_(y).\n"
+        "\n**Sources**\n- [A](https://a.com)\n"
+    )
+    assert _validate_report_sources(report, sources) == (
+        "## Findings\n\n"
+        "Claim one [A](https://a.com) and two [PDF B](https://b.com/x_(y)), bad [9], footnote [^1].\n"
+        "Linked [A](https://a.com) and fake.\n"
+        "Auto [PDF B](https://b.com/x_(y)) and .\n"
+        "Raw ([A](https://a.com)). Raw , then [PDF B](https://b.com/x_(y))."
+    )
 
 
 def _install_probe_backends(monkeypatch, llama, native) -> None:
@@ -1455,10 +2053,7 @@ def test_stream_completion_times_out_when_output_never_starts(monkeypatch):
             yield "data: [DONE]"
 
     _install_fake_client(monkeypatch, [_SilentStream()])
-    supervisor = _make_supervisor(_noop_check_active)
-
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 1.0)
+    _shared_setup_2()
 
 
 def test_admission_keepalives_do_not_spend_the_first_output_budget(monkeypatch):
@@ -1520,11 +2115,7 @@ def test_plain_keepalives_mean_a_silent_backend_and_spend_the_budget(monkeypatch
     """
     monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
     _install_fake_client(monkeypatch, [_comment_only_stream(": keep-alive")])
-    supervisor = _make_supervisor(_noop_check_active)
-
-    started = time.monotonic()
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 30.0)
+    started = _shared_setup_1()
     assert time.monotonic() - started < 5.0, "must end on the budget, not the wall clock"
 
 
@@ -1581,11 +2172,7 @@ def test_the_budget_starts_when_admission_ends(monkeypatch):
             yield "data: [DONE]"
 
     _install_fake_client(monkeypatch, [_AdmittedThenSilent()])
-    supervisor = _make_supervisor(_noop_check_active)
-
-    started = time.monotonic()
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 30.0)
+    started = _shared_setup_1()
     assert time.monotonic() - started < 5.0, "the budget must run from admission end"
 
 
@@ -1703,11 +2290,7 @@ def test_stall_keepalives_after_the_first_frame_do_not_renew_the_budget(monkeypa
                 yield ": keep-alive"
 
     _install_fake_client(monkeypatch, [_RoleThenWedged()])
-    supervisor = _make_supervisor(_noop_check_active)
-
-    started = time.monotonic()
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 30.0)
+    started = _shared_setup_1()
     assert time.monotonic() - started < 5.0, "must end on the budget, not the wall clock"
 
 
@@ -1898,19 +2481,13 @@ def test_stream_completion_first_output_timeout_survives_iterator_cleanup(monkey
                 raise httpx.ReadError("cleanup failed") from exc
 
     _install_fake_client(monkeypatch, [_BrokenSilentStream()])
-    supervisor = _make_supervisor(_noop_check_active)
-
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 1.0)
+    _shared_setup_2()
 
 
 @pytest.mark.parametrize("body", ("data: [DONE]\n\n", ""))
 def test_stream_completion_rejects_zero_output_terminal_stream(monkeypatch, body):
     _install_fake_client(monkeypatch, [_response(200, body = body)])
-    supervisor = _make_supervisor(_noop_check_active)
-
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 1.0)
+    _shared_setup_2()
 
 
 def test_stream_cancellation_wins_at_first_output_deadline():
@@ -2632,3 +3209,446 @@ def test_a_cancel_during_the_rate_limit_wait_is_not_held_for_the_retry_after(mon
 
     assert ended, "the wait never re-checked the run"
     assert ended[0] - started[0] <= research_runs._MODEL_WAIT_POLL_SECONDS
+
+
+# ── self-call endpoint address ───────────────────────────────────────
+
+
+def _endpoint_supervisor(**state) -> ResearchSupervisor:
+    return ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 8889, **state)))
+
+
+@pytest.mark.parametrize(
+    "bound_host, expected_authority",
+    [
+        ("192.168.1.239", "192.168.1.239:8889"),
+        ("127.0.0.1", "127.0.0.1:8889"),
+        ("::1", "[::1]:8889"),
+        ("fe80::1234%eth0", "[fe80::1234%eth0]:8889"),
+    ],
+)
+def test_endpoint_dials_the_address_the_server_is_bound_to(bound_host, expected_authority):
+    supervisor = _endpoint_supervisor(server_request_host = bound_host)
+    assert supervisor._endpoint() == f"http://{expected_authority}/v1/chat/completions"
+
+
+def test_endpoint_falls_back_to_the_noted_request_host():
+    supervisor = _endpoint_supervisor(research_request_host = "10.1.2.3")
+    assert supervisor._endpoint() == "http://10.1.2.3:8889/v1/chat/completions"
+
+
+def test_endpoint_prefers_the_bound_host_over_a_noted_one():
+    supervisor = _endpoint_supervisor(
+        server_request_host = "192.168.1.239",
+        research_request_host = "10.1.2.3",
+    )
+    assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
+
+
+def test_endpoint_uses_loopback_when_no_address_was_published():
+    assert _endpoint_supervisor()._endpoint() == "http://127.0.0.1:8889/v1/chat/completions"
+
+
+def test_note_server_address_records_the_accepting_address_outside_run_server():
+    state = SimpleNamespace()
+    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor.note_server_address(("192.168.1.239", 8889))
+    assert state.research_request_host == "192.168.1.239"
+    assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
+
+
+def test_note_server_address_maps_a_wildcard_bind_back_to_loopback():
+    state = SimpleNamespace()
+    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor.note_server_address(("0.0.0.0", 8889))
+    # On the recorded address, not the endpoint: loopback is also the fallback.
+    assert state.research_request_host == "127.0.0.1"
+    assert supervisor._endpoint() == "http://127.0.0.1:8889/v1/chat/completions"
+
+
+def test_note_server_address_records_the_address_when_only_the_port_is_published():
+    # run_server publishes the port before it binds, the address only once bound.
+    state = SimpleNamespace(server_port = 8889, server_request_host = None)
+    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor.note_server_address(("192.168.1.239", 8889))
+    assert state.research_request_host == "192.168.1.239"
+    assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
+
+
+@pytest.mark.parametrize(
+    "arrivals",
+    [
+        (("127.0.0.1", 8889), ("192.168.1.239", 8889)),
+        (("192.168.1.239", 8889), ("127.0.0.1", 8889)),
+    ],
+)
+def test_a_wildcard_bind_settles_on_loopback_in_either_arrival_order(arrivals):
+    state = SimpleNamespace()
+    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    for server in arrivals:
+        supervisor.note_server_address(server)
+    assert state.research_request_host == "127.0.0.1"
+    assert supervisor._endpoint() == "http://127.0.0.1:8889/v1/chat/completions"
+
+
+def test_a_single_interface_bind_still_latches_its_own_address():
+    state = SimpleNamespace()
+    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor.note_server_address(("192.168.1.239", 8889))
+    supervisor.note_server_address(("192.168.1.239", 8889))
+    assert state.research_request_host == "192.168.1.239"
+
+
+@pytest.mark.parametrize("server", [None, (), ("",), ("192.168.1.239",), ("", 8889), (8889,)])
+def test_note_server_address_ignores_scope_values_that_carry_no_address(server):
+    state = SimpleNamespace()
+    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor.note_server_address(server)
+    assert getattr(state, "research_request_host", None) is None
+
+
+def test_note_server_address_defers_to_run_server_published_state():
+    state = SimpleNamespace(server_port = 8889, server_request_host = "192.168.1.239")
+    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor.note_server_address(("127.0.0.1", 9999))
+    assert getattr(state, "research_request_host", None) is None
+    assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "    git clone https://github.com/unslothai/unsloth\n    print(x[1])",
+        "\tgit clone https://github.com/unslothai/unsloth\n\tprint(x[1])",
+        "1. Install:\n\n    ```sh\n    git clone https://github.com/unslothai/unsloth\n    ```",
+        "- Install:\n\n      git clone https://github.com/unslothai/unsloth",
+    ],
+)
+def test_report_preserves_indented_and_list_code(code):
+    report = f"Setup:\n\n{code}\n\nUse this [1], not https://nope.example."
+    out = _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}])
+    assert out == f"Setup:\n\n{code}\n\nUse this [A](https://a.com), not ."
+
+
+def test_report_starting_with_indented_code_keeps_its_indentation():
+    report = "    curl https://example.com/api\n\nExplanation."
+    assert _validate_report_sources(report, []) == report
+
+
+def test_indented_paragraph_continuation_is_still_validated():
+    report = "Explanation continues\n    at https://nope.example."
+    assert _validate_report_sources(report, []) == "Explanation continues\n    at ."
+
+
+def test_multiline_inline_code_keeps_urls_and_brackets():
+    code = "`pip install torch\n--index-url https://download.pytorch.org/whl/cu121`"
+    report = f"Use {code}, then [1]."
+    assert _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}]) == (
+        f"Use {code}, then [A](https://a.com)."
+    )
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        ("参见https://a.com的`pip install unsloth`命令。", "参见`pip install unsloth`命令。"),
+        (
+            "Clone https://nope.example/`git clone repo` then build [1].",
+            "Clone `git clone repo` then build [A](https://a.com).",
+        ),
+    ],
+)
+def test_url_glued_to_inline_code_keeps_the_code(report, expected):
+    assert _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}]) == expected
+
+
+def test_literal_escaped_backticks_do_not_hide_prose_urls():
+    report = r"Literal \`https://nope.example\` then [1]."
+    out = _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}])
+    assert "https://nope.example" not in out
+    assert out.endswith("then [A](https://a.com).")
+
+
+def test_unclosed_quote_fence_stops_at_the_quote_boundary():
+    code = "> ```sh\n> curl https://example.com/api"
+    report = f"{code}\n\nOutside https://nope.example and [1]."
+    assert _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}]) == (
+        f"{code}\n\nOutside  and [A](https://a.com)."
+    )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        '```python\npattern = "[Document: generated]"\n```',
+        '`pattern = "[Document: generated]"`',
+        '    pattern = "[Document: generated]"',
+    ],
+)
+def test_delivered_report_keeps_document_literals_in_code(code):
+    report = f"Example:\n\n{code}\n\nProse [Document: missing.pdf]."
+    expected = f"Example:\n\n{code}\n\nProse ."
+    assert _validate_report(report, [], []) == expected
+    assert _validate_report_document_sources(_validate_report_sources(report, []), []) == expected
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        ("Context\nhttps://nope.example\n    [Document: hallucinated]", "Context\n\n    "),
+        (
+            "Findings [1]\nhttps://nope.example\n    [Document: made-up.pdf, p. 3] supports this.",
+            "Findings [A](https://a.com)\n\n     supports this.",
+        ),
+    ],
+)
+def test_removed_url_line_does_not_turn_a_document_citation_into_code(report, expected):
+    assert _validate_report(report, [{"url": "https://a.com", "title": "A"}], []) == expected
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        # A report spelling a masking token must not be handed the code that token stands for.
+        (
+            "prose \x00research-code-0\x00 then `real code` [1].",
+            "prose \ufffdresearch-code-0\ufffd then `real code` [A](https://a.com).",
+        ),
+        # Nor may one masked span be rewritten with a later span's text.
+        (
+            "`x = \x00research-code-1\x00` and `second` [1].",
+            "`x = \ufffdresearch-code-1\ufffd` and `second` [A](https://a.com).",
+        ),
+        # The same forgery through the citation and document token names, which predate masking.
+        (
+            "prose \x00research-citation-1\x00 and [1].",
+            "prose \ufffdresearch-citation-1\ufffd and [A](https://a.com).",
+        ),
+        (
+            "prose \x00document-citation-0\x00 and [Document: real.pdf].",
+            "prose \ufffddocument-citation-0\ufffd and [Document: real.pdf].",
+        ),
+    ],
+)
+def test_report_cannot_forge_a_masking_placeholder(report, expected):
+    """CommonMark renders a literal NUL as U+FFFD, so the report is normalized the same way
+    before anything is masked. Without it a report that spells a token gets another region's
+    text substituted into it."""
+    out = _validate_report(
+        report, [{"url": "https://a.com", "title": "A"}], [{"filename": "real.pdf"}]
+    )
+    assert out == expected
+    assert "\x00" not in out
+
+
+def test_restoring_code_does_not_rescan_it_for_later_tokens():
+    """One pass, so a masked span is never searched again once restored."""
+    placeholders: dict[str, str] = {}
+    masked = _mask_code("`a \x00research-code-1\x00 b` and `c`", placeholders)
+    assert len(placeholders) == 2
+    assert (
+        _restore_placeholders(masked, placeholders) == "`a \ufffdresearch-code-1\ufffd b` and `c`"
+    )
+
+
+def test_every_allocated_token_is_one_restoration_recognises():
+    """A kind missing from _PLACEHOLDER_KINDS would leave its raw sentinel in the report, so
+    exercise both producers and check the pattern matches everything they allocate."""
+    placeholders: dict[str, str] = {}
+    report = "Run `curl https://a.com` per [1] and [Document: real.pdf]."
+    masked = _validate_masked_sources(
+        _mask_code(report, placeholders), [{"url": "https://a.com", "title": "A"}], placeholders
+    )
+    masked = _validate_masked_document_sources(masked, [{"filename": "real.pdf"}], placeholders)
+    kinds = {key.strip("\x00").rsplit("-", 1)[0] for key in placeholders}
+    assert kinds == set(_PLACEHOLDER_KINDS)
+    assert all(_PLACEHOLDER.fullmatch(key) for key in placeholders)
+    assert "\x00" not in _restore_placeholders(masked, placeholders)
+
+
+@pytest.mark.parametrize(
+    ("report", "sources", "expected"),
+    [
+        # Backticks in a filename are masked as code before the document pass runs, so an exact
+        # string match against the catalog misses and a real citation gets stripped.
+        (
+            "Text [Document: readme`x`.md] end",
+            [{"filename": "readme`x`.md"}],
+            "Text [Document: readme`x`.md] end",
+        ),
+        (
+            "See [Document: gu`ide`.md, p. 3] and [Document: plain.md].",
+            [{"filename": "gu`ide`.md", "page": 3}, {"filename": "plain.md"}],
+            "See [Document: gu`ide`.md, p. 3] and [Document: plain.md].",
+        ),
+        # A "]" inside the filename must still not truncate the citation.
+        (
+            "Bracket [Document: budget [final].pdf] ok.",
+            [{"filename": "budget [final].pdf"}],
+            "Bracket [Document: budget [final].pdf] ok.",
+        ),
+        # An uncatalogued document is still dropped.
+        (
+            "Plain [Document: real.pdf] and [Document: missing.pdf].",
+            [{"filename": "real.pdf"}],
+            "Plain [Document: real.pdf] and .",
+        ),
+    ],
+)
+def test_document_citation_survives_backticks_in_the_filename(report, sources, expected):
+    assert _validate_report(report, [], sources) == expected
+    assert _validate_report_document_sources(report, sources) == expected
+
+
+def test_restoration_never_leaves_a_nul_in_the_report():
+    """_mask_code normalizes NUL away, so a token with no entry cannot happen. Should a later
+    path restore text that skipped that step, the report must still not carry a NUL."""
+    assert _restore_placeholders(
+        "x \x00research-code-9\x00 y", {"\x00research-code-0\x00": "z"}
+    ) == ("x \ufffdresearch-code-9\ufffd y")
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        # remark-gfm reads these indented lines as footnote prose and renders a bare URL there as
+        # a live link, so they must be validated even though CommonMark calls them code.
+        (
+            "Body [^1].\n\n[^1]: note\n\n    https://nope.example/leak and [1].",
+            "Body [^1].\n\n[^1]: note\n\n     and [A](https://a.com).",
+        ),
+        (
+            "Body [^1].\n\n[^1]: a\n\n    - item https://nope.example/x [2]",
+            "Body [^1].\n\n[^1]: a\n\n    - item  [2]",
+        ),
+        (
+            "Body [^1].\n\n[^1]: a\n\n        https://nope.example/deep and [1].",
+            "Body [^1].\n\n[^1]: a\n\n         and [A](https://a.com).",
+        ),
+        # An indented fence under a definition is a fence to the renderer and an indented code
+        # block here, so it is validated rather than trusted. That keeps main's behaviour: code
+        # protection does not reach inside a footnote, which is the safe direction to miss in.
+        (
+            "Body [^1].\n\n[^1]: a\n\n    ```sh\n    curl https://nope.example/y\n    ```",
+            "Body [^1].\n\n[^1]: a\n\n    ```sh\n    curl \n    ```",
+        ),
+        # An unindented fence closes the definition, and is masked as usual.
+        (
+            "Body [^1].\n\n[^1]: a\n\n```sh\ncurl https://nope.example/y\n```",
+            "Body [^1].\n\n[^1]: a\n\n```sh\ncurl https://nope.example/y\n```",
+        ),
+        # Once the definition ends, an indented block is code again.
+        (
+            "Body [^1].\n\n[^1]: a\n\nProse.\n\n    curl https://nope.example/z",
+            "Body [^1].\n\n[^1]: a\n\nProse.\n\n    curl https://nope.example/z",
+        ),
+    ],
+)
+def test_footnote_content_is_validated_not_masked(report, expected):
+    assert _validate_report(report, [{"url": "https://a.com", "title": "A"}], []) == expected
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        # Backticks in two different cells are not a code span to the renderer, which splits the
+        # row into cells first, so what sits between them still renders as plain cell text.
+        (
+            "| a | b |\n| - | - |\n| `x | https://nope.example/bad ` |",
+            "| a | b |\n| - | - |\n| `x |  ` |",
+        ),
+        (
+            "| a | b |\n| - | - |\n| `x | [Document: fake.pdf] ` |",
+            "| a | b |\n| - | - |\n| `x |  ` |",
+        ),
+        # A command in one cell is still code, which is the point of masking at all.
+        (
+            "| cmd | note |\n| --- | --- |\n| `git clone https://nope.example/r` | clone |",
+            "| cmd | note |\n| --- | --- |\n| `git clone https://nope.example/r` | clone |",
+        ),
+        # An escaped pipe stays inside its cell, so a span may span it.
+        (
+            "| a | b |\n| - | - |\n| `grep a \\| wc https://nope.example/c` | x |",
+            "| a | b |\n| - | - |\n| `grep a \\| wc https://nope.example/c` | x |",
+        ),
+    ],
+)
+def test_table_cells_are_validated_per_cell(report, expected):
+    assert _validate_report(report, [], []) == expected
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        # mermaid >= 11.3 puts an image shape's URL on an SVG image the browser fetches, outside
+        # the markdown image pipeline, so an uncatalogued one in a report is an outbound request
+        # carrying whatever the model was willing to put in it.
+        (
+            '```mermaid\nflowchart TD\n  A@{ img: "https://nope.example/x?leak=1" }\n```',
+            '```mermaid\nflowchart TD\n  A@{ img: " }\n```',
+        ),
+        # A tilde fence reaches the renderer as mermaid too.
+        (
+            '~~~mermaid\nflowchart TD\n  A@{ img: "https://nope.example/y" }\n~~~',
+            '~~~mermaid\nflowchart TD\n  A@{ img: " }\n~~~',
+        ),
+        # click directives are the other way a diagram names a URL.
+        (
+            '```mermaid\nflowchart TD\n  A-->B\n  click A "https://nope.example/c"\n```',
+            '```mermaid\nflowchart TD\n  A-->B\n  click A "\n```',
+        ),
+        # Any other language is inert code and keeps its URL, which is the PR's whole point.
+        (
+            "```bash\ncurl https://nope.example/keep\n```",
+            "```bash\ncurl https://nope.example/keep\n```",
+        ),
+        # `mermaid\\b`, matching the renderer's own gate: mermaidx is not mermaid.
+        (
+            "```mermaidx\ncurl https://nope.example/keep\n```",
+            "```mermaidx\ncurl https://nope.example/keep\n```",
+        ),
+    ],
+)
+def test_mermaid_fences_are_validated_not_masked(report, expected):
+    """A mermaid fence is executed into a diagram rather than shown as code, so it stays subject
+    to the catalog. That is what main did before any code was masked, so nothing regresses."""
+    assert _validate_report(report, [], []) == expected
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        "Prose [Document: `git clone https://nope.example/r` ] end.",
+        "Prose [Document: oops `keepme` ] end.",
+    ],
+)
+def test_dropping_an_unsupported_document_citation_keeps_its_code(report):
+    """The citation pattern can reach across a code span. Removing the citation must not remove
+    the code, which is the one thing this module promises not to touch."""
+    out = _validate_report(report, [], [{"filename": "real.pdf"}])
+    assert "[Document:" not in out
+    assert out.count("`") == 2
+    assert out == "Prose " + report[report.index("`") : report.rindex("`") + 1] + " end."
+
+
+def test_restoring_many_code_spans_stays_linear():
+    """A replace() per token rescans the whole report once per span. Guard the single pass so a
+    code-heavy report cannot go quadratic on the event loop."""
+    placeholders = {f"\x00research-code-{i}\x00": f"`c{i}`" for i in range(2000)}
+    text = "x" * 200_000 + "".join(placeholders)
+    start = time.perf_counter()
+    restored = _restore_placeholders(text, placeholders)
+    elapsed = time.perf_counter() - start
+    assert restored == "x" * 200_000 + "".join(placeholders.values())
+    assert elapsed < 2.0, f"restoration took {elapsed:.1f}s for 2000 spans in a 200KB report"
+
+
+def test_sanitize_config_keeps_the_reasoning_support_flags():
+    request = {"model": "m", "supportsReasoning": True, "supportsReasoningOff": False}
+    config = _sanitize_config(_make_payload(inferenceRequest = dict(request)), {"modelId": "other"})
+    assert config["inferenceRequest"] == request
+    with pytest.raises(Exception):
+        _sanitize_config(
+            _make_payload(inferenceRequest = {"model": "m", "supportsReasoningOff": "no"}),
+            {"modelId": "m"},
+        )

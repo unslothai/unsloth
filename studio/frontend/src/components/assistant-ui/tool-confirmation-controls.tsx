@@ -80,9 +80,8 @@ export function ToolConfirmationControls({
           decision,
         );
         if (ok) {
-          // Only hide the controls once the backend confirms it matched the
-          // pending call -- otherwise the generation would stay blocked with
-          // no way to retry.
+          // Only hide the controls once the backend confirms it matched the pending call --
+          // otherwise the generation would stay blocked with no way to retry.
           setDecided(true);
           clearToolConfirmation(toolCallId);
         } else {
@@ -104,22 +103,20 @@ export function ToolConfirmationControls({
     }
   }, [showControls, autoAllowed, pending, failed, resolve]);
 
-  // ⏎ / Esc, only while this card is asking: an auto-approved one answers
-  // itself. Off route the chat pane is hidden rather than unmounted, so
-  // without the active check a bare key would decide a request nobody can
-  // see. With a second request parked, in the other Compare pane or further
-  // up the thread, the chord has no way to say which one it means, so both
-  // cards fall back to their buttons.
+  // ⏎ / Esc, only while this card is asking: an auto-approved one answers itself. Off route the
+  // chat pane is hidden rather than unmounted, so without the active check a bare key would decide
+  // a request nobody can see. With a second request parked, in the other Compare pane or further up
+  // the thread, the chord has no way to say which one it means, so both cards fall back to their
+  // buttons.
   const chatActive = useChatActive();
   const soleRequest = useChatRuntimeStore(
     (s) => Object.keys(s.toolConfirmations).length === 1,
   );
-  // A sidebar selection answers Escape already, and that listener does not
-  // consume the key, so both would run off one press and deny a call the user
-  // was only dismissing a selection with. Escape there costs nothing to undo
-  // and this does not, so this is the one that waits. Enter goes with it: the
-  // buttons are still there, and a card that takes half its keys is worse to
-  // explain than one that takes none.
+  // A sidebar selection answers Escape already, and that listener does not consume the key, so both
+  // would run off one press and deny a call the user was only dismissing a selection with. Escape
+  // there costs nothing to undo and this does not, so this is the one that waits. Enter goes with
+  // it: the buttons are still there, and a card that takes half its keys is worse to explain than
+  // one that takes none.
   const selectionActive = useChatNavigationStore((s) => s.selectionActive);
   const keyboardReady =
     chatActive &&
@@ -153,11 +150,10 @@ export function ToolConfirmationControls({
     {
       enabled: keyboardReady,
       skipInTextFields: true,
-      // A request usually arrives with the composer still focused from the
-      // prompt that caused it, and Escape types nothing there, so the gate
-      // would hold the decline back at the one moment it is most wanted. Enter
-      // above gets no such pass: that key sends. Every other field keeps its
-      // Escape, the queued-prompt editor and the settings search included.
+      // A request usually arrives with the composer still focused from the prompt that caused it,
+      // and Escape types nothing there, so the gate would hold the decline back at the one moment
+      // it is most wanted. Enter above gets no such pass: that key sends. Every other field keeps
+      // its Escape, the queued-prompt editor and the settings search included.
       textFieldException: COMPOSER_INPUT_SELECTOR,
     },
   );

@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -23,6 +25,41 @@ from scripts import scan_packages as sp  # noqa: E402
 def test_fixture_files_exist():
     for name in ("malicious_wheel.whl", "clean_wheel.whl", "malicious_sdist.tar.gz"):
         assert (FIXTURES / name).is_file(), name
+
+
+def test_no_archive_fixture_is_committed():
+    """The archives are built at session start, never committed.
+
+    Two of them embed the May-12 IOC literal, which makes them true positives for other vendors:
+    on VirusTotal `malicious_sdist.tar.gz` scores 2/60 and `malicious_wheel.whl` 2/65 (Tencent,
+    Rising), and their presence in GitHub's repository archive is what makes Panda report
+    `Exploit/CVE-2014-6271` against `unsloth-main.zip`. unslothai/unsloth#10060 took the test tree
+    out of the PyPI artifacts, but a repository archive contains tests by construction, so the only
+    way those detections stop is for the archives not to be in git (discussion #9577).
+
+    `git ls-files` rather than a directory listing: the files are present on disk in every run,
+    because `tests/security/conftest.py` builds them. What must stay empty is the index.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", "tests/security/fixtures"],
+        cwd = REPO_ROOT,
+        capture_output = True,
+        text = True,
+        timeout = 30,
+    )
+    if tracked.returncode != 0:
+        pytest.skip(f"not a git checkout: {tracked.stderr.strip()}")
+
+    archives = sorted(
+        line
+        for line in tracked.stdout.splitlines()
+        if line.strip().endswith((".whl", ".tar.gz", ".zip", ".tgz"))
+    )
+    assert archives == [], (
+        f"these archive fixtures are committed: {archives}. Build them from "
+        "tests/security/fixtures/_build.py at test time instead (conftest.py already does) and add "
+        "them to .gitignore, so a repository archive carries no file a scanner flags."
+    )
 
 
 def test_fixture_bytes_are_deterministic(tmp_path):
@@ -475,6 +512,21 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
         ),
         (
             "unsloth_zoo/compiler.py",
+            "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        ),
+        # Both approved for the first time alongside compiler.py, and both for the same
+        # reason it is on this list: the matched lines are ordinary metaprogramming that
+        # says nothing about the rest of the file. vllm_utils.py builds attribute paths
+        # out of checkpoint-supplied state dict keys and execs them; moe_utils.py execs a
+        # cached copy of itself, having first compared it byte for byte against the
+        # in-tree source. Approving either on evidence alone would let a later payload in
+        # the same file ride an unchanged match.
+        (
+            "unsloth_zoo/vllm_utils.py",
+            "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        ),
+        (
+            "unsloth_zoo/temporary_patches/moe_utils.py",
             "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
         ),
     }
@@ -2292,6 +2344,17 @@ def _audited_requirements(root):
 # added at all, fails rather than silently widening the exemption.
 FIRST_PARTY_DIGEST_PINNED = {"unsloth-zoo"}
 
+# The `pip` branch is the one uploaded to PyPI, and its `[project].dependencies` carries
+# the whole training runtime rather than just the CLI entry path main declares there.
+# torch comes with it, and it has to stay a range: an exact pin in published wheel
+# metadata would put every `pip install unsloth` on one torch build, which is what the
+# cuXXX-torchYYY extras exist to choose instead. Digest pinning still does its job -- the
+# audit reopens on any byte change -- it just cannot name the version ahead of time, so
+# the bound is what gets asserted. Named, not skipped, and only for the pyproject half:
+# the studio requirement files pin exactly and are held to that. On main, where torch is
+# not declared in pyproject at all, this allowance never fires.
+PYPROJECT_BOUNDED_RANGE_ALLOWED = {"torch"}
+
 
 def test_digest_pinned_packages_are_pinned_on_every_supported_python():
     """A digest-pinned third-party package must be `==` pinned on every Python we support.
@@ -2358,6 +2421,17 @@ def test_digest_pinned_packages_are_pinned_on_every_supported_python():
             continue
         present.add(pkg)
         specifiers = list(requirement.specifier)
+        if source == "pyproject.toml" and pkg in PYPROJECT_BOUNDED_RANGE_ALLOWED:
+            operators = {s.operator for s in specifiers}
+            assert operators & {">=", ">"} and operators & {"<=", "<"}, (
+                f"{pkg} is allowed a range in pyproject.toml, but only a bounded one: an "
+                f"open-ended spec resolves to whatever ships next; got {spec!r}"
+            )
+            marker = requirement.marker
+            for python in pythons:
+                if marker is None or marker.evaluate({"python_version": python}):
+                    covered.setdefault(pkg, set()).add(python)
+            continue
         exact = (
             len(specifiers) == 1
             and specifiers[0].operator == "=="
@@ -2578,3 +2652,197 @@ def test_a_socketed_file_renders_what_it_always_rendered():
     assert len(found) == 1
     code_only = sp._strip_noncode(source)
     assert found[0].evidence == sp._extract_evidence(code_only, sp.RE_REVERSE_SHELL)
+
+
+def test_the_fixtures_are_published_atomically() -> None:
+    """The generated archives live at fixed paths that four CI workers rewrite concurrently.
+
+    `.github/workflows/workflow-trigger-lint.yml` runs `pytest -q -n 4` over `tests/security` with
+    the default `--dist load`, which scatters tests from ONE file across all four workers. Each runs
+    the session-scoped autouse fixture and rewrites these paths while the others read them. A plain
+    `write_bytes` truncates first, so a reader can catch a half-written archive -- and it does not
+    fail with a corrupt-file error, it fails asserting scanner semantics on a short member list,
+    which is close to untraceable.
+
+    Two properties, and the second is what makes the first sound.
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    source = (_Path(__file__).resolve().parent / "fixtures" / "_build.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "os.replace" in source, (
+        "the fixture builder no longer publishes through os.replace. A truncate-then-write at a "
+        "fixed path races the other xdist workers."
+    )
+    assert (
+        "write_bytes(buf" not in source and "write_bytes(gz_buf" not in source
+    ), "the builder writes an archive directly to its final path again"
+    assert f"{_os.getpid.__name__}()" in source or "getpid" in source, (
+        "the temp name is no longer pid-unique, so the workers collide on the temp file instead of "
+        "on the final one"
+    )
+
+    # Byte-for-byte reproducible, which is the reason a reader that sees the old file and a reader
+    # that sees the new one are looking at the same thing.
+    import hashlib
+
+    for name, digest in (
+        ("malicious_wheel.whl", "fe6927b5"),
+        ("clean_wheel.whl", "0c327818"),
+        ("malicious_sdist.tar.gz", "7516530a"),
+    ):
+        got = hashlib.sha256((FIXTURES / name).read_bytes()).hexdigest()
+        assert got.startswith(digest), (
+            f"{name} now hashes {got[:8]}, not {digest}. These bytes are the same ones that were "
+            f"committed before they were generated; a change here means the archives are no longer "
+            f"deterministic and the atomic publish above no longer guarantees equivalence."
+        )
+
+
+def test_building_the_fixtures_leaves_the_callers_environment_alone() -> None:
+    """`build_all()` runs inside a session fixture now, so anything it leaks outlives it.
+
+    It used to assign `SOURCE_DATE_EPOCH` with no teardown. That was harmless while this file was
+    run as a script, and is not harmless when a session fixture calls it partway through a broader
+    pytest run: the value persists for the rest of the worker and every later test and subprocess
+    inherits it. Nothing in the builder reads it either -- each writer is handed the fixed timestamp
+    directly -- so the assignment was doing no work in exchange for that reach.
+    """
+    import os
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "fixtures"))
+    import _build  # noqa: PLC0415
+
+    sentinel = "1234567890"
+    previous = os.environ.get("SOURCE_DATE_EPOCH")
+    os.environ["SOURCE_DATE_EPOCH"] = sentinel
+    try:
+        _build.build_all()
+        assert os.environ["SOURCE_DATE_EPOCH"] == sentinel, (
+            "build_all() overwrote the caller's SOURCE_DATE_EPOCH, which now leaks into every later "
+            "test in this worker"
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("SOURCE_DATE_EPOCH", None)
+        else:
+            os.environ["SOURCE_DATE_EPOCH"] = previous
+
+
+# --- what a reopened baseline entry is told to be -----------------------------------------
+
+
+def _reviewed_site_report(tmp_path, entries, findings):
+    """Run the reopened-site reporter over a hand-written baseline and return what it printed."""
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps({"entries": entries}), encoding = "utf-8")
+    loaded = sp._load_baseline(str(path))
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        sp._report_reviewed_sites(findings, loaded, str(path))
+    return buffer.getvalue()
+
+
+_EXEC_CHECK = "Advanced obfuscation (marshal/compile/zlib) + exec/eval"
+
+
+def _exec_entry(evidence, digest = None):
+    entry = {
+        "package": "unsloth-zoo",
+        "file": "unsloth_zoo/compiler.py",
+        "check": _EXEC_CHECK,
+        "severity": sp.HIGH,
+        "evidence": evidence,
+        "evidence_hash": sp._evidence_hash(evidence),
+    }
+    if digest is not None:
+        entry["file_sha256"] = digest
+    return entry
+
+
+def _exec_finding(evidence, digest = ""):
+    return sp.Finding(
+        sp.HIGH, "unsloth-zoo", "unsloth_zoo/compiler.py", _EXEC_CHECK, evidence, digest
+    )
+
+
+def test_an_occurrence_added_to_a_reviewed_file_is_not_called_a_mere_change(tmp_path):
+    """A file's matches are aggregated into one finding, so appending a new `exec` reopens the
+    same `(package, file, check)` an edited one does. Membership of that triple therefore cannot
+    mean "the flagged code changed": reporting it that way sends a genuinely new occurrence down
+    the narrow "did known metaprogramming move" path, which is the one review it must not get.
+    """
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
+        [_exec_finding("L10: exec(compile(src, path, 'exec'))\nL88: eval(user_supplied)")],
+    )
+    assert "1 matched line(s) appended to a reviewed file, none gone" in report, report
+    assert "read it as you would a new site" in report, report
+
+
+def test_a_pin_miss_says_the_matched_code_is_unchanged(tmp_path):
+    """Identical evidence under a digest pin that no longer matches: the flagged lines did not
+    change, some other edit to the file did. Calling that "different evidence" describes the one
+    thing that is provably the same.
+    """
+    evidence = "L10: exec(compile(src, path, 'exec'))"
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry(evidence, digest = "a" * 64)],
+        [_exec_finding(evidence, digest = "b" * 64)],
+    )
+    assert "same matched code, file digest outside the pin" in report, report
+    assert "new matched line(s)" not in report, report
+
+
+def test_a_rewritten_match_is_called_a_rewrite_and_not_a_new_occurrence(tmp_path):
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
+        [_exec_finding("L10: exec(compile(src, path, 'exec'), module.__dict__)")],
+    )
+    assert "1 matched line(s) added and 1 gone: the flagged code was rewritten" in report, report
+    assert "appended" not in report, report
+
+
+def test_a_rewritten_match_still_asks_for_the_full_read(tmp_path):
+    """Deliberate, and the reason it is pinned: a multiset diff cannot separate "this line was
+    rewritten" from "one left, an unrelated one arrived", and both leave flagged code nobody has
+    read in its current form. Reserving the full read for strict additions would send
+    `exec(compile(src, path, "exec"))` -> `exec(payload)` -- an edit, by the diff -- down the
+    narrow "did known metaprogramming move" path, which is the review that misses it.
+    """
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
+        [_exec_finding("L10: exec(payload)")],
+    )
+    assert "read it as you would a new site" in report, report
+
+
+def test_a_match_that_only_disappeared_does_not_ask_for_the_full_read(tmp_path):
+    """The other side of that choice: nothing flagged arrived, so there is nothing unread."""
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(one)\nL20: exec(two)")],
+        [_exec_finding("L10: exec(one)")],
+    )
+    assert "1 matched line(s) gone, none added" in report, report
+    assert "read it as you would a new site" not in report, report
+
+
+def test_a_site_that_was_never_reviewed_gets_no_line(tmp_path):
+    report = _reviewed_site_report(
+        tmp_path,
+        [_exec_entry("L10: exec(compile(src, path, 'exec'))")],
+        [
+            sp.Finding(
+                sp.HIGH, "unsloth-zoo", "unsloth_zoo/vllm_utils.py", _EXEC_CHECK, "L4: exec(new)"
+            )
+        ],
+    )
+    assert report.strip() == "", report

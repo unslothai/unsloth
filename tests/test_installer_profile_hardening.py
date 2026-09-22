@@ -28,6 +28,7 @@ from unsloth_pwsh_runner import run_pwsh
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
+SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 STUDIO_COMMAND = REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 
 
@@ -659,8 +660,14 @@ def test_module_autoloading_is_restored():
 
 
 @requires_pwsh
-def test_install_ps1_parses():
-    """A syntax error here is a total install failure, and the file is not imported by anything."""
+@pytest.mark.parametrize("script", [INSTALL_PS1, SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
+def test_the_powershell_entrypoints_parse(script):
+    """A syntax error here is a total install failure, and neither file is imported by anything.
+
+    setup.ps1 is here for the same reason install.ps1 is, and because the tests that read it
+    extract single functions: an extraction still parses when the file around it does not, so
+    nothing else in the suite would notice a broken brace at file scope.
+    """
     # A nonzero exit here is claimed to mean install.ps1 has a syntax error, and pwsh aborting before it ever reached
     # the parser exits nonzero too.
     res = run_pwsh(
@@ -670,7 +677,7 @@ def test_install_ps1_parses():
             "-NonInteractive",
             "-Command",
             "$errs = $null; $null = [System.Management.Automation.Language.Parser]::ParseFile("
-            f"{_ps_literal(INSTALL_PS1)}, [ref]$null, [ref]$errs); "
+            f"{_ps_literal(script)}, [ref]$null, [ref]$errs); "
             'if ($errs) { $errs | ForEach-Object { "ERR $($_.Extent.StartLineNumber): '
             '$($_.Message)" }; exit 1 }',
         ],
@@ -860,12 +867,18 @@ def test_the_handoff_is_published_only_around_the_setup_child():
     assert "$env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff" in source
     gate = _locate(source, "$previousSetupRuntimeGateHandoff =", "the runtime-gate handoff")
     proxy = _locate(source, "$previousProxyHandoff =", "the proxy handoff save")
+    # Anchored on the invocation's own line: pinning it to "try {\n" pinned the block's
+    # shape instead of the ordering this test is about, and broke on the restructure.
     call = _locate(
         source,
-        "    try {\n        Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs",
+        "        Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs",
         "the child invocation",
     )
+    opened = _locate(source, "\n    try {\n        $env:SKIP_STUDIO_BASE", "the handoff try")
     assert gate < call and proxy < call, "the handoff must be in place before the child runs"
+    # ...and both saves stay above the try, or the finally reads an unassigned
+    # $hadPrevious* as "there was nothing here" and clears a value it did not set.
+    assert gate < opened and proxy < opened, "the saves must precede the try that restores them"
 
 
 def test_a_standalone_update_reconstructs_the_proxy_for_itself():
@@ -1527,7 +1540,9 @@ def test_an_installer_launch_with_no_proxy_still_skips_the_probe(monkeypatch):
     handoff = installer[
         installer.index("$previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS") :
     ]
-    handoff = handoff[: handoff.index("try {")]
+    # The publish moved inside the try, so the slice runs to the child invocation. It must
+    # still stop before the finally, which legitimately does remove the variable.
+    handoff = handoff[: handoff.index("        Invoke-ManagedUnslothCli -Python $VenvPython")]
     assert (
         "Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS" not in handoff
     ), "the installer must publish an explicit empty handoff, not remove the variable"

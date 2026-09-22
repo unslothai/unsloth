@@ -411,6 +411,7 @@ function KnowledgeBaseDocuments({
               filename={doc.filename}
               status={doc.status}
               progress={doc.progress}
+              stage={doc.stage}
               error={doc.error}
               onRemove={
                 doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)

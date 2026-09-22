@@ -169,7 +169,6 @@ export async function exportGGUF(params: {
   imatrix?: boolean;
   imatrix_path?: string | null;
   private?: boolean;
-  gguf_shard_size?: string | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/gguf", {
     method: "POST",
@@ -240,9 +239,8 @@ export async function getExportStatus(): Promise<ExportStatus> {
   return parseJson<ExportStatus>(response);
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Live export log stream (Server-Sent Events)
-// ─────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────── Live export log stream
+// (Server-Sent Events) ─────────────────────────────────────────────────────────────────────
 
 export type ExportLogStream = "stdout" | "stderr" | "status";
 

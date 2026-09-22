@@ -20,6 +20,7 @@ from unsloth_cli._inference import (
     raise_on_streamed_error,
     render_columns,
     resolve_model_config,
+    server_load_opts,
     stream_markdown,
     visible_text,
 )
@@ -158,17 +159,31 @@ def _pick_model(console) -> str:
 
 
 def chat(
+    ctx: typer.Context,
     model: Optional[str] = typer.Argument(
         None, help = "HF model id or local path. Omit to pick one of your local models."
     ),
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "Hugging Face token if needed."
     ),
-    temperature: float = typer.Option(0.7, "--temperature"),
-    top_p: float = typer.Option(0.9, "--top-p"),
-    top_k: int = typer.Option(40, "--top-k"),
-    max_new_tokens: int = typer.Option(512, "--max-new-tokens"),
-    repetition_penalty: float = typer.Option(1.1, "--repetition-penalty"),
+    temperature: Optional[float] = typer.Option(
+        None, "--temperature", help = "Unset uses the model's recommended value."
+    ),
+    top_p: Optional[float] = typer.Option(
+        None, "--top-p", help = "Unset uses the model's recommended value."
+    ),
+    top_k: Optional[int] = typer.Option(
+        None, "--top-k", help = "Unset uses the model's recommended value."
+    ),
+    max_new_tokens: Optional[int] = typer.Option(
+        None,
+        "--max-new-tokens",
+        help = "Cap on generated tokens. Unset lets a reply use whatever the "
+        "model's context window leaves free after the conversation.",
+    ),
+    repetition_penalty: Optional[float] = typer.Option(
+        None, "--repetition-penalty", help = "Unset leaves it off (1.0)."
+    ),
     system_prompt: str = typer.Option(
         "", "--system-prompt", help = "Optional system prompt for the conversation."
     ),
@@ -179,7 +194,12 @@ def chat(
         "and MLX, and 2048 on the transformers backend. A value that differs from a "
         "running Unsloth server's reloads the model.",
     ),
-    load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
+    load_in_4bit: bool = typer.Option(
+        True,
+        "--load-in-4bit/--no-load-in-4bit",
+        help = "Load the model in 4-bit. Left unset, a running Unsloth server that already "
+        "has this model loaded keeps its precision.",
+    ),
     tensor_parallel: bool = typer.Option(
         False,
         "--tensor-parallel/--no-tensor-parallel",
@@ -288,7 +308,9 @@ def chat(
 
     # Prefer a running Unsloth server: instant starts, model shared with the UI.
     chat_backend = (
-        None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
+        None
+        if (no_server or is_mlx_distributed)
+        else connect_studio_server(model, **server_load_opts(ctx, load_opts))
     )
     server_mode = chat_backend is not None
     if server_mode and should_print:
@@ -464,6 +486,17 @@ def chat(
                 if is_mlx_distributed:
                     raise typer.Exit(code = 1)
                 continue
+
+            if should_print and getattr(chat_backend, "reply_hit_token_limit", False):
+                hint = (
+                    "raise or omit --max-new-tokens"
+                    if max_new_tokens is not None
+                    else "/reset to clear the history, or reload with a larger --max-seq-length"
+                )
+                console.print(
+                    f"(reply stopped at the token limit — {hint})",
+                    style = "bright_black",
+                )
 
             messages.append(
                 {"role": "assistant", "content": visible_text(answer, show_thinking = False)}

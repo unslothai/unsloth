@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { SectionCard } from "@/components/section-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -85,12 +86,6 @@ import {
 } from "./export-navigation-cache";
 import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
 import {
-  type GgufShardMode,
-  ggufShardSaveDirectory,
-  isValidGgufShardSize,
-  normalizeGgufShardSize,
-} from "./lib/gguf-shard-size";
-import {
   isExportPanelActive,
   useExportRuntimeStore,
 } from "./stores/export-runtime-store";
@@ -169,6 +164,7 @@ function siblingGgufDirectory(sourcePath: string): string | null {
 }
 
 export function ExportPage() {
+  const signalReady = useAppShellReadySignal();
   const { hfToken, setHfToken } = useHfTokenStore(
     useShallow((s) => ({
       hfToken: s.token,
@@ -176,7 +172,6 @@ export function ExportPage() {
     })),
   );
 
-  // ---- API-driven checkpoint state ----
   const [models, setModels] = useState<ModelCheckpoints[]>(
     () => getCachedCheckpoints() ?? [],
   );
@@ -280,8 +275,6 @@ export function ExportPage() {
   const [hfUsername, setHfUsername] = useState("");
   const [modelName, setModelName] = useState("");
   const [privateRepo, setPrivateRepo] = useState(false);
-  const [ggufShardMode, setGgufShardMode] = useState<GgufShardMode>("single");
-  const [ggufShardSize, setGgufShardSize] = useState("4GB");
 
   // Export run state lives in the global runtime store so it keeps streaming in the background.
   const runExport = useExportRuntimeStore((s) => s.runExport);
@@ -300,7 +293,6 @@ export function ExportPage() {
     steps: exportTourSteps,
   });
 
-  // ---- Fetch checkpoints on mount ----
   useEffect(() => {
     let cancelled = false;
     const hadCache = getCachedCheckpoints() !== null;
@@ -345,7 +337,6 @@ export function ExportPage() {
     setExportMethod("gguf");
   }, [preselectRun, models]);
 
-  // ---- Fetch local models for direct export ----
   useEffect(() => {
     let cancelled = false;
     const hadCache = getCachedLocalModels() !== null;
@@ -381,10 +372,9 @@ export function ExportPage() {
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [isLoadingLocalModels, loadingCheckpoints]);
+    signalReady();
+  }, [isLoadingLocalModels, loadingCheckpoints, signalReady]);
 
-  // ---- Derived state ----
   const selectedModelData = useMemo(
     () =>
       selectedModelIdx != null
@@ -593,7 +583,7 @@ export function ExportPage() {
   const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
-  const baseDefaultSaveDirectory = useMemo(() => {
+  const defaultSaveDirectory = useMemo(() => {
     const relative = buildRelativeSaveDirectory(
       exportMethod,
       sourceMode,
@@ -626,6 +616,7 @@ export function ExportPage() {
     sourceBaseModelName,
     sourceMode,
   ]);
+  const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
   // Each merged format uploads a full model to the repo root, so several to one repo would collide.
   // GGUF method exporting an adapter checkpoint as a GGUF LoRA; reuses the LoRA export path.
   const ggufAsLora =
@@ -633,25 +624,6 @@ export function ExportPage() {
     ggufTarget === "lora" &&
     effectiveIsAdapter &&
     !isMacHost;
-  const supportsGgufSharding =
-    exportMethod === "gguf" &&
-    !ggufAsLora &&
-    quantLevels.some((quant) => quant === "f16" || quant === "bf16");
-  const normalizedGgufShardSize =
-    supportsGgufSharding && ggufShardMode === "split"
-      ? normalizeGgufShardSize(ggufShardSize)
-      : supportsGgufSharding
-        ? "0"
-        : null;
-  const defaultSaveDirectory = ggufShardSaveDirectory(
-    baseDefaultSaveDirectory,
-    normalizedGgufShardSize,
-  );
-  const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
-  const ggufShardSizeValid =
-    !supportsGgufSharding ||
-    ggufShardMode === "single" ||
-    isValidGgufShardSize(ggufShardSize);
 
   // Restrict a Hub merged export to a single format; multi-format stays available for local export.
   const hubMultiFormat =
@@ -664,7 +636,6 @@ export function ExportPage() {
     exportMethod &&
     !exportUnsupported &&
     !hubMultiFormat &&
-    ggufShardSizeValid &&
     (exportMethod !== "gguf" || ggufAsLora || quantLevels.length > 0) &&
     (exportMethod !== "merged" || selectedFormats.length > 0)
   );
@@ -744,7 +715,6 @@ export function ExportPage() {
     if (exportMethod === "gguf" && !ggufAsLora && quantLevels.length === 0)
       return;
     if (exportMethod === "merged" && selectedFormats.length === 0) return;
-    if (!ggufShardSizeValid) return;
     // A Hub merged push writes each format to the repo root; several would collide (mirrors canExport).
     if (hubMultiFormat) return;
 
@@ -808,7 +778,6 @@ export function ExportPage() {
       isAdapter: adapterExport,
       quantLevels,
       useImatrix: effectiveImatrix,
-      ggufShardSize: normalizedGgufShardSize,
       mergedSelections: selectedFormats.map((v) => ({
         ...mergedFormatPayload(v),
         label: MERGED_FORMATS.find((f) => f.value === v)?.label ?? v,
@@ -827,7 +796,6 @@ export function ExportPage() {
         methodLabel,
         method: effectiveMethod,
         quantLevels,
-        ggufShardSize: normalizedGgufShardSize,
         mergedFormats: exportMethod === "merged" ? selectedFormats : [],
         destination,
       },
@@ -844,8 +812,6 @@ export function ExportPage() {
     isAdapter,
     quantLevels,
     effectiveImatrix,
-    normalizedGgufShardSize,
-    ggufShardSizeValid,
     selectedFormats,
     hubMultiFormat,
     ggufAsLora,
@@ -903,7 +869,6 @@ export function ExportPage() {
     return () => obs.disconnect();
   }, [showPanel]);
 
-  // ---- Render ----
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
       <main className="mx-auto max-w-7xl px-5 py-8 sm:px-9">
@@ -1332,7 +1297,7 @@ export function ExportPage() {
                         </div>
                       )}
 
-                      <div className="rounded-xl bg-foreground/[0.04] p-3">
+                      <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3">
                         <p className="text-ui-11 text-muted-foreground">
                           Direct model exports currently support GGUF only.
                         </p>
@@ -1341,7 +1306,7 @@ export function ExportPage() {
                   )}
 
                   {sourceMode === "checkpoint" && (
-                    <div className="rounded-xl bg-foreground/[0.04] p-3 flex flex-col gap-2">
+                    <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3 flex flex-col gap-2">
                       <span className="text-ui-11 font-medium text-muted-foreground uppercase tracking-wider">
                         Training Info
                       </span>
@@ -1389,7 +1354,7 @@ export function ExportPage() {
                         key={step}
                         className="flex items-start gap-2 text-xs text-muted-foreground"
                       >
-                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-ui-10 font-semibold">
+                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] text-ui-10 font-semibold">
                           {i + 1}
                         </span>
                         {step}
@@ -1737,11 +1702,6 @@ export function ExportPage() {
                   onHfTokenChange={setHfToken}
                   privateRepo={privateRepo}
                   onPrivateRepoChange={setPrivateRepo}
-                  supportsGgufSharding={supportsGgufSharding}
-                  ggufShardMode={ggufShardMode}
-                  onGgufShardModeChange={setGgufShardMode}
-                  ggufShardSize={ggufShardSize}
-                  onGgufShardSizeChange={setGgufShardSize}
                   onStart={handleStart}
                   onClose={handleClosePanel}
                 />

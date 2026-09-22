@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeftRightIcon,
@@ -19,6 +20,8 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
 import { ImageDropzone } from "@/components/image-dropzone";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { buildImagesTourSteps } from "./tour";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -56,13 +59,17 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import type { HostClass } from "@/features/model-picker/components/model-selector/host-artifact-policy";
+import {
+  type HostClass,
+  hostOffersDensePrecision,
+} from "@/features/model-picker/components/model-selector/host-artifact-policy";
 import {
   IMAGE_CATALOG,
   catalogToModelOptions,
+  curatedArtifactTakesDenseQuant,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
-import { useHostClass } from "@/hooks/use-host-class";
+import { useDenseQuantSchemes, useHostClass } from "@/hooks/use-host-class";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -89,7 +96,7 @@ import {
 } from "@/lib/gallery-flags";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageWorkflowStore } from "./stores/image-workflow-store";
-import { WORKFLOW_TABS } from "./workflows";
+import { WORKFLOW_TABS, type WorkflowId } from "./workflows";
 import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
@@ -118,6 +125,7 @@ import {
   denseTransformerBuildLabel,
   isNativeEngineStatus,
   formatResolvedValue,
+  isDenseQuantKind,
   isPrecisionRefusal,
   memoryRecipeValue,
   resolvedBadge,
@@ -166,18 +174,32 @@ import {
   shouldReportGenerateError,
 } from "./lib/generation-stop";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useStagedDownload } from "@/features/hub/download-manager";
+import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
 import {
   TrainBaseSelector,
   type TrainFamilyOption,
 } from "./train/train-base-selector";
 
+/** Whether this pick may receive a transformer precision request. Unknown repos defer to the backend. */
+function sendsTransformerQuant(kind: string | null | undefined, repoId: string): boolean {
+  return (
+    isDenseQuantKind(kind) &&
+    curatedArtifactTakesDenseQuant(repoId, IMAGE_CATALOG) !== false
+  );
+}
+
 // Curated models come from the shared catalog, one group per model with its artifacts as data and
 // the load kind per artifact from loadSpecFor. Built per render, since a host that can only run
 // the native engine is not offered pipeline rows.
-function useImageModels(host: HostClass): ModelOption[] {
-  return useMemo(() => catalogToModelOptions(IMAGE_CATALOG, host), [host]);
+function useImageModels(
+  host: HostClass,
+  denseQuantSchemes: readonly string[],
+): ModelOption[] {
+  return useMemo(
+    () => catalogToModelOptions(IMAGE_CATALOG, host, denseQuantSchemes),
+    [host, denseQuantSchemes],
+  );
 }
 
 // Workflow tabs. `requires` is the backend workflow id (status.workflows) the model must
@@ -203,7 +225,6 @@ const ASPECT_RATIOS: Record<string, [number, number]> = {
   "21:9": [21, 9],
 };
 const ASPECT_OPTIONS = ["custom", ...Object.keys(ASPECT_RATIOS)];
-// Names read faster than bare ratios; Flip covers the portrait side of each.
 const ASPECT_LABELS: Record<string, string> = {
   "1:1": "Square",
   "3:2": "Photo",
@@ -228,7 +249,6 @@ const DIM_OPTIONS = [
   1408, 1536, 1664, 1792, 1920, 2048,
 ];
 
-/** Compact size control: type a value, or pick one of the usual sizes from the menu. */
 function DimensionSelect({
   icon,
   label,
@@ -264,7 +284,7 @@ function DimensionSelect({
     onChange(n);
   };
   return (
-    <div className="flex h-9 flex-1 items-center gap-2 rounded-full border border-border bg-background px-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-white/[0.06] dark:focus-within:bg-white/[0.12]">
+    <div className="flex h-9 flex-1 items-center gap-2 rounded-full border border-border bg-background px-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]">
       <HugeiconsIcon
         icon={icon}
         strokeWidth={1.75}
@@ -313,8 +333,8 @@ function matchAspect(width: number, height: number): { key: string; portrait: bo
 }
 
 // Module cache of the backend-persisted gallery, so a tab switch re-renders instantly; object
-// URLs are revoked only on delete. The 192 MB blob budget never evicts a visible image.
-// 192 MB is ~100-200 images, far more than a viewport holds.
+// URLs are revoked only on delete. The 192 MB blob budget (~100-200 images) never evicts a
+// visible image.
 const IMAGE_BLOB_BUDGET_BYTES = 192 * 1024 * 1024;
 
 const galleryCache: {
@@ -442,7 +462,6 @@ function formatTimestamp(epochSeconds: number): string {
   return new Date(epochSeconds * 1000).toLocaleString();
 }
 
-// Bar label for an in-flight generation: step count plus an ETA once known.
 function genStepLabel(p: DiffusionGenerateProgress): string {
   // Text encoding happens before the first scheduler tick, so step 0 means "working, not denoising yet".
   if (p.step === 0) return "Preparing (text encoding + warmup)…";
@@ -570,7 +589,8 @@ const IDLE_PROGRESS: DiffusionLoadProgress = {
   error: null,
 };
 
-// One row: label, track, value. The Images sliders are Chat ParamSlider, so both pages share one control.
+// One row: label, track, value. The Images sliders are Chat ParamSlider, so both pages share one
+// control.
 function SliderField({
   label,
   hint,
@@ -658,7 +678,6 @@ function ResolvedBadge({
   );
 }
 
-// A compact labeled Select row for the Advanced Options panel.
 function AdvancedSelect({
   label,
   hint,
@@ -670,9 +689,7 @@ function AdvancedSelect({
 }: {
   label: string;
   hint?: ReactNode;
-  // An optional inline badge next to the label (e.g. the "Auto: X" resolved-value pill).
   badge?: ReactNode;
-  // A short always-visible description under the row.
   desc?: string;
   value: string;
   onValueChange: (v: string) => void;
@@ -687,7 +704,7 @@ function AdvancedSelect({
           {badge}
         </span>
         <Select value={value} onValueChange={onValueChange}>
-          <SelectTrigger className="h-8 w-[160px] text-xs">
+          <SelectTrigger aria-label={label} className="h-8 w-[160px] text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -944,7 +961,6 @@ async function buildOutpaint(
   return { image: ic.toDataURL("image/png"), mask: mc.toDataURL("image/png") };
 }
 
-// One labeled row in the recipe popover.
 function RecipeRow({
   label,
   value,
@@ -972,7 +988,6 @@ function RecipeRow({
   );
 }
 
-// The full generation recipe for an image, with a one-click "restore to inputs".
 function RecipePopover({
   image,
   onRestore,
@@ -1047,7 +1062,6 @@ function RecipePopover({
   );
 }
 
-// One "what actually ran" line in the loaded-build summary below.
 function BuildRow({ label, value, badge }: { label: string; value: string; badge?: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-2">
@@ -1153,6 +1167,7 @@ type LoadAdvanced = Pick<
   | "cpu_offload"
   | "speed_mode"
   | "transformer_quant"
+  | "text_encoder_quant"
   | "attention_backend"
   | "memory_mode"
   | "transformer_cache"
@@ -1168,9 +1183,12 @@ export function ImagesPage({
   onInitialReady?: () => void;
 }) {
   const initialReadySent = useRef(false);
+  const [rememberedModel, setRememberedModel] = useState(readImageModel);
+  const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId } | null>(null);
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
-  const imageModels = useImageModels(hostClass);
+  const denseQuantSchemes = useDenseQuantSchemes();
+  const imageModels = useImageModels(hostClass, denseQuantSchemes);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "Cinematic wide shot of a whimsical Alice in Wonderland tea party in an overgrown Victorian garden. Exactly three figures at a long white lace-draped table: a tall eccentric gentleman in an oversized emerald velvet top hat pouring tea from a silver pot mid-motion; a young woman in a pale blue Victorian dress seated left, holding a porcelain teacup with both hands, looking up and laughing; an older woman in deep burgundy seated right in profile, reaching for a tiered cake stand. Detailed embroidered fabrics, realistic skin texture, natural expressions. The table holds mismatched porcelain, antique silverware, towering pastel cakes, and wildflowers. Giant red-capped mushrooms rise behind the table, with ancient trees overhead and golden sunlight streaming through leaves. Shot on 85mm, f/2.8, focus on the gentleman, soft background falloff. Photorealistic, saturated storybook color, warm amber and deep green palette.",
@@ -1253,6 +1271,15 @@ export function ImagesPage({
   // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
   const setPageMode = useImageWorkflowStore((s) => s.setPageMode);
+  const tourSteps = useMemo(
+    () => buildImagesTourSteps({ pageMode }),
+    [pageMode],
+  );
+  const tour = useGuidedTourController({
+    id: "images",
+    steps: tourSteps,
+    enabled: active,
+  });
   // Train family + base live here so the top bar can pick them, replacing the generation model selector on Train.
   const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
   const [trainFamilyName, setTrainFamilyName] = useState("flux.1");
@@ -1273,9 +1300,13 @@ export function ImagesPage({
   );
   // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing one
   // while loaded shows "Reapply".
+  const [modelSelectionAction, setModelSelectionAction] = useState<"load" | "download">("load");
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
+  >("auto");
+  const [textEncoderQuant, setTextEncoderQuant] = useState<
+    "auto" | NonNullable<DiffusionLoadRequest["text_encoder_quant"]>
   >("auto");
   const [attentionBackend, setAttentionBackend] = useState<"auto" | "native" | "cudnn" | "flash3" | "sage">(
     "auto",
@@ -1302,9 +1333,7 @@ export function ImagesPage({
   const seededResident = useRef<string | null>(null);
 
   const [busy, setBusy] = useState<Busy>(null);
-  // {done, total} while a multi-run generation is in flight (null = idle).
   const [genDone, setGenDone] = useState<number | null>(null);
-  // Live per-step progress (step / total + ETA) polled during generation.
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // visibilitychange handler active while a generation poll runs: background tabs clamp
@@ -1332,10 +1361,9 @@ export function ImagesPage({
   // Set by Stop for one handleGenerate call: the backend cancel only reaches the denoise running
   // RIGHT NOW, so a count > 1 request would start its next run straight after.
   const cancelRequested = useRef(false);
-  // True only once the backend answered {cancelled: true}. Anything else means the run was NOT
-  // stopped, so an error it raises afterwards is a real failure.
-  // Anything else -- a POST that never landed, or {cancelled: false} because the run was already past
-  // its last cancellation check -- means it was NOT stopped.
+  // True only once the backend answered {cancelled: true}. Anything else, a POST that never landed
+  // or {cancelled: false} because the run was already past its last cancellation check, means it was
+  // NOT stopped, so an error raised afterwards is a real failure.
   const cancelAcked = useRef(false);
   // Bumped once per handleGenerate call, so a cancel can tell its own run from a later one.
   const runToken = useRef(0);
@@ -1420,7 +1448,8 @@ export function ImagesPage({
   const claimImageRecipe = imagePresets.claimRecipe;
   const imageFormClaimId = imagePresets.formClaimId;
   const applyImageModelDefaults = useCallback(
-    (repoId: string) => {
+    (repoId: string, forceLoad = false) => {
+      if (modelSelectionAction === "download" && !forceLoad) return;
       const revert = quantRevert.current;
       if (revert && !revert.releaseRecipeClaim) {
         const claim = claimImageRecipe();
@@ -1440,7 +1469,7 @@ export function ImagesPage({
         revert.appliedGuidance = recommended.guidance;
       }
     },
-    [claimImageRecipe, imageFormClaimId],
+    [claimImageRecipe, imageFormClaimId, modelSelectionAction],
   );
 
   const dismissLoadToast = useCallback(() => {
@@ -1470,8 +1499,10 @@ export function ImagesPage({
   // Client-side state that only means anything while a model is resident: the replacement
   // load's tracking and the Reapply target. Shared with the indicator eject.
   const dropResidentState = useCallback(() => {
-    // Cancel, not release: a resolving pick or a staged download would load back what was just
-    // ejected. Here rather than in handleUnload, so the loaded-models card is covered too.
+    // Cancel picks that could reload the ejected model. Download-only work carries no pick token
+    // at all now, so it keeps running without needing an exception here -- the exception it used to
+    // need was inert anyway, since the marker was cleared when the PLAN resolved rather than when
+    // the download finished.
     pickGuard.cancel();
     // Everything in flight is now stale. Clearing the timer stops the NEXT poll tick but not a
     // request awaiting its response, and those still apply terminal state; the counter is what
@@ -1944,7 +1975,6 @@ export function ImagesPage({
     [dropFromStrip],
   );
 
-  // Load an image's recipe back into the form inputs.
   const restoreSettings = useCallback((image: GalleryImage) => {
     setPrompt(image.prompt);
     // Negative prompt only applies when guidance>0; do not restore a hidden value.
@@ -2094,9 +2124,9 @@ export function ImagesPage({
     () =>
       subscribeModelEjected("image", () => {
         dropResidentState();
-        // That eject cancelled the replacement load, and its progress poll is the only thing that
-        // clears `busy`, which dropResidentState just stopped; leaving it set locks the page.
-        // Narrowed to "loading" so a generation is left alone, and held until the start settles.
+        // That eject cancelled the replacement load, and its progress poll is the only thing that clears
+        // `busy`, which dropResidentState just stopped; leaving it set locks the page. Narrowed to
+        // "loading" so a generation is left alone, and held until the start settles.
         const pending = pendingStart.current;
         if (pending) {
           setBusy((prev) => (prev === "loading" ? "unloading" : prev));
@@ -2138,6 +2168,10 @@ export function ImagesPage({
         }
         setStatusIfNewest(ticket, loaded);
         toast.success("Model loaded");
+        if (lastLoad.current && matchesRememberedModel(lastLoad.current, loaded)) {
+          rememberImageModel(lastLoad.current);
+          setRememberedModel(lastLoad.current);
+        }
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
         quantRevert.current?.commitRecipeClaim?.();
@@ -2149,6 +2183,7 @@ export function ImagesPage({
         return;
       }
       if (p.phase === "error") {
+        pendingRecalledGeneration.current = null;
         dismissLoadToast();
         reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
@@ -2169,6 +2204,7 @@ export function ImagesPage({
         return;
       }
       if (p.phase === null) {
+        pendingRecalledGeneration.current = null;
         // No load in flight and nothing loaded: the load was cancelled or evicted. Terminal, else this
         // loop spins forever.
         dismissLoadToast();
@@ -2338,6 +2374,13 @@ export function ImagesPage({
       ) ?? null,
     );
     if (quant) setTransformerQuant(quant);
+    const encoder = resolvedSelectValue(record.text_encoder_quant, (v) =>
+      // A declined request runs dense: "off" (or "none", older backend) is the select's Default.
+      (["auto", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const).find(
+        (o) => o === v || (o === "auto" && (v === "none" || v === "off")),
+      ) ?? null,
+    );
+    if (encoder) setTextEncoderQuant(encoder);
     const memory = resolvedSelectValue(record.memory_mode, (v) =>
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
     );
@@ -2353,9 +2396,9 @@ export function ImagesPage({
   }, [resolvedKey]);
 
   const bakedLorasFor = useCallback(
-    (repoId: string): LoraSpecInput[] => {
+    (repoId: string, preserveSelection = false): LoraSpecInput[] => {
       const sameTarget = repoId === (lastLoad.current?.repoId ?? status?.repo_id ?? null);
-      if (!sameTarget) return [];
+      if (!sameTarget && !preserveSelection) return [];
       return loras
         .map((l) => ({ id: l.id.trim(), weight: l.weight }))
         .filter((l) => l.id && l.weight > 0);
@@ -2365,12 +2408,13 @@ export function ImagesPage({
 
   // One snapshot of every Advanced control a load sends, so a staged pick can pin the values it planned against.
   const currentLoadAdvanced = useCallback(
-    (repoId: string): LoadAdvanced => {
-      const baked = bakedLorasFor(repoId);
+    (repoId: string, preserveSelection = false): LoadAdvanced => {
+      const baked = bakedLorasFor(repoId, preserveSelection);
       return {
         cpu_offload: cpuOffload,
         speed_mode: speedMode === "auto" ? undefined : speedMode,
         transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
+        text_encoder_quant: textEncoderQuant === "auto" ? undefined : textEncoderQuant,
         attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
@@ -2388,6 +2432,7 @@ export function ImagesPage({
       cpuOffload,
       speedMode,
       transformerQuant,
+      textEncoderQuant,
       attentionBackend,
       memoryMode,
       transformerCache,
@@ -2454,10 +2499,11 @@ export function ImagesPage({
           hf_token: hfApiToken(getHfToken()),
           cpu_offload: advanced.cpu_offload,
           speed_mode: advanced.speed_mode,
-          // GGUF picks only: the dense fast path replaces a GGUF transformer, and every other kind runs
-          // its checkpoint's own precision. The control is hidden there but the state persists across
-          // picks, so a stale scheme would reach a load that can only decline it.
-          transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
+          // Do not carry a saved precision into a known incompatible artifact.
+          transformer_quant: sendsTransformerQuant(opts.kind, repoId)
+            ? advanced.transformer_quant
+            : undefined,
+          text_encoder_quant: advanced.text_encoder_quant,
           attention_backend: advanced.attention_backend,
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
@@ -2522,9 +2568,9 @@ export function ImagesPage({
   // Set when a staged download finished while this page was hidden: both diffusion pages stay
   // mounted and a load evicts whatever holds the GPU. The pick fires on return.
   const stagedLoadDeferred = useRef(false);
-  // Both deferred paths run the load minutes after the pick was reported started, so both need
-  // the same rollback: a deferred load can still be REFUSED, and staging polls nothing.
-  // `owned` is read BEFORE the call, so a newer pick's label is left alone.
+  // Both deferred paths run the load minutes after the pick was reported started, so both need the
+  // same rollback: a deferred load can still be REFUSED, and staging polls nothing. `owned` is read
+  // BEFORE the call, so a newer pick's label is left alone.
   const runStagedLoad = useCallback(
     (pending: NonNullable<typeof pendingStagedLoad.current>) => {
       if (pendingStagedLoad.current === pending) pendingStagedLoad.current = null;
@@ -2541,17 +2587,37 @@ export function ImagesPage({
     },
     [pickGuard, revertPick],
   );
+  // Each download-only selection keeps its complete plan until it finishes or is cancelled.
+  const downloadOnlyPlans = useRef<StagedDownloadEntry[][]>([]);
+  const pendingLoadEntries = useRef<StagedDownloadEntry[] | null>(null);
+  const stagedPlan = useRef<"download" | { token: number } | null>(null);
+
   const { stage } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
-      if (!active) {
-        stagedLoadDeferred.current = true;
+      if (stagedPlan.current === "download") {
+        finishDownloadOnlyPlan();
         return;
       }
-      const pending = pendingStagedLoad.current;
-      if (pending) runStagedLoad(pending);
+      if (pendingStagedLoad.current?.token === stagedPlan.current?.token) {
+        pendingLoadEntries.current = null;
+      }
+      stagedPlan.current = null;
+      if (startQueuedDownload()) return;
+      resumePendingLoad();
     },
     onCancelled: () => {
+      const cancelled = stagedPlan.current;
+      if (cancelled === "download") {
+        finishDownloadOnlyPlan();
+        return;
+      }
+      stagedPlan.current = null;
+      if (pendingStagedLoad.current?.token !== cancelled?.token) {
+        startQueuedDownload();
+        return;
+      }
+      pendingLoadEntries.current = null;
       // The selected model is only an intent until every dependency is ready: a cancelled companion
       // must not leave that intent behind for a late completion to load.
       pendingStagedLoad.current = null;
@@ -2563,8 +2629,53 @@ export function ImagesPage({
         quantRevert.current = null;
       }
       stagedQuantRevert.current = null;
+      startQueuedDownload();
     },
   });
+
+  /** A staged file set, as the identity two picks of the same model share. */
+  function planKey(entries: StagedDownloadEntry[]) {
+    return JSON.stringify(
+      entries.map((e) => [e.repoId, e.ggufFilename ?? "", [...e.files].sort()]).sort(),
+    );
+  }
+
+  /** The file sets already queued, including the one downloading right now (the queue head). */
+  function queuedDownloadKeys() {
+    return new Set(downloadOnlyPlans.current.map(planKey));
+  }
+
+  function startQueuedDownload() {
+    const next = downloadOnlyPlans.current[0];
+    if (!next) return false;
+    stagedPlan.current = "download";
+    stage(next);
+    return true;
+  }
+
+  function finishDownloadOnlyPlan() {
+    stagedPlan.current = null;
+    downloadOnlyPlans.current.shift();
+    if (startQueuedDownload()) return;
+    resumePendingLoad();
+  }
+
+  function resumePendingLoad() {
+    const entries = pendingLoadEntries.current;
+    const pending = pendingStagedLoad.current;
+    if (!pending || !pickGuard.isLatest(pending.token)) {
+      pendingLoadEntries.current = null;
+      return;
+    }
+    if (entries) {
+      stagedPlan.current = { token: pending.token };
+      stage(entries);
+    } else if (!active) {
+      stagedLoadDeferred.current = true;
+    } else {
+      runStagedLoad(pending);
+    }
+  }
 
   useEffect(() => {
     if (!active || !stagedLoadDeferred.current) return;
@@ -2591,8 +2702,11 @@ export function ImagesPage({
         hf_token: hfApiToken(getHfToken()),
         cpu_offload: advanced.cpu_offload,
         speed_mode: advanced.speed_mode,
-        // Non-GGUF loads ignore this control; the plan must describe the same request as handleLoad.
-        transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
+        // Keep the planned precision identical to the load request.
+        transformer_quant: sendsTransformerQuant(opts.kind, repoId)
+          ? advanced.transformer_quant
+          : undefined,
+        text_encoder_quant: advanced.text_encoder_quant,
         memory_mode: advanced.memory_mode,
         // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the
         // dense build path, and omitting it staged too little.
@@ -2610,74 +2724,113 @@ export function ImagesPage({
       opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
       source: ModelSelectorChangeMeta["source"] = "hub",
       token?: number,
+      downloadSnapshot?: LoadAdvanced,
     ): Promise<boolean> => {
-      // Staging never sets `busy`, so a second pick passes the guard while this plan is in flight,
-      // and plans resolve in response order rather than pick order. Bumped before the non-hub
-      // return too, so a local pick invalidates an in-flight hub plan.
-      // Plans resolve in response order, not pick order. Bumped before the non-hub return too: a local
-      // pick must invalidate an in-flight hub plan.
-      const pick = ++pickSeq.current;
+      const downloadOnly = downloadSnapshot !== undefined || modelSelectionAction === "download";
+      // Staging never sets `busy`, so a second pick passes the guard while this plan is in flight, and
+      // plans resolve in response order rather than pick order. Bumped before the non-hub return too, so
+      // a local pick invalidates an in-flight hub plan. Never for a download-only pick: it supersedes
+      // nothing, and retiring the sequence made the load it interrupted fail its own stale check below
+      // and return silently, leaving the selected model neither staged nor loaded.
+      const pick = downloadOnly ? pickSeq.current : ++pickSeq.current;
       // The previous pick's staged intent dies with it: a pick that stages nothing never calls
       // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
-      pendingStagedLoad.current = null;
-      stagedLoadDeferred.current = false;
-      stagedQuantRevert.current = null;
-      const owns = () => token === undefined || pickGuard.holds(token);
-      if (!owns()) return true;
-      if (source !== "hub") return handleLoadRef.current(repoId, opts);
+      // Only load intents have an owner; a download-only pick holds no token and answers true.
+      const owns = () => token === undefined || downloadOnly || pickGuard.holds(token);
+      // Resolved downloads retain their snapshot without replacing a newer load intent. Neither does
+      // a download-only pick: it adds files to fetch, so retiring the staged load here left the model
+      // that load was waiting for fully downloaded and never loaded.
+      if (!downloadSnapshot && !downloadOnly) {
+        pendingStagedLoad.current = null;
+        pendingLoadEntries.current = null;
+        stagedLoadDeferred.current = false;
+        stagedQuantRevert.current = null;
+        if (!owns()) return true;
+      }
+      if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
-      const advanced = currentLoadAdvanced(repoId);
+      const advanced = downloadSnapshot ?? currentLoadAdvanced(repoId);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
-      // job must not revert it.
-      const ownRevert = quantRevert.current;
+      // job must not revert it. A download-only pick claims no slot at all: it never relabels the
+      // selector, so there is nothing here it could own, and reverting what it found would restore
+      // the PREVIOUS resident under a staged load that is still coming and then leave that load
+      // nothing to commit.
+      const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;
       // Read inside the try, acted on outside it: refusing from in there would fall through to the
       // load if the refusal itself threw.
       let incompatible: string | null = null;
       try {
         const plan = await requestDownloadPlan(repoId, opts, advanced);
-        // Superseded. Report started so this pick's `.then` leaves the newer label alone.
-        if (pick !== pickSeq.current || !owns()) return true;
+        // Only load intents are superseded; accepted downloads keep their own plans.
+        if (!downloadOnly && (pick !== pickSeq.current || !owns())) return true;
+        if (downloadOnly && plan.plan_failed) {
+          throw new Error("Required asset metadata is incomplete. Retry when it is available.");
+        }
         incompatible = plan.incompatible_reason ?? null;
         if (!incompatible && plan.entries.length > 0) {
-          pendingStagedLoad.current = {
-            repoId,
-            opts,
-            advanced,
-            token: token ?? pickGuard.claim(),
-          };
-          stagedQuantRevert.current = ownRevert;
-          stage(
-            plan.entries.map((e) => ({
-              repoId: e.repo_id,
-              files: e.files,
-              bytes: e.bytes,
-              ggufFilename: e.gguf_filename,
-              // The entry carrying the picked checkpoint file, so the panel can label it without guessing:
-              // filenames cannot tell the two apart, and repo identity is not enough when a checkpoint
-              // shares its repo with cached companions. The backend's answer wins, since a gated pipeline
-              // is staged from an ungated MIRROR. Nullish coalescing, not `or`: a planner
-              // answering false is still an answer.
-              checkpoint:
-                e.checkpoint ??
-                (opts.filename
-                  ? e.files.includes(opts.filename)
-                  : e.repo_id === repoId),
-            })),
-          );
+          if (!downloadOnly) {
+            pendingStagedLoad.current = {
+              repoId,
+              opts,
+              advanced,
+              token: token ?? pickGuard.claim(),
+            };
+            stagedQuantRevert.current = ownRevert;
+          }
+          const entries = plan.entries.map((e) => ({
+            repoId: e.repo_id,
+            files: e.files,
+            bytes: e.bytes,
+            ggufFilename: e.gguf_filename,
+            // Keep the planner's checkpoint marker, including explicit false for companions.
+            checkpoint:
+              e.checkpoint ??
+              (opts.filename
+                ? e.files.includes(opts.filename)
+                : e.repo_id === repoId),
+          }));
+          if (downloadOnly) {
+            // Picking the same model twice plans the same files twice. Queueing both downloaded
+            // every byte twice, and the second start could come back "busy" against the first.
+            if (queuedDownloadKeys().has(planKey(entries))) return true;
+            downloadOnlyPlans.current.push(entries);
+            // A late plan waits for the active file set, including a normal load's download.
+            if (stagedPlan.current === null) {
+              stagedPlan.current = "download";
+              stage(entries);
+            }
+          } else {
+            pendingLoadEntries.current = entries;
+            const pending = pendingStagedLoad.current;
+            if (downloadOnlyPlans.current.length === 0 && pending) {
+              stagedPlan.current = { token: pending.token };
+              stage(entries);
+            }
+          }
           return true;
         }
-      } catch {
+      } catch (error) {
+        if (downloadOnly) {
+          toast.error("Could not plan the download", {
+            description: error instanceof Error ? error.message : "Try selecting the model again.",
+          });
+          return true;
+        }
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
-      if (pick !== pickSeq.current || !owns()) return true;
+      if (!downloadOnly && (pick !== pickSeq.current || !owns())) return true;
       if (incompatible) {
         toast.error(incompatible);
-        return false;
+        return downloadOnly;
+      }
+      if (downloadOnly) {
+        toast.info("No downloads were planned for this selection");
+        return true;
       }
       return handleLoadRef.current(repoId, opts, advanced);
     },
-    [stage, currentLoadAdvanced, requestDownloadPlan],
+    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick],
   );
 
   const resolveDownloadFootprint = useCallback(
@@ -2699,6 +2852,15 @@ export function ImagesPage({
     [currentLoadAdvanced, requestDownloadPlan, pickGuard, stage],
   );
 
+  const beginPick = useCallback(() => {
+    pendingRecalledGeneration.current = null;
+    pickSeq.current += 1;
+    pendingStagedLoad.current = null;
+    pendingLoadEntries.current = null;
+    stagedLoadDeferred.current = false;
+    stagedQuantRevert.current = null;
+  }, []);
+
   // A GGUF pick can arrive with only a repo id. The backend rejects a gguf load with no filename
   // and a pipeline load of a GGUF repo, so name the file from the listing first.
   const loadGgufRepoPick = useCallback(
@@ -2708,9 +2870,15 @@ export function ImagesPage({
       source: ModelSelectorChangeMeta["source"] = "hub",
       localPath?: string | null,
     ): Promise<boolean> => {
-      // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
-      const token = pickGuard.claim();
-      const isCurrent = () => isMounted.current && pickGuard.holds(token);
+      // Normal loads belong to the latest selection. A download-only pick claims nothing and
+      // retires nothing: it fetches files, and a staged load already in flight still owns the page.
+      const downloadOnly = modelSelectionAction === "download";
+      const token = downloadOnly ? 0 : pickGuard.claim();
+      const downloadSnapshot = downloadOnly ? currentLoadAdvanced(repoId) : undefined;
+      const isCurrent = () => isMounted.current &&
+        (downloadOnly || pickGuard.holds(token));
+      // onResolved skips the label for a download-only pick, so this snapshot is never installed
+      // for one; taking the slot over would strand a staged load's own baseline in it.
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       return runGgufRepoPick({
         isCurrent,
@@ -2722,24 +2890,29 @@ export function ImagesPage({
           }),
         // Still ambiguous (several quants, or the listing failed): only the expander can say which.
         onAmbiguous: () =>
-          toast.error("Pick a quantization for this model to load it"),
+          toast.error(downloadOnly
+            ? "Pick a quantization for this model to download it"
+            : "Pick a quantization for this model to load it"),
         // Optimistic label, reverted if the load never starts, like the curated GGUF branch below.
         onResolved: (filename) => {
+          if (downloadOnly) return;
           quantRevert.current = revert;
           setQuant(quantHint ?? filename);
           applyImageModelDefaults(repoId);
         },
         onNotStarted: () => {
-          if (quantRevert.current === revert) {
+          // Nothing was applied for a download-only pick, so there is nothing to hand back, and
+          // what sits in the slot is the staged load's own baseline.
+          if (!downloadOnly && quantRevert.current === revert) {
             revertPick(revert);
             quantRevert.current = null;
           }
         },
         load: (filename) =>
-          loadOrStage(repoId, { kind: "gguf", filename }, source, token),
+          loadOrStage(repoId, { kind: "gguf", filename }, source, token, downloadSnapshot),
       });
     },
-    [applyImageModelDefaults, loadOrStage, pickGuard, quant, revertPick],
+    [applyImageModelDefaults, currentLoadAdvanced, loadOrStage, modelSelectionAction, pickGuard, quant, revertPick],
   );
 
   // A hidden page owns nothing: both stay mounted, so a resolution started here must not load after the user switched.
@@ -2772,8 +2945,11 @@ export function ImagesPage({
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
-    // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot land on top.
-    const token = pickGuard.claim();
+    // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot
+    // land on top -- unless it is a Download only arrival, which owns nothing and must leave a load
+    // already staging with its claim, or resumePendingLoad drops that load once its files arrive.
+    const downloadOnlyPick = modelSelectionAction === "download";
+    const token = downloadOnlyPick ? undefined : pickGuard.claim();
     void navigateSelf({ to: "/images", search: {}, replace: true });
     // A label means a GGUF repo whatever the catalog says, and is not loadable, so resolve it
     // rather than routing it as a filename.
@@ -2796,13 +2972,18 @@ export function ImagesPage({
       return;
     }
     // Match every direct picker branch: the routed intent owns both the visible build label and
-    // the Default recipe, and a load that never becomes resident rolls both back.
-    const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-    quantRevert.current = revert;
-    setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
-    applyImageModelDefaults(wanted);
+    // the Default recipe, and a load that never becomes resident rolls both back. A Download only
+    // arrival owns neither, and quantRevert is one slot a staged load may already hold.
+    const revert: PickRevert | null = downloadOnlyPick
+      ? null
+      : (quantRevert.current ?? { prev: quant, steps, guidance });
+    if (revert) {
+      quantRevert.current = revert;
+      setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
+      applyImageModelDefaults(wanted);
+    }
     void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
-      if (!started && pickGuard.holds(token) && quantRevert.current === revert) {
+      if (!started && revert && token !== undefined && pickGuard.holds(token) && quantRevert.current === revert) {
         revertPick(revert);
         quantRevert.current = null;
       }
@@ -2816,6 +2997,7 @@ export function ImagesPage({
     routeSearch?.ggufQuant,
     loadOrStage,
     loadGgufRepoPick,
+    modelSelectionAction,
     navigateSelf,
     pickGuard,
     quant,
@@ -2839,39 +3021,47 @@ export function ImagesPage({
     }
   }, [revertPick]);
 
-  const beginPick = useCallback(() => {
-    pickSeq.current += 1;
-    pendingStagedLoad.current = null;
-    stagedLoadDeferred.current = false;
-    stagedQuantRevert.current = null;
-  }, []);
-
   // The chat picker emits (modelId, quant + filename) for a GGUF, or just (modelId) for a curated safetensors pick.
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
-      // Ignore picks while a load/generation/unload is in flight: the backend rejects a second load with a 409.
-      if (busy !== null) return;
-      beginPick();
+      // A Download only selection fetches files; it does not take over the page. Retiring the staged
+      // intent and claiming the page for it stranded a load that was already downloading: that model
+      // finished downloading and then never loaded, with no toast and nothing to retry from.
+      const downloadOnlyPick = modelSelectionAction === "download";
+      // Ignore picks while a load/generation/unload is in flight: the backend rejects a second load
+      // with a 409. A download-only pick submits no load, so that cannot happen, and the selector
+      // stays interactive during a generation: refusing it there was a silent dead click.
+      if (busy !== null && !downloadOnlyPick) return;
+      if (!downloadOnlyPick) beginPick();
       // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any
       // branch, since staging never sets `busy`.
-      const token = pickGuard.claim();
+      const token = downloadOnlyPick ? undefined : pickGuard.claim();
+      // A download-only pick holds no token, and an absent token owns nothing to hand back.
+      const stillOwnsPick = (): boolean => token !== undefined && pickGuard.holds(token);
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = loadSpecFor(id, IMAGE_CATALOG);
       if (spec && spec.kind !== "gguf") {
       // Carried forward when one is already pending: a superseded staged pick left its optimistic
       // quant and recipe in state, so snapshotting now would record THAT and restore a model that
       // never loaded. Leaving the old entry would also let that download revert this pick.
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-        quantRevert.current = revert;
-        setQuant(null);
-        applyImageModelDefaults(id);
+        // A Download only pick fetches files and never becomes the resident model, so it
+        // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+        // already in flight owns what is in it and still has to commit it.
+        const revert: PickRevert | null = downloadOnlyPick
+          ? null
+          : (quantRevert.current ?? { prev: quant, steps, guidance });
+        if (revert) {
+          quantRevert.current = revert;
+          setQuant(null);
+          applyImageModelDefaults(id);
+        }
         void loadOrStage(
           id,
           { kind: spec.kind, filename: spec.filename },
           meta.source,
           token,
         ).then((started) => {
-            if (!started && pickGuard.holds(token)) {
+            if (!started && revert && stillOwnsPick()) {
               revertPick(revert);
               quantRevert.current = null;
             }
@@ -2881,10 +3071,17 @@ export function ImagesPage({
       // GGUF quant pick from the variant expander. Optimistic for instant feedback, but reverted if
       // the load fails to START or later in the poll: the old pipeline stays loaded either way.
       if (meta.ggufVariant && meta.ggufFilename) {
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-        quantRevert.current = revert;
-        setQuant(meta.ggufVariant);
-        applyImageModelDefaults(id);
+        // A Download only pick fetches files and never becomes the resident model, so it
+        // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+        // already in flight owns what is in it and still has to commit it.
+        const revert: PickRevert | null = downloadOnlyPick
+          ? null
+          : (quantRevert.current ?? { prev: quant, steps, guidance });
+        if (revert) {
+          quantRevert.current = revert;
+          setQuant(meta.ggufVariant);
+          applyImageModelDefaults(id);
+        }
         void loadOrStage(
           id,
           { kind: "gguf", filename: meta.ggufFilename },
@@ -2892,7 +3089,7 @@ export function ImagesPage({
           token,
         ).then((started) => {
           // `quantRevert` is one slot, so only the pick that set the label may take it back.
-          if (!started && pickGuard.holds(token)) {
+          if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
           }
@@ -2918,12 +3115,21 @@ export function ImagesPage({
         }
         // A direct pick carries no curated variant label, so surface the filename or the selector
         // keeps advertising the old quant. Optimistic, reverted if the load never starts.
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-        quantRevert.current = revert;
-        setQuant(filename);
-        applyImageModelDefaults(id);
-        void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
-          if (!started) {
+        // A Download only pick fetches files and never becomes the resident model, so it
+        // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+        // already in flight owns what is in it and still has to commit it.
+        const revert: PickRevert | null = downloadOnlyPick
+          ? null
+          : (quantRevert.current ?? { prev: quant, steps, guidance });
+        if (revert) {
+          quantRevert.current = revert;
+          setQuant(filename);
+          applyImageModelDefaults(id);
+        }
+        void loadOrStage(dir, { kind: "gguf", filename }, meta.source, token).then((started) => {
+          // Guarded like every sibling branch: quantRevert is one slot, so a pick that no longer
+          // owns the page must not hand back a label a newer pick has already set.
+          if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
           }
@@ -2937,12 +3143,19 @@ export function ImagesPage({
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-        quantRevert.current = revert;
-        setQuant(filename);
-        applyImageModelDefaults(id);
-        void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
-          if (!started) {
+        // A Download only pick fetches files and never becomes the resident model, so it
+        // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+        // already in flight owns what is in it and still has to commit it.
+        const revert: PickRevert | null = downloadOnlyPick
+          ? null
+          : (quantRevert.current ?? { prev: quant, steps, guidance });
+        if (revert) {
+          quantRevert.current = revert;
+          setQuant(filename);
+          applyImageModelDefaults(id);
+        }
+        void loadOrStage(dir, { kind: "single_file", filename }, meta.source, token).then((started) => {
+          if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
           }
@@ -2963,17 +3176,26 @@ export function ImagesPage({
       }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos or on-device paths.
       if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
+        // A refused Download only pick retires nothing: it never claimed the page, and the rollback
+        // slot it would clear belongs to whatever load is still staging.
         toast.error("Only unsloth or on-device image models can be loaded here");
-        abandonPick();
+        if (!downloadOnlyPick) abandonPick();
         return;
       }
       // Optimistically clear the quant label, revert it if the load never starts.
-      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-      quantRevert.current = revert;
-      setQuant(null);
-      applyImageModelDefaults(id);
+      // A Download only pick fetches files and never becomes the resident model, so it
+      // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+      // already in flight owns what is in it and still has to commit it.
+      const revert: PickRevert | null = downloadOnlyPick
+        ? null
+        : (quantRevert.current ?? { prev: quant, steps, guidance });
+      if (revert) {
+        quantRevert.current = revert;
+        setQuant(null);
+        applyImageModelDefaults(id);
+      }
       void loadOrStage(id, { kind: "pipeline" }, meta.source, token).then((started) => {
-        if (!started && pickGuard.holds(token)) {
+        if (!started && revert && stillOwnsPick()) {
           revertPick(revert);
           quantRevert.current = null;
         }
@@ -3016,7 +3238,7 @@ export function ImagesPage({
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
-      applyImageModelDefaults(args.baseRepo);
+      applyImageModelDefaults(args.baseRepo, true);
       void handleLoad(args.baseRepo, { kind: "pipeline" }).then((started) => {
         if (!started) {
           pendingDeploy.current = null;
@@ -3032,6 +3254,7 @@ export function ImagesPage({
 
   // Resolves true when the backend accepted the unload; handleCancelLoad reports the cancel only then.
   const handleUnload = useCallback(async (): Promise<boolean> => {
+    pendingRecalledGeneration.current = null;
     // Ejecting cancels any in-flight replacement load, so tear down its client-side tracking too
     // or the toast leaks forever.
     dropResidentState();
@@ -3040,11 +3263,11 @@ export function ImagesPage({
     try {
       setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
       setQuant(null);
-      // Hold the page until any load start still in flight has run to its END, compensating unload
-      // and all. Without the fence an eject landing before the start registered returned success
-      // and cleared busy, so the next pick was refused while the older load carried on.
-      // That older handler, seeing the newer loadSeq, skips its compensating unload and returns without
-      // restarting its poll, leaving a multi-gigabyte load running with no toast and no cancel control.
+      // Hold the page until any load start still in flight has run to its END, compensating unload and
+      // all. Without the fence an eject landing before the start registered returned success and cleared
+      // busy, so the next pick was refused while the older load carried on: that older handler, seeing
+      // the newer loadSeq, skips its compensating unload and leaves a multi-gigabyte load running with
+      // no toast and no cancel control.
       const pending = pendingStart.current;
       if (pending) {
         try {
@@ -3345,10 +3568,10 @@ export function ImagesPage({
         genVisibilityListener.current = null;
       }
       cancelRequested.current = false;
-      // Refresh on EVERY exit, not just the successful one, and AWAIT it before Generate comes back:
-      // a generation can change server-side status and a cancelled native run can leave no model
-      // at all, so re-enabling first would offer a button that 409s.
-      // Speed=Auto compiles on the 3rd LoRA-free run and supports_lora flips false.
+      // Refresh on EVERY exit, not just the successful one, and AWAIT it before Generate comes back: a
+      // generation can change server-side status (Speed=Auto compiles on the 3rd LoRA-free run and
+      // supports_lora flips false) and a cancelled native run can leave no model at all, so re-enabling
+      // first would offer a button that 409s.
       if (isMounted.current) await refreshStatus();
       setBusy(null);
       setGenDone(null);
@@ -3384,6 +3607,82 @@ export function ImagesPage({
     }
   }, []);
 
+  const handleGenerateWithRecall = useCallback(async () => {
+    if (busy !== null || !imagePresets.hydrated) return;
+    if (status?.loaded) {
+      const kind = status.model_kind;
+      if (
+        status.repo_id &&
+        (kind === "pipeline" ||
+          ((kind === "gguf" || kind === "single_file") && status.gguf_filename))
+      ) {
+        const model: RememberedImageModel = {
+          repoId: status.repo_id,
+          kind,
+          filename: status.gguf_filename ?? undefined,
+        };
+        rememberImageModel(model);
+        setRememberedModel(model);
+      }
+      await handleGenerate();
+      return;
+    }
+    if (!rememberedModel || !prompt.trim()) {
+      toast.info(
+        rememberedModel
+          ? "Enter a prompt first."
+          : "Pick an image model first.",
+      );
+      return;
+    }
+    pendingRecalledGeneration.current = {
+      model: rememberedModel,
+      load: loadSeq.current + 1,
+      workflow,
+    };
+    const started = await handleLoad(
+      rememberedModel.repoId,
+      { kind: rememberedModel.kind, filename: rememberedModel.filename },
+      currentLoadAdvanced(rememberedModel.repoId, true),
+    );
+    if (!started) pendingRecalledGeneration.current = null;
+  }, [
+    busy,
+    currentLoadAdvanced,
+    handleGenerate,
+    handleLoad,
+    imagePresets.hydrated,
+    prompt,
+    rememberedModel,
+    status,
+    workflow,
+  ]);
+
+  useEffect(() => {
+    const pending = pendingRecalledGeneration.current;
+    if (!pending) return;
+    if (!active || pending.load !== loadSeq.current) {
+      pendingRecalledGeneration.current = null;
+      return;
+    }
+    if (busy !== null || !status?.loaded) return;
+    pendingRecalledGeneration.current = null;
+    const tab = WORKFLOW_TABS.find(
+      (candidate) => candidate.id === pending.workflow,
+    );
+    if (
+      pending.workflow !== workflow ||
+      !tab ||
+      !(status.workflows ?? []).includes(tab.requires ?? "txt2img")
+    ) {
+      toast.info(
+        "Choose a workflow supported by the loaded model before generating.",
+      );
+      return;
+    }
+    if (matchesRememberedModel(pending.model, status)) void handleGenerate();
+  }, [active, busy, handleGenerate, status, workflow]);
+
   // Publish what the loaded model can do, so the sidebar submenu dims the rest. null while
   // nothing is loaded, which leaves every workflow open to set up first.
   useEffect(() => {
@@ -3411,9 +3710,18 @@ export function ImagesPage({
   const activeWorkflowTab =
     WORKFLOW_TABS.find((t) => t.id === workflow) ?? WORKFLOW_TABS[0];
 
-  // The Advanced (load-time) tuning controls, rendered in the right-docked panel below.
   const advancedControls = (
     <>
+      <AdvancedSelect
+        label="On model selection"
+        hint="Choose Download only to prepare the selected model and its required assets without loading it. Applies to the next model you select; progress and cancellation appear in Downloads."
+        value={modelSelectionAction}
+        onValueChange={(v) => setModelSelectionAction(v as typeof modelSelectionAction)}
+        options={[
+          ["load", "Download and load"],
+          ["download", "Download only"],
+        ]}
+      />
       <AdvancedSelect
         label="Speed"
         hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
@@ -3428,22 +3736,31 @@ export function ImagesPage({
           ["max", "Max"],
         ]}
       />
-      {/* The dense transformer_quant fast path engages only on the GGUF kind, so gate the control to
-          GGUF (or nothing loaded) and otherwise say why it is unavailable. */}
-      {!status?.loaded || status.model_kind === "gguf" ? (
+      {/* Use the same precision eligibility rule as the load request. Native sd.cpp reports
+          model_kind "gguf" as well, to be recallable by exact checkpoint, but runs no torchao
+          path: gate it out by ENGINE or it offers FP8/INT8/NVFP4 with no badge and snaps back. */}
+      {!status?.loaded
+      || (sendsTransformerQuant(status.model_kind, status.repo_id ?? "")
+          && !isNativeEngineStatus(status)) ? (
         <AdvancedSelect
           label="Precision"
-          hint="How the model computes. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) by loading the FULL base model and quantising its transformer onto low-precision tensor cores, and falls back to running the GGUF as-is when the device, VRAM or disk can't take it. Off always runs the GGUF as-is."
+          hint="How the model computes. Auto picks the fastest precision the hardware supports (INT8 on every capable GPU, then FP8 where the card has it) and quantises the transformer onto low-precision tensor cores. A GGUF pick reaches it by loading the FULL base model instead of the GGUF, and falls back to the GGUF as-is when the device, VRAM or disk can't take it; an official pipeline is already dense and is quantised in place, falling back to plain BF16. Off runs the checkpoint as-is."
           badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
           options={[
             ["auto", "Auto (fastest for GPU)"],
-            ["none", "Off (run the GGUF)"],
-            ["fp8", "FP8"],
-            ["int8", "INT8"],
-            ["nvfp4", "NVFP4 (Blackwell)"],
-            ["mxfp8", "MXFP8 (Blackwell)"],
+            ["none", "Off (run the checkpoint as-is)"],
+            // The explicit low-precision schemes need the dense tensor-core path, which a Mac or
+            // CPU-only host cannot run, so the picker does not list what the loader would refuse.
+            ...(hostOffersDensePrecision(hostClass)
+              ? ([
+                  ["fp8", "FP8"],
+                  ["int8", "INT8"],
+                  ["nvfp4", "NVFP4 (Blackwell)"],
+                  ["mxfp8", "MXFP8 (Blackwell)"],
+                ] as [string, string][])
+              : []),
           ]}
         />
       ) : (
@@ -3451,9 +3768,25 @@ export function ImagesPage({
           <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
             Precision
           </span>
-          <span className="text-xs text-muted-foreground/60">GGUF models only</span>
+          <span className="text-xs text-muted-foreground/60">
+            Runs this checkpoint's own precision
+          </span>
         </div>
       )}
+      <AdvancedSelect
+        label="Text encoder precision"
+        hint="Lower precision reduces text-encoder memory but can change image quality. Supported modes depend on the GPU and model. Default keeps the existing encoder precision; the loaded build below reports what was applied."
+        badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
+        value={textEncoderQuant}
+        onValueChange={(v) => setTextEncoderQuant(v as typeof textEncoderQuant)}
+        options={[
+          ["auto", "Default"],
+          ["fp8", "FP8 (storage)"],
+          ["fp8_dynamic", "FP8 (compute)"],
+          ["int8", "INT8"],
+          ["nvfp4", "NVFP4 (Blackwell)"],
+        ]}
+      />
       <AdvancedSelect
         label="Attention"
         hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention: fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
@@ -3545,9 +3878,11 @@ export function ImagesPage({
     // The chat-style layout gives this page no outer top inset, so clear the custom titlebar here as chat does.
     // 34px on win/linux, 0 under macOS's native one.
     <div className="diffusion-surface @container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+      {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
+      {active && <GuidedTour {...tour.tourProps} />}
       {/* Keep the tabs centered over the preview at every width: the model rail holds at 408px when
           space permits and shrinks only to preserve the controls. */}
-      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
@@ -3571,6 +3906,7 @@ export function ImagesPage({
               />
             ) : (
               <ModelSelector
+                triggerDataTour="images-model"
                 models={imageModels}
                 value={status?.loaded ? status.repo_id ?? undefined : undefined}
                 activeGgufVariant={quant}
@@ -3578,7 +3914,7 @@ export function ImagesPage({
                 resolveDownloadFootprint={resolveDownloadFootprint}
                 onEject={status?.loaded ? handleUnload : undefined}
                 variant="ghost"
-                className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
+                className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
                 triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
@@ -3595,7 +3931,7 @@ export function ImagesPage({
                     variant="outline"
                     size="sm"
                     aria-label="Cancel load"
-                    className="!h-[34px] rounded-full text-xs"
+                    className="!h-[calc(34px*var(--ui-space-scale,1))] rounded-full text-xs"
                     onClick={() => void handleCancelLoad()}
                   >
                     Cancel load
@@ -3609,11 +3945,12 @@ export function ImagesPage({
         <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
           <div className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             <PillTabs
+              dataTour="images-mode"
               ariaLabel="Page mode"
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[34px] [&>button]:h-[34px] [&>button]:px-3 @[68rem]:[&>button]:px-11"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
@@ -3655,7 +3992,10 @@ export function ImagesPage({
       /* Settings column + preview canvas. Structural borders stay edge-to-edge; spacing belongs inside each pane.
          The same 50rem page-container breakpoint drives this body and the header above. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
-        <div className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+        <div
+          data-tour="images-settings"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+        >
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
@@ -3826,7 +4166,7 @@ export function ImagesPage({
                             "rounded-lg px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             on
                               ? "bg-primary/15 text-foreground hover:bg-primary/20 dark:bg-primary/25 dark:hover:bg-primary/30"
-                              : "bg-muted text-muted-foreground hover:bg-muted/70 hover:text-foreground dark:bg-white/[0.06] dark:hover:bg-white/[0.1]",
+                              : "bg-muted text-muted-foreground hover:bg-muted/70 hover:text-foreground dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
                           )}
                         >
                           {label}
@@ -4171,7 +4511,7 @@ export function ImagesPage({
             <div className="pt-2">
               <SliderField
                 label="Steps"
-                hint="9 is the recommended setting for Z-Image-Turbo. More steps rarely help."
+                hint="Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
                 value={steps}
                 min={1}
                 max={50}
@@ -4181,7 +4521,7 @@ export function ImagesPage({
             </div>
             <SliderField
               label="Guidance"
-              hint="Keep this at 0 for Z-Image-Turbo. Higher values make its output worse. Other models use guidance."
+              hint="Controls how strongly the model follows the prompt. Start with the selected model's default; distilled models may require low or zero guidance."
               value={guidance}
               min={0}
               max={15}
@@ -4240,8 +4580,8 @@ export function ImagesPage({
             ) : (
               <Button
                 className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                onClick={handleGenerate}
-                disabled={busy !== null || !status?.loaded}
+                onClick={handleGenerateWithRecall}
+                disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel)}
               >
                 Generate
               </Button>
@@ -4249,8 +4589,11 @@ export function ImagesPage({
           </div>
         </div>
 
-        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0">
-          <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[60px]">
+        <div
+          data-tour="images-preview"
+          className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
+        >
+          <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
             {selected && selectedSrc ? (
               <>
                 <img
@@ -4348,7 +4691,7 @@ export function ImagesPage({
             <div
               ref={stripRef}
               // The rule spans the pane; only the thumbnail contents receive the 40px gutter.
-              className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-foreground/10 px-10 py-3"
+              className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] px-10 py-3"
               onScroll={(e) => {
                 // Near the right edge: pull the next older page (infinite scroll).
                 const el = e.currentTarget;
@@ -4389,7 +4732,7 @@ export function ImagesPage({
                     )}
                     {/* Selection marker on a non-focusable overlay, so the button's focus state cannot mask it. */}
                     {image.id === selected?.id && (
-                      <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
+                      <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
                     )}
                   </button>
                   {/* Pin marker, bottom-left so it never sits under the menu. */}

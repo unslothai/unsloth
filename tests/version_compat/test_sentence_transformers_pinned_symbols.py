@@ -24,9 +24,11 @@ ST_TAGS = [
     "master",
 ]
 
+# Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.
+pytestmark = pytest.mark.parametrize("tag", ST_TAGS)
+
 
 # Top-level: SentenceTransformer + SentenceTransformerTrainer must be importable.
-@pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_top_level_exports(tag: str):
     src = fetch_text("UKPLab/sentence-transformers", tag, "sentence_transformers/__init__.py")
     assert src is not None, f"{tag}: sentence_transformers/__init__.py missing"
@@ -39,7 +41,6 @@ def test_st_top_level_exports(tag: str):
 
 
 # Sub-modules: unsloth walks `sentence_transformers.models` for these classes.
-@pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_models_re_exports(tag: str):
     """Transformer / Pooling / Normalize must stay reachable via
     `sentence_transformers.models` despite the ST 5.4 package reorg."""
@@ -105,7 +106,6 @@ def test_st_models_re_exports(tag: str):
 
 
 # Transformer base class: unsloth probes alternate paths; at least ONE must resolve.
-@pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_transformer_base_class_either_path(tag: str):
     candidates = [
         "sentence_transformers/models/Transformer.py",
@@ -125,7 +125,6 @@ def test_st_transformer_base_class_either_path(tag: str):
 
 
 # Transformer.load classmethod: unsloth builds saved-ST modules through it (#6881).
-@pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_transformer_load_accepts_unsloth_kwargs(tag: str):
     """unsloth builds saved ST models via Transformer.load(...) so the saved
     modality_config is honored (#6881). If .load stops accepting the hub kwargs it
@@ -161,7 +160,6 @@ def test_st_transformer_load_accepts_unsloth_kwargs(tag: str):
 
 
 # sentence_transformers.util: import_from_string + load_dir_path helpers unsloth calls.
-@pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_util_helpers(tag: str):
     """util.{import_from_string, load_dir_path} must resolve; accept either the
     flat or the ST 5.4+ package layout, or a re-export from a util submodule."""

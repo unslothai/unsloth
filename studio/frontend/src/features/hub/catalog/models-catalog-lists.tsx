@@ -40,7 +40,12 @@ import {
   NetworkErrorState,
   SkeletonList,
 } from "./catalog-states";
-import { InventoryRow, VirtualRows } from "./models-catalog-rows";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import {
+  CATALOG_COLUMN_GAP_PX,
+  InventoryRow,
+  VirtualRows,
+} from "./models-catalog-rows";
 import {
   type AllModelsView,
   type InventorySort,
@@ -267,15 +272,12 @@ export function DownloadedList({
   onClearFilters,
   scrollElement,
   columns = 1,
-  activeCheckpoint,
-  activeGgufVariant,
   isDataset,
   inventoryTokens,
   deviceType,
   compact = false,
   sort,
   onInventoryChange,
-  onOpenModelSettings,
 }: {
   cachedRows: CachedInventoryRow[];
   localRows: LocalInventoryRow[];
@@ -288,8 +290,6 @@ export function DownloadedList({
   onClearFilters?: () => void;
   scrollElement: HTMLDivElement | null;
   columns?: number;
-  activeCheckpoint: string | null;
-  activeGgufVariant: string | null;
   isDataset: boolean;
   inventoryTokens: readonly string[];
   deviceType: string | null;
@@ -297,7 +297,6 @@ export function DownloadedList({
   compact?: boolean;
   sort: InventorySort;
   onInventoryChange?: () => void;
-  onOpenModelSettings?: (row: CachedInventoryRow | LocalInventoryRow) => void;
 }) {
   // Pinned repos surface first regardless of the active sort, which still orders within groups.
   const pinnedIds = usePinnedModelsStore((s) => s.pinned);
@@ -396,19 +395,22 @@ export function DownloadedList({
     ? RESULT_SPLIT_ROW_HEIGHT_PX
     : RESULT_GRID_ROW_HEIGHT_PX;
   const cellHeightPx = compact ? RESULT_SPLIT_HEIGHT_PX : RESULT_GRID_HEIGHT_PX;
+  // VirtualRows scales its own slots with the UI font size. The pinned grid
+  // below lays the same rows out by hand, so it scales here to match.
+  const pinnedScale = useUiSpaceScale();
+  const pinnedRowHeightPx = Math.round(rowHeightPx * pinnedScale);
+  const pinnedCellHeightPx = Math.round(cellHeightPx * pinnedScale);
+  const pinnedColumnGapPx = Math.round(CATALOG_COLUMN_GAP_PX * pinnedScale);
   const renderInventoryRow = (item: InventoryItem) => (
     <InventoryRow
       row={item.row}
       selected={selectedId === item.row.id}
-      activeCheckpoint={activeCheckpoint}
-      activeGgufVariant={activeGgufVariant}
       isDataset={isDataset}
       dimmed={!inventoryRowMatches(item.row, inventoryTokens)}
       deviceType={deviceType}
       compact={compact}
       onSelect={onSelect}
       onChange={onInventoryChange}
-      onOpenSettings={onOpenModelSettings}
     />
   );
 
@@ -442,7 +444,7 @@ export function DownloadedList({
               <button
                 type="button"
                 onClick={onClearFilters}
-                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
+                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
               >
                 Show all types
               </button>
@@ -484,24 +486,22 @@ export function DownloadedList({
             style={{
               display: "grid",
               gridTemplateColumns: `repeat(${Math.max(1, columns)}, minmax(0, 1fr))`,
-              columnGap: 12,
-              rowGap: rowHeightPx - cellHeightPx,
-              paddingBottom: rowHeightPx - cellHeightPx,
+              columnGap: pinnedColumnGapPx,
+              rowGap: pinnedRowHeightPx - pinnedCellHeightPx,
+              paddingBottom: pinnedRowHeightPx - pinnedCellHeightPx,
             }}
           >
             {pinnedItems.map((item) => {
               const rowKey = `${item.variant}-${item.row.id}`;
-              // movePinned can only move a key that is in the pinned list, and
-              // pins also exist as `repoId::quant` (written by the GGUF quant
-              // menus). Deriving the key without checking membership would let
-              // a row advertise a drag that every movePinned call silently
-              // found nothing to do. pinnedCount selects this slice on the same
-              // predicate today, so the check holds the two in lockstep rather
-              // than trusting them to stay identical. Datasets are excluded
-              // outright: pin keys carry no repo type, so a dataset whose
-              // repoId also names a pinned model reaches this grid, and the row
-              // menu offers datasets no pin action, so a drag here must not
-              // reorder the user's model pins from the dataset list.
+              // movePinned can only move a key that is in the pinned list, and pins also exist as
+              // `repoId::quant` (written by the GGUF quant menus). Deriving the key without
+              // checking membership would let a row advertise a drag that every movePinned call
+              // silently found nothing to do. pinnedCount selects this slice on the same predicate
+              // today, so the check holds the two in lockstep rather than trusting them to stay
+              // identical. Datasets are excluded outright: pin keys carry no repo type, so a
+              // dataset whose repoId also names a pinned model reaches this grid, and the row menu
+              // offers datasets no pin action, so a drag here must not reorder the user's model
+              // pins from the dataset list.
               const itemPinKey =
                 !isDataset &&
                 item.row.repoId &&
@@ -513,7 +513,7 @@ export function DownloadedList({
                   key={rowKey}
                   className="min-w-0"
                   style={{
-                    height: cellHeightPx,
+                    height: pinnedCellHeightPx,
                     opacity: dragRowKey === rowKey ? 0.4 : undefined,
                   }}
                   draggable={itemPinKey != null}
@@ -531,9 +531,8 @@ export function DownloadedList({
                   onDragEnd={() => {
                     dragPinKeyRef.current = null;
                     setDragRowKey(null);
-                    // Escape, or a release outside any cell, reaches dragend
-                    // without a drop. A drop already committed and cleared the
-                    // session, so this call is then a no-op.
+                    // Escape, or a release outside any cell, reaches dragend without a drop. A drop
+                    // already committed and cleared the session, so this call is then a no-op.
                     endPinnedDrag(false);
                   }}
                   onDragOver={(event) => {

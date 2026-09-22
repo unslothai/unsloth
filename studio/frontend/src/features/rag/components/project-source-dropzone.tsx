@@ -318,9 +318,8 @@ export function ProjectSourceDropzone({
           rows can carry their own remove buttons. */}
       <div
         ref={nativeDropRef}
-        // preventDefault runs even while disabled: nothing else on the page
-        // cancels a file drop, so the browser would navigate to the file and
-        // kill the uploads in flight.
+        // preventDefault runs even while disabled: nothing else on the page cancels a file drop, so
+        // the browser would navigate to the file and kill the uploads in flight.
         onDragEnter={(e) => {
           e.preventDefault();
           if (disabled) return;
@@ -343,7 +342,7 @@ export function ProjectSourceDropzone({
           addFiles(Array.from(e.dataTransfer.files ?? []));
         }}
         className={cn(
-          "rounded-[22px] border border-border transition-colors dark:border-white/10",
+          "rounded-[22px] border border-border transition-colors dark:border-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]",
           dragging && "border-primary/60 bg-primary/5",
           disabled && "opacity-60",
         )}

@@ -19,6 +19,7 @@ import {
 import {
   type ScanFolderInfo,
   addScanFolder,
+  formatBytes,
   listScanFolders,
   removeScanFolder,
   scanFolderStatusCopy,
@@ -61,8 +62,7 @@ function formatError(error: unknown): string {
 
 function formatFreeSpace(bytes: number | null): string | null {
   if (bytes === null || !Number.isFinite(bytes)) return null;
-  const gb = bytes / 1024 ** 3;
-  return gb >= 10 ? `${Math.round(gb)} GB free` : `${gb.toFixed(1)} GB free`;
+  return `${formatBytes(bytes)} free`;
 }
 
 export function OnDeviceFoldersDialog({
@@ -153,10 +153,9 @@ export function OnDeviceFoldersDialog({
     onInventoryChange?.();
   }, [onInventoryChange]);
 
-  // Relocating the cache changes which repos are on disk, but
-  // updateHuggingFaceCacheSettings already bumps the inventory version, which
-  // re-fetches every source. Refreshing here too would scan twice, since the
-  // two rounds carry different version keys and cannot be deduplicated.
+  // Relocating the cache changes which repos are on disk, but updateHuggingFaceCacheSettings
+  // already bumps the inventory version, which re-fetches every source. Refreshing here too would
+  // scan twice, since the two rounds carry different version keys and cannot be deduplicated.
   const saveDownloadLocation = useCallback(async (nextPath: string | null) => {
     setDownloadSaving(true);
     try {
