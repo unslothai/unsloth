@@ -2715,5 +2715,13 @@ class TestCliDefaultOptimizerFollowsTheDevicePolicy(unittest.TestCase):
         source = (_BACKEND_ROOT.parent.parent / "unsloth_cli" / "commands" / "train.py").read_text(
             encoding = "utf-8"
         )
-        self.assertIn("_default_optimizer_for_host", source)
-        self.assertIn('training_kwargs.setdefault("optim", _default_optimizer_for_host())', source)
+        self.assertIn("_optimizer_for_host", source)
+        self.assertIn('training_kwargs["optim"] = _optimizer_for_host(training_kwargs.get("optim"))', source)
+
+    def test_an_undetectable_host_keeps_the_historical_default(self):
+        """The CLI helper must fail open: a device lookup that raises cannot stop a run."""
+        cli = _BACKEND_ROOT.parent.parent / "unsloth_cli" / "commands" / "train.py"
+        source = cli.read_text(encoding = "utf-8")
+        self.assertIn("except Exception:", source)
+        # The fallback returns the requested/default optimizer rather than propagating.
+        self.assertIn("return optimizer", source)
