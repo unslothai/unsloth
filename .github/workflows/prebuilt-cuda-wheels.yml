@@ -45,6 +45,10 @@ on:
         description: 'upload to the release (otherwise artifacts only)'
         type: boolean
         default: false
+      draft:
+        description: 'keep the release a draft (unpublished, visible to maintainers only)'
+        type: boolean
+        default: true
       gpu_smoke:
         description: 'also run a real forward pass on the self-hosted GPU runner (slow, optional)'
         type: boolean
@@ -512,17 +516,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.release_tag }}
+          DRAFT: ${{ inputs.draft }}
           TITLE: 'Flash-Attention2, Causal-Conv1D, Mamba_SSM Binaries'
         run: |
           set -euo pipefail
-          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          # A draft release has no tag yet, so it is found by listing, not by tag lookup.
+          # shellcheck disable=SC2016  # $tag is a jq variable, not a shell one
+          existing="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName \
+            --jq --arg tag "$TAG" '.[] | select(.tagName == $tag) | .tagName')"
+          if [ -z "$existing" ]; then
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "$TITLE" \
               --latest=false \
+              --draft="$DRAFT" \
               --notes "Prebuilt CUDA 13 wheels. Release notes are regenerated from the attached assets below."
           else
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --latest=false
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --latest=false --draft="$DRAFT"
           fi
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
             wheels/*.whl wheels/*.sigstore.json wheels/SHA256SUMS
@@ -535,16 +545,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.release_tag }}
+          DRAFT: ${{ inputs.draft }}
         run: |
           set -euo pipefail
-          gh api --paginate "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
-            --jq '.assets[] | select(.name | endswith(".whl")) | "\(.digest // "sha256:unknown" | sub("^sha256:"; ""))  \(.name)"' \
+          # Listed rather than looked up by tag: a draft release has no tag object yet.
+          # shellcheck disable=SC2016  # $tag is a jq variable, not a shell one
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq --arg tag "$TAG" '.[] | select(.tag_name == $tag) | .assets[] | select(.name | endswith(".whl")) | "\(.digest // "sha256:unknown" | sub("^sha256:"; ""))  \(.name)"' \
             > published.txt
           sort -k2 -o published.txt published.txt
           cat published.txt
           python3 .github/scripts/prebuilt_wheels.py notes \
             --tag "$TAG" --repo "$GITHUB_REPOSITORY" < published.txt > notes.md
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md --latest=false
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md --latest=false --draft="$DRAFT"
           cat notes.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Report the release URL
