@@ -226,15 +226,10 @@ def _has_sequence_classification_architecture(config):
     return any(str(arch).endswith("ForSequenceClassification") for arch in architectures)
 
 
-# Auto classes an omni checkpoint may be registered under, beyond the image-text
-# one. Ordered from most to least specific so a model that maps under several
-# still gets the class its own family registered.
-#
-# Every name here must also be in vision.py's _multimodal_auto_classes(): the
-# class chosen here decides processor selection, so returning AutoModelForCausalLM
-# or AutoModel would hand a multimodal checkpoint an AutoTokenizer where main
-# gave it an AutoProcessor. Returning None instead leaves the caller's own choice
-# alone, which is exactly main's behaviour.
+# Most to least specific, so a config mapped under several gets its own family's
+# class. Every name must also be in vision.py's _multimodal_auto_classes(), since
+# the class picked here decides processor selection (asserted by
+# test_every_class_the_resolver_can_return_takes_a_processor).
 _OMNI_AUTO_CLASS_NAMES = (
     "AutoModelForImageTextToText",
     "AutoModelForTextToWaveform",
@@ -244,13 +239,10 @@ _OMNI_AUTO_CLASS_NAMES = (
 def _resolve_omni_auto_model(model_config):
     """A multimodal auto class that really maps this config, or None.
 
-    ``Qwen/Qwen3-Omni-30B-A3B-Instruct`` names
-    ``Qwen3OmniMoeForConditionalGeneration`` and so reads as a VLM, but
-    transformers registers ``qwen3_omni_moe`` only under
-    ``AutoModelForTextToWaveform``. Every other auto class raises
-    "Unrecognized configuration class" on it, which is a hard load failure
-    rather than a fallback. Returns None when nothing matches, so the caller
-    keeps its own choice and the existing error surfaces unchanged.
+    Qwen3-Omni names Qwen3OmniMoeForConditionalGeneration so it reads as a VLM,
+    but transformers registers qwen3_omni_moe only under
+    AutoModelForTextToWaveform, and asking a class with no mapping is a hard
+    load failure, not a fallback.
     """
     import transformers
 
@@ -263,10 +255,8 @@ def _resolve_omni_auto_model(model_config):
                 return auto_class
         except Exception:
             continue
-    # Nothing maps it: keep the caller's choice so the existing error surfaces
-    # unchanged. Returning the concrete class named by the checkpoint was tried
-    # and removed: a concrete class is in no auto mapping, so it took the model
-    # out of the processor set and downgraded it to an AutoTokenizer.
+    # Falling back to the concrete class the checkpoint names is WRONG: it is in no
+    # auto mapping, so it leaves the processor set and downgrades to AutoTokenizer.
     return None
 
 
@@ -1918,7 +1908,8 @@ class FastModel(FastBaseModel):
                     auto_model = AutoModel
                 else:
                     auto_model = AutoModelForVision2Seq
-                    # AutoModelForVision2Seq covers image-text models. An omni checkpoint carrying audio as well can be registered under a different auto class entirely (Qwen3-Omni is only in AutoModelForTextToWaveform), and picking a class with no mapping raises "Unrecognized configuration class" before the weights are touched. Only consulted when the chosen class really has no mapping, so anything that resolves today is unchanged.
+                    # Only when the image-text class has no mapping, so anything that
+                    # resolves today keeps the class it resolves to now.
                     if resolve_model_class(auto_model, model_config) is None:
                         auto_model = _resolve_omni_auto_model(model_config) or auto_model
             else:

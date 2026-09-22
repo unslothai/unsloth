@@ -27,12 +27,9 @@ except:
 def _embeddings_or_none(model, getter):
     """Call `model.<getter>()`, or None when the model cannot answer.
 
-    `hasattr(model, "get_input_embeddings")` is not the question: transformers 5
-    defines the method on every PreTrainedModel and has the base implementation
-    raise NotImplementedError, so a composite checkpoint with no single
-    embedding (Qwen3-Omni carries a thinker and a talker) passes the hasattr
-    check and then raises. The rest of this file already asks by calling and
-    catching; these two callers did not.
+    `hasattr` is not the question: transformers 5 defines the method on every
+    PreTrainedModel with a base impl that raises, so a composite checkpoint
+    passes the hasattr check and then raises. Ask by calling.
     """
     fn = getattr(model, getter, None)
     if fn is None:
@@ -46,28 +43,18 @@ def _embeddings_or_none(model, getter):
 def _multimodal_auto_classes():
     """Auto classes whose models need a processor rather than a tokenizer.
 
-    An omni checkpoint can be registered under an auto class that has nothing
-    to do with images: transformers maps Qwen3-Omni only under
-    `AutoModelForTextToWaveform`. Those models still take a processor rather
-    than a tokenizer. Resolved at call time and tolerant of absent names,
-    because which of these exist differs across the supported transformers
-    range.
-
     Processor SELECTION only, never `is_vlm`: `is_vlm` also arms the
     image-processor repair path, and a Whisper processor legitimately has no
-    `image_processor`, so widening `is_vlm` made loading Whisper try to build
-    an image processor for an audio model.
+    `image_processor`, so widening `is_vlm` made loading Whisper try to build an
+    image processor for an audio model.
     """
     import transformers
 
-    # Looked up rather than referenced because the import above binds whichever
-    # name exists, and the module-level alias is the only one guaranteed bound:
-    # 4.51.3 has both, 5.5.0 dropped AutoModelForVision2Seq, so which of the two
-    # is a live class depends on the installed version.
+    # Looked up, not referenced: which names exist varies (4.51.3 has both, 5.5.0
+    # dropped AutoModelForVision2Seq), so only the alias above is always bound.
     classes = [AutoModelForVision2Seq]
-    # AutoModelForSpeechSeq2Seq is deliberately absent: Whisper lives there, it
-    # already reaches AutoProcessor through is_whisper, and adding it would move
-    # a cell this PR has no need to move.
+    # AutoModelForSpeechSeq2Seq is deliberately absent: Whisper already reaches
+    # AutoProcessor through is_whisper, so adding it would move a cell for nothing.
     for name in (
         "AutoModelForImageTextToText",
         "AutoModelForTextToWaveform",
@@ -610,11 +597,9 @@ def _resolve_offload_embedding(model, offload_embedding):
             model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
         )
     except Exception:
-        # Cannot inspect it, so the offload cannot run: the caller of this
-        # function goes straight on to call get_input_embeddings() unguarded.
-        # Honouring an explicit request here turned "a VRAM optimisation we
-        # cannot apply" into a failed load, which is what this function exists
-        # to avoid. Qwen3-Omni reaches this only now that it loads at all.
+        # Honouring an explicit request here is WRONG: the caller goes straight on
+        # to call get_input_embeddings() unguarded, turning an inapplicable VRAM
+        # optimisation into a failed load.
         return _decline("its embeddings cannot be inspected.")
     if _embeddings_are_tied(in_embed, out_embed):
         return _decline("this model ties embed_tokens to lm_head, so offloading saves no VRAM.")
@@ -1323,18 +1308,15 @@ class FastBaseModel:
             auto_model = AutoModelForCausalLM
         is_vlm = auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText]
         is_whisper = whisper_language is not None and whisper_task is not None
-        # Audio and omni auto classes take a processor too, but they are NOT image models: is_vlm additionally arms the image-processor repair path below, which would try to build one for Whisper.
+        # Audio and omni classes need a processor but are NOT image models, so they
+        # must not widen is_vlm, which arms the image-processor repair path below.
         needs_processor = is_vlm or auto_model in _multimodal_auto_classes()
         # A repo-code VLM may register only AutoModel / AutoModelForCausalLM (DeepSeek-OCR, Nemotron-VL), so auto_model is not a VLM class though the config is a vision model. Keep is_vlm for processor selection, but treat it as a VLM on the vLLM path so a vision_config model is never silently loaded as text-only.
         is_vlm_config = (
             is_vlm
-            # An omni checkpoint keeps its vision config under thinker_config, so the
-            # hasattr below does not see it and the fast_inference guard would let it
-            # into the language-model vLLM path with is_vision_model=False. It is
-            # multimodal whatever the attribute says, and qwen3_omni_moe is not in
-            # VLLM_SUPPORTED_VLM, so this turns a confusing failure into that guard's
-            # clean message. Kept out of is_vlm itself, which arms the image-processor
-            # repair path.
+            # An omni checkpoint hides its vision config under thinker_config, so the
+            # hasattr below misses it and fast_inference would enter the vLLM
+            # language-model path with is_vision_model=False.
             or needs_processor
             or (not text_only and hasattr(auto_config, "vision_config"))
         )

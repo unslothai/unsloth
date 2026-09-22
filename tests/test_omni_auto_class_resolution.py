@@ -65,12 +65,8 @@ def test_ordinary_vlms_are_never_rerouted(config_name):
 
 
 def test_nothing_matching_returns_None_rather_than_a_concrete_class():
-    """None means "keep your own choice", so the existing error surfaces.
-
-    Returning the concrete class the checkpoint names was tried and removed: a
-    concrete class is in no auto mapping, so it fell out of the processor set
-    and downgraded a multimodal checkpoint to an AutoTokenizer.
-    """
+    """Returning the concrete class the checkpoint names is WRONG: it is in no
+    auto mapping, so it leaves the processor set and downgrades to AutoTokenizer."""
     assert _resolve_omni_auto_model(transformers.LlamaConfig()) is None
     assert _resolve_omni_auto_model(object()) is None
 
@@ -89,15 +85,9 @@ def test_every_class_the_resolver_can_return_takes_a_processor():
 
 
 def test_speech_seq2seq_is_not_treated_as_a_vision_model():
-    """Whisper must stay out of this set.
-
-    `is_vlm` also arms the image-processor repair path in `vision.py`, and a
-    WhisperProcessor legitimately has no `image_processor`. Including
-    `AutoModelForSpeechSeq2Seq` here made loading Whisper call
-    `_construct_vlm_processor_fallback("openai/whisper-tiny", "whisper")`,
-    an image processor build for an audio model. Whisper already reaches
-    AutoProcessor through `is_whisper`, so it has no business here.
-    """
+    """Including it made loading Whisper call
+    _construct_vlm_processor_fallback("openai/whisper-tiny", "whisper"): an image
+    processor build for an audio model, whose WhisperProcessor has none."""
     speech = getattr(transformers, "AutoModelForSpeechSeq2Seq", None)
     if speech is None:
         pytest.skip("this transformers has no AutoModelForSpeechSeq2Seq")
@@ -149,13 +139,9 @@ class _NoEmbeddings:
 
 @pytest.mark.parametrize("requested", [True, "auto"])
 def test_offload_embedding_declines_a_model_it_cannot_inspect(requested, capsys):
-    """An uninspectable embedding must decline, including an explicit request.
-
-    The caller goes straight on to `model.get_input_embeddings()` unguarded, so
-    returning the explicit True turned a VRAM optimisation that cannot be
-    applied into a failed load. Qwen3-Omni only reaches this line now that it
-    loads at all.
-    """
+    """Returning the explicit True is WRONG: the caller then calls
+    get_input_embeddings() unguarded, failing the load over a VRAM optimisation
+    that cannot be applied anyway."""
     from unsloth.models.vision import _resolve_offload_embedding
 
     assert _resolve_offload_embedding(_NoEmbeddings(), requested) is False
@@ -168,14 +154,9 @@ def test_offload_embedding_declines_a_model_it_cannot_inspect(requested, capsys)
 
 
 def test_omni_reaches_the_vllm_guard_rather_than_the_language_model_path():
-    """fast_inference on an omni checkpoint must hit the unsupported guard.
-
-    `Qwen3OmniMoeConfig` keeps its vision config under `thinker_config`, so the
-    `hasattr(auto_config, "vision_config")` term is False and, with `is_vlm`
-    correctly narrowed to the image-text classes, `is_vlm_config` would have
-    been False too. That skips the guard and calls load_vllm with
-    `is_vision_model=False` for a model `VLLM_SUPPORTED_VLM` does not list.
-    """
+    """Without the needs_processor term, is_vlm_config is False for an omni
+    checkpoint (its vision config hides under thinker_config), which skips the
+    guard and calls load_vllm with is_vision_model=False for an unsupported model."""
     from unsloth.models.vision import VLLM_SUPPORTED_VLM
 
     config = _omni_config()
@@ -216,14 +197,8 @@ def _pretrained_base():
 
 
 def test_a_getter_that_fails_internally_is_not_read_as_a_bad_signature():
-    """A TypeError from INSIDE a valid zero-argument getter must propagate.
-
-    Skipping it would cost that module its input-gradient hook, and under PEFT
-    with gradient checkpointing the frozen embedding output then carries no
-    gradient: backward fails, or the adapter silently trains on nothing. The
-    signature is asked by binding, before the call, so only a genuine
-    argument mismatch skips.
-    """
+    """Skipping it would cost the module its input-gradient hook, so under PEFT
+    with gradient checkpointing backward fails or the adapter trains on nothing."""
     Base = _pretrained_base()
 
     class RaisesInside(Base):
