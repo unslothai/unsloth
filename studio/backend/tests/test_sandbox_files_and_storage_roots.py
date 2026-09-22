@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from .thread_drain import join_when_started
+
 
 def _shared_setup_1(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
@@ -346,7 +348,7 @@ def test_legacy_sandbox_is_migrated(tmp_path, monkeypatch):
     # waits on the whole tree.
     for thread in threading.enumerate():
         if thread.name == "sandbox-migrate":
-            thread.join(30)
+            join_when_started(thread, timeout = 30)
     moved = wd.parent / "__LOCALID_old1234" / "results.csv"
     print(f"\nmigrated to {moved}")
     assert moved.is_file()
@@ -1277,9 +1279,7 @@ def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_scratch"))
     tools._python_exec("print('hi')", session_id = "__LOCALID_scratch")
-    # .cache is the sandbox's own model-cache mount point: a dot directory that
-    # holds nothing, which is why the removal below still goes through.
-    assert sorted(p.name for p in workdir.iterdir() if p.name != ".cache") == [
+    assert sorted(p.name for p in workdir.iterdir()) == [
         tools._SANDBOX_MARKER,
         tools._SANDBOX_TEMP_DIRNAME,
     ]
@@ -1780,8 +1780,7 @@ def test_a_user_python_file_is_never_executor_scratch(tmp_path, monkeypatch):
     assert sorted(
         p.name
         for p in workdir.iterdir()
-        if p.name not in tools._INTERNAL_SANDBOX_FILES
-        and p.name not in (tools._SANDBOX_TEMP_DIRNAME, ".cache")
+        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert inference._sandbox_listing_names(str(workdir)) == ["studio_exec_results.py"]
     # And a delete without the opt-in will not quietly take it.
@@ -1861,8 +1860,7 @@ def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
     assert sorted(
         p.name
         for p in workdir.iterdir()
-        if p.name not in tools._INTERNAL_SANDBOX_FILES
-        and p.name not in (tools._SANDBOX_TEMP_DIRNAME, ".cache")
+        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert json.loads(files) == [{"name": "studio_exec_results.py", "size": 5}]
 
@@ -5142,7 +5140,17 @@ def test_a_traversal_id_stays_inside_the_sandbox_root_and_opens_nothing(tmp_path
 
     from fastapi import HTTPException
 
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    # The legacy root is `~/studio_sandbox`, read straight off `expanduser("~")`, and an id the
+    # filesystem cannot hold is looked for in its shared `_invalid` bucket on the way to the 404.
+    # UNSLOTH_STUDIO_HOME does not move that, so without a fake home this test asks about whoever
+    # is running it: on a machine that has ever run Studio with a bad id the bucket is there, the
+    # resolver finds a real directory, and the reveal answers 200 instead. It passed on CI only
+    # because a fresh runner has no such folder.
+    _shared_setup_11(tmp_path / "fake-home", monkeypatch, tmp_path)
+    legacy_bucket = tmp_path / "fake-home" / "studio_sandbox" / "_invalid"
+    assert (
+        not legacy_bucket.exists()
+    ), "the refusals below only hold while the legacy bucket is absent"
 
     from routes import inference
 
@@ -5171,6 +5179,28 @@ def test_a_traversal_id_stays_inside_the_sandbox_root_and_opens_nothing(tmp_path
             Path(resolved).is_relative_to(tmp_path / "home") or not Path(resolved).exists()
         ), probe
     assert opened == [], "a refused id must never reach the file manager"
+
+
+def test_an_unusable_id_still_reads_the_legacy_shared_bucket(tmp_path, monkeypatch):
+    """The other half of the test above, and the reason it needs a fake home.
+
+    Before the per-id names, every id the filesystem could not hold shared one
+    bucket at the legacy root. `_legacy_session_dir` still reads that bucket, on
+    purpose, so those chats' files stay reachable after the upgrade. So "a
+    traversal id resolves to nothing" is not unconditional: it holds while the
+    bucket is absent, which is a precondition the previous test now states
+    instead of inheriting from whoever runs it. Pinning the read-back here means
+    deleting it cannot quietly turn that test into a tautology.
+    """
+    from core.inference import tools
+
+    _shared_setup_11(tmp_path / "fake-home", monkeypatch, tmp_path)
+    bucket = tmp_path / "fake-home" / "studio_sandbox" / tools._LEGACY_SHARED_BUCKET
+    bucket.mkdir(parents = True)
+
+    assert tools.resolve_sandbox_workdir("../../../../etc") == str(bucket)
+    # A usable id is a chat of its own and never lands in the shared bucket, whatever is in there.
+    assert tools.resolve_sandbox_workdir("thread-1") != str(bucket)
 
 
 def test_a_sandbox_file_named_reveal_is_still_served(tmp_path):

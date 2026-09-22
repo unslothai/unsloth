@@ -283,7 +283,7 @@ export const ModelCard = memo(function ModelCard({
         <OwnerAvatar
           owner={row.owner}
           repoName={row.repo}
-          className="size-11 shrink-0 rounded-[14px] text-ui-17 ring-1 ring-white/10"
+          className="size-11 shrink-0 rounded-[14px] text-ui-17 ring-1 ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
           remote={false}
         />
         <div className="min-w-0 flex-1 space-y-0.5">
@@ -300,7 +300,7 @@ export const ModelCard = memo(function ModelCard({
             )}
           </span>
         </div>
-        <div className="mt-[3px] flex shrink-0 items-center gap-1">
+        <div className="mt-[calc(3px*var(--ui-space-scale,1))] flex shrink-0 items-center gap-1">
           <AccessGlyphs
             gated={row.result.gated}
             isPrivate={row.result.private}
@@ -329,7 +329,7 @@ export const ModelCard = memo(function ModelCard({
         </div>
       </div>
       <div className="mt-auto flex items-end justify-between gap-2 pt-2.5">
-        <div className="hub-trending-stats flex min-w-0 items-center gap-2.5 pb-[3px]">
+        <div className="hub-trending-stats flex min-w-0 items-center gap-2.5 pb-[calc(3px*var(--ui-space-scale,1))]">
           <StatChip
             icon={Download01Icon}
             value={formatCompact(row.result.downloads)}

@@ -23,6 +23,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { SLOTH_AVATARS } from "../sloth-avatars";
+import { loginDisplayName } from "../hooks/use-effective-profile";
 import { decodeJwtSubject } from "../utils/jwt-subject";
 import { resizeImageFileToDataUrl } from "../utils/resize-image-file";
 import {
@@ -88,7 +89,9 @@ export function ProfilePersonalizationPanel() {
   const lastNicknameRef = useRef(nickname);
 
   const sessionSub = decodeJwtSubject(getAuthToken()) ?? "";
-  const previewName = draftName.trim() || sessionSub || "Unsloth";
+  // Fallback only: the draft being typed still wins over this.
+  const loginName = loginDisplayName(sessionSub);
+  const previewName = draftName.trim() || loginName || "Unsloth";
 
   useEffect(() => {
     const previous = lastDisplayNameRef.current;
@@ -241,7 +244,7 @@ export function ProfilePersonalizationPanel() {
                 type="button"
                 aria-label={t("settings.profile.pictureOptions")}
                 title={t("settings.profile.pictureOptions")}
-                className="absolute top-[85.36%] left-[85.36%] flex size-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.14] dark:hover:bg-white/20"
+                className="absolute top-[85.36%] left-[85.36%] flex size-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.2*var(--contrast-wash-gain,1)))]"
               >
                 <HugeiconsIcon
                   icon={Edit03Icon}
@@ -385,7 +388,7 @@ export function ProfilePersonalizationPanel() {
                 }
               }}
               autoComplete="off"
-              placeholder={sessionSub || "Unsloth"}
+              placeholder={loginName || "Unsloth"}
               className="h-9 w-full rounded-full text-sm"
             />
           </div>

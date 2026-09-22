@@ -209,6 +209,8 @@ def _generate(trainer, env, has_bf16):
         "nullcontext": nullcontext,
         "self": trainer,
         "seen": [],
+        # The generated trainer gets this from rl.py's preamble, so the header resolves it there too.
+        "DEVICE_TYPE_TORCH": "cuda",
     }
     helpers = _autocast_helper_source()
     if helpers:

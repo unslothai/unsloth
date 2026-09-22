@@ -333,3 +333,118 @@ def test_dpo_trains_on_cpu(tmp_path):
         optim = "adamw_torch",
     )
     DPOTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
+
+
+def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
+    """The canary above proves the GRPO trainer runs. It does NOT prove Unsloth's own
+    ``get_batch_samples`` runs, because ``_load_plain`` never goes through the loader that
+    installs it, so ``Trainer.get_batch_samples`` stays stock transformers.
+
+    That gap is not theoretical. unsloth-zoo#1217 rewrote a list-safe
+    ``"labels" in batch_samples[0]`` into ``batch_samples[0].get("labels")``, and GRPO's
+    collator is the identity, so every element of ``batch_samples`` is a list of dicts and
+    every GRPO run died at step 0 with ``AttributeError: 'list' object has no attribute
+    'get'``. It sat on main for a day, invisible to this file, and was found by accident.
+
+    So install the patch the way a real run does, assert it took, and take real steps.
+    """
+    from datasets import Dataset
+    from transformers import Trainer
+    from trl import GRPOConfig, GRPOTrainer
+
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    # patch_gradient_accumulation_fix mutates the Trainer CLASS, and in the grpo-fake-run
+    # workflow this file shares a pytest process with
+    # test_trl_loss_normalization_contract.py, which reads Trainer.get_batch_samples and
+    # Trainer.training_step to check what UPSTREAM transformers returns. Leaving either one
+    # patched makes that file inspect Unsloth's wrapper and call it transformers, so it can
+    # pass while the upstream shape this patcher depends on has changed, or skip because the
+    # generated source is unavailable.
+    #
+    # Snapshot the whole class dict rather than naming attributes: the patcher replaces
+    # training_step as well as get_batch_samples and wraps __init__ and compute_loss, and a
+    # hand-written list of names silently falls behind the next one it touches. monkeypatch
+    # has that same problem, since it also needs the names up front.
+    trainer_attributes_before = dict(Trainer.__dict__)
+    seen = {"calls": 0, "list_batches": 0}
+
+    # The patch call itself is inside the try: a transformers change that makes
+    # patch_gradient_accumulation_fix raise AFTER it has replaced one method would
+    # otherwise leave the base Trainer partially patched for every later file in this
+    # pytest invocation, which is the leak this whole block exists to prevent.
+    try:
+        patch_gradient_accumulation_fix(Trainer)
+        assert Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples", (
+            "the batch sampler under test was never installed; this canary would pass "
+            "against any zoo at all"
+        )
+
+        patched = Trainer.get_batch_samples
+
+        def counting(self, epoch_iterator, num_batches, *args, **kwargs):
+            seen["calls"] += 1
+            result = patched(self, epoch_iterator, num_batches, *args, **kwargs)
+            batch_samples = result[0] if isinstance(result, tuple) else result
+            if batch_samples and isinstance(batch_samples[0], list):
+                seen["list_batches"] += 1
+            return result
+
+        Trainer.get_batch_samples = counting
+
+        model, tok = _load_plain()
+        _guard_finite_logits(model)
+        ds = Dataset.from_list([{"prompt": "hi there"}] * 4)
+        cfg = GRPOConfig(
+            output_dir = str(tmp_path / "ci_grpo_patched"),
+            per_device_train_batch_size = 2,
+            num_generations = 2,
+            max_steps = 2,
+            max_completion_length = 8,
+            logging_steps = 1,
+            report_to = "none",
+            temperature = 1.0,
+            beta = 0.0,
+            save_strategy = "no",
+            use_cpu = True,
+            use_vllm = False,
+            fp16 = False,
+            bf16 = False,
+            optim = "adamw_torch",
+        )
+        GRPOTrainer(
+            model = model,
+            processing_class = tok,
+            reward_funcs = [lambda completions, **k: [float(len(c)) for c in completions]],
+            args = cfg,
+            train_dataset = ds,
+        ).train()
+    finally:
+        for name in [n for n in Trainer.__dict__ if n not in trainer_attributes_before]:
+            delattr(Trainer, name)
+        for name, value in trainer_attributes_before.items():
+            if Trainer.__dict__.get(name) is not value:
+                setattr(Trainer, name, value)
+
+    # Prove the cleanup, rather than trusting it. `is`, not `==`: a wrapper that merely
+    # compares equal to what it replaced still counts as a leak, and `dict == dict` would
+    # not say so. Naming the attributes also keeps a failure readable; comparing the two
+    # class dicts wholesale prints several hundred entries and no verdict.
+    leaked = [n for n in Trainer.__dict__ if n not in trainer_attributes_before]
+    not_restored = [
+        n for n, v in trainer_attributes_before.items() if Trainer.__dict__.get(n) is not v
+    ]
+    assert not leaked and not not_restored, (
+        "this canary left the Trainer class patched, so any later test in the same process "
+        "that reads upstream's own methods is reading Unsloth's instead: "
+        f"added {leaked}, not restored {not_restored}"
+    )
+
+    assert seen["calls"] > 0, "the patched batch sampler was never entered"
+    # The shape that broke: TRL's GRPO collator is the identity, so a batch is a LIST of
+    # dicts, never a dict. A canary that only ever sees the SFT dict shape cannot catch a
+    # regression that assumes one.
+    assert seen["list_batches"] > 0, (
+        "no batch arrived as a list, so this canary is not exercising the GRPO collator "
+        "shape and would not have caught unsloth-zoo#1217"
+    )

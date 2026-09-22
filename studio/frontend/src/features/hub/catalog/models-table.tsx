@@ -73,11 +73,11 @@ const LIST_COLS = {
   model: "flex min-w-0 flex-[2.4] items-center gap-3",
   caps: "hidden min-w-0 flex-[1.7] items-center gap-1.5 md:flex",
   capsModel: "hidden w-[132px] shrink-0 items-center gap-1.5 md:flex",
-  size: "hidden w-[60px] shrink-0 lg:block",
+  size: "hidden w-[calc(60px*var(--ui-space-scale,1))] shrink-0 lg:block",
   updated: "hidden w-[82px] shrink-0 xl:block",
   downloads: "hidden w-[104px] shrink-0 items-center gap-1.5 sm:flex",
   likes: "hidden w-[76px] shrink-0 items-center gap-1.5 sm:flex",
-  actions: "flex w-[64px] shrink-0 items-center justify-end gap-0.5",
+  actions: "flex w-[calc(64px*var(--ui-space-scale,1))] shrink-0 items-center justify-end gap-0.5",
 } as const;
 
 function ViewToggleButton({
@@ -481,7 +481,7 @@ function RowActions({
   const hfEndpoint = useHfEndpoint();
   const hfUrl = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${row.result.id}`;
   const actionClass =
-    "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-foreground/[0.07] data-[state=open]:text-foreground";
+    "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:text-foreground";
   return (
     <>
       <Tooltip>
@@ -645,7 +645,7 @@ export const ResultCard = memo(function ResultCard({
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
-        className="size-[52px] shrink-0 rounded-[16px] text-ui-16 ring-1 ring-black/5 dark:ring-white/10"
+        className="size-[calc(52px*var(--ui-space-scale,1))] shrink-0 rounded-[16px] text-ui-16 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
         remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">
@@ -764,7 +764,7 @@ export const ResultGridRow = memo(function ResultGridRow({
           <OwnerAvatar
             owner={row.owner}
             repoName={row.repo}
-            className="size-9 shrink-0 rounded-[12px] text-ui-13 ring-1 ring-black/5 dark:ring-white/10"
+            className="size-9 shrink-0 rounded-[12px] text-ui-13 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
             remote={false}
           />
           <div className="min-w-0 flex-1">
@@ -881,7 +881,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
       aria-current={selected || undefined}
       data-selected={selected || undefined}
       onClick={() => onSelect(row.id)}
-      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[12px] px-2.5 text-left outline-none transition-colors hover:bg-foreground/[0.04] data-[selected]:bg-foreground/[0.07] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-white/[0.05] dark:data-[selected]:bg-white/[0.08]"
+      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[12px] px-2.5 text-left outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[selected]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[selected]:bg-accent"
     >
       <OwnerAvatar
         owner={row.owner}
