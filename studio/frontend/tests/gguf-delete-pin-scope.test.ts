@@ -40,7 +40,7 @@ for (const path of [
       const body = node.initializer.getText(source);
       if (body.includes("reconcileGgufPinsAfterDelete")) {
         const name = path.includes("models-catalog") ? "catalog repo"
-          : body.includes("onDeleteVariant(v.quant)") ? "expander quant"
+          : body.includes("onDeleteVariant(v.quant") ? "expander quant"
           : body.includes("entry.repoId") ? "pinned quant"
           : body.includes("variant.quant") ? "sole quant" : "picker repo";
         callbacks.push({ name, body, wholeRepo: name.endsWith("repo") });
@@ -80,6 +80,7 @@ for (const task of [null, "text-generation", "image-text-to-text", "text-to-imag
         v: { quant: deleted }, entry: { repoId, quant: deleted },
         c: { repo_id: repoId, task, cache_path: "/inactive/cache" },
         variant: { quant: deleted }, isPinned: true, pinnedKeys: [...pinned],
+        pinnedCopyPath: "/inactive/cache",
         row: { kind: "cache", isGguf: true, pipelineTag: task, cachePath: "/inactive/cache" },
         deletableRepoId: repoId, isDataset: false,
         diffusionTaskById: new Map([[repoId.toLowerCase(), task]]),

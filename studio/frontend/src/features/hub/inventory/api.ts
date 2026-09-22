@@ -346,13 +346,16 @@ export interface DeleteImpact {
 export async function fetchDeleteImpact(
   repoId: string,
   variant?: string | null,
+  cachePath?: string | null,
 ): Promise<DeleteImpact | null> {
   try {
     const response = await authFetch("/api/hub/delete-impact", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(
-        variant ? { repo_id: repoId, variant } : { repo_id: repoId },
+        variant
+          ? { repo_id: repoId, variant, ...(cachePath ? { cache_path: cachePath } : {}) }
+          : { repo_id: repoId, ...(cachePath ? { cache_path: cachePath } : {}) },
       ),
     });
     if (!response.ok) return null;

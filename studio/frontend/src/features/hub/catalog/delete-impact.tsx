@@ -17,6 +17,8 @@ export function useDeleteImpact(
   open: boolean,
   repoId: string,
   variant?: string | null,
+  /** The copy the delete targets, so the preview measures that one and not another duplicate. */
+  cachePath?: string | null,
 ): DeleteImpact | null {
   const [impact, setImpact] = useState<DeleteImpact | null>(null);
   useEffect(() => {
@@ -25,13 +27,13 @@ export function useDeleteImpact(
       return;
     }
     let cancelled = false;
-    void fetchDeleteImpact(repoId, variant ?? undefined).then((result) => {
+    void fetchDeleteImpact(repoId, variant ?? undefined, cachePath ?? undefined).then((result) => {
       if (!cancelled) setImpact(result);
     });
     return () => {
       cancelled = true;
     };
-  }, [open, repoId, variant]);
+  }, [open, repoId, variant, cachePath]);
   return impact;
 }
 

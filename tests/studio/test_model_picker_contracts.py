@@ -645,7 +645,7 @@ def test_variant_expander_refreshes_after_delete():
     shown as downloaded and clickable and tries to reload the removed file."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     del_confirm = re.search(
-        r"await onDeleteVariant\(v\.quant\);.*?setRefreshKey\(\(key\) => key \+ 1\)",
+        r"await onDeleteVariant\(v\.quant[^)]*\);.*?setRefreshKey\(\(key\) => key \+ 1\)",
         src,
         re.S,
     )

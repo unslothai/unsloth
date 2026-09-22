@@ -139,14 +139,16 @@ def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
     return _impl(repo_id, variant)
 
 
-def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
+def _delete_impact_blocking(
+    repo_id: str, variant: Optional[str], cache_path: Optional[str] = None
+) -> dict:
     scans = _account_scans()
     by_id = _repos_by_id(scans)
     key = repo_id.strip().lower()
     all_copies = by_id.get(key, [])
     from hub.utils.gguf_sources import cached_gguf_action_path
 
-    cache_path = cached_gguf_action_path(repo_id, variant)
+    cache_path = cached_gguf_action_path(repo_id, variant, cache_path)
     repos = all_copies
     surviving = []
     if cache_path:
@@ -223,14 +225,16 @@ class _SingleRepoScan:
         self.repos = repos
 
 
-async def delete_impact_response(repo_id: str, variant: Optional[str] = None) -> dict:
+async def delete_impact_response(
+    repo_id: str, variant: Optional[str] = None, cache_path: Optional[str] = None
+) -> dict:
     """What a delete of *repo_id* (/*variant*) would reclaim, retain, and be blocked by."""
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
         raise HTTPException(status_code = 400, detail = f"Invalid gguf_variant: {variant!r}")
-    return await asyncio.to_thread(_delete_impact_blocking, repo_id, variant)
+    return await asyncio.to_thread(_delete_impact_blocking, repo_id, variant, cache_path)
 
 
 def _orphan_companions_blocking() -> dict:

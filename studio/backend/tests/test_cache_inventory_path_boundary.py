@@ -881,7 +881,7 @@ def test_every_request_that_consumes_an_inventory_identity_resolves_the_handle(
 def test_the_delete_preview_does_not_answer_with_the_path(monkeypatch):
     """The preview names the folder it would delete, so an API-key caller gets the opaque
     reference the delete itself accepts, not the host's absolute cache directory."""
-    async def _preview(repo_id, variant):
+    async def _preview(repo_id, variant, cache_path = None):
         return {
             "repo_id": repo_id,
             "variant": variant,

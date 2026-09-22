@@ -845,3 +845,31 @@ def test_a_cached_only_quant_is_judged_by_its_own_partial_state(cache_locations,
     variant = next(v for v in response.variants if v.quant == quant)
     assert not variant.downloaded
     assert variant.partial
+
+
+def test_the_delete_preview_follows_the_copy_the_row_carries(cache_locations, cache_client):
+    """The listing hands each row the copy it resolved, and the confirm dialog must preview
+    that same copy: without the reference the preview measures the active duplicate and
+    describes a delete the user did not ask for."""
+    repo_id, expected = cache_locations
+    active = hf_cache_settings.get_hf_cache_paths().hub_cache
+    quant = "Q4_K_M"
+    for repo, path in expected.values():
+        (path.parent / f"Model-{quant}.gguf").write_bytes(b"0" * 256)
+    inventory_scan.invalidate_hf_cache_scans()
+    remembered = next(repo for repo, _ in expected.values() if repo.parent != active)
+    active_repo = next(repo for repo, _ in expected.values() if repo.parent == active)
+
+    unscoped = cache_client.post(
+        "/api/hub/delete-impact", json = {"repo_id": repo_id, "variant": quant}
+    )
+    assert unscoped.status_code == 200, unscoped.text
+    assert unscoped.json()["cache_path"] == str(active_repo)
+
+    scoped = cache_client.post(
+        "/api/hub/delete-impact",
+        json = {"repo_id": repo_id, "variant": quant, "cache_path": str(remembered)},
+    )
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json()["cache_path"] == str(remembered)
+    assert scoped.json()["reclaimed_bytes"] == 256
