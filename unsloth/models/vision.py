@@ -1382,7 +1382,9 @@ def _text_trainable_core(model, text_intent = True):
             if not isinstance(output_embeddings, torch.nn.Module):
                 output_embeddings = None
         try:
-            has_embeddings = child.get_input_embeddings() is not None and output_embeddings is not None
+            has_embeddings = (
+                child.get_input_embeddings() is not None and output_embeddings is not None
+            )
         except Exception:
             has_embeddings = False
         if has_embeddings:
