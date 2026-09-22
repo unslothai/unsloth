@@ -67,6 +67,17 @@ DELIBERATELY_UNPINNED = {
 }
 
 
+# Actions deliberately held at two different commits, keyed on `owner/repo`, with the
+# reason. The failure below used to tell people to "say so in a comment at each site",
+# which nothing read, so the documented remedy could not make CI pass and the only way
+# out was editing this file. This is the mechanism that advice implied.
+DELIBERATELY_SPLIT: dict[str, str] = {
+    # Empty, and a split is nearly always a half-finished upgrade rather than a decision.
+    # An entry here needs the reason a single commit will not do, not a note that two
+    # exist.
+}
+
+
 def _sources():
     """Every workflow and action definition under .github, as (path, text)."""
     for path in sorted(GITHUB.rglob("*.y*ml")):
@@ -163,6 +174,8 @@ def test_an_action_is_pinned_to_one_sha_everywhere_it_is_used(repo):
     revs = {rev for _, _, _, r, rev in _references() if r == repo and _SHA.match(rev)}
     if len(revs) <= 1:
         return
+    if repo in DELIBERATELY_SPLIT:
+        return
     sites = sorted(
         f"{p.relative_to(GITHUB).as_posix()}:{ln}: {rev[:12]}"
         for p, ln, _, r, rev in _references()
@@ -171,6 +184,23 @@ def test_an_action_is_pinned_to_one_sha_everywhere_it_is_used(repo):
     pytest.fail(
         f"{repo} is pinned to {len(revs)} different commits, so different jobs run "
         f"different versions of it:\n  " + "\n  ".join(sites) + "\n\n"
-        f"If the split is deliberate, say so in a comment at each site. Otherwise settle "
-        f"on one commit, usually the newest reviewed one."
+        f"Settle on one commit, usually the newest reviewed one. If the split really is "
+        f"deliberate, add {repo!r} to DELIBERATELY_SPLIT in this file with the reason a "
+        f"single commit will not do."
     )
+
+
+def test_every_split_exemption_still_exists_and_still_needs_one():
+    """A stale exemption hides a split that has since been resolved."""
+    live = {r for _, _, _, r, _ in _references()}
+    for repo, reason in DELIBERATELY_SPLIT.items():
+        assert reason.strip(), f"{repo} is exempted with no reason written; add one"
+        assert repo in live, (
+            f"{repo} is exempted from the one-commit rule but is no longer used anywhere "
+            f"under .github, so the exemption describes nothing. Remove it."
+        )
+        revs = {rev for _, _, _, r, rev in _references() if r == repo and _SHA.match(rev)}
+        assert len(revs) > 1, (
+            f"{repo} is exempted from the one-commit rule but is now pinned to a single "
+            f"commit, so the exemption is stale. Remove it from DELIBERATELY_SPLIT."
+        )

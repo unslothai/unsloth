@@ -99,14 +99,112 @@ def _extract_restore_key_prefixes(path: Path) -> list[str]:
 
 
 def _literal_prefix(key: str) -> str:
-    """The part of a key that is fixed text, i.e. everything before the first expression.
+    """The fixed-text head of a key: everything before the first expression.
 
-    Keys are mostly `literal-${{ something }}`, so comparing whole strings across two
-    workflows compares the expressions too and almost never matches. The literal head is
-    what actually decides whether one key can satisfy another's prefix restore.
+    Keys are mostly `literal-${{ something }}`, so comparing whole strings compares the
+    expressions too and almost never matches.
     """
-    head = re.split(r"\$\{\{", key, maxsplit = 1)[0]
-    return head.strip().strip("'\"")
+    return re.split(r"\$\{\{", key, maxsplit = 1)[0].strip().strip("'\"")
+
+
+# `runner.os` is the only expression that routinely LEADS a cache key, and it takes
+# exactly three values, so expanding it turns the common undecidable case into three
+# decidable ones. Confirmed against GitHub's docs: the values are Linux, Windows and
+# macOS, exact and case-sensitive.
+_RUNNER_OS_VALUES = ("Linux", "Windows", "macOS")
+_RUNNER_OS_EXPR = re.compile(r"\$\{\{\s*runner\.os\s*\}\}")
+
+# A key that is nothing but one expression referring to a step output or an action input
+# delegates its namespace rather than declaring one.
+_DELEGATED_KEY = re.compile(r"\$\{\{\s*(steps|inputs|needs)\.[^}]*\}\}")
+
+
+def _prefix_candidates(key: str) -> list[str]:
+    """Every literal head this key could have at runtime.
+
+    A key beginning with an expression has no literal head at all, and dropping it was a
+    hole: a PR writing `${{ runner.os }}-shared-abc` and a publish job restoring
+    `Linux-shared-` would never be compared, because the PR side reduced to the empty
+    string and was filtered out. Expanding `runner.os` first gives `Linux-shared-abc`,
+    which is comparable. Anything still expression-led afterwards is genuinely
+    undecidable and is reported rather than dropped.
+    """
+    keys = [_RUNNER_OS_EXPR.sub(v, key) for v in _RUNNER_OS_VALUES] if _RUNNER_OS_EXPR.search(key) else [key]
+    return [h for h in (_literal_prefix(k) for k in keys) if h]
+
+
+def _prefix_compatible(pr_head: str, publish_prefix: str) -> bool:
+    """Can a key with this literal head be restored by this prefix?
+
+    `restore-keys` matching is left-anchored and exact, with no globbing, so the two are
+    compatible when either is a prefix of the other. The second direction is the one that
+    was missing: a PR key `pip-v2-${{ runner.os }}-abc` reduces to the head `pip-v2-`,
+    and a publish prefix `pip-v2-Linux-` is LONGER than that head, so a one-directional
+    `head.startswith(prefix)` test says no while the runtime key `pip-v2-Linux-abc` does
+    start with the prefix and would be restored.
+    """
+    return pr_head.startswith(publish_prefix) or publish_prefix.startswith(pr_head)
+
+
+def _shell_built_key_prefixes(text: str) -> list[str]:
+    """Literal key heads assembled in a composite action's shell, not in its YAML.
+
+    The pip and uv caches build their key in a `run:` step and expose it as an output, so
+    the YAML `key:` is only `${{ steps.probe.outputs.key }}` and carries no namespace at
+    all. Reading YAML alone therefore learned nothing about the very composites this
+    check exists to cover: pip-cache-restore's real namespace is the `pip-v2-` in
+    `prefix="pip-v2-${name}-..."`, several lines away from any `key:`.
+
+    Only `key`-ish and `prefix`-ish variables are read. Taking every shell assignment
+    would invent namespaces that no cache uses, and each invented one is a potential
+    false rejection of a publish prefix.
+    """
+    heads: list[str] = []
+    pattern = re.compile(
+        r"""(?:^|[\s;(])(?:[A-Za-z_]*_)?(?:key|prefix|KEY|PREFIX)\s*=\s*["']?"""
+        r"""([A-Za-z0-9][A-Za-z0-9._-]*?-)(?=\$|\{)""",
+        re.M,
+    )
+    for m in pattern.finditer(text):
+        heads.append(m.group(1))
+    # `echo "key=pip-v2-${hash}" >> "$GITHUB_OUTPUT"` is the same thing written inline.
+    for m in re.finditer(
+        r"""echo\s+["']?(?:key|prefix)=([A-Za-z0-9][A-Za-z0-9._-]*?-)(?=\$|\{)""", text
+    ):
+        heads.append(m.group(1))
+    return heads
+
+
+def _pr_reachable_action_dirs(workflows_dir: Path, pr_paths: list) -> set:
+    """Composite actions a PR-triggered workflow actually uses.
+
+    Scanning every action under .github/actions treated a publish-only composite's keys
+    as a namespace pull requests write, so a publish workflow restoring its OWN action's
+    prefix was rejected as PR-poisonable. That is a false failure on a safe
+    configuration, and a security lint that cries wolf gets switched off.
+    """
+    root = workflows_dir.parent
+    dirs: set = set()
+    seen: set = set()
+    queue = [pth for pth in pr_paths]
+    while queue:
+        pth = queue.pop()
+        if pth in seen:
+            continue
+        seen.add(pth)
+        try:
+            text = pth.read_text()
+        except OSError:
+            continue
+        for m in re.finditer(r"uses:\s*['\"]?(\./[\w./-]+)", text):
+            rel = m.group(1)[2:]
+            cand = root.parent / rel
+            for action in (cand / "action.yml", cand / "action.yaml"):
+                if action.is_file():
+                    dirs.add(action)
+                    queue.append(action)
+    return dirs
+
 
 
 def _on_field(yaml_doc):
@@ -444,11 +542,11 @@ def main() -> int:
     # `${{ steps.x.outputs.key }}`. Those count as PR-reachable: the workflow that uses
     # them runs on pull requests. Without this the prefix rule below would compare
     # against opaque expressions and match nothing.
-    composite_dir = workflows_dir.parent / "actions"
+    pr_workflow_paths = [pth for pth, _ in pr_triggered]
     composite_keys: list[str] = []
-    if composite_dir.is_dir():
-        for action_path in sorted(composite_dir.rglob("action.y*ml")):
-            composite_keys.extend(_extract_cache_keys(action_path))
+    for action_path in sorted(_pr_reachable_action_dirs(workflows_dir, pr_workflow_paths)):
+        composite_keys.extend(_extract_cache_keys(action_path))
+        composite_keys.extend(_shell_built_key_prefixes(action_path.read_text()))
 
     pr_keys = {key for _, keys in pr_triggered for key in keys}
     for pub_path, pub_keys in publish_triggered:
@@ -466,28 +564,55 @@ def main() -> int:
     # restores the newest entry whose key merely STARTS WITH the prefix, so a publish
     # workflow can adopt an entry a pull request wrote without the two keys ever being
     # equal, which is the only thing the check above compares.
-    pr_key_prefixes = {
-        _literal_prefix(k) for k in list(pr_keys) + composite_keys if _literal_prefix(k)
-    }
+    pr_heads: set = set()
+    undecidable_pr_keys: list[str] = []
+    for k in list(pr_keys) + composite_keys:
+        cands = _prefix_candidates(k)
+        if cands:
+            pr_heads.update(cands)
+        elif _DELEGATED_KEY.fullmatch(k.strip()):
+            # `key: ${{ steps.pip-cache.outputs.key }}` names no namespace of its own; it
+            # hands the decision to a composite action, whose real prefix was collected
+            # above from that action's own YAML and shell. Reporting it as undecidable
+            # would flag every workflow that factors its cache out into an action.
+            continue
+        else:
+            undecidable_pr_keys.append(k)
+
     for pub_path, prefixes in publish_restore_prefixes:
         for prefix in prefixes:
-            literal = _literal_prefix(prefix)
-            if not literal:
+            pub_heads = _prefix_candidates(prefix)
+            if not pub_heads:
                 findings.append(
                     f"{pub_path.name}: restore-keys entry {prefix!r} begins with an "
                     "expression, so what it can restore is not decidable here. Give it a "
                     "literal prefix."
                 )
                 continue
-            for pr_prefix in sorted(pr_key_prefixes):
-                if pr_prefix.startswith(literal):
+            for pub_head in pub_heads:
+                hit = next(
+                    (h for h in sorted(pr_heads) if _prefix_compatible(h, pub_head)), None
+                )
+                if hit is not None:
                     findings.append(
-                        f"{pub_path.name}: restore-keys prefix {literal!r} matches "
-                        f"{pr_prefix!r}, a cache key namespace a PR-triggered workflow "
-                        "writes. A prefix restore takes the newest matching entry, so "
-                        "this publish workflow could adopt a cache a pull request "
-                        "produced even though no key is equal. Partition the namespaces, "
-                        "or drop the restore-keys fallback on the publish side."
+                        f"{pub_path.name}: restore-keys prefix {pub_head!r} matches "
+                        f"{hit!r}, a cache key namespace a PR-triggered workflow writes. "
+                        "A prefix restore takes the newest matching entry, so this "
+                        "publish workflow could adopt a cache a pull request produced "
+                        "even though no key is equal. Partition the namespaces, or drop "
+                        "the restore-keys fallback on the publish side."
+                    )
+                    break
+            else:
+                # Only reachable when nothing matched: an undecidable PR key could still
+                # expand into this prefix, so say so rather than passing silently.
+                for k in undecidable_pr_keys:
+                    findings.append(
+                        f"{pub_path.name}: restore-keys prefix {prefix!r} cannot be "
+                        f"compared against PR cache key {k!r}, which begins with an "
+                        "expression this check cannot expand, so whether the prefix "
+                        "reaches that namespace is undecidable. Give the PR key a "
+                        "literal prefix."
                     )
                     break
 
