@@ -2334,13 +2334,29 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
     assert ensured_tags == ["b9001"]
 
 
-def write_linux_install_shape(install_dir: Path) -> None:
+def _write_entrypoints(install_dir: Path) -> None:
+    """The two entrypoints, executable, in both the places a caller looks.
+
+    Executable because a real extraction leaves them so, and because
+    existing_install_matches_choice now asks _entrypoint_is_runnable rather than
+    exists(): a tree it keeps but installed_runtime_health rejects is a repair loop.
+    """
     runtime_dir = install_dir / "build" / "bin"
     runtime_dir.mkdir(parents = True, exist_ok = True)
-    (install_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (install_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (runtime_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (runtime_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
+    for directory in (install_dir, runtime_dir):
+        for name in ("llama-server", "llama-quantize"):
+            binary = directory / name
+            binary.write_text("#!/bin/sh\n", encoding = "utf-8")
+            binary.chmod(0o755)
+
+
+def write_linux_install_shape(install_dir: Path) -> None:
+    runtime_dir = install_dir / "build" / "bin"
+    _write_entrypoints(install_dir)
+    # Since the upstream impl split, llama-server and llama-quantize carry no entry
+    # code of their own and load these by DT_NEEDED, so a Linux payload owes them.
+    (runtime_dir / "libllama-server-impl.so").write_bytes(b"DLL")
+    (runtime_dir / "libllama-quantize-impl.so").write_bytes(b"DLL")
     # libllama-common.so* (PR #5135) is a required runtime payload health group.
     (runtime_dir / "libllama-common.so.0").write_bytes(b"DLL")
     (runtime_dir / "libllama.so.0").write_bytes(b"DLL")
@@ -2369,6 +2385,7 @@ def write_windows_install_shape(
         for name in (
             "llama-common.dll",
             "llama-server-impl.dll",
+            "llama-quantize-impl.dll",
             "ggml.dll",
             "ggml-base.dll",
             "ggml-cpu-x64.dll",
@@ -2396,11 +2413,15 @@ def write_macos_install_shape(
     include_libmtmd: bool = True,
 ) -> None:
     runtime_dir = install_dir / "build" / "bin"
-    runtime_dir.mkdir(parents = True, exist_ok = True)
-    (install_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (install_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (runtime_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (runtime_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
+    _write_entrypoints(install_dir)
+    # The rest of the libraries a real macos-arm64 bundle ships. The toggles above
+    # stay the ones a caller flips, so an off toggle still leaves the tree short of
+    # one whole library rather than of the whole payload.
+    for name in ("libllama-common.0.dylib", "libggml-base.0.dylib", "libggml-cpu.0.dylib"):
+        (runtime_dir / name).write_bytes(b"DLL")
+    # The macOS half of the impl split, shipped unversioned; same reason as the Linux shape.
+    (runtime_dir / "libllama-server-impl.dylib").write_bytes(b"DLL")
+    (runtime_dir / "libllama-quantize-impl.dylib").write_bytes(b"DLL")
     if include_libllama:
         (runtime_dir / "libllama.0.dylib").write_bytes(b"DLL")
     if include_libggml:
@@ -3349,6 +3370,55 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
     assert call_log == ["b9002"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the root wrapper is written on POSIX only")
+@pytest.mark.parametrize("name", ["llama-server", "llama-quantize"])
+def test_a_damaged_root_entrypoint_stops_the_release_being_reused(tmp_path: Path, name: str):
+    """Codex 3973890098, P1. The keep decision graded only build/bin, so an online repair
+    took the shortcut, replaced nothing, and every later launch offered the same repair
+    again. Both read _damaged_entrypoint now.
+
+    Codex 4056336250, P2 narrowed what the LAUNCH side of it may reject: the resolver
+    returns the first usable candidate, so it walks past a root wrapper with no execute
+    bit and runs build/bin, and marking that tree stale repairs a runtime that works. The
+    keep decision is deliberately left strict, since replacing a rotten wrapper is exactly
+    what a reinstall is for, and that direction is safe: the launch verdict is never
+    stricter than the repair that answers it."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_linux_install_shape(install_dir)
+    host = linux_host()
+    choice = asset_choice(name = "llama-b9001-bin-ubuntu-x64-good.tar.gz")
+    checksums = release_checksums((choice.name, choice.expected_sha256, PREBUILT))
+    write_metadata(install_dir, choice, checksums)
+    kwargs = dict(
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        choice = choice,
+        approved_checksums = checksums,
+    )
+    assert existing_install_matches_choice(install_dir, host, **kwargs) is True
+    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host = host) == (True, "")
+
+    (install_dir / name).chmod(0o644)
+    # Walked past by the resolver, so the runtime still starts and launch says so.
+    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host = host) == (True, "")
+    assert (
+        existing_install_matches_choice(install_dir, host, **kwargs) is False
+    ), "a reinstall is what replaces a rotten root wrapper"
+
+    # Empty is the damage the resolver does NOT walk past: is_file() and the execute bit
+    # both survive a truncation, so discovery selects it and the exec dies on ENOEXEC.
+    (install_dir / name).write_text("", encoding = "utf-8")
+    (install_dir / name).chmod(0o755)
+    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host = host) == (
+        False,
+        "llama_runtime_binaries_missing",
+    )
+    assert (
+        existing_install_matches_choice(install_dir, host, **kwargs) is False
+    ), "a tree the probe rejects and this keeps is a repair that changes nothing"
 
 
 def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
@@ -4800,6 +4870,12 @@ _SHARED_PAYLOAD = {
         "libggml-base.so",
         "libggml-cpu.so",
         "libmtmd.so",
+        # The entry code llama-server and llama-quantize lost to the upstream impl
+        # split; they load these by DT_NEEDED. Owed by a published or upstream
+        # bundle only, and these markers carry no bNNNN tag, which the gate reads
+        # as "assume current".
+        "libllama-server-impl.so",
+        "libllama-quantize-impl.so",
     ],
     "windows": ["llama.dll"],
 }
@@ -4866,20 +4942,20 @@ def _complete_existing_llama_install(
             path.write_text("#!/bin/sh\nexit 0\n" if ok else "", encoding = "utf-8")
             os.chmod(path, 0o755 if executable else 0o644)
         else:
-            path.write_text("", encoding = "utf-8")
+            path.write_text("x", encoding = "utf-8")
             os.chmod(path, 0o755 if executable else 0o644)
     platform = "windows" if windows else "linux"
     if payload:
         for name in _SHARED_PAYLOAD[platform]:
-            (runtime_dir / name).write_text("", encoding = "utf-8")
+            (runtime_dir / name).write_text("x", encoding = "utf-8")
         for name in _BACKEND_PAYLOAD.get((platform, backend), ()):
-            (runtime_dir / name).write_text("", encoding = "utf-8")
+            (runtime_dir / name).write_text("x", encoding = "utf-8")
         if source == "published" and visual_server:
             for name in _PUBLISHED_PAYLOAD[platform]:
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text("x", encoding = "utf-8")
         if runtime_asset is not None and paired_runtime:
             for name in ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll"):
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text("x", encoding = "utf-8")
     return install_dir
 
 
@@ -5870,6 +5946,7 @@ def test_windows_prebuilt_health_requires_the_shared_runtime(install_kind: str):
         "llama-common.dll",
         "llama-server.exe",
         "llama-server-impl.dll",
+        "llama-quantize-impl.dll",
         "ggml.dll",
         "ggml-base.dll",
         "ggml-cpu*.dll",
@@ -5883,7 +5960,12 @@ def test_windows_source_build_does_not_require_the_shared_runtime():
     fail a healthy tree."""
     patterns = _flat(runtime_payload_health_groups("windows-cpu", source_label = None))
     assert "llama.dll" in patterns
-    for absent in ("llama-common.dll", "llama-server-impl.dll", "mtmd.dll"):
+    for absent in (
+        "llama-common.dll",
+        "llama-server-impl.dll",
+        "llama-quantize-impl.dll",
+        "mtmd.dll",
+    ):
         assert absent not in patterns
 
 
@@ -5903,7 +5985,12 @@ _PRE_SPLIT_WINDOWS_PAYLOAD = (
     "ggml-cpu-haswell.dll",
     "mtmd.dll",
 )
-_POST_SPLIT_WINDOWS_PAYLOAD = _PRE_SPLIT_WINDOWS_PAYLOAD + ("llama-server-impl.dll",)
+# Both halves of the split, which is what a post-b9283 bundle ships: llama-quantize.exe
+# links against its own impl library exactly as llama-server.exe does against the server's.
+_POST_SPLIT_WINDOWS_PAYLOAD = _PRE_SPLIT_WINDOWS_PAYLOAD + (
+    "llama-server-impl.dll",
+    "llama-quantize-impl.dll",
+)
 
 
 @pytest.mark.parametrize(

@@ -571,7 +571,16 @@ export const ja = {
       sourceHint: "モデルランナーはそれぞれ独自のログを書き出すため、読み込みや生成の失敗の理由は、サーバーログではなくそちらに記録されていることがよくあります。",
       path: "場所",
       pathCopy: "パスをコピー",
-      refreshSection: "更新",
+      currentSession: "現在",
+      statusLive: "ライブ",
+      statusPaused: "一時停止",
+      statusStale: "古い",
+      filterPlaceholder: "行を絞り込む",
+      lineCount: "{count} 行",
+      filteredLineCount: "{total} 行中 {shown} 行",
+      wrapLines: "行を折り返す",
+      jumpToLatest: "最新へ移動",
+      noMatches: "フィルターに一致する行はありません。",
       mode: "モード",
       modeLive: "ライブ",
       modeInterval: "3 秒ごと",
@@ -1117,7 +1126,7 @@ export const ja = {
       custom: {
         chatWidth: {
           label: "チャットの幅",
-          description: "メッセージと入力欄の幅を設定します。全幅ではサイドバーの間のスペースを使います。",
+          description: "メッセージと入力欄の幅です。",
           standard: "標準",
           wide: "広い",
           full: "全幅",
@@ -1188,7 +1197,6 @@ export const ja = {
         },
         contrast: {
           label: "コントラスト",
-          description: "枠線と補助テキストの強さ。",
         },
         reduceMotion: {
           label: "モーションを減らす",
@@ -1217,7 +1225,7 @@ export const ja = {
       sidebarNav: {
         title: "サイドバーナビゲーション",
         description:
-          "サイドバーのタブを固定したり並べ替えたりします。固定していないタブは「その他」メニューにまとめられます。固定していないタブが 1 つだけの場合は、項目が 1 つのメニューを作らずにそのタブを非表示にします。「新規チャット」は固定されたままです。",
+          "サイドバーのタブを固定して並べ替えます。固定していないタブは「その他」メニューに入ります。",
         dragToReorder: "ドラッグして並べ替え",
         pinToSidebar: "{name} をサイドバーに固定",
         moreHolds: "その他 ({count})",
@@ -1225,7 +1233,7 @@ export const ja = {
       sidebarMenu: {
         title: "サイドバーメニュー",
         description:
-          "サイドバーのプロフィールメニュー項目の表示と並び順を変更します。設定、ヘルプ、ログアウト、シャットダウンは固定です。",
+          "プロフィールメニューのショートカットを選んで並べ替えます。",
         darkModeToggle: "ダークモード切り替え",
         dragToReorder: "ドラッグして並べ替え",
       },
@@ -1367,6 +1375,54 @@ export const ja = {
         copied: "パスをコピーしました",
         openError: "フォルダを開けませんでした",
         copyError: "パスをコピーできませんでした",
+        caches: {
+          label: "キャッシュファイル",
+          description:
+            "キャッシュの合計は{size}で、そのうち{reclaimable}を今すぐ削除できます。",
+          hint: "パッケージのダウンロード、コンパイル済みカーネル、転送キャッシュなど、必要になったときにUnslothが再作成するものです。ダウンロード済みのモデル、プロジェクト、チャット、設定、Hugging Faceトークンがここで削除されることはありません。",
+          keywords:
+            "キャッシュ 削除 消去 クリア 掃除 空き容量 ディスク 一時 コンパイル cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "キャッシュサイズを計測しています...",
+          measureFailed: "キャッシュを計測できませんでした",
+          empty: "キャッシュファイルは見つかりませんでした。",
+          detailsAction: "詳細",
+          recheckAction: "再確認",
+          hideDetailsAction: "詳細を隠す",
+          clearAction: "キャッシュを削除",
+          clearOneAction: "削除",
+          clearingAction: "削除しています...",
+          confirmTitle: "キャッシュファイルを削除しますか?",
+          confirmDescription: "約{size}の空き容量ができます。",
+          confirmOneTitle: "{name}を削除しますか?",
+          safety:
+            "Unslothは次に必要になったときにキャッシュを再作成します。ダウンロード済みのモデル、プロジェクト、チャット、設定、Hugging Faceトークンは変更されません。",
+          hubCost:
+            "これはモデルキャッシュです。削除すると、次に使うときにそれらのモデルを再ダウンロードします。",
+          datasetsCost:
+            "削除すると、次に使うときにそれらのデータセットを再ダウンロードします。",
+          blocked: "削除されませんでした: {reason}",
+          cleared: "{size}を削除しました",
+          partial: "一部のキャッシュファイルを削除できませんでした",
+          clearFailed: "キャッシュを削除できませんでした",
+          names: {
+            uv: "uvパッケージキャッシュ",
+            pip: "pipダウンロードキャッシュ",
+            npm: "npmパッケージキャッシュ",
+            bun: "Bunパッケージキャッシュ",
+            torchInductor: "Torch Inductorコンパイルキャッシュ",
+            torchExtensions: "Torch拡張機能のビルド",
+            triton: "Tritonカーネルキャッシュ",
+            cuda: "CUDAカーネルキャッシュ",
+            numba: "Numbaコンパイルキャッシュ",
+            matplotlib: "Matplotlibフォントキャッシュ",
+            vllm: "vLLMキャッシュ",
+            unslothCompiled: "Unslothのコンパイル済みモジュール",
+            hfXet: "Hugging Face転送キャッシュ",
+            hfAssets: "Hugging Faceアセットキャッシュ",
+            hfDatasets: "Hugging Faceデータセットキャッシュ",
+            hfHub: "Hugging Faceモデルキャッシュ",
+          },
+        },
         futureDownloads: "新規ダウンロードのみ",
         environmentManaged: "環境変数 {variable} で管理されています。",
         locationFree: "{free} 空き",
