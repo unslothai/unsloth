@@ -151,21 +151,47 @@ def download_plan(checkpoint: Checkpoint) -> dict[str, Any]:
     return plan
 
 
+def _evict() -> None:
+    global _agent, _loaded, _device_name
+    with _run_lock:
+        _agent = _loaded = _device_name = None
+    gc.collect()
+
+
 def _load_checkpoint(checkpoint: Checkpoint):
     root = _checkpoint_dir(checkpoint)
     import laya
 
+    # Evict only once the new checkpoint is on disk, so a long or failed download leaves the resident model serving.
+    _evict()
     device = _device()
     return laya.load(str(root), subfolder = checkpoint.subfolder, device = device), device
+
+
+def _hub_download_active(checkpoint: Checkpoint) -> bool:
+    # A Hub download job writing the same repo would share blobs with our snapshot_download.
+    if checkpoint.is_local:
+        return False
+    try:
+        from hub.utils.download_registry import get_models_registry
+        if not get_models_registry().active_job_refs(checkpoint.source):
+            return False
+    except Exception:
+        return False
+    return not is_cached(checkpoint)
+
+
+def loading_repo_ids() -> tuple[str, ...]:
+    with _state_lock:
+        if _loader is not None and _loader.is_alive() and _loading and not _loading.is_local:
+            return (_loading.source,)
+    return ()
 
 
 def _load(checkpoint: Checkpoint) -> None:
     global _agent, _loaded, _device_name, _loading, _failure
     started = time.monotonic()
     try:
-        with _run_lock:
-            _agent = _loaded = _device_name = None
-            gc.collect()
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
         message = (
@@ -207,6 +233,10 @@ def _ensure_loading(checkpoint: Checkpoint) -> threading.Thread | None:
                     503, "model_loading", f"{_loading.name} is loading", retry_after = 5
                 )
             return _loader
+        if _hub_download_active(checkpoint):
+            raise Unavailable(
+                503, "model_loading", f"{checkpoint.name} is downloading", retry_after = 5
+            )
         _loading = checkpoint
         _loader = threading.Thread(
             target = _load, args = (checkpoint,), name = "systemone-load", daemon = True

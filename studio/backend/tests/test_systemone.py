@@ -531,6 +531,85 @@ def test_keyless_inference_scope_covers_systemone():
     assert not scope_covers("inference", "PUT", "/api/settings/systemone")
 
 
+def test_switching_models_keeps_serving_until_the_new_checkpoint_is_on_disk(client, monkeypatch):
+    assert _post(client).status_code == 200
+    fetching = threading.Event()
+    release = threading.Event()
+
+    def download(checkpoint, **kwargs):
+        fetching.set()
+        release.wait(5)
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", download)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    assert _post(client, model = "laya-english").status_code == 503
+    assert fetching.wait(5)
+    assert _post(client).status_code == 200
+    release.set()
+    laya_runtime._loader.join(5)
+    assert _post(client).status_code == 200
+    assert laya_runtime.status()["loaded_model"] == "laya-multilingual"
+
+
+def test_load_waits_for_a_hub_download_of_the_same_repo(client, monkeypatch, runtime):
+    from hub.utils import download_registry
+
+    registry = download_registry.get_models_registry()
+    monkeypatch.setattr(
+        registry, "active_job_refs", lambda repo = None: ["job"] if repo == catalog.LAYA_REPO else []
+    )
+    monkeypatch.setattr(laya_runtime, "is_cached", lambda checkpoint: False)
+    response = _post(client)
+    assert response.status_code == 503
+    assert response.json()["detail"]["message"] == "laya-multilingual is downloading"
+    assert runtime == []
+    monkeypatch.setattr(laya_runtime, "is_cached", lambda checkpoint: True)
+    assert _post(client).status_code == 200
+
+
+def test_hub_download_is_refused_while_laya_loads_the_repo(client, monkeypatch):
+    from hub.services.models import downloads
+
+    release = threading.Event()
+
+    def slow(checkpoint):
+        release.wait(5)
+        return FakeAgent(), "cpu"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", slow)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    assert not downloads._load_in_flight(catalog.LAYA_REPO)
+    assert _post(client).status_code == 503
+    assert downloads._load_in_flight("ConvAIInnovations/Laya")
+    release.set()
+    laya_runtime._loader.join(5)
+    assert not downloads._load_in_flight(catalog.LAYA_REPO)
+
+
+def test_errors_keep_the_jev_shape_behind_studio_error_handlers(monkeypatch):
+    from utils.api_errors import install_api_error_handlers
+
+    app = FastAPI()
+    install_api_error_handlers(app)
+    app.include_router(systemone.router, prefix = "/v1")
+    app.dependency_overrides[get_current_subject] = lambda: "tester"
+    client = TestClient(app)
+    response = _post(client, model = "gpt-4")
+    assert response.status_code == 400
+    assert response.json()["detail"]["error_type"] == "api_usage_error"
+    malformed = _post(client, state = 3)
+    assert malformed.status_code == 422
+    assert malformed.json()["detail"][0]["loc"][:2] == ["body", "state"]
+
+
+def test_state_limit_counts_characters_not_json_escapes(client):
+    text = "\u4f60" * (systemone.MAX_STATE_CHARS // 2)
+    assert _post(client, state = text).status_code == 200
+    assert _post(client, state = {"message": text}).status_code == 200
+
+
 def test_real_laya_answers_through_the_route(client, monkeypatch):
     path = os.environ.get("SYSTEMONE_TEST_LAYA")
     if not path:

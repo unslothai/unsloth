@@ -111,7 +111,9 @@ def system_one(payload: SystemOneRequest, current_subject: str = Depends(get_cur
     if checkpoint is None:
         raise _error(400, "api_usage_error", f"Unknown model: {payload.model}")
     state_chars = (
-        len(payload.state) if isinstance(payload.state, str) else len(json.dumps(payload.state))
+        len(payload.state)
+        if isinstance(payload.state, str)
+        else len(json.dumps(payload.state, ensure_ascii = False))
     )
     if state_chars > MAX_STATE_CHARS:
         raise _error(
