@@ -38,13 +38,16 @@ import {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
+import { CacheStorageRows } from "../components/cache-storage-rows";
 import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
-import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
+import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { FolderOpenIcon, LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
 
@@ -132,7 +135,7 @@ function MetricTile({
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
-    <div className="flex min-w-0 flex-col gap-2.5 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-white/[0.06]">
+    <div className="flex min-w-0 flex-col gap-2.5 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
       <div className="flex items-center justify-between gap-3">
         <span className="truncate text-ui-11 font-semibold uppercase tracking-[0.08em] text-muted-foreground">
           {label}
@@ -169,7 +172,7 @@ function MetricTile({
         <Progress
           value={percentKnown ? safePercent : 0}
           aria-label={label}
-          className="h-1.5 rounded-full bg-muted dark:bg-black/40"
+          className="h-1.5 rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]"
           indicatorClassName={usageIndicatorClass(safePercent)}
         />
       )}
@@ -768,7 +771,7 @@ export function ResourcesTab() {
                     <Progress
                       value={safePercent}
                       aria-label={device.name ?? "GPU"}
-                      className="h-1.5 w-full rounded-full bg-muted dark:bg-black/40"
+                      className="h-1.5 w-full rounded-full bg-muted dark:bg-[rgb(0_0_0_/_calc(0.4*var(--contrast-wash-gain,1)))]"
                       indicatorClassName={usageIndicatorClass(safePercent)}
                     />
                   </div>
@@ -840,7 +843,7 @@ export function ResourcesTab() {
                 {isTauri ? (
                   <FolderOpenIcon className="size-3.5" />
                 ) : (
-                  <CopyIcon className="size-3.5" />
+                  <HugeiconsIcon icon={Copy01Icon} className="size-3.5" />
                 )}
               </button>
             </div>
@@ -878,6 +881,7 @@ export function ResourcesTab() {
             ) : null}
           </div>
         </SettingsRow>
+        <CacheStorageRows />
       </SettingsSection>
 
       <FolderBrowser

@@ -2116,13 +2116,17 @@ def _terminal_password_gate(
             return False, False
         # The public page will not auto-fill the bootstrap credential and the seeded file may already be gone,
         # so point recovery at a terminal-attached run / reset-password instead of reading it from disk.
+        # The ABSOLUTE form here: this line is stderr on the host, where naming the install is the point and
+        # a bare `unsloth` may not be on PATH. The 401 body deliberately carries only the PATH form.
+        from routes.auth import _reset_password_command
+
         print(
             "  WARNING: the default admin password is still active while "
             "Unsloth is about to be published on a public Cloudflare URL, and "
             "no terminal is attached to change it here. The public page will "
             "NOT auto-fill the bootstrap credential. Set a new password by "
             "running `unsloth studio` locally with a terminal attached, or "
-            "`unsloth studio reset-password`. Unsloth shuts down after the "
+            f"`{_reset_password_command()}`. Unsloth shuts down after the "
             "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "
             "unless the password is changed.",
             file = sys.stderr,
@@ -2186,10 +2190,12 @@ def _terminal_password_gate(
             "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0), so nothing will stop it "
             "serving that credential."
         )
+    from routes.auth import _reset_password_command
+
     print(
         "  WARNING: continuing with the auto-generated admin password on a bind "
         f"that is reachable from the network. {tail} Change it by logging in, or "
-        "with `unsloth studio reset-password`.",
+        f"with `{_reset_password_command()}`.",
         file = sys.stderr,
         flush = True,
     )

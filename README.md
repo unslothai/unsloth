@@ -358,6 +358,21 @@ For a local run the flag is `--isolated-uv-cache`:
 .\install.ps1 --local --isolated-uv-cache
 ```
 
+Discard the previous environment immediately when reinstalling, instead of keeping a copy until the new one works. A reinstall normally holds both at once, so it needs room for two; this needs room for one, at the cost of not being able to undo a failed install:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_INSTALL_NO_ROLLBACK=1 sh
+```
+```powershell
+$env:UNSLOTH_INSTALL_NO_ROLLBACK=1; irm https://unsloth.ai/install.ps1 | iex
+```
+For a local run the flag is `--no-rollback`:
+```bash
+./install.sh --local --no-rollback
+```
+```powershell
+.\install.ps1 --local --no-rollback
+```
+
 Pinning the Python version:
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh

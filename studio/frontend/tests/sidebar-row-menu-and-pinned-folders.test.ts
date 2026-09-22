@@ -39,8 +39,10 @@ test("an open row menu reserves the same gutter hover does", () => {
     );
     seen.push(`${openGroup}:${openPad}`);
   }
-  // Project chat, pinned chat, spinner, plain recents and folder rows.
-  assert.ok(seen.length >= 5, `only ${seen.length} rows carry both gutters`);
+  // Project chat rows, every row of Pinned and Recents, and the folder rows. The chat rows'
+  // branches collapsed into one when the pin became a fixture of every row rather than of the
+  // pinned ones, so this counts kinds of row, not branches.
+  assert.ok(seen.length >= 3, `only ${seen.length} rows carry both gutters`);
 });
 
 // The kebab reveals itself while its menu is open, but the quick-action beside it was
@@ -91,7 +93,7 @@ test("a folder row's icon follows its disclosure", () => {
 test("an empty open folder says it is empty", () => {
   assert.match(
     APP_SIDEBAR,
-    /\{expanded && projectChats\.length === 0 && \(\n\s*<SidebarMenuItem>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\("shell\.navigation\.noChats"\)\}/,
+    /\{expanded && projectChats\.length === 0 && \(\n\s*<SidebarMenuItem\n\s*\{\.\.\.dnd\.dropZoneProps\(\{ section: order\.section, folderId: project\.id, blockEnd \}\)\}\n\s*>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\("shell\.navigation\.noChats"\)\}/,
   );
   // And it is a row, so the bottom fade has to count it like the "Show more" one.
   assert.match(APP_SIDEBAR, /if \(chats\.length === 0\) rows \+= 1;/);
@@ -132,9 +134,9 @@ test("the folder menu leads with where to go, then what to change", async () => 
     APP_SIDEBAR.indexOf("<span>Delete project</span>"),
   );
   assert.ok(menu.length > 0, "the folder menu moved");
-  const pin = menu.indexOf('{isProjectPinned ? "Unpin project" : "Pin project"}');
+  const pin = menu.indexOf('{isProjectPinned ? "Unpin" : "Pin"}');
   const edit = menu.indexOf("<span>Edit</span>");
-  assert.notEqual(pin, -1, "Pin project left the folder menu");
+  assert.notEqual(pin, -1, "the pin toggle left the folder menu");
   assert.notEqual(edit, -1, "Edit is not in the folder menu");
   assert.ok(pin < edit, "Pin project is not directly under Project home");
   assert.ok(
@@ -169,15 +171,15 @@ test("the folder menu leads with where to go, then what to change", async () => 
 
 // Pinning a folder used to sort it to the top of Projects, beside a Pinned section of chats.
 test("a pinned folder is a row of Pinned, not of Projects", () => {
-  // Pinned renders the folders, in the Pinned section's own order scope.
+  // Pinned renders the folders among its chats, in the Pinned section's own order scope.
   assert.match(
     APP_SIDEBAR,
-    /pinnedProjectRecords\.map\(\(project, projectIndex\) =>\n\s*renderProjectFolderRow\(project, projectIndex, \{\n\s*scope: PINNED_PROJECT_ORDER_SCOPE,\n\s*orderedIds: pinnedProjectRowIds,/,
+    /row\.kind === "project"\n\s*\? renderProjectFolderRow\(row\.project, \{\n\s*scope: PINNED_ORDER_SCOPE,\n\s*orderedIds: pinnedRowIds,/,
   );
   // Projects renders what is left, in its own.
   assert.match(
     APP_SIDEBAR,
-    /visibleProjectRecords\.map\(\(project, projectIndex\) =>\n\s*renderProjectFolderRow\(project, projectIndex, \{\n\s*scope: PROJECT_ORDER_SCOPE,\n\s*orderedIds: projectRowIds,/,
+    /visibleProjectRecords\.map\(\(project\) =>\n\s*renderProjectFolderRow\(project, \{\n\s*scope: PROJECT_ORDER_SCOPE,\n\s*orderedIds: projectRowIds,/,
   );
   // And the Projects list no longer carries them, so a folder is never in both sections.
   const records = APP_SIDEBAR.slice(
@@ -192,7 +194,11 @@ test("a pinned folder is a row of Pinned, not of Projects", () => {
   // The header owns "New project", so its test counts every project, pinned or not.
   assert.match(
     APP_SIDEBAR,
-    /const projectsSectionRendered =\n[\s\S]{0,200}?organizeBy === "project" &&\n\s*projects\.length > 0;/,
+    /const projectsSectionConfigured =\n\s*organizeBy === "project" && projects\.length > 0;/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /const projectsSectionRendered =\n[\s\S]{0,200}?projectsSectionConfigured;/,
   );
   assert.match(APP_SIDEBAR, /\{projectsSectionRendered && \(/);
 });
@@ -243,13 +249,140 @@ test("the walk reads the rows in the order Pinned draws them", () => {
     visibleChatItems(useChatNavigationStore.getState()).map((i) => i.id),
     ["folder-1", "folder-2", "pin-1", "proj-1", "recent-1"],
   );
-  // The sidebar publishes that block whole, and leaves the section's own chats to projectItems.
+  // The sidebar publishes Pinned in its drawn order, folders and chats interleaved with each open
+  // folder's chats under its row, and leaves the section's own chats to projectItems.
   assert.match(
     APP_SIDEBAR,
-    /const pinnedSectionChatItems = useMemo\(\n\s*\(\) => \[\.\.\.pinnedProjectChatItems, \.\.\.visiblePinnedItems\],/,
+    /const pinnedSectionChatItems = useMemo\(\n\s*\(\) =>\n\s*chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\(\(row\) =>\n\s*row\.kind === "project"\n\s*\? folderChatItems\(true, \[row\.project\]\)\n\s*: \[row\.item\],/,
   );
   assert.match(
     APP_SIDEBAR,
     /pinnedItems: pinnedSectionChatItems,\n\s*projectItems: sectionProjectChatItems,/,
+  );
+});
+
+// Pinning is its own grouping. Organizing in one list used to empty Pinned of its folders, so a
+// project pinned to the top vanished along with the section the setting was actually about.
+test("a pinned folder stays in Pinned when the sidebar is one list", () => {
+  const rows = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("const pinnedRows = useMemo("),
+    APP_SIDEBAR.indexOf("const pinnedRowIds = useMemo("),
+  );
+  assert.ok(rows.length > 0, "pinnedRows moved");
+  assert.ok(
+    !rows.includes("organizeBy"),
+    "Pinned still drops its folders when the sidebar organizes in one list",
+  );
+  assert.match(
+    rows,
+    /for \(const project of pinnedProjectBase\) \{\n\s*rows\.push\(\{ kind: "project", id: project\.id, project \}\);/,
+  );
+  // Pinned's own folder rows are selectable wherever they are drawn, while the Projects
+  // section's leave with the section.
+  assert.match(
+    APP_SIDEBAR,
+    /if \(pinnedOpen\) \{\n\s*for \(const project of pinnedProjectRecords\) ids\.add\(project\.id\);/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /if \(projectsOpen && projectsSectionConfigured\) \{\n\s*for \(const project of visibleProjectRecords\) ids\.add\(project\.id\);/,
+  );
+});
+
+// The three orders were each captioned with what they do. The names say it, and the captions
+// made a four-item radio group twice as tall as every other menu in the sidebar.
+test("the sort options are names, with nothing written under them", () => {
+  const options = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("const CHAT_SORT_OPTIONS"),
+    APP_SIDEBAR.indexOf("const ORGANIZE_OPTIONS"),
+  );
+  assert.ok(!options.includes("hint"), "the sort options still carry captions");
+  assert.match(APP_SIDEBAR, /\{CHAT_SORT_OPTIONS\.map\(\(option\) => \(/);
+  const menu = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("{CHAT_SORT_OPTIONS.map("));
+  assert.match(
+    menu.slice(0, menu.indexOf("</DropdownMenuRadioGroup>")),
+    /className=\{menuRadioItemClass\}\n\s*>\n\s*\{t\(option\.key\)\}/,
+  );
+  // And the strings go with them, in every language.
+  for (const key of ["priorityHint", "lastUpdatedHint", "manualOrderHint"]) {
+    assert.ok(!APP_SIDEBAR.includes(key), `${key} is still read`);
+  }
+});
+
+// The project page's own header kebab still opened a name-only dialog, so the same project
+// offered two different "edit" depending on which list it was reached from.
+test("the project page edits through the same dialog the sidebar opens", async () => {
+  const page = await readSrcAsync("features/chat/chat-page.tsx");
+  assert.ok(!page.includes("Rename project"), "the rename-only dialog is still there");
+  assert.ok(!page.includes("commitProjectRename"), "the rename call is still there");
+  assert.match(page, /onSelect=\{\(\) => setEditingProject\(true\)\}/);
+  assert.match(page, /<span>Edit project<\/span>/);
+  // The record behind the header, and the dialog it feeds.
+  assert.match(
+    page,
+    /projects\.find\(\(project\) => project\.id === projectId\)/,
+  );
+  assert.match(
+    page,
+    /project=\{active && editingProject \? \(currentProject \?\? null\) : null\}/,
+  );
+  // Delete hands back to the page's own confirmation, as it does in the sidebar.
+  assert.match(
+    page,
+    /onDelete=\{\(\) => \{\n\s*setEditingProject\(false\);\n\s*openProjectDelete\(\);/,
+  );
+  // And that confirmation says what else it takes: the workspace folder, named where the record
+  // has a path. Without it, deleting from here always left the folder with nothing able to reach it.
+  assert.match(
+    page,
+    /function openProjectDelete\(\): void \{\n\s*setDeleteFilesOnDelete\(false\);\n\s*setDeletingProject\(true\);/,
+  );
+  assert.match(
+    page,
+    /const deleteFiles = deleteFilesOnDelete;\n\s*setDeletingProject\(false\);\n\s*setDeleteFilesOnDelete\(false\);/,
+  );
+  assert.match(page, /await deleteChatProject\(projectId, \{ deleteFiles \}\);/);
+  assert.match(
+    page,
+    /id="chat-landing-delete-project-files"[\s\S]{0,220}?currentProject\?\.rootPath \?\?\n\s*"The project workspace folder will be removed from disk\."/,
+  );
+  assert.match(page, /\{deleteFilesOnDelete \? "Delete all" : "Delete"\}/);
+  // Nothing opens the confirmation without seeding the switch first.
+  assert.equal(
+    (page.match(/setDeletingProject\((?!false\))/g) ?? []).length,
+    1,
+    "setDeletingProject is called outside its opener",
+  );
+});
+
+// A pinned folder stays in one-list mode, but its chats are already Recents rows there: expanding
+// it would draw each of them twice and publish both copies to the walk and the selection.
+test("a pinned folder in one list is a way in, not a second copy of its chats", () => {
+  assert.match(
+    APP_SIDEBAR,
+    /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\) return \[\];/,
+  );
+  assert.match(APP_SIDEBAR, /const listsChats = organizeBy === "project";/);
+  assert.match(
+    APP_SIDEBAR,
+    /const expanded = listsChats && !collapsedProjectIds\.has\(project\.id\);/,
+  );
+  // Nothing to expand into, so the row opens the project instead of toggling into an empty block.
+  assert.match(
+    APP_SIDEBAR,
+    /if \(listsChats\) toggleProjectCollapsed\(project\.id\);\n\s*else openProject\(project\.id\);/,
+  );
+  // Everything a folder draws under itself hangs off that one flag.
+  for (const gated of [
+    /\{expanded &&\n\s*visibleChats\.map\(/,
+    /\{expanded && projectChats\.length === 0 && \(/,
+    /\{expanded &&\n\s*projectChats\.length > PROJECT_CHAT_LIMIT && \(/,
+  ]) {
+    assert.match(APP_SIDEBAR, gated);
+  }
+  // And the row count the scroll fade measures counts nothing where nothing is drawn.
+  assert.match(
+    APP_SIDEBAR,
+    /const projectChatRowCount = useMemo\(\(\) => \{\n[^\n]*\n\s*if \(organizeBy !== "project"\) return 0;/,
   );
 });
