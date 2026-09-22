@@ -14,6 +14,7 @@ import { readSrc, readText } from "./helpers/kit.ts";
 // by owning the tokens, so these tests pin the ownership.
 
 const CSS = readSrc("index.css");
+const HUB_CSS = readSrc("features/hub/hub.css");
 const STORE = readSrc("features/settings/stores/appearance-custom-store.ts");
 const SNAPSHOT = readText("../public/reload-snapshot.js");
 /** Every source that can carry a class, so a fixed wash cannot slip in. */
@@ -30,19 +31,27 @@ const SOURCES = (function walk(dir: string): string[] {
 /** Fills first, then lines. Every one is authored by the palettes as -base. */
 const SURFACE_TOKENS = [
   "card",
+  // The sidebar is a surface like the rest. Left off the curve it held its
+  // authored tone while its own rows washed past it, and the lit row came out
+  // darker than the sidebar behind it.
+  "sidebar",
   "popover",
   "secondary",
   "muted",
+  "panel-input-surface",
+  "panel-input-surface-hover",
+  "tabs-line-indicator",
+];
+/** Hover and selection fills, on a shorter curve so the state stays findable. */
+const STATE_TOKENS = [
   "accent",
   "nav-surface-hover",
   "panel-surface-hover",
-  "panel-input-surface",
-  "panel-input-surface-hover",
   "sidebar-accent",
   "chat-icon-bg-hover",
-  "tabs-line-indicator",
 ];
 const LINE_TOKENS = ["border", "input", "sidebar-border"];
+const FILL_TOKENS = [...SURFACE_TOKENS, ...STATE_TOKENS];
 
 function block(marker: string): string {
   const at = CSS.indexOf(marker);
@@ -52,7 +61,7 @@ function block(marker: string): string {
 }
 
 test("the palettes author base values, never the token the app reads", () => {
-  for (const token of [...SURFACE_TOKENS, ...LINE_TOKENS]) {
+  for (const token of [...FILL_TOKENS, ...LINE_TOKENS]) {
     const authored = CSS.match(new RegExp(`^\\t--${token}-base:`, "gm")) ?? [];
     assert.ok(
       authored.length >= 2,
@@ -72,7 +81,7 @@ test("the palettes author base values, never the token the app reads", () => {
 
 test("at the default the derivation is the identity", () => {
   const identity = block("--card: var(--card-base);");
-  for (const token of [...SURFACE_TOKENS, ...LINE_TOKENS]) {
+  for (const token of [...FILL_TOKENS, ...LINE_TOKENS]) {
     assert.ok(
       identity.includes(`--${token}: var(--${token}-base);`),
       `--${token} does not fall back to its authored value`,
@@ -88,6 +97,15 @@ test("off the default, fills and lines each take their own curve", () => {
         `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-target) var(--contrast-surface-mix));`,
       ),
       `--${token} is not on the surface curve`,
+    );
+  }
+  // A hover nobody can find is the same failure as an outline nobody can find.
+  for (const token of STATE_TOKENS) {
+    assert.ok(
+      adjusted.includes(
+        `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-target) var(--contrast-state-mix, var(--contrast-surface-mix)));`,
+      ),
+      `--${token} is not on the state curve`,
     );
   }
   assert.ok(
@@ -117,11 +135,67 @@ test("lowering flattens further than raising lifts", () => {
     "CONTRAST_SURFACE_MIX_VAR",
     "CONTRAST_LINE_MIX_VAR",
     "CONTRAST_CONTROL_MIX_VAR",
+    "CONTRAST_STATE_MIX_VAR",
   ]) {
     const { raising, lowering } = ceilings(name);
     assert.ok(raising < lowering, `${name} is symmetric`);
     assert.ok(lowering < 100, `${name} flattens all the way to the page`);
   }
+});
+
+test("a lit row never sinks below the surface it sits on", () => {
+  // Both fall toward the page when contrast drops. While they shared a ceiling
+  // they fell together, and since the fills start closer to the page the lit
+  // row reached it first and went under: at the bottom of the slider the active
+  // sidebar row was darker than the sidebar. A shorter curve keeps the order.
+  const ceiling = (name: string) => {
+    const hit = new RegExp(`${name}, mix\\(raising \\? \\d+ : (\\d+)\\)`).exec(
+      STORE,
+    );
+    assert.ok(hit, `${name} is not set from the two ceilings`);
+    return Number(hit[1]);
+  };
+  assert.ok(
+    ceiling("CONTRAST_STATE_MIX_VAR") < ceiling("CONTRAST_SURFACE_MIX_VAR"),
+    "hover fills flatten as fast as the surfaces under them",
+  );
+});
+
+test("a dark selection fill takes the token, not a wash", () => {
+  // A wash is scaled by --contrast-wash-gain, which still falls further at the
+  // bottom of the range than --contrast-state-mix does. Painted as washes, the
+  // selected tab and the selected quant sank to within a couple of levels of
+  // the surface under them there.
+  assert.match(
+    HUB_CSS,
+    /html\.dark \.hub-tab-toggle-pill,\s*html\.dark \.hub-tab-toggle-pill:hover \{[^}]*background-color: var\(--accent\)/,
+    "the selected segment is not on --accent",
+  );
+  for (const file of [
+    "features/hub/catalog/gguf-download-card.tsx",
+    "features/hub/catalog/models-table.tsx",
+  ]) {
+    const source = readSrc(file);
+    assert.match(
+      source,
+      /dark:(data-\[selected\]:)?bg-accent/,
+      `${file} does not paint its selection with --accent`,
+    );
+    // Scoped to the selection utility itself; resting chips and progress
+    // tracks in these files carry the gain on purpose.
+    assert.doesNotMatch(
+      source,
+      /dark:data-\[selected\]:bg-\[[^\]]*contrast-wash-gain/,
+      `${file} still paints a selection with a wash`,
+    );
+  }
+  // The quant row's hover is --accent held back, so it cannot reach the
+  // selected row: as its own wash it closed to a few levels at high contrast.
+  assert.match(
+    readSrc("features/hub/catalog/gguf-download-card.tsx"),
+    /dark:hover:bg-\[color-mix\(in_srgb,var\(--accent\)_\d+%,transparent\)\]/,
+    "the quant row hover is not derived from --accent",
+  );
 });
 
 test("panel sliders move with the slider too", () => {

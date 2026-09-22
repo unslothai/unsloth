@@ -341,6 +341,42 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_flow_shift = 3.0,
     ),
     DiffusionFamily(
+        # Qwen-Image-2.1 is a different ARCHITECTURE, not a refreshed checkpoint, so it is its own
+        # family rather than a prequant_variant_repos row on qwen-image: 32 single-stream blocks
+        # against 60 dual-stream MMDiT ones, nine weights per block, no bias tensors anywhere, one
+        # global modulation projection, a Qwen3-VL text encoder and its own VAE class. Sharing the
+        # qwen-image entry would hand it that family's pipeline, transformer, VAE and exclusion
+        # rules, none of which fit.
+        name = "qwen-image-2.1",
+        pipeline_class = "QwenImage21Pipeline",
+        transformer_class = "QwenImage21Transformer2DModel",
+        base_repo = "Qwen/Qwen-Image-2.1",
+        prequant_repos = (
+            ("int8", "unsloth/Qwen-Image-2.1-FP8"),
+            ("fp8", "unsloth/Qwen-Image-2.1-FP8"),
+        ),
+        # The artifacts are safetensors, not the historical torch.save pickle, so the family has to
+        # NAME them: every derived fallback ends in .pt, and without these rows the loader would ask
+        # the Hub for a file that is not there and silently fall back to the dense bf16 download.
+        prequant_filenames = (
+            ("fp8", "Qwen-Image-2.1-FP8.safetensors"),
+            ("int8", "Qwen-Image-2.1-INT8.safetensors"),
+        ),
+        # Qwen3-VL 8B, pre-cast. Independent of the DiT scheme, as on every other family.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-2.1-FP8"),),
+        cfg_kwarg = "true_cfg_scale",
+        # 2.1 is UNIFIED: one pipeline, and QwenImage21Pipeline.__call__ takes ``image`` as condition
+        # images alongside the prompt, so this is the FLUX.2 shape rather than the Qwen-Image-Edit
+        # one. Not ``edit``, which means the pipeline IS the edit pipeline and there is no plain
+        # text-to-image: here text-to-image is the default and the images are optional context. The
+        # encoder reads each one as vision context and the VAE turns it into latent tokens prepended
+        # to the noise, with no ``strength`` anywhere, which is exactly what the reference workflow
+        # passes. Without this flag diffusion.py refuses reference images for this family and the
+        # capability ships dark.
+        reference = True,
+        aliases = ("qwen_image_21", "qwenimage21", "qwen-image-21"),
+    ),
+    DiffusionFamily(
         name = "z-image",
         pipeline_class = "ZImagePipeline",
         transformer_class = "ZImageTransformer2DModel",
@@ -1127,6 +1163,10 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "LTX2Pipeline": "0.37.0",
     "Flux2KleinInpaintPipeline": "0.38.0",
     "Ideogram4Pipeline": "0.39.0",
+    # Qwen-Image-2.1 merged upstream on 2026-09-18, four weeks after 0.40.0 was cut, so 0.41.0 is
+    # the first release that can carry it. ``_version_tuple`` stops at the first non-numeric part,
+    # so a 0.41.0.dev0 build from main reads as (0, 41, 0) and satisfies this too.
+    "QwenImage21Pipeline": "0.41.0",
     "Krea2Pipeline": "0.39.0",
     # Older than the 0.35 baseline, but listed anyway: the packaging leaves an UNCONSTRAINED diffusers installable
     # below 3.10, so an already-present ancient one satisfies the pin, and quoting the 0.39 floor at a family that has
@@ -1170,6 +1210,14 @@ def pipeline_class_requirement(pipeline_class: str) -> tuple[Optional[str], bool
     return minimum, _version_tuple(minimum) >= _version_tuple(_DIFFUSERS_DROPPED_PY39)
 
 
+# Minimums that name a release which does not EXIST yet. ``pip install -U 'diffusers>=0.41.0'`` has
+# no candidate today, so quoting it as the remedy sends someone to a command that cannot succeed.
+# Studio installs the pinned main build for exactly these classes (studio/backend/requirements/
+# diffusers-main.txt), so the remedy is to put that back, not to chase a release. Delete an entry
+# here the moment its version ships, which is the same moment diffusers-pin.txt moves to it.
+_UNRELEASED_MIN_DIFFUSERS = frozenset({"0.41.0"})
+
+
 def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> str:
     """The refusal text: what is missing, what is installed, and a remedy this interpreter can
     actually carry out."""
@@ -1178,6 +1226,14 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
         return (
             f"'{family_name}' needs a newer diffusers ({pipeline_class}); this environment has "
             f"diffusers {installed}. Upgrade with: pip install -U diffusers."
+        )
+    if minimum in _UNRELEASED_MIN_DIFFUSERS:
+        return (
+            f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}), which has not been "
+            f"released yet; this environment has diffusers {installed}. Unsloth installs a pinned "
+            "build of diffusers main for this, so re-run the Unsloth installer (and leave "
+            "UNSLOTH_DIFFUSERS_MAIN unset), or install it directly with: pip install -r "
+            "studio/backend/requirements/diffusers-main.txt"
         )
     remedy = f"Upgrade with: pip install -U 'diffusers>={minimum}'."
     if needs_py310:
