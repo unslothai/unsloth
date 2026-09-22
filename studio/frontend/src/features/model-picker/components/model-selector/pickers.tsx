@@ -1854,9 +1854,8 @@ function GgufVariantExpander({
     [variantGroups, defaultVariant],
   );
 
-  // Each workflow gets its own recommendation: the largest quant the device runs with room to
-  // spare, else the largest that runs at all, else the smallest. The repo default only decides it
-  // when nothing has been measured, so a big machine is not held at the default's size.
+  // Each workflow gets its own recommendation: the repo default (UD-Q4_K_XL, else Q4_K_M, else
+  // Q4_K_S) wherever the device loads it, else the largest smaller quant that loads.
   const effectiveRecommendedByGroup = useMemo(() => {
     const recommended = new Map<string, string>();
     for (const group of variantGroups) {
@@ -1866,7 +1865,9 @@ function GgufVariantExpander({
         continue;
       }
       // Null when the group carries no sizes at all, so there is nothing to measure.
-      const pick = recommendedQuantForDevice(group.variants, getGgufFit) ?? preferred;
+      const pick =
+        recommendedQuantForDevice(group.variants, getGgufFit, preferred) ??
+        preferred;
       if (pick) recommended.set(group.key, pick.quant);
     }
     return recommended;

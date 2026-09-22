@@ -1133,15 +1133,18 @@ export function ggufFitIsComfortable(fit: GgufFitClass): boolean {
   return fit === "fits" || fit === "ram";
 }
 
-/** What to recommend on a device whose budget is known: the largest quant that runs with room to
- *  spare, else the largest that runs at all, else the smallest. Quality the machine can actually
- *  hold, rather than whatever size the repo defaults to.
+/** What to recommend on a device whose budget is known. With a repo default (`preferred`, the
+ *  backend's pick: UD-Q4_K_XL, else Q4_K_M, else Q4_K_S), that default wherever it loads, and
+ *  the largest smaller quant that does when it cannot. Spare memory is not a reason to star F16:
+ *  on a large card that recommended a 13 GiB F16 over a 3.9 GiB Q4_K_M. Without one, the largest
+ *  quant that runs with room to spare, else the largest that runs at all, else the smallest.
  *
  *  Null when no variant carries a size, since then there is nothing to weigh against the device
  *  and the caller's repo default is the better guess. */
 export function recommendedQuantForDevice<T extends GgufVariantSizes>(
   variants: readonly T[],
   fitOf: (sizeBytes: number) => GgufFitClass,
+  preferred: T | null = null,
 ): T | null {
   // Ranked by the weights, since that is the quality on offer and the size the row shows. Judged on
   // the download footprint, which also covers the companion GGUFs the loader charges for: a vision
@@ -1167,9 +1170,19 @@ export function recommendedQuantForDevice<T extends GgufVariantSizes>(
       ? variant
       : best,
   );
+  // Step down from the default when it cannot load, never up past it.
+  const candidates =
+    preferred && variants.includes(preferred)
+      ? ggufVariantFitSizeBytes(preferred) <= 0 ||
+        fitOfVariant(preferred) !== "oom"
+        ? [preferred]
+        : bySizeDesc.filter(
+            (variant) => variant.size_bytes < preferred.size_bytes,
+          )
+      : bySizeDesc;
   return (
-    bySizeDesc.find((variant) => ggufFitIsComfortable(fitOfVariant(variant))) ??
-    bySizeDesc.find((variant) => fitOfVariant(variant) !== "oom") ??
+    candidates.find((variant) => ggufFitIsComfortable(fitOfVariant(variant))) ??
+    candidates.find((variant) => fitOfVariant(variant) !== "oom") ??
     smallestFootprint
   );
 }
