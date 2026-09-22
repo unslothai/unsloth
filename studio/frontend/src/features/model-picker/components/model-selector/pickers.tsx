@@ -921,6 +921,18 @@ function artifactBudget(gpu: {
   };
 }
 
+/** The allowance a curated row was judged against, and the memory it is 70% of. */
+type CuratedBudget = { allowanceGb: number; deviceGb: number; device: "GPU" | "RAM" };
+
+function curatedBudget(
+  fit: NonNullable<ReturnType<typeof curatedArtifactFit>>,
+): CuratedBudget | undefined {
+  const { allowanceGb, deviceGb, device } = fit;
+  return allowanceGb != null && deviceGb != null && device
+    ? { allowanceGb, deviceGb, device }
+    : undefined;
+}
+
 const META_COLUMN = {
   // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
   quant: "min-[560px]:w-[7.2em]",
@@ -1047,7 +1059,7 @@ function ModelRow({
   onClick,
   vramStatus,
   vramEst,
-  vramBudgetGb,
+  vramBudget,
   gpuGb,
   tooltipText,
   hubUrl,
@@ -1075,7 +1087,7 @@ function ModelRow({
   vramStatus?: GgufFitClass | VramFitStatus | null;
   vramEst?: number;
   /** Memory allowance used to judge this curated row's fit. */
-  vramBudgetGb?: number;
+  vramBudget?: CuratedBudget;
   gpuGb?: number;
   tooltipText?: ReactNode;
   /** Hugging Face address for online/Hub rows, surfaced on hover the way local rows show an
@@ -1119,8 +1131,12 @@ function ModelRow({
       ? exceeds
         // "memory", not "VRAM": a GGUF at `partial` splits across VRAM and RAM and the figure
         // is weights plus activations plus KV, so "Needs ~47GB VRAM" contradicted the verdict.
-        ? vramBudgetGb != null
-          ? `Needs ~${vramEst}GB for weights (budget: ~${vramBudgetGb.toFixed(1)}GB, 70% of a ${gpuGb}GB GPU)`
+        ? vramBudget
+          ? `Needs ~${vramEst}GB for weights (budget: ~${vramBudget.allowanceGb.toFixed(1)}GB, 70% of ${
+              vramBudget.device === "RAM"
+                ? `${Number(vramBudget.deviceGb.toFixed(2))}GB available RAM`
+                : `a ${gpuGb}GB GPU`
+            })`
           : `Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`
         : vramStatus === "tight" || vramStatus === "marginal"
           ? `~${vramEst}GB VRAM (tight fit on ${gpuGb}GB)`
@@ -3583,8 +3599,7 @@ export function HubModelPicker({
         /** GGUF rows carry the classifier's own verdict; curated torch rows carry "exceeds". */
         status: GgufFitClass | VramFitStatus | null;
         est: number;
-        /** Curated row's memory allowance. */
-        budgetGb?: number;
+        budget?: CuratedBudget;
       }
     >();
     /** Size-based verdict for a row whose real footprint we know, against the budget that row
@@ -3694,7 +3709,7 @@ export function HubModelPicker({
           meta,
           status: curatedFit.fits ? null : "exceeds",
           est: curatedFit.sizeGb ? Math.round(curatedFit.sizeGb) : 0,
-          budgetGb: curatedFit.allowanceGb,
+          budget: curatedBudget(curatedFit),
         });
         continue;
       }
@@ -5090,7 +5105,7 @@ export function HubModelPicker({
         est: number;
         status: VramFitStatus | null;
         detail: string | null;
-        budgetGb?: number;
+        budget?: CuratedBudget;
       }
     >();
     const pipelineBudget = artifactBudget(loadScopedGpu(gpu, Boolean(task)));
@@ -5109,7 +5124,7 @@ export function HubModelPicker({
           est: curatedFit.sizeGb ? Math.round(curatedFit.sizeGb) : 0,
           status: curatedFit.fits ? null : "exceeds",
           detail: params ? formatCompact(params) : null,
-          budgetGb: curatedFit.allowanceGb,
+          budget: curatedBudget(curatedFit),
         });
         continue;
       }
@@ -7202,7 +7217,7 @@ export function HubModelPicker({
                               }}
                               vramStatus={info?.status ?? null}
                               vramEst={info?.est}
-                              vramBudgetGb={info?.budgetGb}
+                              vramBudget={info?.budget}
                               gpuGb={isG ? expanderGpuGb : expanderSystemGpuGb}
                               onArrowDownIntoChildren={
                                 expandedGguf === id
@@ -7321,8 +7336,8 @@ export function HubModelPicker({
                             vramEst={
                               isKnownGgufRepo(id) ? undefined : vram?.est
                             }
-                            vramBudgetGb={
-                              isKnownGgufRepo(id) ? undefined : vram?.budgetGb
+                            vramBudget={
+                              isKnownGgufRepo(id) ? undefined : vram?.budget
                             }
                             gpuGb={
                               isKnownGgufRepo(id)

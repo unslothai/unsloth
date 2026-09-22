@@ -289,6 +289,18 @@ test("Qwen-Image-2.1 is badged with the size its verdict used", () => {
   assert.equal(curatedArtifactFit(QWEN_21, IMAGE_CATALOG, onCard(22.49, []))?.sizeGb, 33);
 });
 
+test("a transcription row judged on RAM names RAM as the budget's device", () => {
+  const WHISPER = "unsloth/whisper-large-v3";
+  const onRam = curatedArtifactFit(WHISPER, AUDIO_CATALOG, { gpuGb: 1, systemRamGb: 5 });
+  assert.equal(onRam?.fits, false);
+  assert.equal(onRam?.device, "RAM");
+  assert.equal(onRam?.deviceGb, 5);
+  assert.equal(onRam?.allowanceGb, 5 * 0.7);
+  const onGpu = curatedArtifactFit(WHISPER, AUDIO_CATALOG, { gpuGb: 5, systemRamGb: 1 });
+  assert.equal(onGpu?.device, "GPU");
+  assert.equal(onGpu?.deviceGb, 5);
+});
+
 test("Qwen-Image-2.1 routes every card as on main", () => {
   const group = groupForRepoId(QWEN_21, IMAGE_CATALOG);
   assert.ok(group);
