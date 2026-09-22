@@ -1184,7 +1184,13 @@ def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
     module_name, class_name = class_ref.rsplit(".", 1)
     # A forced download refreshes the repository, so an already imported sibling may be the
     # implementation that is about to be replaced; go through transformers instead.
-    if not cross_repo and not hub_kwargs.get("force_download", False):
+    # The same holds for a code_revision: the config came from the model revision, the class
+    # transformers builds comes from the code revision.
+    if (
+        not cross_repo
+        and not hub_kwargs.get("force_download", False)
+        and not hub_kwargs.get("code_revision", None)
+    ):
         # The config module is already materialised; its modeling sibling usually is too. A
         # `other/repo--module.Class` reference lives in another repository, so a same-named
         # module next to the config is not the class transformers will build.

@@ -445,3 +445,37 @@ def test_every_resolver_probe_forwards_the_trust_decision():
                     module.__name__,
                     node.lineno,
                 )
+
+
+def test_a_code_revision_skips_the_materialised_sibling(monkeypatch):
+    """The config's sibling module comes from the model revision; with a code_revision the
+    class transformers builds comes from another one, so the resolver must ask transformers."""
+    import importlib
+    import types
+
+    from unsloth.models import _utils
+
+    sibling = types.ModuleType("transformers_modules.tiny_rev.modeling_tiny")
+
+    class FromConfigRevision:
+        pass
+
+    class FromCodeRevision:
+        pass
+
+    sibling.TinyForCausalLM = FromConfigRevision
+    config_cls = type(
+        "TinyConfig", (), {"__module__": "transformers_modules.tiny_rev.configuration_tiny"}
+    )
+    config = config_cls()
+    config.auto_map = {"AutoModelForCausalLM": "modeling_tiny.TinyForCausalLM"}
+    config._name_or_path = "someone/tiny"
+    monkeypatch.setitem(__import__("sys").modules, sibling.__name__, sibling)
+    import transformers.dynamic_module_utils as dmu
+
+    monkeypatch.setattr(dmu, "get_class_from_dynamic_module", lambda *a, **k: FromCodeRevision)
+    auto = type("AutoModelForCausalLM", (), {})
+    assert _utils._resolve_remote_model_class(auto, config) is FromConfigRevision
+    assert (
+        _utils._resolve_remote_model_class(auto, config, code_revision = "abc123") is FromCodeRevision
+    )
