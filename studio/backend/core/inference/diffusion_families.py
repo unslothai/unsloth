@@ -366,12 +366,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-2.1-FP8"),),
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image_21", "qwenimage21", "qwen-image-21"),
-        # Our own mirror of the Comfy-Org repack, byte for byte (sha256
-        # bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9), same shape as the
-        # qwen-image and z-image entries. The model's own repo would also serve a usable VAE, and
-        # ungated at that, but its copy is the fp32 diffusers file at 1.35 GB against 644 MiB here
-        # for an identical render (mean absolute difference 0.13/255 at a fixed seed), and
-        # mirroring keeps a rename upstream from turning every CPU load into a 404.
+        # Built by us from Qwen/Qwen-Image-2.1 itself: the same 238 tensors under upstream's own
+        # names, cast fp32 -> bf16 and written as one file, because sd-cli takes --vae as a single
+        # file rather than a diffusers subfolder. That is 0.63 GiB against upstream's 1.26 GiB of
+        # fp32, and a fixed-seed 1024 render through it is PIXEL-identical to one made with the
+        # fp32 original. No third-party repack is in the chain; the file is nonetheless
+        # value-identical to Comfy-Org's bf16 repack, all 238 tensors, so either works.
         # 2.1 has its own VAE class, so the qwen-image or Wan 2.2 file decodes to noise here
         # rather than failing.
         sd_cpp_vae = ("unsloth/Qwen-Image-2.1-ComfyUI", "vae/qwen_image_2.1_vae_bf16.safetensors"),
