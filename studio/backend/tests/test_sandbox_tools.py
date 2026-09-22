@@ -808,6 +808,10 @@ class TestNetworkTargetResolution:
                 f"import httpx._client as hc\nhc.Client().get('http://{_H}/')",
                 id = "httpx_client_module_alias",
             ),
+            pytest.param(
+                f"import requests\nrequests.get('https://pypi.org/', proxies={{'https': '{_H}:8080'}})",
+                id = "proxy_without_scheme",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -900,6 +904,7 @@ class TestNetworkTargetResolution:
             "import httpx\nc = httpx.Client()\nc.proxies = {'https': 'http://203.0.113.5'}\n"
             "c.get('https://pypi.org/')",
             "from requests.utils import quote\nquote('http://203.0.113.5/')",
+            "import requests\nrequests.get('https://pypi.org/', proxies={'https': 'pypi.org:443'})",
         ],
     )
     def test_known_trusted_host_runs(self, code):

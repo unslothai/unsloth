@@ -18045,7 +18045,7 @@ def _check_signal_escape_patterns(code: str):
                     for value in values:
                         # `proxies = None` and `{"https": None}` switch the proxy off.
                         if not (isinstance(value, ast.Constant) and value.value is None):
-                            destinations.append((value, True, "url"))
+                            destinations.append((value, True, "proxy"))
                 if specs:
                     # A splat can carry the destination past both spellings, and its contents are
                     # not here to read: `requests.get(**{"url": "http://evil.example/"})`.
@@ -18089,6 +18089,10 @@ def _check_signal_escape_patterns(code: str):
                             # (`"http://evil." + tld`).
                             if m and (whole or reading[m.end(1) :]):
                                 host = m.group(1)
+                            elif not m and kind == "proxy" and whole and reading.strip():
+                                # requests prepends `http://` to a proxy with no scheme, so
+                                # `"host:8080"` is a proxy host, not a path.
+                                host = reading.strip()
                         if host is None:
                             unreadable = unreadable or (fails_closed and not whole)
                         else:
