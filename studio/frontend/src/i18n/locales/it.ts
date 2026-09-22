@@ -131,6 +131,8 @@ export const it = {
       noChatsYet: "Ancora nessuna chat",
       // Shown under an empty project folder in the sidebar.
       noChats: "Nessuna chat",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Tutti i progetti fissati",
       showMore: "Mostra altro",
       showLess: "Mostra meno",
       settings: "Impostazioni",

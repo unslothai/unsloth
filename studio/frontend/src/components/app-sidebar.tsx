@@ -236,6 +236,7 @@ import { useIsCoarsePointer } from "@/hooks/use-mobile";
 import {
   folderRingKey,
   sectionRingKey,
+  SIDEBAR_TAIL_ID,
   useSidebarDrag,
   type SidebarDragItem,
   type SidebarDropContext,
@@ -1856,24 +1857,31 @@ export function AppSidebar() {
     if (effects.unpinProject && pinnedProjectIdSet.has(effects.unpinProject)) {
       toggleProjectPin(effects.unpinProject);
     }
-    const applyOrders = (before?: Record<string, string[]>) => {
+    // `superseded` once the user has picked a sort since the drop: that is the newer intent, so
+    // the drop's switch to Manual is dropped rather than overwriting it.
+    const applyOrders = (
+      before?: Record<string, string[]>,
+      superseded?: boolean,
+    ) => {
       for (const order of effects.orders) {
         setManualOrder(
           order.scope,
           before ? landedOrder(order, before[order.scope]) : order.ids,
         );
       }
-      if (effects.switchSort === "chats" && chatSort !== "manual") {
+      if (superseded) return;
+      if (effects.switchSort === "chats") {
         setChatSort("manual");
         toast.info(t("shell.organize.switchedToManual"));
       }
-      if (effects.switchSort === "pinned" && pinnedSort !== "manual") {
+      if (effects.switchSort === "pinned") {
         setPinnedSort("manual");
         toast.info(t("shell.organize.switchedToManual"));
       }
     };
     const move = effects.moveChat;
     if (!move) {
+      // Nothing to wait for, so nothing can come between the drop and this.
       applyOrders();
       return;
     }
@@ -1887,13 +1895,30 @@ export function AppSidebar() {
     const moves = chatMovesRef.current;
     const previous = moves.get(item.id);
     const generation = (previous?.generation ?? 0) + 1;
+    // Watches for the change itself, not the value before against the value after: a sort picked
+    // and picked back while the move is in flight reads as untouched by value, and it is not.
+    // Only the one list this drop would switch, since the two sorts are independent: a pick in
+    // the other is no intent about this one, and standing down for it would leave the slot
+    // written into a list still sorted, which is the drop ignored all over again.
+    const switching = effects.switchSort;
+    let sortPicked = false;
+    const stopWatchingSort = switching
+      ? useSidebarOrganizationStore.subscribe((now, before) => {
+          sortPicked ||=
+            switching === "pinned"
+              ? now.pinnedSort !== before.pinnedSort
+              : now.chatSort !== before.chatSort;
+        })
+      : () => {};
     const chain = (previous?.chain ?? Promise.resolve())
       .then(() => moveChatToProject(item, move.projectId))
       .then((moved) => {
         if (!moved || moves.get(item.id)?.generation !== generation) return;
-        applyOrders(ordersBefore);
+        // Read before applyOrders, whose own switch would otherwise trip the watch.
+        applyOrders(ordersBefore, sortPicked);
         if (unpinAfter) usePinnedChatsStore.getState().unpin(unpinAfter);
-      });
+      })
+      .finally(stopWatchingSort);
     moves.set(item.id, { generation, chain });
   }
 
@@ -4331,6 +4356,28 @@ export function AppSidebar() {
                             sort: { value: pinnedSort, set: setPinnedSort },
                           }),
                     )}
+                    {/* The end of the list, as somewhere to aim. A folder last in Pinned runs its
+                        block to the bottom of the section, so every pixel down there is inside it
+                        and a chat meant to go after the folder was filed into it instead.
+                        Always drawn, never only while a row is carried: a row appearing at drag
+                        start shifts every section under it after the pointer was sampled, and the
+                        bottom fade measures a height this one would not be counted in.
+                        It draws its own line, since the line under the folder's last chat already
+                        means "into the folder, last" and the same pixels cannot mean both. */}
+                    <SidebarMenuItem
+                      aria-hidden
+                      className={cn(
+                        "relative h-[calc(8px*var(--ui-space-scale,1))]",
+                        dropCueClass(PINNED_ORDER_SCOPE, SIDEBAR_TAIL_ID),
+                      )}
+                      {...dnd.dropZoneProps({
+                        section: "pinned",
+                        blockEnd: {
+                          scope: PINNED_ORDER_SCOPE,
+                          id: SIDEBAR_TAIL_ID,
+                        },
+                      })}
+                    />
                   </SidebarMenu>
                 </SidebarGroupContent>
               </CollapsibleContent>
@@ -4413,6 +4460,17 @@ export function AppSidebar() {
                           orderedIds: projectRowIds,
                           section: "projects",
                         }),
+                      )}
+                      {/* Every project is pinned, so the section is drawn with nothing in it. The
+                          line gives the body a height: without one it collapses to zero and the
+                          hit test walks straight past it, so a pinned folder dragged back has
+                          nowhere to land and nothing lights up. */}
+                      {visibleProjectRecords.length === 0 && (
+                        <SidebarMenuItem>
+                          <p className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center pl-3 pr-4 text-ui-13 leading-ui-18 tracking-nav text-nav-fg-muted">
+                            {t("shell.navigation.allProjectsPinned")}
+                          </p>
+                        </SidebarMenuItem>
                       )}
                       {/* Long project lists stay one row deep until asked. */}
                       {sidebarProjectRecords.length > SIDEBAR_PROJECT_LIMIT && (

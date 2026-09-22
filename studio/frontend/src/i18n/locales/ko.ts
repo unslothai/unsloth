@@ -164,6 +164,8 @@ export const ko = {
       noChatsYet: "아직 채팅이 없습니다",
       // Shown under an empty project folder in the sidebar.
       noChats: "채팅 없음",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "모든 프로젝트가 고정됨",
       showMore: "더 보기",
       showLess: "간략히 보기",
       settings: "설정",
