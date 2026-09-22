@@ -157,9 +157,20 @@ def _call_sites(path: Path, target: str) -> list[dict]:
         ref = value.strip()
         if not ref.startswith("./"):
             continue
-        stem = ref.rstrip("/").split("/")[-1]
-        if stem != target and PurePosixPath(stem).stem != PurePosixPath(target).stem:
-            continue
+        # Compared as the FULL local reference when one is given, because two actions
+        # may share a directory name: `./.github/actions/a/cache` and
+        # `./.github/actions/b/cache` both end in `cache`, so matching on the last
+        # component pooled their call sites and invented one action's value for the
+        # other. A bare name is still accepted, which is what the predicate self-tests
+        # and the shell-head narrowing pass.
+        full = ref[2:].rstrip("/") if ref.startswith("./") else ref.rstrip("/")
+        if "/" in target:
+            if full != target and PurePosixPath(full).parent.as_posix() != target:
+                continue
+        else:
+            stem = full.split("/")[-1]
+            if stem != target and PurePosixPath(stem).stem != PurePosixPath(target).stem:
+                continue
         with_ = mapping.get("with")
         sites.append(with_ if isinstance(with_, dict) else {})
     return sites
@@ -294,6 +305,28 @@ def _prefix_compatible(pr_head: str, publish_prefix: str, truncated: bool = True
         return True
     return truncated and publish_prefix.startswith(pr_head)
 
+
+def _shell_output_keys(text: str) -> list:
+    """Fully literal `key=<value>` values written to `$GITHUB_OUTPUT`.
+
+    The companion to `_shell_built_key_prefixes`, which recovers the literal HEAD of a
+    key whose tail is assembled at runtime and therefore finds nothing in a key that is
+    literal all the way through. Both are evidence that the producer was read; a step
+    emitting `key=own-v1-abc` is completely resolved, and treating "no dynamic head" as
+    "producer not understood" failed a correct configuration.
+
+    These are exact keys, so they join the comparison rather than only vouching for it.
+    """
+    out = []
+    for line in text.splitlines():
+        if "GITHUB_OUTPUT" not in line:
+            continue
+        for value in re.findall(r"\bkey=([A-Za-z0-9][A-Za-z0-9._-]*)", line):
+            if "$" not in value and value not in out:
+                out.append(value)
+    return out
+
+
 def _shell_built_key_prefixes(
     text: str, inputs: set | None = None, all_literal: bool = True,
 ) -> list[str]:
@@ -383,7 +416,14 @@ def _target_name(path: Path) -> str:
     ever matched and the values its callers pass were never recovered -- and a key built
     from one of those values then had no namespace at all.
     """
-    return path.parent.name if path.name.startswith("action.") else path.name
+    directory = path.parent if path.name.startswith("action.") else path
+    for parent in path.parents:
+        if parent.name == ".github":
+            try:
+                return directory.relative_to(parent.parent).as_posix()
+            except ValueError:
+                break
+    return directory.name
 
 
 def _namespaces_by_target(callers: list, targets: list) -> dict:
@@ -410,7 +450,7 @@ def _namespaces_by_target(callers: list, targets: list) -> dict:
     return out
 
 
-def _expand_key(key: str, namespaces: dict) -> tuple:
+def _expand_key(key: str, namespaces: dict, producers_resolved: bool = True) -> tuple:
     """(every literal key this can take, whether that list is complete).
 
     Substitutes each `${{ inputs.X }}` OCCURRENCE, rather than only a key that is
@@ -444,9 +484,14 @@ def _expand_key(key: str, namespaces: dict) -> tuple:
                 # repository's own pip-cache-save, whose every caller passes
                 # `${{ steps.pip-cache.outputs.key }}`, against every publish key in the
                 # tree -- a false failure on a correct configuration.
-                if resolved:
+                if resolved and producers_resolved:
                     delegated_inputs.add(match.group(1))
                 else:
+                    # Delegation only settles the key when the producer's namespace was
+                    # actually recovered. `_shell_built_key_prefixes` reads two narrow
+                    # spellings; a workflow that emits its key with `printf 'key=%s\n'`
+                    # matches neither, so nothing was recorded and dismissing the key as
+                    # "delegated" turned an unread producer into a clean bill of health.
                     complete = False
                 continue
             changed = True
@@ -943,16 +988,22 @@ def main() -> int:
     # `${{ steps.probe.outputs.key }}`, with no composite involved at all. Only actions
     # were read for shell-built heads, so that key hit the delegation branch with nothing
     # recovered and a publish `restore-keys: shared-` had nothing to compare against.
+    shell_literals: set = set()
     for pth in pr_workflow_paths:
-        built = _shell_built_key_prefixes(pth.read_text(ENC))
+        text = pth.read_text(ENC)
+        built = _shell_built_key_prefixes(text)
         composite_keys.extend(built)
         shell_built.update(built)
+        # Literal keys the producer writes outright. Exact keys, so they belong in the
+        # comparison, and evidence the step was understood.
+        shell_literals.update(_shell_output_keys(text))
     for action_path in pr_reachable:
         composite_keys.extend(_extract_cache_keys(action_path))
         resolved = _resolved_inputs(pr_callers, _target_name(action_path))
         names, all_literal = resolved.get("name", (set(), False))[:2]
         built = _shell_built_key_prefixes(action_path.read_text(ENC), names, all_literal)
         composite_keys.extend(built)
+        shell_literals.update(_shell_output_keys(action_path.read_text(ENC)))
         # A shell-built value is the literal HEAD of a key whose remainder is assembled
         # at runtime, so it is truncated by construction even though no `${{` survives
         # in the recorded string. Without this the reverse-direction rule below stopped
@@ -986,6 +1037,17 @@ def main() -> int:
         _pr_reachable_action_dirs(workflows_dir, publish_callers)
     )
     publish_namespaces = _input_namespaces(publish_callers, publish_reachable)
+    # The publish side builds keys in shell too, and its heads were never collected:
+    # `_shell_built_key_prefixes` ran over PR-reachable documents only. A publish
+    # workflow that emits `key=shared-key` and restores `${{ steps.probe.outputs.key }}`
+    # therefore had that key dismissed as delegated with nothing recovered to compare,
+    # while a pull request writing the literal `shared-key` passed.
+    publish_shell: set = set()
+    for pth in publish_callers + publish_reachable:
+        text = pth.read_text(ENC)
+        publish_shell.update(_shell_built_key_prefixes(text))
+        publish_shell.update(_shell_output_keys(text))
+    publish_producers_resolved = bool(publish_shell)
     # Each definition keeps its OWN inputs. See `_namespaces_by_target`.
     pr_by_target = _namespaces_by_target(pr_callers, pr_reachable)
     publish_by_target = _namespaces_by_target(publish_callers, publish_reachable)
@@ -998,7 +1060,7 @@ def main() -> int:
     # unresolved, and a composite whose callers all pass literals then rejected an
     # unrelated publish key on the strength of its own duplicate. The target loop below
     # is where those keys belong, with the inputs that decide them.
-    pr_sites += [({}, k) for k in sorted(shell_built)]
+    pr_sites += [({}, k) for k in sorted(shell_built | shell_literals)]
     for target, namespace in pr_by_target.items():
         pr_sites += [(namespace, k) for k in _extract_cache_keys(target)]
 
@@ -1006,15 +1068,20 @@ def main() -> int:
     # PR keys whose value this check could not settle, with the literal head they are
     # known to start with. Only these can collide with a publish key unseen.
     pr_undecided: list = []
+    # Whether any producer on this side was actually read. With none, a delegated key
+    # names a value this check never saw, which is doubt rather than delegation.
+    pr_producers_resolved = bool(shell_built or shell_literals)
     for namespace, key in pr_sites:
-        literals, complete = _expand_key(key, namespace)
+        literals, complete = _expand_key(key, namespace, pr_producers_resolved)
         pr_keys.update(k for k in literals if "${{" not in k)
         # Delegation is not indecision. A key that is nothing but
         # `${{ steps.probe.outputs.key }}` names a value assembled in a shell step, and
         # `_shell_built_key_prefixes` recovers its head and records that namespace
         # separately; counting it here as well reported every publish key in the tree
         # against it, which failed the live tree on a correct configuration.
-        if not complete and not _DELEGATED_KEY.fullmatch(key.strip()):
+        if not complete and not (
+            pr_producers_resolved and _DELEGATED_KEY.fullmatch(key.strip())
+        ):
             pr_undecided.append((key, _prefix_candidates(key)))
     pr_raw_unresolved = {raw.strip() for raw, _heads in pr_undecided}
 
@@ -1025,7 +1092,11 @@ def main() -> int:
         # `safe-key` and reported as colliding with a PR cache of that name.
         pub_ns = publish_by_target.get(pub_path, publish_namespaces)
         for raw in pub_keys:
-            literals, complete = _expand_key(raw, pub_ns)
+            literals, complete = _expand_key(raw, pub_ns, publish_producers_resolved)
+            if _DELEGATED_KEY.fullmatch(raw.strip()):
+                # Compared as the heads its own shell produced, rather than skipped.
+                literals = sorted(publish_shell) or [raw.strip()]
+                complete = publish_producers_resolved
             # Identical spellings first. Two keys written the same way around an
             # expression this check cannot expand -- `shared-${{ hashFiles('lock') }}`
             # on both sides -- resolve identically at run time, so a PR that leaves the
@@ -1052,8 +1123,10 @@ def main() -> int:
                     )
                     continue
                 if "${{" in k:
-                    if _DELEGATED_KEY.fullmatch(k.strip()):
-                        # Delegated, not undecidable. See the PR side above.
+                    if publish_producers_resolved and _DELEGATED_KEY.fullmatch(
+                        k.strip()
+                    ):
+                        # Delegated AND read. See the PR side above.
                         continue
                     # An unresolved PUBLISH key, which needs the same treatment as an
                     # unresolved PR key and was simply skipped. A publish composite

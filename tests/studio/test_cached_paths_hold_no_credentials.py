@@ -103,6 +103,26 @@ CREDENTIAL_HOMES = {
 # that reads as harmless: there is no HF_HOME in the file to notice.
 # unsloth-zoo's gemma4-audio-probe.yml cached ~/.cache/huggingface until 2026-09-22 for
 # exactly that reason, and the explicit-variable check below would have passed it.
+# What each home actually holds, for deciding whether a restrictive glob could capture
+# it. An empty tuple means the variable names the credential FILE itself rather than a
+# directory, so the configured path is what a pattern has to match.
+#
+# Derived per variable rather than from one global list of filenames. The global list
+# was a guess that omitted `credentials.toml`, which `CREDENTIAL_HOMES` three lines up
+# already documents, so `cargo-home/*.toml` was accepted while it persisted exactly the
+# file cargo writes. A canned list cannot cover a file-valued home at all, since those
+# take whatever basename the job chooses.
+CREDENTIAL_FILES = {
+    "HF_HOME": ("token", "stored_tokens"),
+    "HF_TOKEN_PATH": (),
+    "NPM_CONFIG_USERCONFIG": (),
+    "CARGO_HOME": ("credentials", "credentials.toml"),
+    "DOCKER_CONFIG": ("config.json",),
+    "AWS_SHARED_CREDENTIALS_FILE": (),
+    "GOOGLE_APPLICATION_CREDENTIALS": (),
+}
+
+
 DEFAULT_CREDENTIAL_HOMES = {
     "~/.cache/huggingface": "HF_HOME default; token, stored_tokens",
     "~/.huggingface": "legacy HF_HOME default; token",
@@ -120,14 +140,20 @@ DEFAULT_CREDENTIAL_HOMES = {
 # nothing points it elsewhere, so a job that sets the variable writes its credentials
 # there instead and persisting the default location holds none. Flagging it anyway was a
 # false failure on a correct configuration.
+# Any ONE of these variables being set moves the credential out of the default
+# location. Two variables reach the Hugging Face default: HF_HOME relocates the whole
+# directory, and HF_TOKEN_PATH relocates the token and `stored_tokens` on their own, so
+# a job setting only HF_TOKEN_PATH writes nothing of interest to `~/.cache/huggingface`
+# and persisting it was reported anyway. A single owner per default could not express
+# that.
 DEFAULT_OWNERS = {
-    "~/.cache/huggingface": "HF_HOME",
-    "~/.huggingface": "HF_HOME",
-    "~/.cargo": "CARGO_HOME",
-    "~/.docker": "DOCKER_CONFIG",
-    "~/.npmrc": "NPM_CONFIG_USERCONFIG",
-    "~/.aws": "AWS_SHARED_CREDENTIALS_FILE",
-    "~/.config/gh": None,
+    "~/.cache/huggingface": ("HF_HOME", "HF_TOKEN_PATH"),
+    "~/.huggingface": ("HF_HOME", "HF_TOKEN_PATH"),
+    "~/.cargo": ("CARGO_HOME",),
+    "~/.docker": ("DOCKER_CONFIG",),
+    "~/.npmrc": ("NPM_CONFIG_USERCONFIG",),
+    "~/.aws": ("AWS_SHARED_CREDENTIALS_FILE",),
+    "~/.config/gh": (),
 }
 
 # Which credential homes each shell login actually writes into. Matching every pattern
@@ -599,7 +625,10 @@ def _login_offenders_in_unit(job, job_env, unit_inputs):
         if not homes:
             continue
         for var, home in sorted(homes.items()):
-            hit = next((p for p in persisted if _inside(home, p)), None)
+            hit = next(
+                (p for p in persisted if _inside(home, p, CREDENTIAL_FILES.get(var, ()))),
+                None,
+            )
             if hit is None:
                 continue
             if spec is not None and var in spec["vars"]:
@@ -641,43 +670,54 @@ def _normalise(path: str) -> str:
 
 
 
-# Files a credential actually lands in, for deciding whether a restrictive glob could
-# capture one. Not exhaustive and not meant to be: it is consulted only to ACCEPT a
-# narrow pattern, and an unrecognised name falls through to the widening branch.
-_CREDENTIAL_FILENAMES = (
-    "token", "config.json", "credentials", "credentials.json", ".npmrc",
-    "credentials.db", "application_default_credentials.json", "hosts.yml", "stored-tokens",
-)
 
-
-def _glob_can_capture_credentials(pattern: str) -> bool:
-    """Could this persistence pattern actually include a credential file?
-
-    `path: hf-cache/**` takes everything beneath `hf-cache`, token included.
-    `path: hf-cache/*.bin` takes only the weight files, and the token is not one, so
-    widening both to `hf-cache` reported a login whose credential the upload cannot
-    contain. Dropping the wildcard segment is right for a recursive pattern and wrong
-    for a restrictive one, and they were being treated alike.
-
-    A single-star segment with no extension (`hf-cache/*`) matches any NAME at that
-    level, so it can capture `token` and still counts. Only a pattern narrow enough to
-    exclude every known credential filename is accepted, and an unfamiliar name is
-    treated as capturable rather than safe.
-    """
-    import fnmatch
-
-    tail = pattern.replace("\\", "/").split("/")
-    for i, segment in enumerate(tail):
-        if not any(ch in segment for ch in "*?["):
+def _glob_regex(pattern: str):
+    """A glob compiled with `/` respected: `**` crosses separators, `*` does not."""
+    out = []
+    i = 0
+    pattern = pattern.replace("\\", "/")
+    while i < len(pattern):
+        ch = pattern[i]
+        if pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
             continue
-        if segment == "**" or "**" in segment:
-            return True
-        # Anything after this segment is a directory pattern, which says nothing about
-        # the filenames beneath it.
-        if i != len(tail) - 1:
-            return True
-        return any(fnmatch.fnmatch(name, segment) for name in _CREDENTIAL_FILENAMES)
-    return True
+        if ch == "*":
+            out.append("[^/]*")
+        elif ch == "?":
+            out.append("[^/]")
+        else:
+            out.append(re.escape(ch))
+        i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
+def _glob_captures(pattern: str, home: str, files = None) -> bool:
+    """Could this persistence pattern include the credential this home holds?
+
+    Asked of the REAL path, not of a list of likely filenames. `path: hf-cache/**` takes
+    the token with everything else; `path: hf-cache/*.bin` takes the weight files and
+    cannot contain it. Dropping the wildcard segment treated the two alike.
+
+    `files` are the names the credential takes beneath a directory-valued home. A home
+    with none is itself the credential file, which is the only workable rule for
+    AWS_SHARED_CREDENTIALS_FILE and friends: those take whatever basename the job gives
+    them, so no list of filenames can anticipate them and the configured value is the
+    only thing that can be tested.
+    """
+    home = _normalise(home).rstrip("/")
+    if files is None:
+        # The caller did not say which variable this is, so the filename is unknown and
+        # any pattern reaching into the home could match it. Falling back to the old
+        # containment keeps an unannotated call site conservative: forgetting the
+        # argument must not turn a finding off, which an empty tuple would have done.
+        outer = _normalise(_deglob(pattern)).strip("/")
+        return bool(outer) and (home == outer or home.startswith(outer + "/"))
+    rx = _glob_regex(_normalise(pattern))
+    # The home itself, for a variable that names the credential FILE, and each known
+    # filename beneath it for one that names a directory.
+    candidates = [home] + [home + "/" + f for f in files]
+    return any(rx.match(c) for c in candidates)
 
 
 def _deglob(path: str) -> str:
@@ -694,7 +734,7 @@ def _deglob(path: str) -> str:
         parts.append(segment)
     return "/".join(parts) if parts else path
 
-def _inside(inner: str, outer: str) -> bool:
+def _inside(inner: str, outer: str, files = None) -> bool:
     """Is `inner` the same directory as `outer`, or below it?
 
     A glob suffix is trimmed off `outer` first. `path: hf-cache/**` uploads everything
@@ -702,8 +742,10 @@ def _inside(inner: str, outer: str) -> bool:
     `_inside("hf-cache", "hf-cache/**")` is false and the whole upload looked unrelated to
     the credential home it contains.
     """
-    if any(ch in outer for ch in "*?[") and not _glob_can_capture_credentials(outer):
-        return False
+    if any(ch in outer for ch in "*?["):
+        # Decided by matching the credential's own path against the pattern, which is
+        # both stricter and more honest than widening the pattern to its fixed prefix.
+        return _glob_captures(outer, inner, files)
     inner, outer = _normalise(inner), _normalise(_deglob(outer))
     inner, outer = inner.strip("/"), outer.strip("/")
     if not inner or not outer:
@@ -734,7 +776,8 @@ def _offending_jobs():
                         continue
                     for persisted, _s in _persisted_in_unit(unit, unit_env, unit_inputs):
                         for var, home in homes.items():
-                            if _inside(_expand(home, env, unit_inputs), persisted):
+                            if _inside(_expand(home, env, unit_inputs), persisted,
+                                       CREDENTIAL_FILES.get(var, ())):
                                 yield f"{path.name}:{jid}", var, persisted, home
 
 
@@ -890,7 +933,7 @@ def test_no_job_persists_a_default_credential_home():
                     # A job setting `CARGO_HOME: /tmp/cargo` writes credentials there, so
                     # persisting `~/.cargo` holds none, and flagging it was a false
                     # failure on a correct configuration.
-                    if DEFAULT_OWNERS.get(default) in overridden:
+                    if any(v in overridden for v in DEFAULT_OWNERS.get(default, ())):
                         continue
                     if _inside(default, persisted):
                         offenders.append(
@@ -1385,13 +1428,20 @@ def test_a_glob_path_still_contains_its_directory():
     assert _deglob("hf-cache/*.bin") == "hf-cache"
     assert _deglob("hf-cache") == "hf-cache"
     assert _inside("hf-cache", "hf-cache/**") is True
-    assert _inside("hf-cache", "hf-cache/*.bin") is False
-    assert _inside("other", "hf-cache/**") is False
+    hf = CREDENTIAL_FILES["HF_HOME"]
+    assert _inside("hf-cache", "hf-cache/*.bin", hf) is False
+    assert _inside("other", "hf-cache/**", hf) is False
     # A bare `*` matches any NAME, `token` among them, so it still counts.
-    assert _inside("hf-cache", "hf-cache/*") is True
-    # And a narrow pattern that happens to match a real credential filename counts too:
-    # docker writes `config.json`.
-    assert _inside("docker-cache", "docker-cache/*.json") is True
+    assert _inside("hf-cache", "hf-cache/*", hf) is True
+    # And a narrow pattern that matches the file THAT home really holds counts too:
+    # docker writes `config.json`, cargo writes `credentials.toml`.
+    assert _inside("docker-cache", "docker-cache/*.json",
+                   CREDENTIAL_FILES["DOCKER_CONFIG"]) is True
+    assert _inside("cargo-home", "cargo-home/*.toml",
+                   CREDENTIAL_FILES["CARGO_HOME"]) is True
+    # A caller that does not say which variable it means gets the conservative answer,
+    # because an unknown filename could be anything.
+    assert _inside("hf-cache", "hf-cache/*.bin") is True
 
 
 def test_a_login_action_is_matched_case_insensitively():
@@ -1424,14 +1474,16 @@ def test_an_overridden_default_home_is_not_a_finding():
     `~/.cargo` holds none of them. Flagging it anyway was a false failure on a correct
     configuration, and every variable in CREDENTIAL_HOMES had the same problem.
     """
-    for default, owner in DEFAULT_OWNERS.items():
-        if owner is None:
-            continue
-        assert owner in CREDENTIAL_HOMES, (
-            f"{owner} overrides {default} but is not tracked as a credential home"
-        )
-    assert DEFAULT_OWNERS["~/.cargo"] == "CARGO_HOME"
-    assert DEFAULT_OWNERS["~/.cache/huggingface"] == "HF_HOME"
+    for default, owners in DEFAULT_OWNERS.items():
+        for owner in owners:
+            assert owner in CREDENTIAL_HOMES, (
+                f"{owner} overrides {default} but is not tracked as a credential home"
+                )
+    assert DEFAULT_OWNERS["~/.cargo"] == ("CARGO_HOME",)
+    # Two variables reach the Hugging Face default. HF_TOKEN_PATH moves the token and
+    # `stored_tokens` on its own, so a job setting only that one leaves nothing of
+    # interest in `~/.cache/huggingface`, and a single owner could not say so.
+    assert DEFAULT_OWNERS["~/.cache/huggingface"] == ("HF_HOME", "HF_TOKEN_PATH")
 
 
 def test_a_reusable_workflow_job_is_flattened(tmp_path, monkeypatch):
@@ -1690,13 +1742,24 @@ def test_a_restrictive_glob_does_not_capture_a_token():
     An unfamiliar name still counts as capturable, so the narrowing only ever accepts a
     pattern that demonstrably excludes every credential file this check knows about.
     """
-    assert _glob_can_capture_credentials("hf-cache/**") is True
-    assert _glob_can_capture_credentials("hf-cache/*") is True
-    assert _glob_can_capture_credentials("hf-cache/*.bin") is False
+    hf = CREDENTIAL_FILES["HF_HOME"]
+    assert _glob_captures("hf-cache/**", "hf-cache", hf) is True
+    assert _glob_captures("hf-cache/*", "hf-cache", hf) is True
+    assert _glob_captures("hf-cache/*.bin", "hf-cache", hf) is False
     # docker writes config.json, so a `*.json` pattern does capture a credential.
-    assert _glob_can_capture_credentials("docker-cache/*.json") is True
-    # A wildcard DIRECTORY says nothing about the filenames beneath it.
-    assert _glob_can_capture_credentials("root/*/data") is True
+    assert _glob_captures(
+        "docker-cache/*.json", "docker-cache", CREDENTIAL_FILES["DOCKER_CONFIG"]
+    ) is True
+    # cargo writes credentials.toml, which a canned filename list had omitted.
+    assert _glob_captures(
+        "cargo-home/*.toml", "cargo-home", CREDENTIAL_FILES["CARGO_HOME"]
+    ) is True
+    # A file-valued home is matched as the path it names, whatever the basename. No
+    # list of likely filenames can cover these, which is why the real value is tested.
+    assert _glob_captures("creds/*.ini", "creds/my-profile.ini", ()) is True
+    assert _glob_captures("creds/*.ini", "elsewhere/my-profile.ini", ()) is False
+    # A pattern reaching only into a SUBDIRECTORY cannot hold a token at the root.
+    assert _glob_captures("hf-cache/models/**", "hf-cache", hf) is False
 
     safe = {
         "env": {"HF_HOME": "hf-cache"},
@@ -1829,3 +1892,59 @@ def test_the_discovery_scan_reaches_a_reusable_workflow_unit(tmp_path, monkeypat
         "the discovery scan has to reach the delegating job, or the guard below is "
         "never instantiated for it"
     )
+
+
+def test_a_restrictive_glob_is_matched_against_the_real_credential_path():
+    """The filename comes from the home being tested, not from a canned list.
+
+    A global list of likely filenames omitted `credentials.toml`, which
+    `CREDENTIAL_HOMES` already documents for CARGO_HOME, so `cargo-home/*.toml` was
+    accepted while persisting exactly the file cargo writes. And a file-valued home such
+    as AWS_SHARED_CREDENTIALS_FILE takes whatever basename the job chooses, which no
+    list can anticipate -- the configured value is the only thing that can be tested.
+    """
+    cargo = CREDENTIAL_FILES["CARGO_HOME"]
+    assert _inside("cargo-home", "cargo-home/*.toml", cargo) is True
+
+    leaking = {
+        "env": {"CARGO_HOME": "cargo-home"},
+        "steps": [
+            {"run": "cargo login $TOKEN"},
+            {
+                "uses": "actions/cache/save@v4",
+                "with": {"path": "cargo-home/*.toml", "key": "k"},
+            },
+        ],
+    }
+    assert _login_offenders({}, leaking), (
+        "cargo writes cargo-home/credentials.toml, which this pattern persists"
+    )
+
+    named = {
+        "env": {"AWS_SHARED_CREDENTIALS_FILE": "creds/my-profile.ini"},
+        "steps": [
+            {"run": "aws configure set aws_access_key_id x"},
+            {
+                "uses": "actions/upload-artifact@v4",
+                "with": {"path": "creds/*.ini", "name": "c"},
+            },
+        ],
+    }
+    assert _login_offenders({}, named), (
+        "the configured path matches the pattern, whatever its basename"
+    )
+
+
+def test_hf_token_path_alone_moves_the_token_out_of_the_default_home():
+    """Two variables reach the Hugging Face default, and either one relocates the token.
+
+    A job setting only HF_TOKEN_PATH writes the token and `stored_tokens` beside it, so
+    `~/.cache/huggingface` holds none and persisting it is safe. Tracking a single owner
+    per default could not say that, and the default-home rule reported it anyway.
+    """
+    assert DEFAULT_OWNERS["~/.cache/huggingface"] == ("HF_HOME", "HF_TOKEN_PATH")
+    assert DEFAULT_OWNERS["~/.huggingface"] == ("HF_HOME", "HF_TOKEN_PATH")
+    # Every named owner is a variable this module actually tracks.
+    for default, owners in DEFAULT_OWNERS.items():
+        for owner in owners:
+            assert owner in CREDENTIAL_HOMES, f"{owner} for {default}"

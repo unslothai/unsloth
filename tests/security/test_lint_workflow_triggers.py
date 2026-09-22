@@ -2515,9 +2515,28 @@ def test_a_reusable_workflow_is_named_by_its_file_not_its_directory():
     recovered and a key built from one of them had no namespace at all.
     """
     lint = _lint_module()
-    assert lint._target_name(Path(".github/workflows/reuse.yml")) == "reuse.yml"
-    assert lint._target_name(Path(".github/actions/pip-cache/action.yml")) == "pip-cache"
-    assert lint._target_name(Path(".github/actions/pip-cache/action.yaml")) == "pip-cache"
+    # The FULL local reference, which is what a `uses:` line writes. A basename was
+    # enough to tell a workflow from an action, and not enough to tell two actions
+    # apart: `.github/actions/a/cache` and `.github/actions/b/cache` both end in
+    # `cache`, so their call sites pooled and one action's value was invented for the
+    # other.
+    assert (
+        lint._target_name(Path(".github/workflows/reuse.yml"))
+        == ".github/workflows/reuse.yml"
+    )
+    assert (
+        lint._target_name(Path(".github/actions/pip-cache/action.yml"))
+        == ".github/actions/pip-cache"
+    )
+    assert (
+        lint._target_name(Path(".github/actions/pip-cache/action.yaml"))
+        == ".github/actions/pip-cache"
+    )
+    # An action is still named by its directory and a reusable workflow by its file,
+    # which is the distinction this started from.
+    assert lint._target_name(Path(".github/actions/a/cache/action.yml")) != (
+        lint._target_name(Path(".github/actions/b/cache/action.yml"))
+    )
 
 
 def test_an_unresolvable_publish_key_is_reported_too(tmp_path):
@@ -2747,4 +2766,173 @@ def test_two_differently_spelled_unresolved_keys_are_paired(tmp_path):
     assert proc.returncode == 0, (
         f"`shared-` and `wheels-only-` cannot become each other:\n{proc.stdout}\n"
         f"{proc.stderr}"
+    )
+
+
+def test_a_delegated_key_whose_producer_was_not_read_stays_undecided(tmp_path):
+    """Delegation settles a key only when the producer's namespace was recovered.
+
+    `_shell_built_key_prefixes` reads two narrow spellings. A workflow emitting its key
+    with `printf 'key=%s\\n'` matches neither, so nothing was recorded -- and dismissing
+    the key as "delegated" turned an unread producer into a clean bill of health, letting
+    a publish `restore-keys: shared-` through.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - id: make\n"
+        "        run: printf 'key=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: ${{ steps.make.outputs.key }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("shared-pub", "            shared-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the producer's spelling was not recognised, so the key's namespace is "
+        f"unknown and `shared-` cannot be cleared:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_a_literal_producer_output_is_read_as_a_key(tmp_path):
+    """A producer emitting a fully literal key is resolved, not unrecognised.
+
+    Requiring a dynamic HEAD as the evidence that a producer was understood failed the
+    opposite case: `echo 'key=own-v1-abc'` has no tail to assemble, so the head
+    extractor finds nothing while the key is completely known. The value is an exact
+    cache key, so it joins the comparison rather than only vouching for the step.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - id: probe\n"
+        "        run: echo 'key=own-v1-abc' >> \"$GITHUB_OUTPUT\"\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: ${{ steps.probe.outputs.key }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: unrelated-v1\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"the key is known to be `own-v1-abc`, which is not `unrelated-v1`:\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+
+    # And the literal really is compared, rather than merely vouching for the producer.
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: own-v1-abc\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the publish workflow restores exactly the key the probe writes:\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_a_publish_side_delegated_key_is_resolved_from_its_own_shell(tmp_path):
+    """Shell heads were collected from PR-reachable documents only.
+
+    So a publish workflow that emits `key=shared-key` and restores
+    `${{ steps.probe.outputs.key }}` had that key dismissed as delegated with nothing
+    recovered to compare it against, and a pull request writing the literal `shared-key`
+    passed an exact collision.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n          path: wheels\n          key: shared-key\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - id: probe\n"
+        "        run: echo 'key=shared-key' >> \"$GITHUB_OUTPUT\"\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: ${{ steps.probe.outputs.key }}\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the publish workflow's own shell says the key is `shared-key`, which the "
+        f"pull request writes:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_two_actions_sharing_a_directory_name_keep_their_call_sites(tmp_path):
+    """`a/cache` and `b/cache` are different actions, however they end.
+
+    Matching call sites on the last path component pooled them, so a value passed to one
+    was attributed to the other and a publish key no pull request writes was rejected.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    first = root / "actions" / "a" / "cache"
+    second = root / "actions" / "b" / "cache"
+    wf.mkdir(parents = True)
+    first.mkdir(parents = True)
+    second.mkdir(parents = True)
+    (first / "action.yml").write_text(
+        "name: a cache\n"
+        "inputs:\n  name:\n    description: n\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - uses: actions/cache@v4\n"
+        "      with:\n        path: wheels\n        key: prefix-${{ inputs.name }}\n"
+    )
+    (second / "action.yml").write_text(
+        "name: b cache\n"
+        "inputs:\n  name:\n    description: n\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - run: echo ${{ inputs.name }}\n      shell: bash\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/a/cache\n"
+        "        with:\n          name: safe\n"
+        "      - uses: ./.github/actions/b/cache\n"
+        "        with:\n          name: shared\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: prefix-shared\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"`shared` only ever reaches b/cache, which caches nothing, so no PR cache "
+        f"writes `prefix-shared`:\n{proc.stdout}\n{proc.stderr}"
     )
