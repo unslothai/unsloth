@@ -305,15 +305,18 @@ test("the canvas panel reserves the notice's height too", () => {
   // preview/source tabs and the close control sit in exactly that band, and the
   // notice is opaque and takes pointer events at z-30. Same fix as the research
   // panel, and 0px whenever no notice is on screen.
+  // The 90 and the 122 now carry the UI scale, minus the content inset, which
+  // is window chrome and stays fixed. At the default both come to what they
+  // were, so the geometry this test describes is unchanged.
   const panel = slice(artifact, 'variant === "panel"', "aria-label=");
   assert.match(
     panel,
-    /marginTop:\s*\n?\s*"calc\(90px \+ var\(--studio-chat-notice-height, 0px\)\)"/,
+    /marginTop:\s*\n?\s*"calc\(var\(--studio-content-top-inset, 0px\) \+ \(90px - var\(--studio-content-top-inset, 0px\)\) \* var\(--ui-space-scale, 1\) \+ var\(--studio-chat-notice-height, 0px\)\)"/,
   );
   // Both edges move, or the panel keeps its height and overflows the bottom.
   assert.match(
     panel,
-    /height:\s*\n?\s*"calc\(100% - 122px - var\(--studio-chat-notice-height, 0px\)\)"/,
+    /height:\s*\n?\s*"calc\(100% - var\(--studio-content-top-inset, 0px\) - \(122px - var\(--studio-content-top-inset, 0px\)\) \* var\(--ui-space-scale, 1\) - var\(--studio-chat-notice-height, 0px\)\)"/,
   );
   // The class list must not still carry the fixed geometry the style replaces.
   assert.doesNotMatch(panel, /mt-\[90px\]/);

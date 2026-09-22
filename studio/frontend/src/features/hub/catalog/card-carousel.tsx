@@ -99,8 +99,12 @@ export function CardCarousel<T>({
   }, [updateArrows]);
 
   useEffect(() => {
+    // The stride and the cards scale with the UI font size, which moves
+    // scrollWidth. The observer above only sees the scroller's own box, so the
+    // dimensions belong here rather than being left to a height that happens
+    // to change alongside them.
     updateArrows();
-  }, [updateArrows, items]);
+  }, [updateArrows, items, itemWidth, itemHeight, gapPx]);
 
   const scrollByCards = useCallback(
     (direction: 1 | -1) => {

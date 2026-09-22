@@ -135,6 +135,12 @@ test("fixed slots that hold scaled content scale with it", () => {
   assert.ok(strip.includes(HOOK), "the carousel stride ignores it");
   assert.match(strip, /const gapPx = CARD_GAP_PX \* scale;/);
   assert.match(strip, /const topPaddingPx = CAROUSEL_TOP_PADDING_PX \* scale;/);
+  // A new scale changes scrollWidth, which decides the arrows. The resize
+  // observer only watches the scroller's own box, so the sizes are deps.
+  assert.match(
+    strip,
+    /\}, \[updateArrows, items, itemWidth, itemHeight, gapPx\]\);/,
+  );
 
   const lists = readSrc("features/hub/catalog/models-catalog-lists.tsx");
   assert.ok(lists.includes(HOOK), "the pinned grid ignores it");
