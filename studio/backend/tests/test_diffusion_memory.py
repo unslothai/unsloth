@@ -2123,9 +2123,7 @@ def test_an_unsizable_load_gets_no_canvas_opinion():
     assert diffusion_memory.recommended_canvas_px(17 * 1024, None) is None
     assert diffusion_memory.recommended_canvas_px(17 * 1024, 0) is None
     assert diffusion_memory.recommended_canvas_px(0, 24 * 1024) is None
-    assert (
-        diffusion_memory.recommended_canvas_px(17 * 1024, 24 * 1024, is_unified = True) is None
-    )
+    assert diffusion_memory.recommended_canvas_px(17 * 1024, 24 * 1024, is_unified = True) is None
 
 
 def test_the_plan_carries_the_canvas_for_the_loader_to_report():

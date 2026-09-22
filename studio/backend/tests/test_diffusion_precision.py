@@ -611,7 +611,7 @@ def test_an_unset_request_takes_the_family_scheme_and_is_marked_as_not_asked_for
 
 
 def test_an_opt_out_still_pins_the_released_bf16_encoder():
-    """"none"/"off" has to survive the new default, or the bf16 reference configuration
+    """ "none"/"off" has to survive the new default, or the bf16 reference configuration
     becomes unreachable and no comparison against it can be run."""
     for opt_out in ("none", "off", " OFF "):
         assert resolve_te_quant_request(opt_out, "fp8") == (None, False)
