@@ -232,3 +232,81 @@ test("the picker no longer refuses a different model mid-load", () => {
   assert.match(guard, /This model is already loading/);
   assert.match(guard, /return;/);
 });
+
+
+test("a cancelled preflight keeps the slot until its coroutine unwinds", () => {
+  const runtime = read(RUNTIME);
+  // The old run may be parked inside an unabortable preflight, so the slot is released
+  // only once the coroutine that owns it has actually unwound.
+  assert.match(runtime, /settledPromise: Promise<void>;/);
+  assert.match(runtime, /markLoadRunSettled = resolve;/);
+  assert.match(runtime, /settledPromise: loadRunSettled,/);
+  assert.match(runtime, /markSettled: markLoadRunSettled,/);
+  assert.match(runtime, /\} finally \{\n\s*\/\/ Last act of this run's coroutine[\s\S]*?markLoadRunSettled\(\);/);
+  const cancel = section(
+    runtime,
+    "const cancelLoadRun = useCallback(",
+    "const cancelLoadingWithCheckpointPolicy = useCallback(",
+  );
+  assert.match(
+    cancel,
+    /if \(ownsModelLoadRun\(activeLoadRunRef\.current, run\)\) \{[\s\S]*?await run\.settledPromise;/,
+    "the slot must be held until the cancelled run settles",
+  );
+});
+
+test("the cancelled coroutine stops applying config after its preflight awaits", () => {
+  const runtime = read(RUNTIME);
+  const ABORT_CHECK = 'if (abortCtrl.signal.aborted) throw new Error("Cancelled");';
+  // Staged metadata gates the config pre-apply, so the abort check has to sit between them.
+  const staged = section(
+    runtime,
+    "if (isGguf && isDiffusion === undefined) {",
+    "const targetIsDiffusion = isDiffusion === true;",
+  );
+  const stagedAwait = staged.indexOf("await fetchGgufStagedMetadata(");
+  const stagedAbort = staged.indexOf(ABORT_CHECK);
+  assert.notEqual(stagedAwait, -1, "expected the staged-metadata await");
+  assert.notEqual(stagedAbort, -1, "staged metadata must be followed by an abort check");
+  assert.ok(stagedAbort > stagedAwait, "the abort check must follow the await");
+  // validateModel is the other unabortable preflight that precedes shared-state writes.
+  const validation = section(
+    runtime,
+    "const validation = await validateModel({",
+    "if (validation.mlx_loads_base_model) {",
+  );
+  assert.ok(
+    validation.includes(ABORT_CHECK),
+    "validateModel must be followed by an abort check before it writes shared state",
+  );
+});
+
+test("a superseded preflight yields instead of starting the stale load", () => {
+  const runtime = read(RUNTIME);
+  // A newer pick cannot take the lifecycle lease while this preflight holds it, so it
+  // leaves no picker entry behind: the epoch, not only the picker, has to be re-checked.
+  const recheck = section(
+    runtime,
+    "// Re-check the tracked picker for a load that was already starting",
+    "const forceCancelActive = stopDecision.forceCancelActive;",
+  );
+  assert.match(
+    recheck,
+    /if \(rivalLoadStarted\(\) \|\| modelSelectionIntentEpoch !== loadIntentId\) \{/,
+  );
+  assert.match(recheck, /releasePreflightLifecycleLease\(\);/);
+});
+
+test("a superseded run does not restore its config over the replacement", () => {
+  const runtime = read(RUNTIME);
+  const terminal = section(
+    runtime,
+    "await performLoad();",
+    "// Last act of this run's coroutine",
+  );
+  assert.match(
+    terminal,
+    /if \(modelSelectionIntentEpoch === loadIntentId\) restorePreviousConfig\(\);/,
+    "only a run that still owns the selection may roll the shared config back",
+  );
+});

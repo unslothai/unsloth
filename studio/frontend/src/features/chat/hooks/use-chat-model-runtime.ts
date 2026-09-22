@@ -188,6 +188,11 @@ type ActiveModelLoadRun = {
   cancelPromise: Promise<boolean> | null;
   rollbackCheckpoint: string | null;
   rollbackConfig?: PerModelConfig;
+  /** Resolves once the coroutine that owns this run has unwound. Cancellation
+   *  holds the slot until then, so an aborted load cannot apply or restore
+   *  configuration while the replacement that superseded it owns the slot. */
+  settledPromise: Promise<void>;
+  markSettled: () => void;
 };
 
 /** The selection the user last asked for, so an await can tell it was superseded. */
@@ -959,6 +964,11 @@ export function useChatModelRuntime() {
           return false;
         } finally {
           if (ownsModelLoadRun(activeLoadRunRef.current, run)) {
+            // The aborted coroutine may still be parked inside an unabortable preflight
+            // await (status, a consent dialog, staged metadata). Its own abort checks stop
+            // it from touching shared state, but hold the slot until it has actually
+            // unwound, or a replacement could overlap the run it just replaced.
+            await run.settledPromise;
             activeLoadRunRef.current = releaseOwnedModelLoadRun(
               activeLoadRunRef.current,
               run,
@@ -1336,6 +1346,9 @@ export function useChatModelRuntime() {
             // Same window as the confirm below: a rival load may have started during that GET, and it owns
             // the resident model now.
             if (rivalLoadStarted()) return;
+            // Same window as the confirmation below: a newer pick that could not take the
+            // lease still supersedes the status this preflight was about to adopt.
+            if (modelSelectionIntentEpoch !== loadIntentId) return;
             // Roll back the config pre-applied for the load that is not happening, before hydrating, so the
             // resident status wins over the staged snapshot. The helper carries the diffusion flag.
             restorePreviousConfig();
@@ -1436,7 +1449,9 @@ export function useChatModelRuntime() {
       }
       // Re-check the tracked picker for a load that was already starting when this lifecycle lease was acquired.
       try {
-        if (rivalLoadStarted()) {
+        // A newer pick supersedes this preflight even though it could not claim the lease:
+        // without this the stale load would start anyway and discard the user's newer choice.
+        if (rivalLoadStarted() || modelSelectionIntentEpoch !== loadIntentId) {
           releasePreflightLifecycleLease();
           return;
         }
@@ -1521,6 +1536,13 @@ export function useChatModelRuntime() {
       loadingModelRef.current = loadInfo;
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
+      // Settlement is the last act of this run's coroutine: the resolver is assigned
+      // synchronously here, so a cancel can await it even while the run is parked in an
+      // unabortable preflight await.
+      let markLoadRunSettled = () => {};
+      const loadRunSettled = new Promise<void>((resolve) => {
+        markLoadRunSettled = resolve;
+      });
       // Claim the slot for this attempt. Every late callback below proves it still
       // owns the run before it touches shared loading state.
       const loadRun: ActiveModelLoadRun = {
@@ -1530,6 +1552,8 @@ export function useChatModelRuntime() {
         cancelPromise: null,
         rollbackCheckpoint: previousCheckpoint,
         rollbackConfig: previousConfigForReplacement,
+        settledPromise: loadRunSettled,
+        markSettled: markLoadRunSettled,
 
         requestId: crypto.randomUUID(),
         loadAttemptPath: null,
@@ -1617,6 +1641,9 @@ export function useChatModelRuntime() {
               })
             ).isDiffusion;
           }
+          // The staged-metadata read cannot be aborted, so a replacement picked while it
+          // was outstanding would otherwise have this load's config applied over it.
+          if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           const targetIsDiffusion = isDiffusion === true;
           if (pendingLoadConfig) {
             applyPerModelConfigToRuntime(pendingLoadConfig, {
@@ -1905,6 +1932,9 @@ export function useChatModelRuntime() {
                 : {}),
             });
             isLora = validation.is_lora ?? isLora;
+            // validateModel cannot be aborted either, and everything below writes shared
+            // state, so stop here if a replacement superseded this load meanwhile.
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
             if (validation.mlx_loads_base_model) {
               mlxLoadProgress = true;
               const mlxBaseDescription = isLora
@@ -3054,7 +3084,10 @@ export function useChatModelRuntime() {
           }
         }
       } catch (error) {
-        restorePreviousConfig();
+        // A superseded run must not restore its config over the replacement's: the newer
+        // selection inherited this run's rollback target and owns restoration from here.
+        // Standalone cancellations keep restoring.
+        if (modelSelectionIntentEpoch === loadIntentId) restorePreviousConfig();
         if (abortCtrl.signal.aborted) return; // User cancelled, nothing to report
         resetLoadingUiForRun(loadRun);
         const message =
@@ -3064,6 +3097,9 @@ export function useChatModelRuntime() {
         if (throwOnError) {
           throw error instanceof Error ? error : new Error(message);
         }
+      } finally {
+        // Last act of this run's coroutine: unblocks a cancellation holding the slot.
+        markLoadRunSettled();
       }
     },
     [
