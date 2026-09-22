@@ -501,19 +501,29 @@ def _create_unsloth_optimizer(
             "without FSDP, or drop embedding_learning_rate."
         )
 
-    optimizer_grouped_parameters = [
-        {
-            "params": [
+    # Four categories, but a LoRA run trains no bias and no norm, so the two no-decay
+    # ones come back empty, and an empty group is not free: AdafactorSchedule.get_lr
+    # reads group["params"][0] unguarded, and every extra group is one more that
+    # torch's load_state_dict insists the checkpoint have, so keeping the empty ones
+    # would stop runs started before this resuming. Dropped, as
+    # `_create_q_galore_optimizer` below already does.
+    optimizer_grouped_parameters = []
+    for group, group_lr in (("non_embeddings", lr), ("embeddings", embedding_lr)):
+        for decays in (True, False):
+            params = [
                 param
                 for name, param in param_groups[group].items()
                 if (name in decay_parameter_names) is decays
-            ],
-            "weight_decay": weight_decay if decays else 0.0,
-            "lr": group_lr,
-        }
-        for group, group_lr in (("non_embeddings", lr), ("embeddings", embedding_lr))
-        for decays in (True, False)
-    ]
+            ]
+            if not params:
+                continue
+            optimizer_grouped_parameters.append(
+                {
+                    "params": params,
+                    "weight_decay": weight_decay if decays else 0.0,
+                    "lr": group_lr,
+                }
+            )
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
     return optimizer
 
