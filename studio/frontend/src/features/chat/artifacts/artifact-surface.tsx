@@ -210,11 +210,13 @@ export function ArtifactSurface({
         variant === "panel"
           ? {
               // 90 above and 32 below, the same 32 the shell's mb-8 draws, so
-              // the three move together with the UI font size.
+              // the three move together with the UI font size. The content
+              // inset inside the 90 is the window's titlebar band, which does
+              // not scale, so only the header and gap above the panel do.
               marginTop:
-                "calc(90px * var(--ui-space-scale, 1) + var(--studio-chat-notice-height, 0px))",
+                "calc(var(--studio-content-top-inset, 0px) + (90px - var(--studio-content-top-inset, 0px)) * var(--ui-space-scale, 1) + var(--studio-chat-notice-height, 0px))",
               height:
-                "calc(100% - 122px * var(--ui-space-scale, 1) - var(--studio-chat-notice-height, 0px))",
+                "calc(100% - var(--studio-content-top-inset, 0px) - (122px - var(--studio-content-top-inset, 0px)) * var(--ui-space-scale, 1) - var(--studio-chat-notice-height, 0px))",
             }
           : undefined
       }

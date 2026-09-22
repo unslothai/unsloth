@@ -168,13 +168,15 @@ test("the artifact panel's vertical budget adds up at any size", () => {
   // panel outgrows its pane and the bottom is clipped.
   const surface = readSrc("features/chat/artifacts/artifact-surface.tsx");
   assert.match(surface, /\bmb-8\b/, "the panel no longer carries mb-8");
+  // The titlebar band inside the 90 is window chrome and stays fixed, so it
+  // comes out of the offset before the rest is scaled and goes back in after.
   assert.match(
     surface,
-    /marginTop:\s*\n?\s*"calc\(90px \* var\(--ui-space-scale, 1\) \+ var\(--studio-chat-notice-height, 0px\)\)"/,
+    /marginTop:\s*\n?\s*"calc\(var\(--studio-content-top-inset, 0px\) \+ \(90px - var\(--studio-content-top-inset, 0px\)\) \* var\(--ui-space-scale, 1\) \+ var\(--studio-chat-notice-height, 0px\)\)"/,
   );
   assert.match(
     surface,
-    /height:\s*\n?\s*"calc\(100% - 122px \* var\(--ui-space-scale, 1\) - var\(--studio-chat-notice-height, 0px\)\)"/,
+    /height:\s*\n?\s*"calc\(100% - var\(--studio-content-top-inset, 0px\) - \(122px - var\(--studio-content-top-inset, 0px\)\) \* var\(--ui-space-scale, 1\) - var\(--studio-chat-notice-height, 0px\)\)"/,
   );
   // 90 above plus the 32 of mb-8 is the 122 taken off the pane.
   assert.equal(90 + 8 * 4, 122);
