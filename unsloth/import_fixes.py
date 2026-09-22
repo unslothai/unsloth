@@ -1573,6 +1573,48 @@ def fix_transformers_is_torch_fx_available():
     logger.info("Unsloth: Restored transformers `is_torch_fx_available` for remote modeling code written against 4.x.")
 
 
+def _validate_rope_accepting_ignore_keys(original):
+    """``original`` wrapped to accept and drop the 5.0 ``ignore_keys`` argument, or ``None``
+    when it already takes it (or cannot be inspected, or is already wrapped)."""
+    if original is None or getattr(original, "_unsloth_ignore_keys", False):
+        return None
+    try:
+        parameters = inspect.signature(original).parameters
+    except (TypeError, ValueError):
+        return None
+    if "ignore_keys" in parameters:
+        return None
+    # The 5.0 signature was (self, ignore_keys = None). A single positional argument is that
+    # parameter only when the current validator takes no positional argument of its own.
+    takes_positional = any(
+        p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
+        for p in list(parameters.values())[1:]
+    )
+
+    @functools.wraps(original)
+    def validate_rope(
+        self,
+        *args,
+        ignore_keys = None,
+        **kwargs,
+    ):
+        if len(args) == 1 and not kwargs and not takes_positional:
+            args = ()
+        return original(self, *args, **kwargs)
+
+    validate_rope._unsloth_ignore_keys = True
+    return validate_rope
+
+
+def _patch_own_validate_rope(cls):
+    wrapped = _validate_rope_accepting_ignore_keys(cls.__dict__.get("validate_rope"))
+    if wrapped is not None:
+        try:
+            cls.validate_rope = wrapped
+        except Exception:
+            pass
+
+
 def fix_transformers_validate_rope_ignore_keys():
     """Let remote configuration code call ``validate_rope(ignore_keys = ...)`` on a transformers
     that dropped that parameter.
@@ -1583,35 +1625,57 @@ def fix_transformers_validate_rope_ignore_keys():
     ``AutoConfig.from_pretrained`` with ``TypeError: validate_rope() got an unexpected keyword
     argument 'ignore_keys'`` before a single weight is read. The wrapper accepts and drops the
     keyword; on a build whose validator still takes it, or has no mixin at all (4.x), nothing
-    is changed."""
+    is changed.
+
+    Some configurations define their own validator (Phi3Config, PhimoeConfig, DeepseekV4Config
+    and Phi4MultimodalConfig on 5.17), and a remote subclass of one of those resolves to it
+    rather than to the mixin. Every class already imported is patched, and a hook on
+    ``PreTrainedConfig.__init_subclass__`` patches every class defined afterwards: transformers
+    imports its model configurations lazily, and remote configurations arrive later still."""
     try:
         from transformers.modeling_rope_utils import RotaryEmbeddingConfigMixin
     except Exception:
         return
     original = RotaryEmbeddingConfigMixin.__dict__.get("validate_rope")
-    if original is None or getattr(original, "_unsloth_ignore_keys", False):
-        return
     try:
-        if "ignore_keys" in inspect.signature(original).parameters:
+        if original is None or "ignore_keys" in inspect.signature(original).parameters:
             return
     except (TypeError, ValueError):
         return
+    _patch_own_validate_rope(RotaryEmbeddingConfigMixin)
 
-    @functools.wraps(original)
-    def validate_rope(
-        self,
-        *args,
-        ignore_keys = None,
-        **kwargs,
-    ):
-        # The 5.0 signature was (self, ignore_keys = None): one positional argument is that
-        # parameter and is dropped the same way; anything else is the validator's business.
-        if len(args) == 1 and not kwargs:
-            args = ()
-        return original(self, *args, **kwargs)
+    try:
+        from transformers import PretrainedConfig as _BaseConfig
+    except Exception:
+        _BaseConfig = None
+    if _BaseConfig is not None:
+        pending = [_BaseConfig]
+        seen = set()
+        while pending:
+            cls = pending.pop()
+            if id(cls) in seen:
+                continue
+            seen.add(id(cls))
+            _patch_own_validate_rope(cls)
+            try:
+                pending.extend(cls.__subclasses__())
+            except Exception:
+                pass
+        hook = _BaseConfig.__dict__.get("__init_subclass__")
+        if not getattr(getattr(hook, "__func__", hook), "_unsloth_ignore_keys_hook", False):
+            previous = hook.__func__ if isinstance(hook, classmethod) else None
 
-    validate_rope._unsloth_ignore_keys = True
-    RotaryEmbeddingConfigMixin.validate_rope = validate_rope
+            def __init_subclass__(cls, **kwargs):
+                if previous is not None:
+                    previous(cls, **kwargs)
+                else:
+                    super(_BaseConfig, cls).__init_subclass__(**kwargs)
+                _patch_own_validate_rope(cls)
+
+            __init_subclass__._unsloth_ignore_keys_hook = True
+            if previous is not None:
+                __init_subclass__.__wrapped__ = previous
+            _BaseConfig.__init_subclass__ = classmethod(__init_subclass__)
     logger.info(
         "Unsloth: Patched transformers `validate_rope` to accept the 5.0 `ignore_keys` argument."
     )

@@ -79,8 +79,9 @@ def test_is_torch_fx_available_is_importable_from_transformers_utils_after_the_f
     from transformers.utils import is_torch_fx_available
     import transformers.utils.import_utils as import_utils
 
-    assert is_torch_fx_available() is True
-    assert import_utils.is_torch_fx_available() is True
+    # The 4.x definition: whatever torch availability says (False on a torch-less MLX host).
+    assert is_torch_fx_available() == import_utils.is_torch_available()
+    assert import_utils.is_torch_fx_available() == import_utils.is_torch_available()
     fix_transformers_is_torch_fx_available()  # idempotent
     assert import_utils.is_torch_fx_available is import_utils.is_torch_fx_available
 
@@ -90,3 +91,21 @@ def test_the_mlx_branch_installs_the_fx_shim_too():
 
     source = (pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "__init__.py").read_text()
     assert "fix_transformers_is_torch_fx_available" in source[source.find("if _IS_MLX:"):]
+
+
+def test_a_config_with_its_own_validator_accepts_ignore_keys_too():
+    """Phi3Config (and a remote subclass of it) resolves validate_rope to its own override,
+    not the mixin's; classes defined after the fix are covered by the subclass hook."""
+    fix_transformers_validate_rope_ignore_keys()
+    from transformers import Phi3Config
+
+    config = Phi3Config(hidden_size = 32, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 32, vocab_size = 16)
+    config.validate_rope(ignore_keys = {"rope_type"})
+
+    class LaterConfig(Phi3Config):   # defined after the fix, like a remote configuration
+        model_type = "later_phi3_for_test"
+
+        def validate_rope(self):
+            return "own"
+
+    assert LaterConfig.validate_rope(config, ignore_keys = {"x"}) == "own"
