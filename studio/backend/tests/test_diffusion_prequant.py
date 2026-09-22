@@ -2026,7 +2026,13 @@ def test_an_unreachable_hub_is_reported_as_itself_not_blamed_on_the_last_candida
 
     asked: list = []
 
-    def _dl(repo_id, filename, token = None, cache_dir = None, local_files_only = False):
+    def _dl(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+        local_files_only = False,
+    ):
         asked.append(filename)
         raise LocalEntryNotFoundError("connection error")
 
@@ -2067,7 +2073,9 @@ def test_a_cached_name_this_install_cannot_open_is_not_a_cache_hit(monkeypatch, 
     cached = {"Hosted-FP8.safetensors": str(tmp_path / "st"), "Hosted-FP8.pt": None}
     monkeypatch.setattr(pq, "_cached_in_root", lambda src, root, name = None: cached.get(name))
 
-    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None, name = None: True)
+    monkeypatch.setattr(
+        pq, "restricted_prequant_load_supported", lambda scheme = None, name = None: True
+    )
     assert pq.cached_checkpoint_path(source) == str(tmp_path / "st")
 
     # The install can read a pickle but not a safetensors artifact: the only cached name is one it

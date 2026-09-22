@@ -410,6 +410,7 @@ def test_the_real_installed_torchao_answers_the_int8_question(monkeypatch):
     from core.inference.prequant_safetensors import scheme_is_flattenable
 
     import torchao
+
     answer = scheme_is_flattenable(_make_quant_config("int8"))
     version = tuple(int(p) for p in torchao.__version__.split("+")[0].split(".")[:2])
     if version < (0, 18):
