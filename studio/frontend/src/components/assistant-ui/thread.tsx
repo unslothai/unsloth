@@ -1787,20 +1787,49 @@ const ThreadMessage: FC = () => {
 const ForkContinuationRule: FC = () => {
   const threadId = useChatRuntimeStore((s) => s.activeThreadId);
   const messageId = useAuiState(({ message }) => message.id);
-  const isBoundary = useForkBoundaryStore((s) =>
-    threadId === null ? false : s.boundaryByThreadId[threadId] === messageId,
+  const boundary = useForkBoundaryStore((s) =>
+    threadId === null ? undefined : s.boundaryByThreadId[threadId],
   );
-  if (!isBoundary) return null;
+  const navigate = useNavigate();
+  if (!boundary || boundary.messageId !== messageId) return null;
+  const sourceThreadId = boundary.sourceThreadId;
+  const label = (
+    <>
+      <GitBranchIcon strokeWidth={1.75} className="size-3.5" />
+      Continued from chat
+    </>
+  );
+  const labelClass =
+    "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap leading-none";
   return (
     <div
       data-slot="fork-continuation-rule"
       className="mt-6 mb-2 flex w-full items-center gap-3 text-muted-foreground text-sm"
     >
       <span aria-hidden={true} className="h-px flex-1 bg-border" />
-      <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap leading-none">
-        <GitBranchIcon strokeWidth={1.75} className="size-3.5" />
-        Continued from chat
-      </span>
+      {sourceThreadId ? (
+        <button
+          type="button"
+          data-slot="fork-continuation-link"
+          title="Open the chat this was forked from"
+          onClick={() =>
+            navigate({
+              to: "/chat",
+              search: { thread: sourceThreadId },
+              replace: false,
+            })
+          }
+          className={cn(
+            labelClass,
+            "cursor-pointer rounded-sm underline decoration-transparent underline-offset-2 transition-colors hover:text-foreground hover:decoration-current focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
+          )}
+        >
+          {label}
+        </button>
+      ) : (
+        // The source is gone, so the text stays but leads nowhere.
+        <span className={labelClass}>{label}</span>
+      )}
       <span aria-hidden={true} className="h-px flex-1 bg-border" />
     </div>
   );

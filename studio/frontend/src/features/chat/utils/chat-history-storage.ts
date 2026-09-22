@@ -744,7 +744,15 @@ export async function listStoredChatMessages(
     }),
   ]);
   if (backendThread) {
-    setForkBoundary(threadId, backendThread.forkBoundaryMessageId);
+    setForkBoundary(
+      threadId,
+      backendThread.forkBoundaryMessageId,
+      // A deleted source cannot be opened, so the divider drops its link rather than its text.
+      backendThread.forkedFromThreadId &&
+        !isChatThreadDeleted(backendThread.forkedFromThreadId)
+        ? backendThread.forkedFromThreadId
+        : null,
+    );
   }
   if (backendMessages && (backendThread || backendMessages.length > 0)) {
     const merged = mergeMessages(backendMessages, legacyMessages, {

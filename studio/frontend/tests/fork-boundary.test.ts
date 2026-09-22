@@ -30,13 +30,28 @@ test("a thread with no boundary published has none", () => {
   );
 });
 
-test("a fork's boundary is kept per thread", () => {
+test("a fork's boundary and source are kept per thread", () => {
   reset();
-  setForkBoundary("fork-a", "msg-1");
-  setForkBoundary("fork-b", "msg-2");
+  setForkBoundary("fork-a", "msg-1", "src-a");
+  setForkBoundary("fork-b", "msg-2", "src-b");
   const { boundaryByThreadId } = useForkBoundaryStore.getState();
-  assert.equal(boundaryByThreadId["fork-a"], "msg-1");
-  assert.equal(boundaryByThreadId["fork-b"], "msg-2");
+  assert.deepEqual(boundaryByThreadId["fork-a"], {
+    messageId: "msg-1",
+    sourceThreadId: "src-a",
+  });
+  assert.deepEqual(boundaryByThreadId["fork-b"], {
+    messageId: "msg-2",
+    sourceThreadId: "src-b",
+  });
+});
+
+test("an omitted source leaves the divider without a link", () => {
+  reset();
+  setForkBoundary("t", "msg-1");
+  assert.equal(
+    useForkBoundaryStore.getState().boundaryByThreadId["t"].sourceThreadId,
+    null,
+  );
 });
 
 test("null and undefined clear the entry, so a plain chat shows no divider", () => {
@@ -51,10 +66,13 @@ test("null and undefined clear the entry, so a plain chat shows no divider", () 
 
 test("republishing the same boundary keeps the identity, so rows do not re-render", () => {
   reset();
-  setForkBoundary("t", "msg-1");
+  setForkBoundary("t", "msg-1", "src");
   const first = useForkBoundaryStore.getState().boundaryByThreadId;
-  setForkBoundary("t", "msg-1");
+  setForkBoundary("t", "msg-1", "src");
   assert.equal(useForkBoundaryStore.getState().boundaryByThreadId, first);
+  // A source that has since been deleted is a real change.
+  setForkBoundary("t", "msg-1", null);
+  assert.notEqual(useForkBoundaryStore.getState().boundaryByThreadId, first);
 });
 
 test("clearing a thread that has no entry keeps the identity", () => {
@@ -107,13 +125,24 @@ test("ThreadMessage renders the divider after every message kind", () => {
 test("the divider is gated on the active thread's boundary", () => {
   const text = findDeclaration("ForkContinuationRule").getText();
   assert.match(text, /useForkBoundaryStore/);
-  assert.match(text, /boundaryByThreadId\[threadId\] === messageId/);
+  assert.match(text, /boundary\.messageId !== messageId/);
   // Nothing at all when this is not the boundary row.
-  assert.match(text, /if \(!isBoundary\) return null;/);
+  assert.match(text, /if \(!boundary \|\| boundary\.messageId !== messageId\) return null;/);
   assert.match(text, /Continued from chat/);
 });
 
 test("a thread with no active id never claims a boundary", () => {
   const text = findDeclaration("ForkContinuationRule").getText();
-  assert.match(text, /threadId === null \? false/);
+  assert.match(text, /threadId === null \? undefined/);
+});
+
+test("the label links back to the source chat, and only while there is one", () => {
+  const text = findDeclaration("ForkContinuationRule").getText();
+  // Same navigation the fork action itself uses.
+  assert.match(text, /to: "\/chat",\s*search: \{ thread: sourceThreadId \}/);
+  assert.match(text, /sourceThreadId \? \(/);
+  // A deleted source keeps the words but drops the button.
+  assert.match(text, /<span className=\{labelClass\}>\{label\}<\/span>/);
+  // A button, not an anchor: it is in-app navigation, not a URL.
+  assert.match(text, /<button\n?\s*type="button"/);
 });
