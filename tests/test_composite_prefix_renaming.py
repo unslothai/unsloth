@@ -528,3 +528,71 @@ def test_an_unrelated_module_keeps_its_own_same_named_function(
 
     assert outsider.get_model_conversion_mapping is mine
     assert outsider.get_model_conversion_mapping() == "mine"
+
+
+def test_it_defers_to_the_unsloth_zoo_copy_of_the_same_repair(monkeypatch):
+    """Two packages carry this repair; exactly one of them must install it.
+
+    unsloth_zoo owns the bitsandbytes Linear4bit patch that reports the failure and is
+    importable without unsloth, so it carries the same re-scope in
+    `temporary_patches/conversion_mapping_rescope.py`. A second wrapper on top of the first
+    is measurably inert -- the first pass leaves no leaked signature for the second to match
+    -- but it is still a wrapper nobody needs, and one of the two has to yield. This one does.
+    """
+    conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
+    import unsloth.import_fixes as import_fixes
+
+    if import_fixes._transformers_rescopes_submodule_prefix_renamings():
+        pytest.skip("this transformers carries the upstream fix; neither copy installs")
+
+    before = conversion_mapping.get_model_conversion_mapping
+
+    def zoo_wrapper(*args, **kwargs):
+        return before(*args, **kwargs)
+
+    zoo_wrapper.__wrapped__ = before
+    setattr(zoo_wrapper, "_unsloth_zoo_patched_composite_prefix_renaming", True)
+    monkeypatch.setattr(conversion_mapping, "get_model_conversion_mapping", zoo_wrapper)
+
+    import_fixes.fix_transformers_composite_prefix_renaming()
+
+    assert conversion_mapping.get_model_conversion_mapping is zoo_wrapper
+    assert not getattr(
+        conversion_mapping.get_model_conversion_mapping,
+        "_unsloth_patched_composite_prefix_renaming", False,
+    )
+
+
+def test_it_finds_the_zoo_mark_under_an_unmarked_wrapper(monkeypatch):
+    """unsloth_zoo's moe_utils_bnb4bit wraps the same function without `__wrapped__`.
+
+    The detector therefore walks the whole chain rather than reading only the top object.
+    """
+    conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
+    import unsloth.import_fixes as import_fixes
+
+    def zoo_repair():
+        pass
+    setattr(zoo_repair, "_unsloth_zoo_patched_composite_prefix_renaming", True)
+
+    def moe_wrapper():
+        pass
+    moe_wrapper.__wrapped__ = zoo_repair
+
+    monkeypatch.setattr(conversion_mapping, "get_model_conversion_mapping", moe_wrapper)
+    assert import_fixes._zoo_composite_prefix_renaming_installed() is True
+
+
+def test_the_zoo_detector_cannot_spin_on_a_cycle(monkeypatch):
+    conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
+    import unsloth.import_fixes as import_fixes
+
+    def a():
+        pass
+    def b():
+        pass
+    a.__wrapped__ = b
+    b.__wrapped__ = a
+
+    monkeypatch.setattr(conversion_mapping, "get_model_conversion_mapping", a)
+    assert import_fixes._zoo_composite_prefix_renaming_installed() is False

@@ -886,6 +886,31 @@ def fix_transformers_fully_masked_rows():
 
 _COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_patched_composite_prefix_renaming"
 
+# unsloth_zoo marks its own copy of this repair with this. Spelled as a literal rather than
+# imported, so a zoo too old to define it cannot turn a skipped repair into an ImportError.
+_ZOO_COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_zoo_patched_composite_prefix_renaming"
+
+
+def _zoo_composite_prefix_renaming_installed():
+    """Has unsloth_zoo's copy of this repair already wrapped the function?
+
+    The whole `__wrapped__` chain, because zoo also wraps the same function in
+    `temporary_patches/moe_utils_bnb4bit.py` without setting `__wrapped__`, so the repair can
+    sit under another wrapper. Bounded, so a malformed chain cannot spin.
+    """
+    try:
+        from transformers import conversion_mapping
+    except Exception:
+        return False
+    function = getattr(conversion_mapping, "get_model_conversion_mapping", None)
+    seen = 0
+    while function is not None and seen < 8:
+        if getattr(function, _ZOO_COMPOSITE_PREFIX_RENAMING_FLAG, False):
+            return True
+        function = getattr(function, "__wrapped__", None)
+        seen += 1
+    return False
+
 # How many of a submodule's own parameter names to try a renaming against. A prefix renaming
 # either matches every name under the submodule or none of them, so one would do; eight costs
 # nothing and covers a mapping that only rewrites some leaf names.
@@ -1191,6 +1216,14 @@ def fix_transformers_composite_prefix_renaming():
     fires on nothing, and for the standalone text model the entry was written for.
     """
     if _transformers_rescopes_submodule_prefix_renamings():
+        return
+    # unsloth_zoo carries the same repair, in temporary_patches/conversion_mapping_rescope.py,
+    # because it owns the bitsandbytes Linear4bit patch that reports this failure and is
+    # importable without unsloth. When it installed first there is nothing left to do: a second
+    # wrapper is measurably inert -- the first pass leaves no leaked signature for the second to
+    # match -- but it is still a wrapper nobody needs, and one of the two has to yield. This one
+    # does, so the newer implementation wins on a stack where the two versions disagree.
+    if _zoo_composite_prefix_renaming_installed():
         return
     try:
         from transformers import conversion_mapping
