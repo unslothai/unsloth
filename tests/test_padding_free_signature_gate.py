@@ -20,7 +20,18 @@ import pytest
 torch = pytest.importorskip("torch")
 from torch import nn  # noqa: E402
 
-from unsloth.trainer import _forward_accepts_packing_kwargs  # noqa: E402
+try:
+    from unsloth.trainer import _forward_accepts_packing_kwargs  # noqa: E402
+except ImportError:
+    # On Apple Silicon with MLX, `unsloth/__init__.py` replaces `unsloth.trainer` with a
+    # synthetic module carrying only the MLX trainer names, so `unsloth/trainer.py` never
+    # loads and every private helper in it is unreachable. Nothing to test there either:
+    # padding-free belongs to the torch trainer, and MLX training does not go through it.
+    # Skip rather than let the whole module fail collection, which aborts more than itself.
+    import unsloth
+    if getattr(unsloth, "DEVICE_TYPE", None) != "mlx":
+        raise
+    pytest.skip("unsloth.trainer is the MLX shim here", allow_module_level = True)
 
 
 class _NoKwargs(nn.Module):
