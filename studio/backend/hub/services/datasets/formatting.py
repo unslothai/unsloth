@@ -49,7 +49,7 @@ from hub.utils.paths import (
     normalize_path,
     resolve_dataset_path,
 )
-from hub.utils.hf_tokens import cached_read_refused
+from hub.utils.hf_tokens import cached_read_refused, recording_a_request_token_fetch
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.paths.path_utils import drop_shadowed_appledouble_names
 
@@ -477,8 +477,16 @@ def check_format_response(
                             "token": hf_token,
                         }
 
-                        streamed_ds = load_dataset(**load_kwargs)
-                        rows = list(islice(streamed_ds, PREVIEW_SIZE))
+                        # Recorded against the call that can materialise rows, not the
+                        # listing above it: a preview writes into the datasets cache under
+                        # what may be a one-off token, and unrecorded a later tokenless
+                        # caller reads "none needed one". Recording before `list_repo_files`
+                        # left a record for a fetch a 404 or outage never made.
+                        with recording_a_request_token_fetch(
+                            hf_token, request.dataset_name, "dataset"
+                        ):
+                            streamed_ds = load_dataset(**load_kwargs)
+                            rows = list(islice(streamed_ds, PREVIEW_SIZE))
                         if rows:
                             preview_slice = Dataset.from_list(rows)
                 except Exception as e:
@@ -500,9 +508,12 @@ def check_format_response(
                     if request.subset:
                         load_kwargs["name"] = request.subset
 
-                    streamed_ds = load_dataset(**load_kwargs)
+                    # Tier 2 reaches the network on its own, whether or not tier 1 ran, and
+                    # takes its record back if it fails having cached nothing.
+                    with recording_a_request_token_fetch(hf_token, request.dataset_name, "dataset"):
+                        streamed_ds = load_dataset(**load_kwargs)
 
-                    rows = list(islice(streamed_ds, PREVIEW_SIZE))
+                        rows = list(islice(streamed_ds, PREVIEW_SIZE))
                     if not rows:
                         raise HTTPException(
                             status_code = 400,

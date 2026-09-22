@@ -157,6 +157,16 @@ def _coerce_optional_bool(value, default: bool) -> bool:
     return bool(value)
 
 
+def apply_save_strategy(config, save_steps_val):
+    # Save Steps 0 means "no checkpoints"; without an explicit strategy HF defaults to every 500 steps.
+    if save_steps_val and save_steps_val > 0:
+        config["save_steps"] = save_steps_val
+        config["save_strategy"] = "steps"
+    else:
+        config["save_strategy"] = "no"
+    return config
+
+
 def _coerce_optional_nonneg_float(name: str, value):
     """Reject negatives and non-finite; `ge=0` misses raw callers, and inf never binds."""
     if value is None:
@@ -643,6 +653,7 @@ class TrainingProgress:
     status_message: str = "Ready to train"
     elapsed_seconds: Optional[float] = None
     eta_seconds: Optional[float] = None
+    session_start_step: int = 0
     grad_norm: Optional[float] = None
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
@@ -1041,6 +1052,10 @@ class _MLXTrainerAdapter:
                     self.training_progress.elapsed_seconds,
                 ),
                 eta_seconds = event.get("eta_seconds", self.training_progress.eta_seconds),
+                session_start_step = event.get(
+                    "session_start_step",
+                    self.training_progress.session_start_step,
+                ),
                 grad_norm = event.get("grad_norm", self.training_progress.grad_norm),
                 num_tokens = event.get("num_tokens", self.training_progress.num_tokens),
                 eval_loss = event.get("eval_loss", self.training_progress.eval_loss),
@@ -1188,6 +1203,7 @@ class TrainingBackend:
         # Xet -> HTTP model-load fallback state (config kept for the respawn).
         self._last_full_config: Optional[dict] = None
         self._in_model_load: bool = False
+        self._model_download_repo_id: Optional[str] = None
         self._xet_fallback_used: bool = False
         self._needs_xet_respawn: bool = False
 
@@ -1915,6 +1931,7 @@ class TrainingBackend:
             self._last_full_config = config
             self._last_hf_cache_env = cache_env
             self._in_model_load = False
+            self._model_download_repo_id = None
             self._xet_fallback_used = False
             self._needs_xet_respawn = False
 
@@ -2627,6 +2644,7 @@ class TrainingBackend:
                 )
                 with self._lock:
                     self._in_model_load = False
+                    self._model_download_repo_id = None
                     self._event_queue = event_queue
                     self._stop_queue = stop_queue
                     self._proc = new_proc
@@ -3004,6 +3022,12 @@ class TrainingBackend:
         if etype == "model_load_started":
             with self._lock:
                 self._in_model_load = True
+                self._model_download_repo_id = None
+            return
+        if etype == "model_load_resolved":
+            with self._lock:
+                if self._in_model_load:
+                    self._model_download_repo_id = event["repo_id"]
             return
         if etype == "model_load_completed":
             with self._lock:
@@ -3054,6 +3078,9 @@ class TrainingBackend:
                 self._progress.total_steps = event.get("total_steps", self._progress.total_steps)
                 self._progress.elapsed_seconds = event.get("elapsed_seconds")
                 self._progress.eta_seconds = event.get("eta_seconds")
+                self._progress.session_start_step = event.get(
+                    "session_start_step", self._progress.session_start_step
+                )
                 self._progress.grad_norm = event.get("grad_norm")
                 self._progress.num_tokens = event.get("num_tokens")
                 self._progress.eval_loss = event.get("eval_loss")

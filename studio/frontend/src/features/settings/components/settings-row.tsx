@@ -79,9 +79,13 @@ export function SettingsRow({
                     aria-label={hint}
                     className="flex shrink-0 items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
+                    {/* Sized off the token, not size-3.5: the label beside it is
+                        scaled by the UI font size preference, and a fixed 14px
+                        glyph drifts out of proportion with it. Same curve the
+                        app's other small glyphs follow. */}
                     <HugeiconsIcon
                       icon={InformationCircleIcon}
-                      className="size-3.5"
+                      className="size-[var(--ui-icon-size-sm)]"
                     />
                   </button>
                 </TooltipTrigger>
@@ -103,7 +107,7 @@ export function SettingsRow({
           className={cn(
             "flex max-w-full shrink-0",
             // Line the control up with the first description line, not the label.
-            alignTop ? "items-start pt-[21px]" : "items-center",
+            alignTop ? "items-start pt-[calc(21px*var(--ui-space-scale,1))]" : "items-center",
           )}
         >
           {children}

@@ -408,6 +408,7 @@ class FastLanguageModel(FastLlamaModel):
         unsloth_tiled_mlp = False,
         text_only = False,
         *args,
+        on_model_resolved = None,
         **kwargs,
     ):
         quantization_config = kwargs.get("quantization_config", None)
@@ -453,6 +454,7 @@ class FastLanguageModel(FastLlamaModel):
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             delegated, tokenizer = FastModel.from_pretrained(
+                on_model_resolved = on_model_resolved,
                 model_name = model_name,
                 max_seq_length = max_seq_length,
                 dtype = dtype,
@@ -582,6 +584,9 @@ class FastLanguageModel(FastLlamaModel):
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+        # Report the loader decision before fetching this repo, including adapter bases.
+        if on_model_resolved is not None:
+            on_model_resolved(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM whose message never mentions quantization.
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
@@ -768,6 +773,9 @@ class FastLanguageModel(FastLlamaModel):
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+            # Report the loader decision before fetching this repo, including adapter bases.
+            if on_model_resolved is not None:
+                on_model_resolved(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
@@ -879,6 +887,7 @@ class FastLanguageModel(FastLlamaModel):
         # Optimized Cohere and Granite paths are disabled until their errors match.
         else:
             delegated, tokenizer = FastModel.from_pretrained(
+                on_model_resolved = on_model_resolved,
                 model_name = old_model_name,
                 max_seq_length = max_seq_length,
                 dtype = dtype,
@@ -1189,6 +1198,7 @@ class FastModel(FastBaseModel):
         target_parameters = None,  # For MoE expert parameters
         text_only = False,
         *args,
+        on_model_resolved = None,
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
@@ -1357,6 +1367,9 @@ class FastModel(FastBaseModel):
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+        # Report the loader decision before fetching this repo, including adapter bases.
+        if on_model_resolved is not None:
+            on_model_resolved(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
@@ -1693,6 +1706,9 @@ class FastModel(FastBaseModel):
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
+            # Report the loader decision before fetching this repo, including adapter bases.
+            if on_model_resolved is not None:
+                on_model_resolved(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))

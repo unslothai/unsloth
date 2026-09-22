@@ -34,6 +34,23 @@ from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 from utils.reasoning_budget import validate_reasoning_budget_message
 
 
+def resolve_inventory_handle(value: str) -> str:
+    """Turn a `ref:...` inventory identity back into the path it stands for. A reference this
+    process did not issue is left as it arrived. Decides nothing about authorization."""
+    if not isinstance(value, str) or not value.startswith("ref:"):
+        return value
+    try:
+        from hub.utils.host_paths import note_resolved_handle, resolve_host_path_reference
+    except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail loads
+        return value
+    resolved = resolve_host_path_reference(value)
+    if not resolved:
+        return value
+    # Remembered for this request so the ANSWER carries the handle, not the path.
+    note_resolved_handle(value, resolved)
+    return resolved
+
+
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
@@ -81,6 +98,8 @@ class LoadRequest(BaseModel):
         None,
         description = "Custom Jinja2 chat template to use instead of the model's default",
     )
+
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
     @field_validator("chat_template_override")
     @classmethod
@@ -412,6 +431,9 @@ class UnloadRequest(BaseModel):
             "unload takes away the llama-server they are decoding on."
         ),
     )
+    # The resident model is keyed on the path, so an unresolved handle matches nothing and
+    # reports success while the model keeps its GPU.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
 
 class SearchImagesLookupRequest(BaseModel):
@@ -468,6 +490,8 @@ class ValidateModelRequest(BaseModel):
     """Check whether an identifier resolves to a ModelConfig; does NOT load weights."""
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -518,6 +542,17 @@ class ValidateModelRequest(BaseModel):
             "sizes like /load. Only 0 changes the verdict: a zero-layer DiffusionGemma "
             "split places no layers on any device, so it cannot compete with training "
             "for VRAM. -1 (Auto) keeps the previous behaviour for callers that omit it."
+        ),
+    )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = (
+            "Per-GPU share (--tensor-split) intended for the follow-up load. Manual "
+            "mode promotes an explicit -ts from llama_extra_args into this field "
+            "before stripping the raw flag, so the preflight strips exactly the "
+            "tokens /load strips and judges the command /load will run (#11330). "
+            "No sizing here reads the ratio itself: _guard_chat_load_against_training "
+            "and _estimate_gguf_required_gb budget per device, not per share."
         ),
     )
     n_parallel: Optional[int] = Field(
@@ -609,6 +644,10 @@ class ValidateModelRequest(BaseModel):
         "n_batch", "n_ubatch", "ctx_checkpoints", "reasoning_budget", mode = "before"
     )(LoadRequest._no_booleans.__func__)
 
+    _reject_degenerate_tensor_split = field_validator("tensor_split")(
+        LoadRequest._reject_degenerate_tensor_split.__func__
+    )
+
 
 class TransformersUpgradeInfo(BaseModel):
     """A model architecture no installed transformers ships, but a newer release does."""
@@ -672,6 +711,12 @@ class TransformersUpgradeCheckRequest(BaseModel):
         description = "Run this check precedes a resume of. Lets the answer say whether "
         "installing would strand that checkpoint's exact 4-bit resume.",
     )
+
+    # This route SWALLOWS a failed lookup and answers "no upgrade needed", so training starts
+    # and dies at model load in the worker.
+    _resolve_the_handle = field_validator(
+        "model_name", "model_local_path", "model_snapshot_path", "model_snapshot_repo_id"
+    )(resolve_inventory_handle)
 
 
 class TransformersUpgradeCheckResponse(BaseModel):
@@ -790,6 +835,12 @@ class ValidateModelResponse(BaseModel):
         description = "Details for the transformers-upgrade dialog; set only when "
         "requires_transformers_upgrade is true.",
     )
+    mlx_loads_base_model: Optional[str] = Field(
+        None,
+        description = "On an MLX host, the full-precision repo that will be downloaded and "
+        "loaded in place of the requested unsloth bnb-4bit repo (or of a LoRA's bnb base), "
+        "because MLX cannot read bitsandbytes weights. None when the pick loads as asked.",
+    )
 
 
 class EstimateMemoryRequest(BaseModel):
@@ -873,6 +924,9 @@ class EstimateMemoryRequest(BaseModel):
     _no_booleans = field_validator(
         "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", mode = "before"
     )(LoadRequest._no_booleans.__func__)
+    # Unresolved, the reference reads as a Hub id and the panel is told the estimate is
+    # unavailable for a row it was offered.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
 
 class EstimateMemoryResponse(BaseModel):
@@ -3386,6 +3440,29 @@ def _merge_anthropic_system(system: Any, additions: list[str]) -> Any:
     return system
 
 
+_CLAUDE_STYLE_REMINDER_SUFFIX = (
+    " output style is active. Remember to follow the specific guidelines for this style."
+)
+
+
+def _is_repeated_claude_style_reminder(text: str, retained_system: list[str]) -> bool:
+    """Keep Claude's per-tool style reminder from growing an unchanged system prefix.
+
+    Only the exact standalone reminder is redundant, and only when both its style
+    heading and an identical reminder are already retained. Never deduplicate
+    arbitrary instructions or text from user/tool messages.
+    """
+    if not text.endswith(_CLAUDE_STYLE_REMINDER_SUFFIX):
+        return False
+    style = text[: -len(_CLAUDE_STYLE_REMINDER_SUFFIX)]
+    if not style or "\n" in style or "\r" in style:
+        return False
+    heading = f"# Output Style: {style}"
+    return any(heading in part.splitlines() for part in retained_system) and any(
+        text in part.split("\n\n") for part in retained_system
+    )
+
+
 class AnthropicMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: Union[str, list[AnthropicContentBlock]]
@@ -3561,13 +3638,15 @@ class AnthropicMessagesRequest(BaseModel):
 
         normalized_messages: list[Any] = []
         system_additions: list[str] = []
+        retained_system = [_anthropic_content_to_system_text(data.get("system"))]
         changed = False
 
         for message in messages:
             if isinstance(message, dict) and message.get("role") == "system":
-                system_additions.append(
-                    _anthropic_content_to_system_text(message.get("content", ""))
-                )
+                text = _anthropic_content_to_system_text(message.get("content", ""))
+                if not _is_repeated_claude_style_reminder(text, retained_system):
+                    system_additions.append(text)
+                    retained_system.append(text)
                 changed = True
                 continue
             normalized_messages.append(message)
@@ -3651,6 +3730,8 @@ class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
     model_path: str = Field(..., description = "Diffusion repo id or local path")
+    # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     gguf_filename: Optional[str] = Field(
         None,
         description = "The chosen single-file checkpoint (GGUF or safetensors) inside "
@@ -3667,6 +3748,8 @@ class DiffusionLoadRequest(BaseModel):
     base_repo: Optional[str] = Field(
         None, description = "Companion diffusers repo for VAE/text-encoders (default: family base)"
     )
+    # Referenced out, so resolved back in, or a caller handed a `ref:` base cannot load it.
+    _resolve_the_base_handle = field_validator("base_repo")(resolve_inventory_handle)
     family_override: Optional[str] = Field(
         None, description = "Force a family when it can't be inferred from the repo id"
     )
@@ -4567,6 +4650,8 @@ class VideoLoadRequest(BaseModel):
     """Request to load a local text-to-video checkpoint."""
 
     model_path: str = Field(..., description = "Video repo id or local path")
+    # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     gguf_filename: Optional[str] = Field(
         None,
         description = "The chosen single-file checkpoint (GGUF or safetensors) inside "
@@ -4584,6 +4669,8 @@ class VideoLoadRequest(BaseModel):
         None,
         description = "Companion diffusers repo for VAE/text-encoders (default: family base)",
     )
+    # As on the diffusion request above: referenced out, so resolved back in.
+    _resolve_the_base_handle = field_validator("base_repo")(resolve_inventory_handle)
     family_override: Optional[str] = Field(
         None, description = "Force a family when it can't be inferred from the repo id"
     )

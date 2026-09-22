@@ -1527,7 +1527,7 @@ export function DiffusionTrainPanel({
           ref={attachSettingsScroll}
           onScroll={onSettingsScroll}
           className={cn(
-            "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-6 pl-0.5 pr-8 pt-[42px] @[50rem]:overflow-y-auto",
+            "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-6 pl-0.5 pr-8 pt-[calc(42px*var(--ui-space-scale,1))] @[50rem]:overflow-y-auto",
             settingsFadeClass,
           )}
         >
@@ -1891,7 +1891,7 @@ export function DiffusionTrainPanel({
           cards' outer ring from being clipped. */}
       {/* 40px off the rule, the gutter the settings column has off the page edge. */}
       {/* This pane remains a query container for its own stat and chart breakpoints. */}
-      <div className="@container hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 pb-7 pl-10 pr-1.5 pt-4 @[50rem]:overflow-y-auto @[50rem]:pt-[42px]">
+      <div className="@container hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 pb-7 pl-10 pr-1.5 pt-4 @[50rem]:overflow-y-auto @[50rem]:pt-[calc(42px*var(--ui-space-scale,1))]">
         {viewRun && !hasRun ? (
           <>
             <div className="flex flex-col gap-3">
