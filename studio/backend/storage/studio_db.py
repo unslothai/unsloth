@@ -3922,6 +3922,8 @@ def fork_chat_thread(
     the new thread dict (with messages copied) or None if source missing. Reset both code-exec
     container ids; the per-provider snapshot is handled by the route layer. `id_factory()` produces
     fresh message uuids, injected for testability."""
+    from storage.research_runs_db import ACTIVE_STATUSES as active_research_statuses
+
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -3934,7 +3936,16 @@ def fork_chat_thread(
             conn.rollback()
             return None
         # admission and copying share the write lock, including the gap before supervisor registration.
-        if _active_chat_generation_run_ids(conn, {source_thread_id}):
+        research_status_placeholders = ",".join("?" for _ in active_research_statuses)
+        if (
+            _active_chat_generation_run_ids(conn, {source_thread_id})
+            or conn.execute(
+                f"SELECT 1 FROM research_runs WHERE thread_id = ? "
+                f"AND status IN ({research_status_placeholders}) LIMIT 1",
+                (source_thread_id, *sorted(active_research_statuses)),
+            ).fetchone()
+            is not None
+        ):
             raise ChatForkActiveGenerationError(
                 "This chat is still generating. Fork it once it finishes."
             )
