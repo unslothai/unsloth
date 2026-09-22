@@ -6110,7 +6110,7 @@ export function HubModelPicker({
                   type="button"
                   onClick={onBrowseHub}
                   aria-label="Search more models on the Hub"
-                  className="hub-tab-toggle-pill flex h-(--picker-control-h) w-(--picker-control-w) shrink-0 items-center justify-center gap-[calc(5px*var(--ui-space-scale,1))] rounded-full border-0 text-xs text-foreground transition-colors"
+                  className="hub-tab-toggle-pill hub-pill-action flex h-(--picker-control-h) w-(--picker-control-w) shrink-0 items-center justify-center gap-[calc(5px*var(--ui-space-scale,1))] rounded-full border-0 text-xs text-foreground transition-colors"
                 >
                   <HugeiconsIcon
                     icon={DashboardCircleIcon}
