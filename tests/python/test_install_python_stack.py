@@ -1273,6 +1273,7 @@ class TestPackageManagerPolicyOptOut:
         "PIP_EXTRA_INDEX_URL",
         "PIP_CONSTRAINT",
         "PIP_CERT",
+        "PIP_KEYRING_PROVIDER",
         "PIP_CONFIG_FILE",
         "UV_REQUIRE_HASHES",
         "UV_OFFLINE",
@@ -1283,6 +1284,7 @@ class TestPackageManagerPolicyOptOut:
         "UV_FIND_LINKS",
         "UV_INDEX_URL",
         "UV_EXTRA_INDEX_URL",
+        "UV_KEYRING_PROVIDER",
         "UV_CONFIG_FILE",
         "UV_NO_CONFIG",
     )
@@ -2598,6 +2600,99 @@ class TestPackageManagerPolicyOptOut:
             assert (
                 f"_carry_pip_index_into_uv {pip_name} {uv_name}" in body
             ), f"{pip_name} is carried by the other entry points but not by install.sh"
+
+    @requires_sh
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        "listing",
+        [
+            # Exactly what `pip config list` prints for an indented multi-line value:
+            # ONE row with literal backslash-n escapes, not newline bytes. Measured, not
+            # assumed -- a pip.conf with two indented find-links renders this way.
+            r"global.find-links='\n/wheelhouse/a\n/wheelhouse/b'",
+            "global.find-links='/wheelhouse/a /wheelhouse/b'",
+            "global.find-links='/wheelhouse/a,/wheelhouse/b'",
+        ],
+    )
+    def test_the_shell_decodes_a_multiline_find_links_value(self, listing, tmp_path):
+        """Deleting quotes is not decoding, and the difference is the whole value.
+
+        Left as-is, the entire string became a single uv location, so with no-index in
+        force neither configured wheelhouse could resolve anything. Python's side already
+        decoded these through ast.literal_eval, which is how the two halves disagreed.
+        """
+        library = "\n".join(
+            _shell_function_source(name) for name in ("_pm_config_rows", "_resolve_index_policy")
+        )
+        script = f"""
+        {library}
+        _PM_PIP_CONFIG_LISTING="{listing}"
+        unset UV_FIND_LINKS PIP_FIND_LINKS PIP_NO_INDEX PIP_CERT
+        _PM_INDEX_POLICY_ARGS=""
+        _resolve_index_policy
+        printf '%s' "$UV_FIND_LINKS"
+        """
+        result = subprocess.run(
+            ["/bin/sh", "-c", script],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+            cwd = tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/wheelhouse/a,/wheelhouse/b"
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        ("environment", "listing", "carried", "stops"),
+        [
+            ({"PIP_KEYRING_PROVIDER": "subprocess"}, b"", "subprocess", False),
+            ({}, b"global.keyring-provider='subprocess'\n", "subprocess", False),
+            ({"PIP_KEYRING_PROVIDER": "disabled"}, b"", None, False),
+            ({}, b"", None, False),
+            # pip has an `import` mode; uv's --keyring-provider takes disabled or
+            # subprocess only, so there is nothing to translate it to.
+            ({"PIP_KEYRING_PROVIDER": "import"}, b"", None, True),
+        ],
+    )
+    def test_the_keyring_provider_is_carried_or_stops_the_run(
+        self, environment, listing, carried, stops, monkeypatch, capsys
+    ):
+        """Carrying a private index without the means to authenticate to it is not a carry.
+
+        uv is sent to the operator's index and refused, and the pip fallback that could have
+        used the keyring has already been declined on purpose -- the same shape as the
+        certificate, and the same reason it travels with the index rather than apart.
+        """
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", listing)
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: {})
+        monkeypatch.setattr(ips, "_POLICY_UNCARRYABLE_REPORTED", False)
+        with self._environment(environment, opt_out = "1"):
+            if stops:
+                with pytest.raises(SystemExit) as stopped:
+                    ips._require_carryable_pip_policy()
+                assert stopped.value.code == 1
+                assert "keyring" in capsys.readouterr().out
+            else:
+                ips._require_carryable_pip_policy()
+                assert ips._pip_policy_as_uv_env().get("UV_KEYRING_PROVIDER") == carried
+        # No default-path assertion here: this function has no internal gate, its two
+        # callers do, and the 90-cell environment comparison is what holds that line.
+
+    def test_the_pip_bootstrap_goes_through_the_policy_wrapper(self):
+        """A uv install is a uv install, wherever it sits.
+
+        _install_bnb_rocm bootstraps pip with uv when ensurepip fails, and it did so through
+        run_maybe_quiet, which injects nothing. So a no-index operator whose wheelhouse has
+        no pip had uv reach a registry to fetch one, past the opt-out, from inside the step
+        that exists to respect it.
+        """
+        body = _shell_function_source("_install_bnb_rocm")
+        bootstrap = body[body.index("uv pip install") :]
+        bootstrap = bootstrap[: bootstrap.index("\n")]
+        assert (
+            "run_install_cmd" in body[: body.index("uv pip install")][-200:]
+        ), f"the uv pip bootstrap bypasses the policy wrapper: {bootstrap}"
 
     def test_the_shell_declines_the_forced_pip_amd_wheel_too(self):
         """install.sh runs the same direct-URL install through pip, for the same reason.

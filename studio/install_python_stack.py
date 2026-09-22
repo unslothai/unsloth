@@ -9239,6 +9239,11 @@ def _require_readable_pip_policy() -> None:
 def _require_carryable_pip_policy() -> None:
     """Under the opt-out, a pip setting uv cannot be told and we must not ignore stops.
 
+    Two settings are named here. pip's `import` keyring mode has no uv equivalent at all --
+    uv accepts `disabled` or `subprocess` only -- so an index carried without the means to
+    authenticate to it sends uv somewhere it will be refused, while the pip fallback that
+    could have used the keyring is declined on purpose.
+
     no-deps is the one setting where BOTH obvious answers are wrong. Carrying it would have
     uv install the Studio dependencies without their own dependencies, producing an
     environment that imports and then fails at run time, with no error at install time and
@@ -9253,6 +9258,22 @@ def _require_carryable_pip_policy() -> None:
     global _POLICY_UNCARRYABLE_REPORTED
     if not _respect_pm_policy():
         return
+    keyring = (_effective_pip_policy("PIP_KEYRING_PROVIDER", "keyring-provider") or "").lower()
+    if keyring and keyring not in ("auto", "disabled", "subprocess"):
+        if not _POLICY_UNCARRYABLE_REPORTED:
+            _POLICY_UNCARRYABLE_REPORTED = True
+            _step("error", f"pip keyring provider '{keyring}' has no uv equivalent", _red)
+            _safe_print(
+                _red(
+                    f"   {_POLICY_OPT_OUT_ENV} is set and pip is configured to authenticate "
+                    f"with keyring-provider '{keyring}'. uv accepts only 'disabled' or "
+                    "'subprocess', so it cannot authenticate to your index the way you "
+                    "asked, and installing past that is what this variable exists to "
+                    f"prevent. Set keyring-provider to subprocess, or unset "
+                    f"{_POLICY_OPT_OUT_ENV} for one run."
+                )
+            )
+        sys.exit(1)
     value = _effective_pip_policy("PIP_NO_DEPS", "no-deps")
     if value is None or value.strip().lower() in ("", "0", "false", "no", "off", "n", "f"):
         return
@@ -9358,6 +9379,15 @@ def _pip_policy_as_uv_env(pinned: bool = False) -> "dict[str, str]":
         constraint = _effective_pip_policy("PIP_CONSTRAINT", "constraint")
         if constraint:
             carried["UV_CONSTRAINT"] = constraint
+    # uv binds --keyring-provider to UV_KEYRING_PROVIDER and accepts `disabled` or
+    # `subprocess` only. Restrictive in the sense that matters here: it is how uv is allowed
+    # to authenticate, so carrying an index without it sends uv somewhere it will be
+    # refused. pip's `import` mode has no uv equivalent and stops the run instead, in
+    # _require_carryable_pip_policy.
+    if not os.environ.get("UV_KEYRING_PROVIDER", "").strip():
+        keyring = (_effective_pip_policy("PIP_KEYRING_PROVIDER", "keyring-provider") or "").lower()
+        if keyring == "subprocess":
+            carried["UV_KEYRING_PROVIDER"] = "subprocess"
     if pinned:
         return carried
     # A private or required index is the commonest hardening of all, and uv reads none of

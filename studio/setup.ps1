@@ -7112,6 +7112,14 @@ function Test-PipConfigFilesPresent {
 # environment that fails later with nothing to point at; ignoring it installs packages the
 # operator excluded. So neither: the run stops and names the setting.
 function Assert-CarryablePipPolicy {
+    $keyring = Get-PipPolicyKeyring
+    if ($keyring -and @('auto', 'disabled', 'subprocess') -notcontains $keyring) {
+        throw ("UNSLOTH_RESPECT_PM_POLICY is set and pip is configured to authenticate " +
+            "with keyring-provider '$keyring'. uv accepts only 'disabled' or " +
+            "'subprocess', so it cannot authenticate to your index the way you asked, " +
+            "and installing past that is what this variable exists to prevent. Set " +
+            "keyring-provider to subprocess, or unset UNSLOTH_RESPECT_PM_POLICY for one run.")
+    }
     $off = @('', '0', 'false', 'no', 'off', 'n', 'f')
     $value = "$env:PIP_NO_DEPS".Trim()
     if (-not $value) {
@@ -7146,7 +7154,27 @@ function Assert-ReadablePipPolicy {
 # and could not resolve anything.
 function ConvertTo-UvFindLinks {
     param([string]$PipValue)
-    return (($PipValue -split '[\s,]+' | Where-Object { $_ }) -join ',')
+    # `pip config list` renders a multiline value as ONE string containing literal
+    # backslash-n escapes, not newline bytes, so those are decoded before the split or the
+    # whole value becomes a single invalid uv location.
+    $decoded = $PipValue -replace '\\n', ' ' -replace '\\t', ' '
+    return (($decoded -split '[\s,]+' | Where-Object { $_ }) -join ',')
+}
+
+# uv binds --keyring-provider to UV_KEYRING_PROVIDER and accepts `disabled` or `subprocess`
+# only. pip also has `import`, which uv has no equivalent for; that one stops the run in
+# Assert-CarryablePipPolicy, since an index carried without the means to authenticate to it
+# sends uv somewhere it will be refused.
+function Get-PipPolicyKeyring {
+    $value = "$env:PIP_KEYRING_PROVIDER".Trim()
+    if (-not $value) {
+        foreach ($line in (Get-PmPipConfigListing)) {
+            if ("$line" -match "^(global|install)\.keyring[-_]provider\s*=\s*'?([^']*)'?\s*$") {
+                $value = $Matches[2].Trim()
+            }
+        }
+    }
+    return $value.ToLowerInvariant()
 }
 
 # The pip half of the hash question, resolved the way pip itself resolves it: PIP_* outranks
@@ -7286,6 +7314,10 @@ function Get-PipPolicyIndexArgs {
         }
     }
     if ($cert) { $args += @('--cert', $cert) }
+    if ((Get-PipPolicyKeyring) -eq 'subprocess' -and
+        -not "$env:UV_KEYRING_PROVIDER".Trim()) {
+        $env:UV_KEYRING_PROVIDER = 'subprocess'
+    }
     return $args
 }
 

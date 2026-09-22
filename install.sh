@@ -262,9 +262,16 @@ _load_pip_config_listing() {
 # below went through one, so the whole translation was silently inert on a Mac. Two -e
 # expressions instead, which both sed families take.
 _pm_config_rows() {
+    # `pip config list` renders a multiline value as ONE row containing literal backslash-n
+    # escapes, not newline bytes: `global.find-links='\n/wheelhouse/a\n/wheelhouse/b'`.
+    # Python's side decodes those through ast.literal_eval; deleting quotes alone left the
+    # whole string as a single uv location, so with no-index in force neither wheelhouse
+    # could resolve anything. Decoded to spaces, which every consumer here already splits on
+    # or trims, and which keeps one row per line.
     printf '%s\n' "$_PM_PIP_CONFIG_LISTING" \
         | sed -n -e "s/^global\.$1=//p" -e "s/^install\.$1=//p" \
-        | tr -d "'\""
+        | tr -d "'\"" \
+        | sed -e 's/\\n/ /g' -e 's/\\t/ /g' -e 's/^ *//' -e 's/ *$//'
 }
 
 # Does this host have a pip configuration file at all? Documented locations, existence only.
@@ -427,6 +434,10 @@ _resolve_only_binary_policy() {
         _pm_saved_ifs="$IFS"; IFS=,
         for _pm_one in $_pm_value; do
             IFS="$_pm_saved_ifs"
+            # A multiline pip.conf value arrives with spaces around the tokens, and an
+            # untrimmed token fails the charset check below -- which for a format control
+            # is the UNSAFE direction, since it drops the operator's restriction.
+            _pm_one=$(printf '%s' "$_pm_one" | sed -e 's/^ *//' -e 's/ *$//')
             [ -n "$_pm_one" ] || continue
             case "$_pm_one" in
                 *[!A-Za-z0-9._:-]*) continue ;;
@@ -472,6 +483,27 @@ _resolve_only_binary_policy() {
 # spellings for it: uv 0.10.7 binds these to UV_INDEX_URL and UV_EXTRA_INDEX_URL. Never over
 # a uv value the operator set, and never for the pinned commands run_install_cmd scrubs,
 # where an inherited index outranking an explicit --default-index is #6898 exactly.
+# uv binds --keyring-provider to UV_KEYRING_PROVIDER and accepts `disabled` or `subprocess`
+# only. pip also has `import`, which uv has no equivalent for, so that one stops the run:
+# carrying the index without the means to authenticate to it sends uv somewhere it will be
+# refused, and the pip fallback that could have used the keyring is declined on purpose.
+_carry_pip_keyring_into_uv() {
+    [ -n "${UV_KEYRING_PROVIDER:-}" ] && return 0
+    _pm_kr="${PIP_KEYRING_PROVIDER:-}"
+    [ -z "$_pm_kr" ] && _pm_kr=$(_pm_config_rows "keyring[-_]provider" | tail -n 1)
+    case "$(printf '%s' "$_pm_kr" | tr '[:upper:]' '[:lower:]')" in
+        ""|auto|disabled) ;;
+        subprocess) UV_KEYRING_PROVIDER=subprocess; export UV_KEYRING_PROVIDER ;;
+        *)
+            step "error" "pip keyring provider '$_pm_kr' has no uv equivalent" "$C_ERR" >&2
+            substep "UNSLOTH_RESPECT_PM_POLICY is set and pip is configured to authenticate with keyring-provider '$_pm_kr'. uv accepts only 'disabled' or 'subprocess', so it cannot authenticate to your index the way you asked, and installing past that is what this variable exists to prevent. Set keyring-provider to subprocess, or unset UNSLOTH_RESPECT_PM_POLICY for one run." "$C_ERR" >&2
+            exit 1
+            ;;
+    esac
+    unset _pm_kr
+    return 0
+}
+
 _carry_pip_index_into_uv() {
     _pm_pair_env="$1"
     _pm_pair_uv="$2"
@@ -559,6 +591,7 @@ _pm_policy_ready() {
     # uv binds --constraints to UV_CONSTRAINT and reads no pip spelling for it, so a
     # constraint file the operator required was invisible and uv could resolve a version
     # they had prohibited. Restrictive, so it is carried for pinned commands too.
+    _carry_pip_keyring_into_uv
     _carry_pip_index_into_uv PIP_CONSTRAINT UV_CONSTRAINT "constraint"
     _carry_pip_index_into_uv PIP_INDEX_URL UV_INDEX_URL "index[-_]url"
     _carry_pip_index_into_uv PIP_EXTRA_INDEX_URL UV_EXTRA_INDEX_URL "extra[-_]index[-_]url"
@@ -800,7 +833,11 @@ _install_bnb_rocm() {
     # uv rejects the pre-release wheel: filename version (1.33.7rc0) does not match metadata (0.50.x.dev0). pip accepts it, so bootstrap pip and use it.
     if ! "$_venv_py" -m pip --version >/dev/null 2>&1; then
         if ! run_maybe_quiet "$_venv_py" -m ensurepip --upgrade; then
-            run_maybe_quiet uv pip install --python "$_venv_py" pip || \
+            # Through run_install_cmd, not run_maybe_quiet: this is a uv install like any
+            # other, and bypassing the wrapper meant it received no --no-index, no
+            # --only-binary and no --cert, so a no-index operator whose wheelhouse has no
+            # pip had uv reach a registry to fetch it, past the opt-out.
+            run_install_cmd "bootstrap pip" uv pip install --python "$_venv_py" pip || \
                 substep "[WARN] could not bootstrap pip; bitsandbytes install will likely fail" "$C_WARN"
         fi
     fi
