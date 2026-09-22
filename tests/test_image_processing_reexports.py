@@ -185,9 +185,44 @@ def test_import_unsloth_does_not_pull_in_the_image_stack():
 # the functional hunk is removed.
 
 
+def _unsloth_import_or_skip():
+    """Skip when this host cannot finish `import unsloth` at all.
+
+    The tests that use this assert on state `import unsloth` installs, but they
+    do not own that import: the module-level `from unsloth.import_fixes import
+    ...` above is what triggers it, and on a host with no supported accelerator
+    it ends at `_gpu_init.py`'s device check, BEFORE the line that installs this
+    fix. The assertion then reports the fix missing for a reason that has
+    nothing to do with re-exports.
+
+    Measured on GitHub's `macos-15` (Apple Silicon, mlx present but
+    `is_mlx_available()` false, so neither import path completes):
+    `NotImplementedError: Unsloth currently only works on NVIDIA GPUs and Intel
+    GPUs` from `_gpu_init.py`, three red tests, while `ubuntu-latest`,
+    `ubuntu-24.04-arm`, `windows-latest` and `macos-15-intel` were green on the
+    same commit.
+
+    Keyed on the raising function, not its message, for the reason
+    `test_import_unsloth_does_not_pull_in_the_image_stack` spells out. Anything
+    else still fails: a host that CAN import unsloth and still lacks the wrap is
+    the defect these tests exist to catch. `test_every_import_path_installs_the_fix`
+    keeps the wiring covered from a host that skips here.
+    """
+    import traceback
+
+    try:
+        import unsloth  # noqa: F401
+    except NotImplementedError:
+        if "get_device_type" in traceback.format_exc():
+            pytest.skip("import unsloth needs an accelerator this host does not have")
+        raise
+
+
 def test_the_fix_is_actually_installed_on_import():
     """`import unsloth` must leave get_class_in_module wrapped."""
     from packaging.version import Version
+
+    _unsloth_import_or_skip()
 
     if Version(transformers.__version__) < Version("5.0.0"):
         pytest.skip("no re-exports were dropped before transformers 5")
@@ -206,6 +241,8 @@ def test_remote_code_reading_siglip_helpers_loads(tmp_path):
     the point, because the fix is deliberately lazy and only installs there.
     """
     import pathlib
+
+    _unsloth_import_or_skip()
 
     from transformers import dynamic_module_utils
     from transformers.utils import HF_MODULES_CACHE
@@ -365,6 +402,8 @@ def test_the_wrapper_is_reinstalled_after_a_module_reload():
 
     if Version(transformers.__version__) < Version("5.0.0"):
         pytest.skip("no re-exports were dropped before transformers 5")
+    _unsloth_import_or_skip()
+
     from unsloth.import_fixes import fix_transformers5_image_processing_reexports
     from transformers import dynamic_module_utils
 
