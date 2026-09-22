@@ -164,6 +164,8 @@ export const ar = {
       noChatsYet: "لا توجد محادثات بعد",
       // Shown under an empty project folder in the sidebar.
       noChats: "لا توجد محادثات",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "كل المشاريع مثبتة",
       showMore: "عرض المزيد",
       showLess: "عرض أقل",
       settings: "الإعدادات",

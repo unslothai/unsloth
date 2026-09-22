@@ -4414,6 +4414,17 @@ export function AppSidebar() {
                           section: "projects",
                         }),
                       )}
+                      {/* Every project is pinned, so the section is drawn with nothing in it. The
+                          line gives the body a height: without one it collapses to zero and the
+                          hit test walks straight past it, so a pinned folder dragged back has
+                          nowhere to land and nothing lights up. */}
+                      {visibleProjectRecords.length === 0 && (
+                        <SidebarMenuItem>
+                          <p className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center pl-3 pr-4 text-ui-13 leading-ui-18 tracking-nav text-nav-fg-muted">
+                            {t("shell.navigation.allProjectsPinned")}
+                          </p>
+                        </SidebarMenuItem>
+                      )}
                       {/* Long project lists stay one row deep until asked. */}
                       {sidebarProjectRecords.length > SIDEBAR_PROJECT_LIMIT && (
                         <SidebarMenuItem>

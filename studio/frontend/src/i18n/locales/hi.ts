@@ -167,6 +167,8 @@ export const hi = {
       noChatsYet: "अभी तक कोई चैट नहीं",
       // Shown under an empty project folder in the sidebar.
       noChats: "कोई चैट नहीं",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "सभी प्रोजेक्ट पिन किए गए",
       showMore: "और दिखाएं",
       showLess: "कम दिखाएं",
       settings: "सेटिंग्स",

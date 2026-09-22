@@ -299,8 +299,33 @@ test("a chat dropped on Recents leaves its folder and its pin", () => {
     ),
   );
   assert.deepEqual(unfiled.action, { kind: "move", projectId: null });
-  assert.deepEqual(unfiled.cue, { ring: sectionRingKey("recents") });
   assert.deepEqual(unfiled.effects.moveChat, { chatId: "c3", projectId: null });
+  // The section's own space lands last, the slot Pinned already gives it, so the line says where
+  // the chat is going instead of the whole section saying only that it is going in there.
+  assert.deepEqual(unfiled.cue, {
+    line: { rowKey: rowKey(RECENTS_ORDER_SCOPE, "r2"), edge: "bottom" },
+  });
+  assert.deepEqual(unfiled.effects.orders, [
+    {
+      scope: RECENTS_ORDER_SCOPE,
+      ids: ["r1", "r2", "c3"],
+      place: { id: "c3", targetId: "r2", edge: "bottom" },
+    },
+  ]);
+  // And the slot sticks: a sorted list would put the chat back where the sort wants it.
+  assert.equal(unfiled.effects.switchSort, "chats");
+  // Empty Recents has no row to land against, so the section is the target.
+  assert.deepEqual(
+    plannedDrop(
+      planSidebarDrop(
+        chat("c3", "projects", projectOrderScope("home"), "home"),
+        { section: "recents" },
+        "top",
+        context({ orders: { ...context().orders, recents: [] } }),
+      ),
+    ).cue,
+    { ring: sectionRingKey("recents") },
+  );
   // Out of Pinned: the pin goes, and so does the folder that would keep it out of Recents.
   const unpinned = plannedDrop(
     planSidebarDrop(
@@ -621,6 +646,36 @@ test("a folder dragged into Pinned is pinned where it lands, and back out is unp
     ),
   );
   assert.deepEqual(unpinOnHeader.cue, { ring: sectionRingKey("projects") });
+});
+
+// Pinning the last project leaves the section drawn but empty, and that is exactly when a folder
+// is dragged back into it.
+test("an empty Projects section still shows where a folder would land", () => {
+  const ctx = context({
+    pinnedProjectIds: new Set(["work", "home", "misc"]),
+    orders: { ...context().orders, projects: [] },
+  });
+  const onBody = plannedDrop(
+    planSidebarDrop(
+      folder("work", "pinned", PINNED_ORDER_SCOPE),
+      { section: "projects" },
+      "bottom",
+      ctx,
+    ),
+  );
+  // No folder to land against, so the whole section is the target.
+  assert.deepEqual(onBody.action, { kind: "unpin" });
+  assert.deepEqual(onBody.cue, { ring: sectionRingKey("projects") });
+  assert.deepEqual(onBody.effects.orders, [
+    { scope: PROJECT_ORDER_SCOPE, ids: ["work"] },
+  ]);
+  // The ring is painted on the section body, which is only there to be painted and hit if the
+  // empty section draws a row. A zero-height box is skipped by elementsFromPoint.
+  assert.match(
+    APP_SIDEBAR,
+    /\{visibleProjectRecords\.length === 0 && \(\n\s*<SidebarMenuItem>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\("shell\.navigation\.allProjectsPinned"\)\}/,
+  );
+  assert.match(EN, /allProjectsPinned: "All projects pinned",/);
 });
 
 // The gap between a header and its first row is where "above the first row" is aimed, so the

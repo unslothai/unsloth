@@ -343,14 +343,16 @@ function planChatDrop(
     // With folders off every chat is a Recents row, and only the pin goes.
     const filed = drag.projectId !== null && ctx.organizeBy === "project";
     if (pinned || filed) {
-      const landing = landingIn(
-        RECENTS_ORDER_SCOPE,
-        ctx.orders.recents,
-        drag.id,
-        zone,
-        edge,
-        ctx.chatSort,
-      );
+      const landing =
+        landingIn(
+          RECENTS_ORDER_SCOPE,
+          ctx.orders.recents,
+          drag.id,
+          zone,
+          edge,
+          ctx.chatSort,
+        ) ??
+        lastIn(RECENTS_ORDER_SCOPE, ctx.orders.recents, drag.id, ctx.chatSort);
       return {
         action: filed ? { kind: "move", projectId: null } : { kind: "unpin" },
         cue: landing?.cue ?? ring(sectionRingKey("recents")),
@@ -419,22 +421,50 @@ function landingIn(
   zone: SidebarDropZone,
   edge: DropEdge,
   sort: SidebarChatSort,
-): {
+): Landing | null {
+  if (zone.row?.kind !== "chat" || zone.row.scope !== scope) return null;
+  return slotAt(scope, ids, chatId, zone.row.id, edge, sort);
+}
+
+interface Landing {
   cue: SidebarDropCue;
   order: SidebarDropEffects["orders"][number];
   resorts: boolean;
-} | null {
-  if (zone.row?.kind !== "chat" || zone.row.scope !== scope) return null;
-  if (zone.row.id === chatId) return null;
+}
+
+/** The slot against one row of the list. Null when that row is the chat itself. */
+function slotAt(
+  scope: string,
+  ids: string[],
+  chatId: string,
+  targetId: string,
+  edge: DropEdge,
+  sort: SidebarChatSort,
+): Landing | null {
+  if (targetId === chatId) return null;
   return {
-    cue: line(scope, zone.row.id, edge),
+    cue: line(scope, targetId, edge),
     order: {
       scope,
-      ids: placeIdAt(ids, chatId, zone.row.id, edge),
-      place: { id: chatId, targetId: zone.row.id, edge },
+      ids: placeIdAt(ids, chatId, targetId, edge),
+      place: { id: chatId, targetId, edge },
     },
     resorts: sort !== "manual",
   };
+}
+
+/** The list's own space, past its last row: last, the slot Pinned already gives it. A flat list
+ *  has no container row of its own, so ringing the whole section says only that the chat is going
+ *  somewhere in there, when it does in fact land somewhere. Null when there is no row to land
+ *  against, and the caller lights the section instead. */
+function lastIn(
+  scope: string,
+  ids: string[],
+  chatId: string,
+  sort: SidebarChatSort,
+): Landing | null {
+  const last = ids[ids.length - 1];
+  return last === undefined ? null : slotAt(scope, ids, chatId, last, "bottom", sort);
 }
 
 /** Reorders a chat within its list. A sorted list switches to Manual, or the sort would undo
