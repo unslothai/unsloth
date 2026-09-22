@@ -167,3 +167,29 @@ def test_vision_loader_hands_the_text_config_to_the_planner():
     assert "_planner_config = auto_config if text_only_decoder else None" in source
     # The veto is gone: a text_only load only declines through the old-planner path.
     assert "if text_only_decoder\n            else None" not in source
+
+
+def test_a_config_in_the_planner_kwargs_does_not_collide_with_the_text_config():
+    seen = {}
+    text_config = object()
+
+    def planner(
+        model_name,
+        *,
+        max_memory = None,
+        config = None,
+        **kwargs,
+    ):
+        seen.update(config = config, kwargs = kwargs)
+        return _Plan()
+
+    ns = _load(planner)
+    device_map = ns["resolve_unsloth_device_map"](
+        "unsloth",
+        "org/vlm",
+        planner_kwargs = {"config": object()},
+        planner_config = text_config,
+        planner_config_reason = _REASON,
+    )
+    assert device_map == _Plan.device_map
+    assert seen["config"] is text_config

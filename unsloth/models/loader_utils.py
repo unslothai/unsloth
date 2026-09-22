@@ -378,6 +378,11 @@ def resolve_unsloth_device_map(
                 planner_config_reason or "this unsloth_zoo cannot plan from a resolved config"
             )
         config_kwargs["config"] = planner_config
+    # One `config` only: the resolved one above describes the model the load builds, so it
+    # replaces a `config` the caller put in device_map_planner_kwargs (two would raise
+    # TypeError, which the handler below turns into a silent "sequential").
+    if "config" in config_kwargs:
+        planner_kwargs.pop("config", None)
 
     # Free, not total: this process's context and anything else resident make total an overcommit. Guarded, because a card can still refuse mid-probe.
     try:
