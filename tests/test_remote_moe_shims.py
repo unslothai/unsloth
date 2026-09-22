@@ -146,7 +146,10 @@ _SARVAM_EDITS = (
         "        if not self.training:\n            y = self.moe_infer(hidden_states, topk_idx, topk_weight).view(*orig_shape)\n"
         "        else:\n            y = self.moe_infer(hidden_states, topk_idx, topk_weight).view(*orig_shape)\n",
     ),
-    ("        if self.config.n_shared_experts is not None:", "        if self.shared_experts is not None:"),
+    (
+        "        if self.config.n_shared_experts is not None:",
+        "        if self.shared_experts is not None:",
+    ),
 )
 
 
@@ -333,7 +336,9 @@ def test_a_renamed_port_with_a_no_grad_else_branch_is_shimmed(shared):
     `else:` branch computes the output under `@torch.no_grad()` (so LoRA on the experts would
     get no gradient), and its shared expert may be None."""
     torch.manual_seed(0)
-    mod = _remote_module(f"transformers_modules.tiny_sarvam_{int(shared)}.modeling_sarvam_moe", _SARVAM_EDITS)
+    mod = _remote_module(
+        f"transformers_modules.tiny_sarvam_{int(shared)}.modeling_sarvam_moe", _SARVAM_EDITS
+    )
     block = mod.SarvamMLAMoE(mod.Cfg())
     if not shared:
         block.shared_experts = None
