@@ -265,14 +265,18 @@ export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
 export { EditProjectDialog } from "./components/edit-project-dialog";
 export {
+  canForkChatRow,
   chatExportOptions,
   exportConversationByFormat,
+  forkChatRow,
   getSidebarItemThreadIds,
   recordedSandboxSessionIds,
   sandboxSessionIdsHolding,
   type ConversationExportFormat,
 } from "./components/chat-row-menu";
 export { OpenChatFolderUnavailableItem } from "./components/open-chat-folder-item";
+export { useForkInFlight } from "./utils/fork-in-flight";
+export { showForkCreatedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
