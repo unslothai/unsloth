@@ -2699,6 +2699,19 @@ html[data-chat-font] .aui-root {
 		height: var(--ui-icon-size) !important;
 	}
 
+	/* The rule above pins svg size with !important, straight off --ui-icon-size, so a glyph
+	   never sees the --icon-size the row menu retunes. Same rule, one class deeper. */
+	.unsloth-plus-menu.sidebar-row-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
+		)
+		svg:not(.unsloth-tick) {
+		width: var(--icon-size) !important;
+		height: var(--icon-size) !important;
+	}
+
 	/* Destructive items keep red text and a red-tinted hover, not the grey one. */
 	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"])[data-variant="destructive"],
 	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"])[data-variant="destructive"] * {

@@ -249,6 +249,16 @@ test("the compact class is scoped, and both menu families get the same rules", (
   // Sized only through the modifier, never on .unsloth-plus-menu itself.
   assert.match(CSS, /\.unsloth-plus-menu\.sidebar-row-menu\[data-slot\] \{/);
   assert.match(CSS, /--icon-size: var\(--ui-icon-size-sm\);/);
+  // A glyph is an svg, and the base rule pins svg size with !important straight off
+  // --ui-icon-size, so retuning --icon-size alone leaves every icon full size.
+  const svgRules = CSS.split("\n\t.unsloth-plus-menu").filter((r) =>
+    r.includes("svg:not(.unsloth-tick)"),
+  );
+  assert.equal(svgRules.length, 2, "expected a base svg rule and a row-menu override");
+  const scoped = svgRules.find((r) => r.startsWith(".sidebar-row-menu"));
+  assert.ok(scoped, "the row menu needs its own svg size rule");
+  assert.match(scoped, /width: var\(--icon-size\) !important;/);
+  assert.match(scoped, /height: var\(--icon-size\) !important;/);
   // A right-click menu and a 3-dot menu must dress alike, so every item rule names both slots.
   const plusRules = CSS.split("\n\t.unsloth-plus-menu").slice(1);
   for (const rule of plusRules) {
