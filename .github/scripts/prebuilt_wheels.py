@@ -195,13 +195,16 @@ def _resolve(raw: str, allowed, default, label: str) -> list[str]:
     unknown = [item for item in wanted if item not in allowed]
     if unknown:
         raise SystemExit(
-            f"unknown {label}: {', '.join(sorted(unknown))}. "
-            f"Allowed: {', '.join(allowed)}."
+            f"unknown {label}: {', '.join(sorted(unknown))}. " f"Allowed: {', '.join(allowed)}."
         )
     return [item for item in allowed if item in wanted]
 
 
-def build_matrix(packages: str = "", torches: str = "", pythons: str = "") -> list[dict]:
+def build_matrix(
+    packages: str = "",
+    torches: str = "",
+    pythons: str = "",
+) -> list[dict]:
     chosen_packages = _resolve(packages, DEFAULT_PACKAGES, DEFAULT_PACKAGES, "package")
     chosen_torch = _resolve(torches, TORCH_VERSIONS, DEFAULT_TORCH, "torch version")
     chosen_python = _resolve(pythons, PYTHON_VERSIONS, DEFAULT_PYTHON, "python version")
@@ -377,9 +380,9 @@ def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
         if parsed is None:
             continue
         rows.append((parsed, digest))
-    rows.sort(key=lambda row: (row[0]["torch"], row[0]["python"], row[0]["package"]))
+    rows.sort(key = lambda row: (row[0]["torch"], row[0]["python"], row[0]["package"]))
 
-    lines = [NOTES_PREAMBLE.format(repo=repo, tag=tag).rstrip("\n"), ""]
+    lines = [NOTES_PREAMBLE.format(repo = repo, tag = tag).rstrip("\n"), ""]
     if not rows:
         lines.append("No wheels are attached to this release yet.")
         return "\n".join(lines) + "\n"
@@ -389,7 +392,7 @@ def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
     for parsed, digest in rows:
         lines.append(
             "| `{name}` | {package} | {version} | {torch} | {cuda} | {python} | {abi} | `{digest}` |".format(
-                digest=digest, **parsed
+                digest = digest, **parsed
             )
         )
     lines.append("")
@@ -402,11 +405,11 @@ def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
 
 def _cmd_matrix(args: argparse.Namespace) -> int:
     include = build_matrix(
-        packages=os.environ.get("UW_PACKAGES", ""),
-        torches=os.environ.get("UW_TORCH_VERSIONS", ""),
-        pythons=os.environ.get("UW_PYTHON_VERSIONS", ""),
+        packages = os.environ.get("UW_PACKAGES", ""),
+        torches = os.environ.get("UW_TORCH_VERSIONS", ""),
+        pythons = os.environ.get("UW_PYTHON_VERSIONS", ""),
     )
-    matrix = json.dumps({"include": include}, separators=(",", ":"))
+    matrix = json.dumps({"include": include}, separators = (",", ":"))
     print(matrix)
 
     # Writing the step output here rather than echoing it in YAML keeps the JSON -- which is
@@ -414,13 +417,13 @@ def _cmd_matrix(args: argparse.Namespace) -> int:
     if args.github:
         output = os.environ.get("GITHUB_OUTPUT")
         if output:
-            with open(output, "a", encoding="utf-8") as handle:
+            with open(output, "a", encoding = "utf-8") as handle:
                 handle.write(f"matrix={matrix}\n")
                 handle.write(f"count={len(include)}\n")
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:
             listing = "\n".join(f"- `{cell['wheel_name']}`" for cell in include)
-            with open(summary, "a", encoding="utf-8") as handle:
+            with open(summary, "a", encoding = "utf-8") as handle:
                 handle.write(f"### Build plan\n\n{len(include)} cells:\n\n{listing}\n")
     return 0
 
@@ -446,32 +449,32 @@ def _cmd_notes(args: argparse.Namespace) -> int:
         if not name:
             digest, _, name = line.partition(" ")
         entries.append((digest.strip(), name.strip().lstrip("*")))
-    sys.stdout.write(render_notes(entries, tag=args.tag, repo=args.repo))
+    sys.stdout.write(render_notes(entries, tag = args.tag, repo = args.repo))
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(description = __doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest = "command", required = True)
 
-    matrix_parser = sub.add_parser("matrix", help="print the build matrix as JSON")
+    matrix_parser = sub.add_parser("matrix", help = "print the build matrix as JSON")
     matrix_parser.add_argument(
         "--github",
-        action="store_true",
-        help="also append matrix/count to $GITHUB_OUTPUT and a listing to $GITHUB_STEP_SUMMARY",
+        action = "store_true",
+        help = "also append matrix/count to $GITHUB_OUTPUT and a listing to $GITHUB_STEP_SUMMARY",
     )
-    matrix_parser.set_defaults(func=_cmd_matrix)
+    matrix_parser.set_defaults(func = _cmd_matrix)
 
-    name_parser = sub.add_parser("wheel-name", help="print the filename for one cell")
-    name_parser.add_argument("--package", required=True)
-    name_parser.add_argument("--torch", required=True)
-    name_parser.add_argument("--python", required=True)
-    name_parser.set_defaults(func=_cmd_wheel_name)
+    name_parser = sub.add_parser("wheel-name", help = "print the filename for one cell")
+    name_parser.add_argument("--package", required = True)
+    name_parser.add_argument("--torch", required = True)
+    name_parser.add_argument("--python", required = True)
+    name_parser.set_defaults(func = _cmd_wheel_name)
 
-    notes_parser = sub.add_parser("notes", help="print the release body, digests on stdin")
-    notes_parser.add_argument("--tag", required=True)
-    notes_parser.add_argument("--repo", required=True)
-    notes_parser.set_defaults(func=_cmd_notes)
+    notes_parser = sub.add_parser("notes", help = "print the release body, digests on stdin")
+    notes_parser.add_argument("--tag", required = True)
+    notes_parser.add_argument("--repo", required = True)
+    notes_parser.set_defaults(func = _cmd_notes)
 
     args = parser.parse_args(argv)
     return args.func(args)

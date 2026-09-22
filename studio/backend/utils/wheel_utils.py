@@ -121,9 +121,7 @@ _UNSLOTH_PREBUILT_VERSIONS = {
 }
 
 
-def unsloth_prebuilt_wheel_url(
-    *, filename_prefix: str, env: dict[str, str] | None
-) -> str | None:
+def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | None) -> str | None:
     """Our own prebuilt wheel for this environment, or None to leave resolution unchanged.
 
     Every gate here is narrower than it strictly has to be, because the cost of the two answers is not symmetric: returning None costs a source build the user was already facing, and returning a URL for a combination we did not publish costs a 404 and the same source build with a misleading log line in front of it. So it answers only for the exact cells the workflow builds, and the torch minor, CUDA major, ABI, interpreter and platform must all match. Linux x86_64 only: nothing else is built, and Windows, macOS and linux_aarch64 keep whatever behaviour they have today.
