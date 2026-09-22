@@ -486,7 +486,7 @@ export function SettingsDialog() {
                   }}
                   placeholder={t("settings.dialog.searchPlaceholder")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
-                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06]"
+                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
                 />
                 {query && (
                   <button
@@ -511,7 +511,7 @@ export function SettingsDialog() {
                         <button
                           type="button"
                           onClick={() => openResult(tab.id)}
-                          className="flex h-[30px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                          className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                         >
                           {tab.iconComponent ? (
                             <tab.iconComponent className="size-icon shrink-0" />
@@ -529,7 +529,7 @@ export function SettingsDialog() {
                             key={entry}
                             type="button"
                             onClick={() => openResult(tab.id, entry)}
-                            className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                            className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                           >
                             <span className="min-w-0 truncate">{entry}</span>
                           </button>
@@ -570,9 +570,9 @@ export function SettingsDialog() {
                       type="button"
                       onClick={() => setActiveTab(tab.id)}
                       className={cn(
-                        "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
+                        "relative flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
                         // Keep the row height when the list scrolls: a flex item
-                        // shrinks past h-[32px] down to its text otherwise.
+                        // shrinks past h-[calc(32px*var(--ui-space-scale,1))] down to its text otherwise.
                         "shrink-0",
                         "focus-visible:outline-none",
                         // The active pill already marks the current tab, so
@@ -625,7 +625,7 @@ export function SettingsDialog() {
               <button
                 type="button"
                 onClick={closeDialog}
-                className="absolute top-3 end-3 z-10 flex size-[30px] items-center justify-center rounded-[10px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="absolute top-3 end-3 z-10 flex size-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-[10px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 aria-label={t("settings.dialog.closeAriaLabel")}
               >
                 <HugeiconsIcon icon={Cancel01Icon} className="size-4" />

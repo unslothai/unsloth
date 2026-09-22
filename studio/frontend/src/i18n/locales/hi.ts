@@ -1138,7 +1138,7 @@ export const hi = {
       custom: {
         chatWidth: {
           label: "चैट की चौड़ाई",
-          description: "संदेशों और इनपुट बॉक्स की चौड़ाई तय करें। पूरी चौड़ाई साइडबार के बीच की जगह का उपयोग करती है।",
+          description: "संदेशों और इनपुट बॉक्स की चौड़ाई।",
           standard: "मानक",
           wide: "चौड़ा",
           full: "पूरी चौड़ाई",
@@ -1211,7 +1211,6 @@ export const hi = {
         },
         contrast: {
           label: "कंट्रास्ट",
-          description: "बॉर्डर और सेकंडरी टेक्स्ट की तीव्रता।",
         },
         reduceMotion: {
           label: "एनिमेशन कम करें",
@@ -1241,7 +1240,7 @@ export const hi = {
       sidebarNav: {
         title: "साइडबार नेविगेशन",
         description:
-          "साइडबार के टैब पिन करें और उनका क्रम बदलें। जो टैब पिन नहीं हैं वे “अधिक” मेन्यू में इकट्ठा हो जाते हैं; यदि सिर्फ़ एक ही टैब पिन नहीं है तो एक आइटम वाला मेन्यू बनाने के बजाय उसे छिपा दिया जाता है। नई चैट अपनी जगह पर तय रहती है।",
+          "साइडबार के टैब पिन करें और क्रम बदलें। बिना पिन वाले टैब “अधिक” मेन्यू में चले जाते हैं।",
         dragToReorder: "क्रम बदलने के लिए खींचें",
         pinToSidebar: "{name} को साइडबार में पिन करें",
         moreHolds: "अधिक ({count})",
@@ -1249,7 +1248,7 @@ export const hi = {
       sidebarMenu: {
         title: "साइडबार मेन्यू",
         description:
-          "साइडबार के प्रोफ़ाइल मेन्यू में आइटम दिखाएं, छिपाएं और क्रम बदलें। सेटिंग्स, सहायता, लॉग आउट और शटडाउन अपनी जगह पर तय रहते हैं।",
+          "प्रोफ़ाइल मेन्यू के शॉर्टकट चुनें और उनका क्रम बदलें।",
         darkModeToggle: "डार्क मोड टॉगल",
         dragToReorder: "क्रम बदलने के लिए खींचें",
       },
@@ -1389,6 +1388,54 @@ export const hi = {
         copied: "पथ कॉपी किया गया",
         openError: "फ़ोल्डर नहीं खोला जा सका",
         copyError: "पथ कॉपी नहीं किया जा सका",
+        caches: {
+          label: "कैश फ़ाइलें",
+          description:
+            "कैश में {size}, जिनमें से {reclaimable} अभी साफ़ किया जा सकता है।",
+          hint: "पैकेज डाउनलोड, कंपाइल किए गए कर्नेल और ट्रांसफ़र कैश जिन्हें Unsloth ज़रूरत पड़ने पर दोबारा बना लेता है। डाउनलोड किए गए मॉडल, प्रोजेक्ट, चैट, सेटिंग्स और आपका Hugging Face टोकन यहाँ कभी साफ़ नहीं किए जाते।",
+          keywords:
+            "कैश साफ़ करना हटाना खाली जगह डिस्क अस्थायी कंपाइल cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "कैश का आकार मापा जा रहा है...",
+          measureFailed: "कैश मापे नहीं जा सके",
+          empty: "कोई कैश फ़ाइल नहीं मिली।",
+          detailsAction: "विवरण",
+          recheckAction: "फिर से जाँचें",
+          hideDetailsAction: "विवरण छिपाएँ",
+          clearAction: "कैश साफ़ करें",
+          clearOneAction: "साफ़ करें",
+          clearingAction: "साफ़ किया जा रहा है...",
+          confirmTitle: "कैश की गई फ़ाइलें साफ़ करें?",
+          confirmDescription: "इससे लगभग {size} खाली होगा।",
+          confirmOneTitle: "{name} साफ़ करें?",
+          safety:
+            "अगली बार ज़रूरत पड़ने पर Unsloth कैश दोबारा बना लेता है। डाउनलोड किए गए मॉडल, प्रोजेक्ट, चैट, सेटिंग्स और आपके Hugging Face टोकन को छुआ नहीं जाता।",
+          hubCost:
+            "यह मॉडल कैश है। इसे साफ़ करने पर अगली बार उपयोग करते समय वे मॉडल फिर से डाउनलोड होंगे।",
+          datasetsCost:
+            "इसे साफ़ करने पर अगली बार उपयोग करते समय वे डेटासेट फिर से डाउनलोड होंगे।",
+          blocked: "साफ़ नहीं किया गया: {reason}",
+          cleared: "{size} साफ़ किया गया",
+          partial: "कुछ कैश फ़ाइलें हटाई नहीं जा सकीं",
+          clearFailed: "कैश साफ़ नहीं किए जा सके",
+          names: {
+            uv: "uv पैकेज कैश",
+            pip: "pip डाउनलोड कैश",
+            npm: "npm पैकेज कैश",
+            bun: "Bun पैकेज कैश",
+            torchInductor: "Torch Inductor कंपाइल कैश",
+            torchExtensions: "Torch एक्सटेंशन बिल्ड",
+            triton: "Triton कर्नेल कैश",
+            cuda: "CUDA कर्नेल कैश",
+            numba: "Numba कंपाइल कैश",
+            matplotlib: "Matplotlib फ़ॉन्ट कैश",
+            vllm: "vLLM कैश",
+            unslothCompiled: "Unsloth कंपाइल किए गए मॉड्यूल",
+            hfXet: "Hugging Face ट्रांसफ़र कैश",
+            hfAssets: "Hugging Face एसेट कैश",
+            hfDatasets: "Hugging Face डेटासेट कैश",
+            hfHub: "Hugging Face मॉडल कैश",
+          },
+        },
         futureDownloads: "केवल नए डाउनलोड",
         environmentManaged: "{variable} एनवायरनमेंट वेरिएबल द्वारा प्रबंधित।",
         locationFree: "{free} खाली",
