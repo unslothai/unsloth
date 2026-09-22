@@ -261,7 +261,9 @@ test("cancelling during the preliminary unload reconciles the removed resident m
   // Only a real preliminary /unload removes the resident model; the forced path leaves
   // it to /load, so it must not be recorded as gone.
   assert.match(runtime, /residentModelUnloaded: boolean;/);
-  assert.match(runtime, /residentModelUnloaded: false,/);
+  // A fresh run starts unloaded only when it inherits that fact from the run it replaces;
+  // its own preliminary unload flips the flag below.
+  assert.match(runtime, /residentModelUnloaded: inheritedPendingRollback\?\.residentUnloaded === true,/);
   const pre = section(
     runtime,
     "if (!forceCancelActive) {",
@@ -368,3 +370,124 @@ test("a superseded run does not restore its config over the replacement", () => 
     "only a run that still owns the selection may roll the shared config back",
   );
 });
+
+// The four exact-head Codex findings on the previous revision: each asserts the code path
+// that used to leave the store and the backend disagreeing.
+
+test("a failed unload reconciles only after the cancelled run has settled", () => {
+  const runtime = read(RUNTIME);
+  const cancel = section(
+    runtime,
+    "const cancelLoadRun = useCallback(",
+    "const cancelLoadingWithCheckpointPolicy = useCallback(",
+  );
+  // The unabortable /load can still make this run's own target resident after /unload failed.
+  // Reading status before the run stops would let that later response survive unreconciled,
+  // leaving the store naming the old checkpoint while the new model serves prompts.
+  const failure = section(
+    cancel,
+    "// The request failed, so reconcile against the backend before releasing the",
+    "return false;",
+  );
+  const settle = failure.indexOf("await run.settledPromise;");
+  const refresh = failure.indexOf("await refresh();");
+  assert.notEqual(settle, -1, "the failed-cancel path must wait for the run to settle");
+  assert.notEqual(refresh, -1, "the failed-cancel path must still reconcile status");
+  assert.ok(settle < refresh, "status must be read only after the run has stopped");
+  // The pre-fix order refreshed against a still-moving backend.
+  assert.equal(
+    /toast\.error\(message, \{ description: detail \}\);\s*\/\/[^\n]*\n[\s\S]{0,200}?try \{\n\s*await refresh\(\);/.test(
+      cancel,
+    ),
+    false,
+    "the refresh must not run before the settlement await",
+  );
+});
+
+test("clearing a cancelled run's checkpoint restores its rollback config first", () => {
+  const runtime = read(RUNTIME);
+  // clearCheckpoint remembers whatever the store holds under params.checkpoint. After the
+  // preliminary unload that checkpoint still names the FORMER resident while the store already
+  // holds the cancelled target's settings, so clearing first persisted the wrong model's entry.
+  const helper = section(
+    runtime,
+    "function restoreRollbackConfigForClear(",
+    "const approvedRemoteCodeFingerprints",
+  );
+  assert.match(helper, /applyPerModelConfigToRuntime\(run\.rollbackConfig,/);
+  const cancel = section(
+    runtime,
+    "const cancelLoadRun = useCallback(",
+    "const cancelLoadingWithCheckpointPolicy = useCallback(",
+  );
+  const reconcile = section(
+    cancel,
+    "if \(!run\.loadAttemptPath && run\.residentModelUnloaded\)",
+    "activeLoadRunRef.current = releaseOwnedModelLoadRun(",
+  );
+  const restore = reconcile.indexOf("restoreRollbackConfigForClear(run);");
+  const clear = reconcile.indexOf("clearCheckpoint();");
+  assert.notEqual(restore, -1, "the reconciliation must restore the rollback config");
+  assert.notEqual(clear, -1, "the reconciliation must clear the checkpoint");
+  assert.ok(restore < clear, "the rollback config must be restored before the clear");
+});
+
+test("an inherited rollback carries the already-unloaded state into the replacement", () => {
+  const runtime = read(RUNTIME);
+  // The reconciliation above clears the store checkpoint, so the replacement can no longer read
+  // the unloaded fact from the store. It has to ride the inherited record, or performLoad would
+  // skip its compensating reload and leave no model resident.
+  assert.match(runtime, /residentUnloaded\?: boolean;/);
+  const inherit = section(
+    runtime,
+    "const inheritCancelledRunRollback = (",
+    "// A different pick supersedes the load in flight.",
+  );
+  assert.match(
+    inherit,
+    /residentUnloaded:\n\s*cancelledRun\.residentModelUnloaded &&\n\s*cancelledRun\.loadAttemptPath === null,/,
+  );
+  const registration = section(
+    runtime,
+    "const loadRun: ActiveModelLoadRun = {",
+    "activeLoadRunRef.current = loadRun;",
+  );
+  assert.match(
+    registration,
+    /residentModelUnloaded: inheritedPendingRollback\?\.residentUnloaded === true,/,
+  );
+  // The gate itself has to read the inherited fact, not only the store checkpoint.
+  const gate = section(
+    runtime,
+    "async function performLoad\(\): Promise<void> {",
+    "const pendingLoadConfig =",
+  );
+  assert.match(
+    gate,
+    /let previousWasUnloaded =\n\s*inheritedPendingRollback\?\.residentUnloaded === true;/,
+  );
+  // The compensating reload must still be gated on that flag with a rollback target present.
+  assert.match(runtime, /if \(previousWasUnloaded && previousCheckpoint\) \{/);
+});
+
+test("a failed cancellation clears the rollback the replacement would inherit", () => {
+  const runtime = read(RUNTIME);
+  const loop = section(
+    runtime,
+    "// A different pick supersedes the load in flight.",
+    "// A local pick that is superseded by a later selection must not keep the slot.",
+  );
+  const failed = section(loop, "if \(!stopped\) \{", "return;\n        }");
+  // A failed /unload leaves an uncertain backend, so the checkpoint/config captured before it
+  // no longer describes what is resident; inheriting it would restore the wrong model later.
+  assert.match(
+    failed,
+    /pendingReplacementRollback = null;/,
+    "the failed-cancellation path must drop the pending rollback marker",
+  );
+  const drop = failed.indexOf("pendingReplacementRollback = null;");
+  const bail = failed.indexOf("if (throwOnError) throw new Error(message);");
+  assert.notEqual(bail, -1, "expected the bail-out");
+  assert.ok(drop < bail, "the marker must be cleared on the way out");
+});
+

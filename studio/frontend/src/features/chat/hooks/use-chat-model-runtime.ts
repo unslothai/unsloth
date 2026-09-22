@@ -278,10 +278,26 @@ function sameGpuSelection(
   return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
+/** Put the rollback snapshot back before a checkpoint is dropped. clearCheckpoint remembers
+ *  whatever the store holds under the checkpoint's id, and a run cancelled after its preliminary
+ *  unload has already applied its target's config: clearing first would persist the cancelled
+ *  target's settings as the former resident's durable entry. */
+function restoreRollbackConfigForClear(run: ActiveModelLoadRun): void {
+  if (!run.rollbackConfig) return;
+  applyPerModelConfigToRuntime(run.rollbackConfig, {
+    isDiffusion: useChatRuntimeStore.getState().loadedIsDiffusion,
+  });
+}
+
 const approvedRemoteCodeFingerprints = new Map<string, string>();
 type PendingReplacementRollback = {
   checkpoint: string | null;
   config?: PerModelConfig;
+  /** True when the cancelled run had already removed the resident model with a real /unload
+   *  and stopped before POSTing its own /load: the cancellation reconciliation clears the store
+   *  checkpoint for exactly that case, so the replacement has to carry the unloaded state or it
+   *  would skip its compensating reload and leave nothing resident. */
+  residentUnloaded?: boolean;
 };
 
 // Cancellation can finish after a newer selection intent has already started, so the
@@ -954,6 +970,10 @@ export function useChatModelRuntime() {
           // slot. The caller still receives false and must not start a replacement
           // from an uncertain backend state.
           try {
+            // The unabortable /load can still land after this unload failed and make this run's
+            // own target resident. Read status only once the run has stopped, or the store keeps
+            // naming the old checkpoint while prompts are served by the newly loaded model.
+            await run.settledPromise;
             await refresh();
             setModelsError(`${message}: ${detail}`);
           } catch (refreshError) {
@@ -981,6 +1001,9 @@ export function useChatModelRuntime() {
             // this cannot lose the replacement's target.
             if (!run.loadAttemptPath && run.residentModelUnloaded) {
               try {
+                // The run applied its target's config before the preliminary unload, so the store
+                // still names the former resident while holding the cancelled target's settings.
+                restoreRollbackConfigForClear(run);
                 clearCheckpoint();
                 await refresh();
               } catch {
@@ -1157,6 +1180,12 @@ export function useChatModelRuntime() {
         pendingReplacementRollback = {
           checkpoint: cancelledRun.rollbackCheckpoint,
           config: previousConfigForReplacement,
+          // Only claim the former resident is gone when this run really unloaded it and never
+          // POSTed a load of its own: that is exactly when the reconciliation above clears the
+          // store checkpoint this replacement reads.
+          residentUnloaded:
+            cancelledRun.residentModelUnloaded &&
+            cancelledRun.loadAttemptPath === null,
         };
       };
 
@@ -1206,6 +1235,10 @@ export function useChatModelRuntime() {
         }
         if (!stopped) {
           restorePreviousConfig();
+          // The unload failed, so the backend state is uncertain and this run's rollback target
+          // no longer describes what is resident. A later selection must derive its rollback from
+          // the refreshed store instead of inheriting the failed run's checkpoint and config.
+          pendingReplacementRollback = null;
           const message =
             "The current model could not be stopped, so the new model was not loaded.";
           setModelsError(message);
@@ -1578,7 +1611,9 @@ export function useChatModelRuntime() {
         cancelPromise: null,
         rollbackCheckpoint: previousCheckpoint,
         rollbackConfig: previousConfigForReplacement,
-        residentModelUnloaded: false,
+        // An inherited rollback target whose model the cancelled run already unloaded: the backend
+        // has nothing resident, so a failure below must restore it rather than find it still there.
+        residentModelUnloaded: inheritedPendingRollback?.residentUnloaded === true,
         settledPromise: loadRunSettled,
         markSettled: markLoadRunSettled,
 
@@ -1615,7 +1650,11 @@ export function useChatModelRuntime() {
 
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
-          let previousWasUnloaded = false;
+          // The cancelled run may already have unloaded the model this load rolls back to, and its
+          // cancellation reconciled the store checkpoint to empty for exactly that case. Without
+          // this the compensating reload below would be skipped and no model left resident.
+          let previousWasUnloaded =
+            inheritedPendingRollback?.residentUnloaded === true;
           const pendingLoadConfig =
             typeof selection !== "string" ? selection.config : undefined;
           // The outgoing model's slot INTENT (blank = follow the server default), which the resolved baseline
