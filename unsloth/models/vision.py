@@ -1266,10 +1266,11 @@ def _text_trainable_core(model, text_intent = True):
     None) are returned unchanged, as is anything ambiguous.
     `UNSLOTH_KEEP_COMPOSED_WRAPPER=1` turns this off.
 
-    `text_intent` is False when the load asked for the multimodal model (a
-    vision config and no `text_only = True`): an image batch does carry those
-    inputs, so the wrapper is kept and a hint names `text_only = True` for the
-    text case, instead of silently discarding the vision tower.
+    `text_intent` is True only when the caller passed `text_only = True`: a
+    multimodal batch does carry those inputs, and an audio-only wrapper has no
+    vision config to infer anything from, so otherwise the wrapper is kept and a
+    hint names `text_only = True` for the text case, instead of silently
+    discarding the vision or audio tower.
     """
     if os.environ.get("UNSLOTH_KEEP_COMPOSED_WRAPPER", "0") == "1":
         return model
@@ -1982,7 +1983,8 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         **kwargs,
                     )
-                model = _text_trainable_core(model, text_intent = text_only or not is_vlm_config)
+                # Only the caller knows: a wrapper with an audio-only config has no vision_config either.
+                model = _text_trainable_core(model, text_intent = bool(text_only))
                 _inherit_gradient_checkpointing_support(model)
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
                 offload_embedding = _resolve_offload_embedding(
