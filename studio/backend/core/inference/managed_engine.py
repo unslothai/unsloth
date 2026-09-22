@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from .engine_install import engine_lease, installed, profile, support_reason
+from .engine_install import engine_lease, installed, profile, profile_digest, support_reason
 
 
 from .engine_adapters import (
@@ -38,8 +38,12 @@ def validate_load(engine: str, request) -> None:
         reason = support_reason(engine, gpu_id)
         if reason:
             raise ValueError(f"GPU {gpu_id}: {reason}")
-    if not installed(engine):
+    info = installed(engine)
+    if not info:
         raise ValueError(f"Install {engine} in Settings > System > Inference engines first.")
+    # The picker's rule too: an outdated profile loads only after an explicit restore.
+    if info.get("profile_digest") != profile_digest(engine) and not info.get("restored"):
+        raise ValueError(f"Update {engine} in Settings > System > Inference engines first.")
     # Also judges /validate requests, which carry no LoRA or template fields.
     if (
         request.gguf_variant

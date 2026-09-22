@@ -473,7 +473,11 @@ def test_validate_rejects_engine_settings_before_the_picker_unloads(monkeypatch,
         is_vision = False,
     )
     monkeypatch.setattr(managed_engine, "support_reason", lambda *args: None)
-    monkeypatch.setattr(managed_engine, "installed", lambda engine: {"path": "/env"})
+    monkeypatch.setattr(
+        managed_engine,
+        "installed",
+        lambda engine: {"path": "/env", "profile_digest": install.profile_digest(engine)},
+    )
     monkeypatch.setattr(
         route,
         "_resolve_model_identifier_for_request",
@@ -895,11 +899,18 @@ def test_multi_gpu_preflight_checks_every_device(engine, monkeypatch):
     from models.inference import LoadRequest
 
     checked = []
-    monkeypatch.setattr(managed_engine, "installed", lambda _: {"path": "/env"})
+    info = {"path": "/env", "profile_digest": install.profile_digest(engine)}
+    monkeypatch.setattr(managed_engine, "installed", lambda _: info)
     monkeypatch.setattr(managed_engine, "support_reason", lambda _, gpu: checked.append(gpu))
     request = LoadRequest(model_path = "model", gpu_ids = [1, 0], engine = engine)
     managed_engine.validate_load(engine, request)
     assert checked == [1, 0]
+    # An outdated profile needs an update, unless the user explicitly restored it.
+    info["profile_digest"] = "outdated"
+    with pytest.raises(ValueError, match = "Update"):
+        managed_engine.validate_load(engine, request)
+    info["restored"] = True
+    managed_engine.validate_load(engine, request)
     managed_engine.validate_load(engine, request.model_copy(update = {"tensor_parallel": True}))
     for ids in ([0, 0], [-1, 0]):
         with pytest.raises(ValueError, match = "distinct"):
