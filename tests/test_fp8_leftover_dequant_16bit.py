@@ -27,6 +27,9 @@ import os
 import tempfile
 
 import pytest
+from real_accelerator import (
+    has_real_cuda,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 from torch import nn
 from safetensors.torch import save_file
@@ -228,7 +231,10 @@ def test_scale_grid_that_does_not_tile_is_refused():
     )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+# has_real_cuda(), not torch.cuda.is_available(): tests/_zoo_aggressive_cuda_spoof.py
+# patches the torch probe to True process-wide, so this would un-skip on a CPU-only box
+# whenever it shares a pytest session with tests/version_compat or tests/vllm_compat.
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_out_of_memory_on_the_device_is_finished_through_the_cpu(monkeypatch):
     """A card full to its 16bit plan has no room for the dequant transient: the stack is parked on the CPU, dequantized there and moved back."""
     from unsloth.models import loader_utils
