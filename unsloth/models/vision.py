@@ -341,6 +341,46 @@ def _lift_endpoint_hooks_onto_adapters(model):
     return lifted
 
 
+def _align_root_hook_with_input_embeddings(model):
+    """Point the root dispatch hook at the input embedding's device.
+
+    accelerate picks the root execution device as the first member of the SET of devices in the
+    map, so a plan that keeps the embedding off that device (the Nemotron Teacher lands it on
+    cuda:1 with the head on cuda:2) sends every input to cuda:0 first; the embedding hook then
+    carries input_ids on while attention_mask and labels stay behind. Modeling code that builds
+    its own mask on the embedding's device (the transformers 4.4x `_update_causal_mask` the
+    Nemotron-H hub checkpoints still ship) fails with "Expected all tensors to be on the same
+    device, but found at least two devices". Native transformers moves the mask itself, which is
+    what kept the extra hop invisible. Aligning the root with the embedding also drops both
+    copies from every batch. Returns the device the root now runs on, or None when untouched."""
+    device_map = getattr(model, "hf_device_map", None)
+    if not device_map or len(set(device_map.values())) < 2:
+        return None
+    hook = getattr(model, "_hf_hook", None)
+    current = getattr(hook, "execution_device", None)
+    if current is None:
+        return None
+    try:
+        embedding = model.get_input_embeddings()
+    except Exception:
+        return None
+    weight = getattr(embedding, "weight", None)
+    target = getattr(weight, "device", None)
+    if target is None or target.type in ("cpu", "meta") or target.index is None:
+        return None
+    if isinstance(current, int):
+        current = torch.device(target.type, current)
+    else:
+        try:
+            current = torch.device(current)
+        except (TypeError, RuntimeError):
+            return None
+    if current == target:
+        return None
+    hook.execution_device = target
+    return target
+
+
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
@@ -2068,6 +2108,12 @@ class FastBaseModel:
                     offload_embedding = offload_embedding,
                     fast_inference = fast_inference,
                 )
+                _aligned_root_device = _align_root_hook_with_input_embeddings(model)
+                if _aligned_root_device is not None:
+                    logger.info(
+                        f"Unsloth: inputs now go straight to {_aligned_root_device}, where the input "
+                        "embedding lives, instead of through the first device in the map."
+                    )
                 # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
                 _restore_dropped_fp8_scales(
                     model,
