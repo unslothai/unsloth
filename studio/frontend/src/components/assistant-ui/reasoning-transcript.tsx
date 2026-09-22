@@ -18,6 +18,7 @@ import {
   useState,
 } from "react";
 import {
+  CodeBlockActions,
   MarkdownTextSource,
   SearchImagesEnabledContext,
 } from "./markdown-text";
@@ -145,11 +146,13 @@ function CodeGroup({
   fragments,
   top,
   measure,
+  streaming,
 }: {
   items: VirtualItem[];
   fragments: ReasoningFragment[];
   top: number;
   measure: RowProps["measure"];
+  streaming: boolean;
 }) {
   const surface = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -190,8 +193,15 @@ function CodeGroup({
       )}
       style={{ transform: `translateY(${items[0].start - top}px)` }}
     >
-      {first.first && code.language && (
-        <div className="mb-2 text-xs text-muted-foreground">
+      {first.first && (
+        <CodeBlockActions
+          disabled={streaming}
+          language={code.language}
+          source={code.source}
+        />
+      )}
+      {first.first && (
+        <div className="mb-2 min-h-4 pr-20 text-xs text-muted-foreground">
           {code.language}
         </div>
       )}
@@ -539,6 +549,7 @@ export function ReasoningTranscript({
                 fragments={fragments}
                 top={geometry.top}
                 measure={virtualizer.measureElement}
+                streaming={streaming}
               />
             );
           const item = group.items[0];

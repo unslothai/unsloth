@@ -110,5 +110,22 @@ async (page) => {
   await page.waitForTimeout(500);
   check(await page.locator('[data-table-continuation] table').count() > 0, "table continuation became plain text");
   check(await page.locator('[data-table-continuation] thead').first().evaluate((node) => getComputedStyle(node).display) === "none", "table continuation repeated its header");
+  await page.evaluate(() => window.__reasoning.seed({ text: "Earlier thought.\n\n".repeat(1000) + '```svg\n<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><circle cx="40" cy="40" r="30"/></svg>\n```' }));
+  await page.mouse.wheel(0, 100000);
+  await page.getByAltText("SVG preview").waitFor();
+  check(await page.getByAltText("SVG preview").evaluate((node) => node.complete && node.naturalWidth > 0), "bounded SVG preview did not load");
+
+  const codeSource = "const bird = { x: 80, y: 140, velocity: 0 };\n".repeat(1000).trimEnd();
+  await page.evaluate((source) => window.__reasoning.seed({ text: "```javascript\n" + source + "\n```" }), codeSource);
+  await page.mouse.wheel(0, -100000);
+  await page.waitForTimeout(400);
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.getByTitle("Copy code", { exact: true }).click();
+  check(await page.evaluate(() => navigator.clipboard.readText()) === codeSource, "fence copy lost offscreen code");
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByTitle("Download file", { exact: true }).click();
+  const download = await downloadPromise;
+  const chunks = []; for await (const chunk of await download.createReadStream()) chunks.push(chunk.toString());
+  check(chunks.join("") === codeSource, "fence download lost offscreen code");
   return { passed: true, streaming, longLineSelectionLength: selection.text.length, tallParagraphDrift: after - anchor.top };
 }

@@ -123,6 +123,15 @@ test("bounded mermaid fences retain their specialized renderer while streaming",
   assert.match(next.at(-1)!.text, /A-->B/);
 });
 
+test("bounded SVG fences retain the existing sanitized preview renderer", () => {
+  const svg = '```svg\n<svg xmlns="http://www.w3.org/2000/svg"><circle r="10"/></svg>\n```';
+  const rows = new ReasoningTranscriptIndex().update([
+    "Earlier thought.\n\n".repeat(1000) + svg,
+  ]);
+  assert.equal(rows.at(-1)!.code, undefined);
+  assert.equal(rows.at(-1)!.text, svg);
+});
+
 test("large tables retain headers and alignment as render-only continuation context", () => {
   const source =
     "| Item | Value |\n| :--- | ---: |\n" + "| bird | 42 |\n".repeat(3000);

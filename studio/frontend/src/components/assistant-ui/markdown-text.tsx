@@ -496,7 +496,7 @@ function MermaidCopyButton({ source }: { source: string }) {
   );
 }
 
-function CodeBlockActions({
+export function CodeBlockActions({
   disabled,
   language,
   source,

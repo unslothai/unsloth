@@ -134,10 +134,12 @@ async (page) => {
   await page.evaluate(() => window.__reasoning.seed({ text:
     "Earlier paragraph.\n\n".repeat(1000) + "[Link][ref]\n\n> [ref]: https://example.org",
   }));
+  await page.mouse.move(550, 350); await page.mouse.wheel(0, 100000);
   await page.waitForTimeout(500);
   check(await page.getByRole("link", { name: "Link", exact: true }).getAttribute("href") === "https://example.org/", "fragmented reference lost its document definition");
   for (const marker of ["1. ", "- Parent\n  1. ", "> 1. "]) {
     await page.evaluate((marker) => window.__reasoning.seed({ text: marker + "Long item ".repeat(3000) + "\n2. Second item" }), marker);
+    await page.mouse.wheel(0, 100000);
     await page.waitForTimeout(500);
     const continuation = page.locator("li[data-reasoning-list-continuation]").last();
     check(await continuation.count() === 1, "long list item lost its continuation container");

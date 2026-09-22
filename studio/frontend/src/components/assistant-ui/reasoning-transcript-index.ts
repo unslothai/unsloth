@@ -494,7 +494,7 @@ function fragmentsOf(
   const key = `${document}:${generation}:${block.start}`;
   if (
     !fallback.fenced ||
-    (fallback.language === "mermaid" &&
+    ((fallback.language === "mermaid" || fallback.language === "svg") &&
       block.text.length <= REASONING_FRAGMENT_CHARACTERS)
   ) {
     return [
@@ -545,7 +545,7 @@ export class ReasoningTranscriptIndex {
         if (
           block.fence &&
           !(
-            block.fence.language === "mermaid" &&
+            (block.fence.language === "mermaid" || block.fence.language === "svg") &&
             block.text.length <= REASONING_FRAGMENT_CHARACTERS
           )
         ) {
