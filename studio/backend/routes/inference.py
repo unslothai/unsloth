@@ -1634,6 +1634,7 @@ try:
         parse_reasoning_budget_message_override,
         parse_reasoning_budget_override,
         parse_split_mode_override,
+        parse_tensor_split_override,
         resolve_reasoning_budget,
         resolve_reasoning_budget_message,
         resolve_tensor_parallel,
@@ -1697,6 +1698,7 @@ except ImportError:
         parse_reasoning_budget_message_override,
         parse_reasoning_budget_override,
         parse_split_mode_override,
+        parse_tensor_split_override,
         resolve_reasoning_budget,
         resolve_reasoning_budget_message,
         resolve_tensor_parallel,
@@ -7222,10 +7224,13 @@ def _should_strip_tensor_split(request: LoadRequest) -> bool:
     override it), and with the ratio cleared it wants llama.cpp's default
     free-VRAM split. Either way an inherited --tensor-split must go, else the
     cleared case silently keeps the stale ratio while status reports None.
-    Unlike _should_strip_split_mode this leaves --split-mode untouched, so a
-    user's row/none/layer mode survives an Unsloth split-ratio edit. When the
-    Tensor Parallelism toggle IS overriding the mode, _should_strip_split_mode
-    (called alongside this at every site) strips --split-mode anyway.
+    Explicit extras must be promoted into ``request.tensor_split`` first (same
+    pattern as ``-ngl`` -> ``gpu_layers``) or the strip would discard the only
+    copy of an asymmetric MoE split (#11330). Unlike _should_strip_split_mode
+    this leaves --split-mode untouched, so a user's row/none/layer mode survives
+    an Unsloth split-ratio edit. When the Tensor Parallelism toggle IS overriding
+    the mode, _should_strip_split_mode (called alongside this at every site)
+    strips --split-mode anyway.
     """
     return (
         getattr(request, "gpu_memory_mode", "auto") == "manual"
@@ -15758,11 +15763,36 @@ async def _load_model_impl(
         # stripping the raw flags. This keeps CLI pass-through such as
         # ``-ngl 20`` from being silently replaced by the manual default (-1).
         # The inherited path already strips offload flags. Manual + per-GPU
-        # ratio owns --tensor-split the same way.
+        # ratio owns --tensor-split the same way: promote ``-ts`` into
+        # ``tensor_split`` first, or the strip drops an asymmetric MoE split
+        # and llama-server falls back to a near-even layer count (#11330).
+        # At gpu_layers < 0 the strip does not fire, so the ratio sits in extras
+        # AND in the field; both copies die in load_model's Auto-layers branch,
+        # which test_manual_auto_layers_never_emits_two_tensor_splits pins.
         if request.gpu_memory_mode == "manual" and extra_llama_args:
+            _manual_updates: dict[str, Any] = {}
             _gpu_layers_override = parse_gpu_layers_override(extra_llama_args)
             if _gpu_layers_override is not None:
-                request = request.model_copy(update = {"gpu_layers": _gpu_layers_override})
+                _manual_updates["gpu_layers"] = _gpu_layers_override
+            # reserialized only where the launcher REWRITES the ratio, the same predicate
+            # _should_strip_tensor_split uses: manual with the RESOLVED layer count non-negative.
+            # At Auto layers both copies are dropped before argv, so judging a rendering nothing
+            # emits would refuse a flag the child never sees. 400, not the 500 a raise gives.
+            _resolved_layers = (
+                _gpu_layers_override
+                if _gpu_layers_override is not None
+                else getattr(request, "gpu_layers", -1)
+            )
+            try:
+                _tensor_split_override = parse_tensor_split_override(
+                    extra_llama_args, reserialized = _resolved_layers >= 0
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+            if _tensor_split_override is not None:
+                _manual_updates["tensor_split"] = _tensor_split_override
+            if _manual_updates:
+                request = request.model_copy(update = _manual_updates)
             _stripped_explicit = strip_shadowing_flags(
                 extra_llama_args,
                 strip_context = False,
@@ -17102,15 +17132,34 @@ async def validate_model(
         # the GPU; the opposite pairing refused a load that only ever runs on the CPU.
         # Same translation, same strip, so the guard below judges the same command.
         # After the validation above, so nothing here parses a token the load refuses.
+        # ``-ts`` / ``--tensor-split`` is promoted the same way (#11330).
         if getattr(request, "gpu_memory_mode", None) == "manual" and effective_extra_args:
             from core.inference.llama_server_args import (
                 parse_gpu_layers_override,
+                parse_tensor_split_override,
                 strip_shadowing_flags,
             )
 
+            _validate_manual_updates: dict[str, Any] = {}
             _validate_ngl_override = parse_gpu_layers_override(effective_extra_args)
             if _validate_ngl_override is not None:
-                request = request.model_copy(update = {"gpu_layers": _validate_ngl_override})
+                _validate_manual_updates["gpu_layers"] = _validate_ngl_override
+            # Same reserialized judgement, and the same 400, as the load path above.
+            _validate_resolved_layers = (
+                _validate_ngl_override
+                if _validate_ngl_override is not None
+                else getattr(request, "gpu_layers", -1)
+            )
+            try:
+                _validate_ts_override = parse_tensor_split_override(
+                    effective_extra_args, reserialized = _validate_resolved_layers >= 0
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            if _validate_ts_override is not None:
+                _validate_manual_updates["tensor_split"] = _validate_ts_override
+            if _validate_manual_updates:
+                request = request.model_copy(update = _validate_manual_updates)
             effective_extra_args = strip_shadowing_flags(
                 effective_extra_args,
                 strip_context = False,

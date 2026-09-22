@@ -164,16 +164,24 @@ def chat(
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "Hugging Face token if needed."
     ),
-    temperature: float = typer.Option(0.7, "--temperature"),
-    top_p: float = typer.Option(0.9, "--top-p"),
-    top_k: int = typer.Option(40, "--top-k"),
+    temperature: Optional[float] = typer.Option(
+        None, "--temperature", help = "Unset uses the model's recommended value."
+    ),
+    top_p: Optional[float] = typer.Option(
+        None, "--top-p", help = "Unset uses the model's recommended value."
+    ),
+    top_k: Optional[int] = typer.Option(
+        None, "--top-k", help = "Unset uses the model's recommended value."
+    ),
     max_new_tokens: Optional[int] = typer.Option(
         None,
         "--max-new-tokens",
         help = "Cap on generated tokens. Unset lets a reply use whatever the "
         "model's context window leaves free after the conversation.",
     ),
-    repetition_penalty: float = typer.Option(1.1, "--repetition-penalty"),
+    repetition_penalty: Optional[float] = typer.Option(
+        None, "--repetition-penalty", help = "Unset leaves it off (1.0)."
+    ),
     system_prompt: str = typer.Option(
         "", "--system-prompt", help = "Optional system prompt for the conversation."
     ),

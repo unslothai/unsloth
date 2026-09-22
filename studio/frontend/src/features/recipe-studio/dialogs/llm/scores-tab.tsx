@@ -149,7 +149,7 @@ export function LlmScoresTab({
             }
           />
           <Textarea
-            className="corner-squircle nodrag min-h-[56px] text-xs"
+            className="corner-squircle nodrag min-h-[calc(56px*var(--ui-space-scale,1))] text-xs"
             placeholder="Score description"
             value={score.description}
             onChange={(event) =>
