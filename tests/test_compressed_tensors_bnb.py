@@ -862,3 +862,29 @@ def test_scheme_is_resolved_per_converter_source_and_mixed_buckets_are_refused()
     assert _scheme_for_sources(ctc, ["mlp.experts.*.up_proj.weight"]).weights.num_bits == 8
     with pytest.raises(RuntimeError, match = "different config groups"):
         _scheme_for_sources(ctc, ["mlp.experts.*.gate_proj.weight", "mlp.experts.*.up_proj.weight"])
+
+
+def test_an_explicit_quantizer_other_than_bnb_4bit_keeps_the_checkpoint_config():
+    from transformers import BitsAndBytesConfig
+    from unsloth.models.loader_utils import quantization_config_selects_bnb_4bit
+
+    assert quantization_config_selects_bnb_4bit(None)
+    assert quantization_config_selects_bnb_4bit(BitsAndBytesConfig(load_in_4bit = True))
+    assert quantization_config_selects_bnb_4bit(
+        {"quant_method": "bitsandbytes", "load_in_4bit": True}
+    )
+    assert not quantization_config_selects_bnb_4bit(BitsAndBytesConfig(load_in_8bit = True))
+    assert not quantization_config_selects_bnb_4bit({"quant_method": "gptq", "bits": 4})
+    # With the 8-bit quantizer the plan is never armed, so the packed config stays on the model.
+    config = _Config(quantization_config = _w4a16())
+    load_in_4bit, _, method = check_and_disable_bitsandbytes_loading(
+        config,
+        load_in_4bit = True,
+        load_in_8bit = False,
+        verbose = False,
+        requantize_packed = quantization_config_selects_bnb_4bit(
+            BitsAndBytesConfig(load_in_8bit = True)
+        ),
+    )
+    assert method == "compressed-tensors" and not load_in_4bit
+    assert getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is None

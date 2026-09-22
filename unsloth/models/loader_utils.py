@@ -1515,6 +1515,25 @@ def check_and_disable_bitsandbytes_loading(
     return load_in_4bit, load_in_8bit, quant_method
 
 
+def quantization_config_selects_bnb_4bit(quantization_config):
+    """True when an explicit ``quantization_config`` (None, a dict or a config object) leaves the load on bitsandbytes 4-bit.
+
+    The packed compressed-tensors re-quantization hands its plan to the bitsandbytes 4-bit quantizer, so a caller who
+    passes any other quantizer (8-bit bitsandbytes, GPTQ, AWQ) must not have the checkpoint's own config stripped."""
+    if quantization_config is None:
+        return True
+    if isinstance(quantization_config, dict):
+        get = quantization_config.get
+    else:
+        get = lambda key, default = None: getattr(quantization_config, key, default)
+    method = get("quant_method", "") or ""
+    # BitsAndBytesConfig stores a QuantizationMethod enum, whose str() is the member name on some Pythons.
+    method = str(getattr(method, "value", method)).lower()
+    if "bitsandbytes" not in method:
+        return False
+    return bool(get("load_in_4bit", False)) and not bool(get("load_in_8bit", False))
+
+
 def sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit):
     """Make UNSLOTH_MODEL_NAME's `_load_in_4bit_`/`_load_in_8bit_` tokens match the EFFECTIVE bnb state (after get_model_name remap + check_and_disable). The per-load env is built from the pre-remap config (None for adapter-only PEFT repos), so its tokens can be wrong once the base resolves. Only the gpt-oss patch reads them, so this is gated to gpt-oss."""
     name = os.environ.get("UNSLOTH_MODEL_NAME", "")
