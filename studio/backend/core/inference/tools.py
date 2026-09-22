@@ -17150,6 +17150,11 @@ def _check_signal_escape_patterns(code: str):
         top = f"{parts[0]}.{parts[-1]}"
         return top if top in _NETWORK_DESTINATION_ARG or top in _CLIENT_CLASSES else None
 
+    def _returns_of(function_name: str) -> str:
+        """The key under which a local function's return values are tracked. No receiver path
+        contains parentheses, so it cannot collide with one."""
+        return f"{function_name}()"
+
     def _is_no_proxy(key) -> bool:
         """A proxy mapping's `no_proxy` entry lists hosts to bypass, not a server to connect to."""
         return isinstance(key, ast.Constant) and key.value == "no_proxy"
@@ -17304,12 +17309,15 @@ def _check_signal_escape_patterns(code: str):
             # Function name -> its local definitions, and every (parameter, argument) a call to
             # one passes, so `fetch(requests.Session())` makes `s` in `def fetch(s)` a session.
             self.local_functions: "dict[str, list[ast.AST]]" = {}
+            # Function id -> its name, so a `return` knows whose return value it sets.
+            self.def_names: "dict[int, str]" = {}
             # Method name -> (definition, parameters the receiver fills: 1, or 0 for a static).
             self.local_methods: "dict[str, list[tuple[ast.AST, int]]]" = {}
             if network_possible:
                 for fn in nodes:
                     if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         self.local_functions.setdefault(fn.name, []).append(fn)
+                        self.def_names[id(fn)] = fn.name
                     elif isinstance(fn, ast.ClassDef):
                         for m in fn.body:
                             if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -17337,6 +17345,8 @@ def _check_signal_escape_patterns(code: str):
             )
             for alt in _alternatives(value):
                 path = self._receiver_path(alt)
+                if isinstance(alt, ast.Call) and isinstance(alt.func, ast.Name):
+                    path = _returns_of(alt.func.id)
                 if path is not None:
                     self.flows_from.setdefault(path, []).append(index)
 
@@ -17362,8 +17372,11 @@ def _check_signal_escape_patterns(code: str):
                 named = {a.arg for a in positional + fn.args.kwonlyargs}
                 pairs += [(kw.arg, kw.value) for kw in node.keywords if kw.arg in named]
                 for param, arg in pairs:
-                    # Bound where the parameter is, so the body's calls see it.
-                    self._record_flow(ast.Name(id = param, ctx = ast.Store()), arg, at, fn)
+                    target = ast.Name(id = param, ctx = ast.Store())
+                    # Bound where the parameter is, so the body's calls see it; linked so a
+                    # proxy the helper sets on its parameter is the caller's client's proxy.
+                    self._link(target, arg)
+                    self._record_flow(target, arg, at, fn)
 
         def resolve_flows(self) -> None:
             """Carry clients along every recorded flow until nothing changes. Each pass through
@@ -17401,6 +17414,9 @@ def _check_signal_escape_patterns(code: str):
                     found.update(
                         c for c in self._fq_candidates(alt.func, at) if c in _CLIENT_CLASSES
                     )
+                    if isinstance(alt.func, ast.Name):
+                        # A local factory: `make()` holds whatever `make` returns.
+                        found.update(self.instance_aliases.get(_returns_of(alt.func.id), ()))
                     continue
                 path = self._receiver_path(alt)
                 if path is None:
@@ -17844,6 +17860,15 @@ def _check_signal_escape_patterns(code: str):
             if self.collecting and isinstance(node.target, ast.Name):
                 at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
                 self._carry(node.target, node.value, at, node)
+            self.generic_visit(node)
+
+        def visit_Return(self, node):
+            function = self.def_names.get(self.scope_stack[-1])
+            if self.collecting and node.value is not None and function is not None:
+                at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                self._record_flow(
+                    ast.Name(id = _returns_of(function), ctx = ast.Store()), node.value, at, node
+                )
             self.generic_visit(node)
 
         def _carry_loop(self, node) -> None:

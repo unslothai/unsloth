@@ -887,6 +887,21 @@ class TestNetworkTargetResolution:
                 f"import requests\n[s.get('http://{_H}/') for s in [requests.Session()]]",
                 id = "client_as_comprehension_target",
             ),
+            pytest.param(
+                f"import requests\ndef configure(x):\n    x.proxies = {{'https': 'http://{_H}:8080'}}\n"
+                "s = requests.Session()\nconfigure(s)\ns.get('https://pypi.org/')",
+                id = "proxy_set_by_a_helper",
+            ),
+            pytest.param(
+                "import requests\ndef make():\n    return requests.Session()\n"
+                f"s = make()\ns.get('http://{_H}/')",
+                id = "client_from_a_local_factory",
+            ),
+            pytest.param(
+                "import requests\ndef inner():\n    return requests.Session()\n"
+                f"def outer():\n    return inner()\nouter().get('http://{_H}/')",
+                id = "client_through_two_factories",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1003,6 +1018,8 @@ class TestNetworkTargetResolution:
             "import requests\ndef fetch(s):\n    return s.get('http://203.0.113.5/')\nfetch({})",
             "import httpx\nhttpx.stream('GET', 'https://pypi.org/')",
             "import httpx\nhttpx.Client(transport=httpx.HTTPTransport(retries=3)).get('https://pypi.org/')",
+            "import requests\ndef make():\n    return requests.Session()\nmake().get('https://pypi.org/')",
+            "def make():\n    return {}\nmake().get('http://203.0.113.5/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):
