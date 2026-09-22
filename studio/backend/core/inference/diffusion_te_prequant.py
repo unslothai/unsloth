@@ -25,6 +25,7 @@ None and the caller falls back to the dense download + cast. Inert with nothing 
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
@@ -186,6 +187,40 @@ def te_prequant_repo_filenames(repo_id: str, component: str, scheme: str) -> tup
 def te_prequant_repo_filename(repo_id: str, component: str, scheme: str) -> str:
     """The preferred checkpoint filename for ``(component, scheme)`` in ``repo_id``."""
     return te_prequant_repo_filenames(repo_id, component, scheme)[0]
+
+
+def te_candidate_filenames(source: Any) -> tuple:
+    """``source``'s names, best first, for anything SHAPED like a source.
+
+    One accessor so the download PLAN and the resolver cannot disagree about which artifact a
+    source means. They did: the resolver learned the chain while every consumer kept matching
+    ``filename`` alone, so the moment the preferred name became a safetensors spelling no repo
+    hosting a ``.pt`` was recognised by the plan, its dense encoder went back into the pull, and
+    the loader fetched the ``.pt`` on top of it. Planners also pass lightweight stand-ins, so this
+    reads defensively rather than touching the dataclass.
+    """
+    names = (
+        getattr(source, "filename", None),
+        *(getattr(source, "fallback_filenames", None) or ()),
+    )
+    return tuple(n for n in names if n)
+
+
+def te_candidate_is_readable(name: Optional[str]) -> bool:
+    """Whether this install can open a pre-cast encoder artifact called ``name``.
+
+    NOT the transformer's ``restricted_prequant_load_supported``: this state dict is plain
+    tensors, read under a bare ``weights_only`` load with no constructor allowlist, so a ``.pt``
+    is always readable and asking the DiT's question would refuse one on every install whose
+    torchao lacks some DiT scheme's constructors. Only the safetensors container has a
+    requirement, and a plan that drops the dense encoder for an artifact this install cannot open
+    leaves the load with neither.
+    """
+    if not name:
+        return False
+    from .prequant_safetensors import is_safetensors_checkpoint, safetensors_prequant_supported
+
+    return safetensors_prequant_supported() if is_safetensors_checkpoint(name) else True
 
 
 def family_te_prequant_repo(fam: Any, scheme: str, component: str) -> Optional[str]:
@@ -532,9 +567,21 @@ def _resolve_checkpoint_path(
         from huggingface_hub import hf_hub_download
         from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
-        names = [source.filename, *(source.fallback_filenames or ())]
+        # Which exception means "this NAME is absent" depends on the mode, and the two are not
+        # interchangeable. huggingface_hub documents LocalEntryNotFoundError as "not on the disk
+        # when network is disabled OR UNAVAILABLE (connection issue). The entry may exist on the
+        # Hub", and it SUBCLASSES EntryNotFoundError, so catching the base online would swallow an
+        # unreachable Hub, spend a second full attempt on the next name, and report that one's
+        # error instead of the connection failure that actually happened. Online, only a real 404
+        # advances; offline, a cache miss is the only verdict there is.
+        miss = (
+            (EntryNotFoundError, LocalEntryNotFoundError)
+            if local_files_only
+            else (EntryNotFoundError,)
+        )
+        names = [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)]
         last: Optional[Exception] = None
-        for name in [n for n in names if n]:
+        for name in names:
             try:
                 return hf_hub_download(
                     repo_id = source.location,
@@ -543,10 +590,17 @@ def _resolve_checkpoint_path(
                     cache_dir = cache_dir,
                     local_files_only = local_files_only,
                 )
-            except (EntryNotFoundError, LocalEntryNotFoundError) as exc:
-                # This name is not in this repo (or not in the cache offline). Try the next
-                # extension rather than giving up: only "no candidate exists" is a real miss, and
-                # anything else (auth, network, a corrupt cache) must still surface as itself.
+            except LocalEntryNotFoundError:
+                # Online this is the Hub being unreachable, not a missing name: re-raise as itself
+                # rather than blaming the next candidate for it.
+                if not local_files_only:
+                    raise
+                last = sys.exc_info()[1]
+                continue
+            except miss as exc:
+                # This name is not in this repo. Try the next extension rather than giving up:
+                # only "no candidate exists" is a real miss, and anything else (auth, a corrupt
+                # cache) must still surface as itself.
                 last = exc
                 continue
         if last is not None:
@@ -617,13 +671,15 @@ def te_prequant_hub_files(
         except Exception as exc:  # noqa: BLE001 -- unavailable pre-cast means the dense encoder
             _warn(logger, f"hub_files:{source.location}", exc)
             continue
-        files = [
-            (s.rfilename, int(getattr(s, "size", 0) or 0))
-            for s in (info.siblings or [])
-            if s.rfilename == source.filename
-        ]
-        if files:
-            found[component] = files
+        sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
+        # The first candidate the repo HOLDS and this install can OPEN, in the resolver's own
+        # order, so the bytes counted here are the bytes that will actually be fetched. Matching
+        # the primary name alone reported every .pt repo as having no pre-cast encoder at all the
+        # moment safetensors became the preferred spelling.
+        for name in te_candidate_filenames(source):
+            if name in sizes and te_candidate_is_readable(name):
+                found[component] = [(name, sizes[name])]
+                break
     return found
 
 
