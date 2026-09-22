@@ -14,8 +14,11 @@ from core.inference.diffusion_families import (
     default_generation_params,
     detect_family,
     excluded_model_reason,
+    family_sd_cpp_supported,
+    sd_cpp_companion_only_repo_ids,
     sd_cpp_text_encoders_for,
 )
+from core.inference.sd_cpp_args import text_encoder_flags_for_family
 from core.inference.diffusion_lora import _CURATED, list_loras
 
 
@@ -663,3 +666,38 @@ def test_every_image_family_base_repo_is_loadable():
     assert (
         not unreachable
     ), f"these families declare a base repo that validate_load_request refuses: {unreachable}"
+
+
+def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encoder():
+    """The no-GPU route for unsloth/Qwen-Image-2.1-GGUF.
+
+    Every assertion here is a way the route was observed to fail quietly rather than loudly:
+    a family without both sd.cpp assets silently falls back to diffusers, the qwen-image VAE
+    decodes 2.1 latents to noise instead of erroring, and a fixed flow shift overrides the
+    resolution-dependent schedule upstream picks for this architecture.
+    """
+    fam = detect_family("unsloth/Qwen-Image-2.1-GGUF")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    assert family_sd_cpp_supported(fam)
+
+    assert fam.sd_cpp_vae == (
+        "unsloth/Qwen-Image-2.1-ComfyUI",
+        "vae/qwen_image_2.1_vae_bf16.safetensors",
+    )
+    # Not the qwen-image VAE, which is a different class for a different latent space.
+    assert "2.1" in fam.sd_cpp_vae[1]
+
+    encoders = sd_cpp_text_encoders_for(fam, "unsloth/Qwen-Image-2.1-GGUF", None)
+    assert len(encoders) == 1
+    repo, filename, kind = encoders[0]
+    assert repo == "unsloth/Qwen3-VL-8B-Instruct-GGUF"
+    assert filename == "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
+    assert kind == "llm"
+    assert text_encoder_flags_for_family(fam.name) == ("--llm",)
+
+    assert fam.sd_cpp_sampling_method == "euler"
+    assert fam.sd_cpp_flow_shift is None
+
+    # The companion repos are fetch-only, so they must not be offered as loadable models.
+    companions = sd_cpp_companion_only_repo_ids()
+    assert "unsloth/qwen-image-2.1-comfyui" in companions

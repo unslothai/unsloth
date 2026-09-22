@@ -366,6 +366,24 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-2.1-FP8"),),
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image_21", "qwenimage21", "qwen-image-21"),
+        # Byte-identical mirror of Comfy-Org/Qwen-Image-2.1 (sha256
+        # bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9). 2.1 has its own VAE
+        # class, so the qwen-image file here decodes to noise rather than failing.
+        sd_cpp_vae = ("unsloth/Qwen-Image-2.1-ComfyUI", "vae/qwen_image_2.1_vae_bf16.safetensors"),
+        # Qwen3-VL 8B, not Qwen2.5-VL, and supplied through --llm rather than --qwen2vl: the
+        # qwen2vl flag carries Qwen2-VL's vision preprocessing, which this encoder does not want.
+        # Q4_K_M keeps the CPU RAM win the no-GPU route exists for (bf16 is 16.4 GB, this is 4.7).
+        sd_cpp_text_encoders = (
+            (
+                "unsloth/Qwen3-VL-8B-Instruct-GGUF",
+                "Qwen3-VL-8B-Instruct-Q4_K_M.gguf",
+                "llm",
+            ),
+        ),
+        sd_cpp_sampling_method = "euler",
+        # No flow shift on purpose. Qwen-Image pins 3.0, but upstream sd.cpp selects a
+        # resolution-dependent schedule for qwen_image_2_1 itself, and passing a fixed shift
+        # overrides that silently: the render still succeeds and is simply worse off-square.
     ),
     DiffusionFamily(
         name = "z-image",
