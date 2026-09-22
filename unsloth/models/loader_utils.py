@@ -1210,9 +1210,10 @@ def _load_fp8_weight_map(
             token = token,
         )
 
-    stem = f"model.{variant}" if variant else "model"
-    index_file = f"{stem}.safetensors.index.json"
-    single_file = f"{stem}.safetensors"
+    # transformers' _add_variant puts the variant before the last suffix:
+    # model.<variant>.safetensors and model.safetensors.index.<variant>.json.
+    index_file = f"model.safetensors.index.{variant}.json" if variant else "model.safetensors.index.json"
+    single_file = f"model.{variant}.safetensors" if variant else "model.safetensors"
     is_local = os.path.isdir(model_name)
 
     if is_local and os.path.exists(_local_path(index_file)):

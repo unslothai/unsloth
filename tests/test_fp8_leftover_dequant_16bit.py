@@ -447,3 +447,12 @@ def test_generic_out_of_memory_runtime_errors_defer_to_the_cpu(monkeypatch):
         done, skipped = _dequantize_leftover_fp8_params(model, d, torch.bfloat16)
     assert done == 2
     assert model.experts.gate_up_proj.dtype == torch.bfloat16
+
+
+def test_a_variant_index_uses_transformers_naming(tmp_path):
+    """transformers names a variant's shard index model.safetensors.index.<variant>.json."""
+    import json
+    from unsloth.models.loader_utils import _load_fp8_weight_map
+
+    (tmp_path / "model.safetensors.index.fp8.json").write_text(json.dumps({"weight_map": {"a.weight": "model-fp8-00001.safetensors"}}))
+    assert _load_fp8_weight_map(str(tmp_path), True, None, variant = "fp8") == {"a.weight": "model-fp8-00001.safetensors"}
