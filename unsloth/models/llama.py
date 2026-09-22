@@ -2775,7 +2775,13 @@ class FastLlamaModel:
                     variant = kwargs.get("variant"),
                 )
             elif not fast_inference:
-                if user_config is not None:
+                # A packed compressed-tensors checkpoint being re-quantized to bitsandbytes on the fly
+                # had its own quantization config dropped from `model_config`; the load must use that
+                # object rather than re-read config.json.
+                from .compressed_tensors_bnb import UNSLOTH_COMPRESSED_TENSORS_ATTR
+
+                _ct_requant = getattr(model_config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
+                if user_config is not None or _ct_requant:
                     # Transformers 5.x @strict model init rejects extra kwargs next to config=, so set the override
                     # on the config and pass the single config object through.
                     if max_position_embeddings is not None:

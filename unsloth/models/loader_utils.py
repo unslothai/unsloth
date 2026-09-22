@@ -1404,6 +1404,37 @@ def _restore_dropped_fp8_scales(
         return (0, 0)
 
 
+def enable_composite_gradient_checkpointing(model, verbose = True):
+    """A remote-code composition (Kimi-K2.7: `KimiK25ForConditionalGeneration` holding a
+    `DeepseekV3ForCausalLM`) often leaves `supports_gradient_checkpointing` at its False
+    default on the outer class while the language model inside supports it. transformers'
+    `gradient_checkpointing_enable` refuses on the outer flag alone, although the enable
+    itself walks every submodule. When an inner PreTrainedModel supports checkpointing, mark
+    the outer class as supporting it too. Returns True when the flag was set."""
+    try:
+        from transformers import PreTrainedModel
+    except Exception:
+        return False
+    if not isinstance(model, PreTrainedModel):
+        return False
+    if getattr(type(model), "supports_gradient_checkpointing", False):
+        return False
+    inner = [
+        type(m).__name__
+        for name, m in model.named_modules()
+        if name and isinstance(m, PreTrainedModel) and getattr(type(m), "supports_gradient_checkpointing", False)
+    ]
+    if not inner:
+        return False
+    type(model).supports_gradient_checkpointing = True
+    if verbose:
+        print(
+            f"Unsloth: {type(model).__name__} did not declare gradient checkpointing support but its "
+            f"{inner[0]} does; enabling it on the outer model."
+        )
+    return True
+
+
 def check_and_disable_bitsandbytes_loading(
     model_config,
     load_in_4bit = True,
@@ -1415,6 +1446,17 @@ def check_and_disable_bitsandbytes_loading(
 
     if quant_method is None or quant_method == "bitsandbytes":
         return load_in_4bit, load_in_8bit, quant_method
+
+    # A compressed-tensors packed INT4 / INT8 weight-only checkpoint (W4A16, W8A16) can be
+    # decompressed one tensor at a time while it streams in and re-quantized to bitsandbytes
+    # 4-bit, which is the only form PEFT can attach a LoRA to. When that applies the
+    # checkpoint's own quantization config is dropped from `model_config` here and
+    # `load_in_4bit` stays on.
+    if load_in_4bit and not load_in_8bit and quant_method == "compressed-tensors":
+        from .compressed_tensors_bnb import arm_compressed_tensors_bnb_loading
+
+        if arm_compressed_tensors_bnb_loading(model_config, verbose = verbose) is not None:
+            return True, False, None
 
     # A non-bitsandbytes quantization config (compressed-tensors, gptq, awq) means BOTH bitsandbytes loading flags must be disabled to avoid config conflicts.
     if load_in_4bit or load_in_8bit:

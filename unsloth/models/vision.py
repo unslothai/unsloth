@@ -2427,6 +2427,11 @@ class FastBaseModel:
         lora_config = LoraConfig(
             **{k: v for k, v in local_variables.items() if k in allowed_parameters},
         )
+        from .loader_utils import enable_composite_gradient_checkpointing
+        from .remote_moe_shims import prepare_remote_moe_for_training
+
+        enable_composite_gradient_checkpointing(model)
+        prepare_remote_moe_for_training(model)
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
@@ -2557,6 +2562,11 @@ class FastBaseModel:
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
 
+        from .loader_utils import enable_composite_gradient_checkpointing
+        from .remote_moe_shims import prepare_remote_moe_for_training
+
+        enable_composite_gradient_checkpointing(model)
+        prepare_remote_moe_for_training(model)
         model = prepare_model_for_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
