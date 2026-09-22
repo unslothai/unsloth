@@ -8,7 +8,9 @@
 import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.ts";
 import {
   type GgufFitClass,
+  type GgufVariantSizes,
   classifyGgufFit as classifyGgufFitForDevice,
+  ggufVariantFitSizeBytes,
 } from "../../../../lib/gguf-fit.ts";
 import {
   type HostClass,
@@ -1115,17 +1117,22 @@ export function ggufFitIsComfortable(fit: GgufFitClass): boolean {
 /** What to recommend on a device whose budget is known: the largest quant that runs with room to
  *  spare, else the largest that runs at all, else the smallest. Quality the machine can actually
  *  hold, rather than whatever size the repo defaults to. */
-export function recommendedQuantForDevice<T extends { size_bytes: number }>(
+export function recommendedQuantForDevice<T extends GgufVariantSizes>(
   variants: readonly T[],
   fitOf: (sizeBytes: number) => GgufFitClass,
 ): T | null {
   if (variants.length === 0) return null;
+  // Ranked by the weights, since that is the quality on offer and the size the row shows. Judged on
+  // the download footprint, which also covers the companion GGUFs the loader charges for: a vision
+  // projector, or a drafter `auto` promotes to. On `size_bytes` alone this starred quants that go
+  // OOM once the mmproj lands beside them.
+  const fitOfVariant = (variant: T) => fitOf(ggufVariantFitSizeBytes(variant));
   const bySizeDesc = [...variants].sort(
     (left, right) => right.size_bytes - left.size_bytes,
   );
   return (
-    bySizeDesc.find((variant) => ggufFitIsComfortable(fitOf(variant.size_bytes))) ??
-    bySizeDesc.find((variant) => fitOf(variant.size_bytes) !== "oom") ??
+    bySizeDesc.find((variant) => ggufFitIsComfortable(fitOfVariant(variant))) ??
+    bySizeDesc.find((variant) => fitOfVariant(variant) !== "oom") ??
     bySizeDesc[bySizeDesc.length - 1]
   );
 }

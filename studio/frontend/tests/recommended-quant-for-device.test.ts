@@ -73,6 +73,21 @@ test("more memory never recommends a smaller quant", () => {
   }
 });
 
+// A vision repo fetches an mmproj beside the weights, so download_size_bytes runs ahead of
+// size_bytes. Scoring the checkpoint alone recommended a quant that OOMs once the projector lands.
+test("companion weights count against the budget", () => {
+  const vision = [
+    { quant: "UD-Q4_K_XL", size_bytes: 18 * GB, download_size_bytes: 22 * GB },
+    { quant: "UD-Q6_K_XL", size_bytes: 25 * GB, download_size_bytes: 29 * GB },
+  ];
+  const fit = fitOn(0, 64);
+  // 64 GiB of RAM offloads 32 GiB. The larger quant needs 29.75 GiB on its weights but 34.35 GiB
+  // with the projector, so only the smaller one actually loads.
+  assert.equal(fit(25 * GB), "ram");
+  assert.equal(fit(29 * GB), "oom");
+  assert.equal(recommendedQuantForDevice(vision, fit)?.quant, "UD-Q4_K_XL");
+});
+
 test("a machine too small for anything still gets the smallest", () => {
   const pick = recommendedQuantForDevice(QUANTS, () => "oom");
   assert.equal(pick?.quant, "UD-IQ1_S");
