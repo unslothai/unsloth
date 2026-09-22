@@ -219,11 +219,16 @@ def test_the_recorded_base_must_be_the_canonical_id_not_just_the_same_tail(capsy
     assert fam is not None and fam.base_repo == "Qwen/Qwen-Image-2.1"
 
     argv = [
-        "--base", "./temp/qwen_image_21",
-        "--family", "qwen-image-2.1",
-        "--scheme", "int8",
-        "--out", "/nonexistent/out.pt",
-        "--base-model-id", "other/Qwen-Image-2.1",
+        "--base",
+        "./temp/qwen_image_21",
+        "--family",
+        "qwen-image-2.1",
+        "--scheme",
+        "int8",
+        "--out",
+        "/nonexistent/out.pt",
+        "--base-model-id",
+        "other/Qwen-Image-2.1",
     ]
     assert build.main(argv) == 2
     message = capsys.readouterr().out
