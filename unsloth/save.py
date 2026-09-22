@@ -3248,10 +3248,10 @@ def _imatrix_is_enabled(imatrix_file):
     return imatrix_file is not None and imatrix_file is not False
 
 
-def _gguf_reuses_loaded_checkpoint(model):
+def _gguf_reuses_loaded_checkpoint(model, state_dict = None):
     if isinstance(model, (PeftModel, PeftModelForCausalLM)):
         return False
-    if getattr(model, "_unsloth_full_finetuning", False):
+    if state_dict is not None or getattr(model, "_unsloth_full_finetuning", False):
         return False
     name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
     try:
@@ -3260,16 +3260,16 @@ def _gguf_reuses_loaded_checkpoint(model):
         return False
 
 
-def _gguf_writes_16bit_checkpoint(model):
+def _gguf_writes_16bit_checkpoint(model, state_dict = None):
     """Whether a GGUF export writes a full 16-bit checkpoint before converting. A PEFT model is merged into one. A non-PEFT model reuses an existing checkpoint when `_name_or_path` names a directory, and otherwise falls back to `save_pretrained`, which writes the same two bytes per parameter; sizing that fallback at zero is what lets an export pass the preflight and then fill the disk. A module-level helper rather than a local, because the caller snapshots `locals()` into the kwargs of `unsloth_generic_save`."""
-    return not _gguf_reuses_loaded_checkpoint(model)
+    return not _gguf_reuses_loaded_checkpoint(model, state_dict)
 
 
-def _fallback_checkpoint_extra_bytes(model):
+def _fallback_checkpoint_extra_bytes(model, state_dict = None):
     """Bytes the non-PEFT fallback checkpoint costs ON TOP of the 16-bit estimate. `estimate_gguf_export_bytes` budgets two bytes per logical parameter, which is what a LoRA merge writes, but the fallback calls `self.save_pretrained` with no cast, so a model loaded with `dtype = torch.float32` writes four. Measured from the parameters' real storage so a mixed-dtype model is not priced off its largest tensor, and clamped at zero: this can only ask for more room, never less."""
     if isinstance(model, (PeftModel, PeftModelForCausalLM)):
         return 0
-    if not _gguf_writes_16bit_checkpoint(model):
+    if not _gguf_writes_16bit_checkpoint(model, state_dict):
         return 0
     try:
         actual = 0
@@ -3338,9 +3338,9 @@ def _gguf_conversion_directory(model_directory):
     return cwd if _directory_is_writable(cwd) else model_directory
 
 
-def _gguf_model_input_directory(model, save_directory):
+def _gguf_model_input_directory(model, save_directory, state_dict = None):
     """The folder the converter reads, which is not always `save_directory`. A non-PEFT model whose `_name_or_path` names a directory is converted from that checkpoint, which `unsloth_save_pretrained_gguf` assigns to `save_directory` before calling `save_to_gguf`; the same condition `_gguf_writes_16bit_checkpoint` uses. It matters only in the unwritable-CWD fallback, where the intermediate GGUF lands beside the reused checkpoint rather than the requested output, and the two can be on different filesystems."""
-    if _gguf_reuses_loaded_checkpoint(model):
+    if _gguf_reuses_loaded_checkpoint(model, state_dict):
         return str(model.config._name_or_path)
     return save_directory
 
@@ -3406,6 +3406,7 @@ def _preflight_gguf_disk(
     has_imatrix = False,
     needs_merge = True,
     merge_is_disposable = False,
+    state_dict = None,
 ):
     """Refuse a GGUF export that cannot fit, before it writes a single byte. Returns `(directory, prewarm_ok)`. `directory` differs from the input only when a Kaggle kernel's tiny working directory was swapped for the large /tmp overlay, and then it says so once. `prewarm_ok` is False when the export fits only without pre-warming the Hugging Face cache with the base model. A GGUF export peaks at more than "the model, twice": it caches the full-precision base, writes the 16-bit HF merge, then an intermediate GGUF at the source dtype, then each requested quant, with every earlier artefact still on disk. Gemma4 (26B A4B) Vision, Gemma4 (31B) Vision and Qwen3 32B each trained, ran inference and completed `merged_16bit` before dying partway through a GGUF shard, because the check in front of them had sized the job at two copies. Dropping the pre-warm is tried before refusing, because the merge downloads what it needs either way. `merge_is_disposable` says the merge is this export's own throwaway, so `_free_merge_if_disk_is_tight` may delete it once the intermediate GGUF exists and the peak becomes the larger of two phases rather than their sum; defaults off, which is what every caller got before. Never blocks on a guess: an unmeasurable model or disk returns the directory untouched. UNSLOTH_DISK_PREFLIGHT=0 disables."""
     if os.environ.get("UNSLOTH_DISK_PREFLIGHT", "1").strip().lower() in (
@@ -3457,7 +3458,7 @@ def _preflight_gguf_disk(
         )
         # The estimate prices the checkpoint at 2 bytes per parameter, but the non-PEFT fallback writes the model's own dtype, so an fp32 model needs the difference. Zero for a 16-bit model.
         if need > 0 and needs_merge:
-            extra = _fallback_checkpoint_extra_bytes(model)
+            extra = _fallback_checkpoint_extra_bytes(model, state_dict)
             need += extra
             need_with_cache += extra
         # The same estimate without the checkpoint: the `_gguf` sibling's intermediate plus every quant. Used only when that sibling sits on a smaller filesystem. Its own try, so an estimator that cannot answer leaves the main guard standing.
@@ -3547,7 +3548,7 @@ def _preflight_gguf_disk(
     )
     # Resolved before the split is priced, because where the conversion lands decides which filesystem it is charged to.
     conversion_directory = _gguf_conversion_directory(
-        _gguf_model_input_directory(model, save_directory)
+        _gguf_model_input_directory(model, save_directory, state_dict)
     )
 
     # Cleared when the cache shares a filesystem with room for the export but not a cached base too: dropping the optional half beats failing. The message travels with the flag, since more than one filesystem can set it and each has to name the one it measured.
@@ -3893,9 +3894,10 @@ def unsloth_save_pretrained_gguf(
             # Resolved rather than left at the default, which says "f16" while the export asks the config.
             model_dtype = _gguf_source_dtype(self),
             has_imatrix = _imatrix_is_enabled(imatrix_file),
-            needs_merge = _gguf_writes_16bit_checkpoint(self),
+            needs_merge = _gguf_writes_16bit_checkpoint(self, state_dict),
             # The same flag save_to_gguf reclaims on. Where a non-PEFT model reuses its own checkpoint the flag is cleared below on the same condition, so the two cannot disagree.
             merge_is_disposable = merge_is_disposable,
+            state_dict = state_dict,
         )
 
     arguments = dict(locals())
@@ -3973,7 +3975,7 @@ def unsloth_save_pretrained_gguf(
     else:
         # Non-PEFT model: the checkpoint already exists, so point save_to_gguf at the original path instead of re-saving into a temp subdir.
         original_path = getattr(self.config, "_name_or_path", None)
-        if _gguf_reuses_loaded_checkpoint(self):
+        if _gguf_reuses_loaded_checkpoint(self, state_dict):
             print(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
             )

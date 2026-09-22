@@ -3397,7 +3397,7 @@ class TestTheGgufPreflightIsToldTheModelDtype:
         monkeypatch.setattr(
             S,
             "_fallback_checkpoint_extra_bytes",
-            lambda model: asked.append(None) or 0,
+            lambda model, *_: asked.append(None) or 0,
         )
         wrong = estimate(quantization_methods = ["f16", "q4_k_m"], first_conversion = "f16")
         right = estimate(quantization_methods = ["f16", "q4_k_m"], first_conversion = "bf16")
@@ -3472,7 +3472,7 @@ class TestThePrewarmedCacheIsChargedToItsOwnFilesystem:
         monkeypatch.setattr(
             S, "_filesystem_id", lambda path: devices.get(str(path), state["cache_device"])
         )
-        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model: 0)
+        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model, *_: 0)
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
@@ -3565,7 +3565,7 @@ class TestAnUnsupportedBF16IsNormalizedBeforeEstimating:
         monkeypatch.setattr(S, "estimate_gguf_export_bytes", estimate)
         monkeypatch.setattr(S, "free_bytes", lambda path: 1000 * GB)
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
-        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model: 0)
+        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model, *_: 0)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)
         return asked
 
@@ -3666,7 +3666,7 @@ class TestTheCacheIsChargedOnTheConversionFilesystem:
             lambda path: state["conversion_free"] if str(path) == self.WORK else 1000 * GB,
         )
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
-        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model: 0)
+        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model, *_: 0)
         monkeypatch.setattr(S, "_gguf_conversion_directory", lambda directory: self.WORK)
         monkeypatch.setattr(S, "_hub_cache_directory", lambda: self.CACHE)
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
@@ -3768,7 +3768,7 @@ class TestACacheOnAnotherFilesystemIsNotChargedToTheOutputDisk:
             S, "_filesystem_id", lambda path: devices.get(str(path), state["cache_device"])
         )
         monkeypatch.setattr(S, "_hub_cache_directory", lambda: self.ELSEWHERE)
-        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model: 0)
+        monkeypatch.setattr(S, "_fallback_checkpoint_extra_bytes", lambda model, *_: 0)
         monkeypatch.setattr(S, "IS_KAGGLE_ENVIRONMENT", False)
         monkeypatch.setattr(S, "IS_COLAB_ENVIRONMENT", False)
         monkeypatch.delenv("UNSLOTH_DISK_PREFLIGHT", raising = False)

@@ -210,9 +210,16 @@ def test_non_peft_gguf_uses_checkpoint_as_input_not_output(
     assert tokenizer.saved_to == [str(checkpoint)]
 
 
-@pytest.mark.parametrize("state_dict", [None, {"lm_head.weight": "consolidated"}])
+@pytest.mark.parametrize(
+    "full_finetuning, state_dict",
+    [
+        (True, None),
+        (True, {"lm_head.weight": "consolidated"}),
+        (False, {"lm_head.weight": "consolidated"}),
+    ],
+)
 def test_full_finetune_gguf_writes_trained_weights_not_source_checkpoint(
-    monkeypatch, tmp_path, state_dict
+    monkeypatch, tmp_path, full_finetuning, state_dict
 ):
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
@@ -228,7 +235,7 @@ def test_full_finetune_gguf_writes_trained_weights_not_source_checkpoint(
             "model_type": "llama",
         },
     )()
-    model._unsloth_full_finetuning = True
+    model._unsloth_full_finetuning = full_finetuning
     model.saved_to = []
     model.save_pretrained = lambda path, **kwargs: model.saved_to.append(
         (path, kwargs.get("state_dict"))
@@ -264,8 +271,10 @@ def test_full_finetune_gguf_writes_trained_weights_not_source_checkpoint(
     assert model.saved_to == [(str(requested), state_dict)]
     assert tokenizer.saved_to == [str(requested)]
     assert os.listdir(checkpoint) == []
-    assert save_mod._gguf_writes_16bit_checkpoint(model) is True
-    assert save_mod._gguf_model_input_directory(model, str(requested)) == str(requested)
+    assert save_mod._gguf_writes_16bit_checkpoint(model, state_dict) is True
+    assert save_mod._gguf_model_input_directory(model, str(requested), state_dict) == str(
+        requested
+    )
 
 
 # The above rejection points users at push_to_hub_gguf(save_method='lora'), so that path has to work; it is only ever
