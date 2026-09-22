@@ -46,7 +46,6 @@ import importlib.util
 from ..device_type import (
     is_hip,
     get_device_type,
-    DEVICE_TYPE,
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
