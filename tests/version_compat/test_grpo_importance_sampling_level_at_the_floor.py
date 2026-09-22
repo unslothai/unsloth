@@ -51,7 +51,12 @@ class _Accelerator:
     num_processes = 1
 
 
-def _trainer(*, on_trainer = None, on_config = None, with_logps: bool):
+def _trainer(
+    *,
+    on_trainer = None,
+    on_config = None,
+    with_logps: bool,
+):
     """A stand-in GRPOTrainer binding `importance_sampling_level` where the TRL under test does."""
     import torch
 
@@ -71,13 +76,16 @@ def _trainer(*, on_trainer = None, on_config = None, with_logps: bool):
     if on_trainer is not None:
         trainer.importance_sampling_level = on_trainer
     # `with_logps` picks the branch: a tensor takes the no-grad slow path, None the gradient one.
-    trainer._get_per_token_logps = (
-        lambda *a, **k: (torch.zeros((1, 2)) if with_logps else None)
-    )
+    trainer._get_per_token_logps = lambda *a, **k: (torch.zeros((1, 2)) if with_logps else None)
     return trainer
 
 
-def _captured_level(*, on_trainer = None, on_config = None, with_logps: bool) -> str:
+def _captured_level(
+    *,
+    on_trainer = None,
+    on_config = None,
+    with_logps: bool,
+) -> str:
     """Compile the real rewritten compute_loss and read the level it hands the loss."""
     torch = pytest.importorskip("torch")
     source = grpo_trainer_compute_loss("compute_loss", None)
@@ -104,7 +112,9 @@ def _captured_level(*, on_trainer = None, on_config = None, with_logps: bool) ->
     exec(compile("\n".join(RL_PRE_ITEMS["grpo_trainer"]), "<pre_items>", "exec"), namespace)
     namespace["grpo_compute_loss_slow"] = _loss_stub
     namespace["grpo_accumulated_loss"] = _loss_stub
-    exec(compile(re.sub(r"^    ", "", source, flags = re.MULTILINE), "<rewritten>", "exec"), namespace)
+    exec(
+        compile(re.sub(r"^    ", "", source, flags = re.MULTILINE), "<rewritten>", "exec"), namespace
+    )
 
     inputs = {
         "prompt_ids": torch.zeros((1, 2), dtype = torch.long),
@@ -128,9 +138,14 @@ def test_the_floor_binds_neither_and_still_reaches_the_loss(with_logps: bool) ->
 @pytest.mark.parametrize("with_logps", [True, False], ids = ["no_grad_path", "gradient_path"])
 def test_the_trainer_attribute_still_wins_where_trl_sets_it(with_logps: bool) -> None:
     """0.20.0 and up: unchanged behaviour, the trainer's own value is forwarded verbatim."""
-    assert _captured_level(
-        on_trainer = "sequence", on_config = "token", with_logps = with_logps,
-    ) == "sequence"
+    assert (
+        _captured_level(
+            on_trainer = "sequence",
+            on_config = "token",
+            with_logps = with_logps,
+        )
+        == "sequence"
+    )
 
 
 @pytest.mark.parametrize("with_logps", [True, False], ids = ["no_grad_path", "gradient_path"])
@@ -154,9 +169,7 @@ def test_the_window_still_binds_what_this_loss_expects() -> None:
         config = fetch_text("huggingface/trl", tag, "trl/trainer/grpo_config.py")
         trainer = fetch_text("huggingface/trl", tag, "trl/trainer/grpo_trainer.py")
         assert config is not None and trainer is not None, f"{tag}: GRPO sources not found"
-        has_field = bool(
-            re.search(r"^\s{4}importance_sampling_level\s*:", config, re.M)
-        )
+        has_field = bool(re.search(r"^\s{4}importance_sampling_level\s*:", config, re.M))
         has_attr = bool(
             re.search(
                 r"^\s+self\.importance_sampling_level\s*=\s*args\.importance_sampling_level",
