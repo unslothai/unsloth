@@ -123,17 +123,20 @@ def _repair_env() -> dict[str, str]:
     return env
 
 
-def _wait_for_peer_pass() -> None:
-    """Hold the gate until no process holds the dependency pass. Killing our installer released it,
-    but the pass it was waiting behind (a sibling's repair, an update) may still be writing."""
+def _peer_holds_pass() -> bool:
+    """Whether another process (a sibling's repair, an update) is inside the dependency pass."""
     try:
         from studio.install_manifest import pass_lock
     except Exception:  # noqa: BLE001 - no lock to read is no peer to wait for
-        return
-    while True:
-        with pass_lock() as uncontended:
-            if uncontended:
-                return
+        return False
+    with pass_lock() as uncontended:
+        return not uncontended
+
+
+def _wait_for_peer_pass() -> None:
+    """Hold the gate until no process holds the dependency pass. Killing our installer released it,
+    but the pass it was waiting behind may still be writing."""
+    while _peer_holds_pass():
         time.sleep(_PEER_POLL_S)
 
 
@@ -191,7 +194,9 @@ def start_diffusers_autorepair_if_needed() -> bool:
     global _thread
     if _opted_out() or not _MAIN_PIN.is_file() or not _INSTALLER.is_file():
         return False
-    if not _diffusers_is_an_index_install():
+    # A peer mid-install can have removed the metadata, so its pass also starts the installer, which
+    # waits the pass out and keeps loads refused meanwhile.
+    if not _diffusers_is_an_index_install() and not _peer_holds_pass():
         return False
     with _lock:
         if _thread is not None:
@@ -199,8 +204,7 @@ def start_diffusers_autorepair_if_needed() -> bool:
         _thread = threading.Thread(target = _run_repair, daemon = True, name = "diffusers-autorepair")
         _thread.start()
     logger.info(
-        "diffusers is the release build; checking for the pinned Diffusers main build in the "
-        "background. Set %s=1 to disable.",
+        "checking for the pinned Diffusers main build in the background. Set %s=1 to disable.",
         DISABLE_ENV_VAR,
     )
     return True

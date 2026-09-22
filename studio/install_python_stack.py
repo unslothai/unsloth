@@ -10621,8 +10621,8 @@ def _diffusers_main_needs_dependency_pass() -> bool:
     on the release until the next version bump. The same gates as 11c decide whether the pass
     could install the build at all, so a host with neither git nor the zip route keeps its fast
     path. A pass that tried
-    and failed records "failed" and also keeps it, as does a failed startup repair: without that, a
-    host that cannot reach github.com would repeat the whole dependency pass on every update.
+    and failed records "failed" and also keeps it: without that, a host that cannot reach
+    github.com would repeat the whole dependency pass on every update.
     """
     req = REQ_ROOT / "diffusers-main.txt"
     if not req.is_file():
@@ -10639,14 +10639,21 @@ def _diffusers_main_needs_dependency_pass() -> bool:
     try:
         manifest = install_manifest.read_manifest() or {}
         last = (manifest.get("step_results") or {}).get("diffusers-main.txt")
-        repair = manifest.get(_DIFFUSERS_MAIN_REPAIR_KEY)
     except Exception:  # noqa: BLE001 - an unreadable manifest is no record of a failed try
-        last = repair = None
-    return last != "failed" and repair != "failed"
+        last = None
+    return last != "failed"
 
 
-# The backend's startup repair records its failure here; the next pass rewrites the manifest without it.
+# The backend's startup repair records its failure here, read by the repair alone so an explicit
+# update still retries; that pass rewrites the manifest without it.
 _DIFFUSERS_MAIN_REPAIR_KEY = "diffusers_main_repair"
+
+
+def _startup_repair_failed() -> bool:
+    try:
+        return (install_manifest.read_manifest() or {}).get(_DIFFUSERS_MAIN_REPAIR_KEY) == "failed"
+    except Exception:  # noqa: BLE001 - an unreadable manifest is no record of a failed try
+        return False
 
 
 _REPAIR_LOCK_POLL_S = 5
@@ -10662,7 +10669,11 @@ def _repair_diffusers_main() -> int:
 
     global USE_UV, _STEP, _TOTAL
     while True:
-        if not _diffusers_main_requested() or not _diffusers_main_needs_dependency_pass():
+        if (
+            not _diffusers_main_requested()
+            or not _diffusers_main_needs_dependency_pass()
+            or _startup_repair_failed()
+        ):
             return 1
         with install_manifest.pass_lock() as uncontended:
             if uncontended:

@@ -21,6 +21,8 @@ if str(_BACKEND) not in sys.path:
 
 import utils.diffusers_repair as dr  # noqa: E402
 
+_REAL_PEER_HOLDS_PASS = dr._peer_holds_pass
+
 
 class _Dist:
     def __init__(self, direct_url):
@@ -38,6 +40,7 @@ def _reset(monkeypatch):
     monkeypatch.setattr(dr, "_installed", False)
     monkeypatch.delenv(dr.DISABLE_ENV_VAR, raising = False)
     monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.setattr(dr, "_peer_holds_pass", lambda: False)
 
 
 def _installed_diffusers(monkeypatch, direct_url):
@@ -146,19 +149,37 @@ def test_a_timed_out_repair_stops_the_installers_children_too(monkeypatch, tmp_p
     assert dr.diffusers_repair_installed() is False
 
 
-def test_the_gate_waits_for_a_peer_to_leave_the_pass(monkeypatch):
-    """The repair's installer may have been waiting behind a sibling's repair or an update when it
-    timed out; that peer can still be rewriting diffusers."""
+def _peer_pass(monkeypatch, *uncontended):
     import contextlib
     import types
 
-    held = iter([False, False, True])
-    polls = []
+    monkeypatch.setattr(dr, "_peer_holds_pass", _REAL_PEER_HOLDS_PASS)
+    held = iter(uncontended)
     fake = types.SimpleNamespace(pass_lock = lambda: contextlib.nullcontext(next(held)))
     monkeypatch.setitem(sys.modules, "studio.install_manifest", fake)
+
+
+def test_the_gate_waits_for_a_peer_to_leave_the_pass(monkeypatch):
+    """The repair's installer may have been waiting behind a sibling's repair or an update when it
+    timed out; that peer can still be rewriting diffusers."""
+    _peer_pass(monkeypatch, False, False, True)
+    polls = []
     monkeypatch.setattr(dr.time, "sleep", lambda seconds: polls.append(seconds))
     dr._wait_for_peer_pass()
     assert polls == [dr._PEER_POLL_S] * 2
+
+
+def test_a_start_during_a_peers_pass_waits_it_out(monkeypatch):
+    """A peer swapping diffusers can have removed its metadata, which reads as no index release."""
+    _peer_pass(monkeypatch, False)
+    _installed_diffusers(
+        monkeypatch, {"url": "https://github.com/huggingface/diffusers", "vcs_info": {}}
+    )
+    started = []
+    monkeypatch.setattr(dr.subprocess, "Popen", lambda argv, **kw: started.append(argv) or _Proc(1))
+    assert dr.start_diffusers_autorepair_if_needed() is True
+    dr._thread.join(5)
+    assert started and started[0][-1] == "--repair-diffusers-main"
 
 
 @pytest.mark.parametrize(

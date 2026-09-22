@@ -832,16 +832,23 @@ def test_the_startup_repair_runs_only_the_main_step(monkeypatch):
     assert module.recorded == [{module._DIFFUSERS_MAIN_REPAIR_KEY: "failed"}]
 
 
-def test_a_failed_startup_repair_is_not_retried_until_the_next_pass(monkeypatch):
-    """Every start would otherwise refuse diffusion loads through another fetch this host cannot make."""
-    module = _fast_path_probe_module(monkeypatch, resident = False)
-    assert module._diffusers_main_needs_dependency_pass() is True
-    monkeypatch.setattr(
-        module.install_manifest,
-        "read_manifest",
-        lambda *a, **k: {module._DIFFUSERS_MAIN_REPAIR_KEY: "failed"},
-    )
-    assert module._diffusers_main_needs_dependency_pass() is False
+def test_a_failed_startup_repair_stops_startup_retries_but_not_an_update(monkeypatch):
+    """Every start would otherwise refuse diffusion loads through another fetch this host cannot
+    make, while the update the backend's warning points at must still retry."""
+
+    def failed_repair(module):
+        monkeypatch.setattr(
+            module.install_manifest,
+            "read_manifest",
+            lambda *a, **k: {module._DIFFUSERS_MAIN_REPAIR_KEY: "failed"},
+        )
+
+    module, ran = _repair_module(monkeypatch, needed = [True], resident_after = False)
+    failed_repair(module)
+    assert module._repair_diffusers_main() == 1 and ran == []
+    probe = _fast_path_probe_module(monkeypatch, resident = False)
+    failed_repair(probe)
+    assert probe._diffusers_main_needs_dependency_pass() is True
 
 
 def test_the_startup_repair_leaves_a_healthy_install_alone(monkeypatch):
