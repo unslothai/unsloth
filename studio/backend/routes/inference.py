@@ -7412,12 +7412,18 @@ def _drafter_for_path(
     *,
     kind: str = "mtp",
     log_native_fallback: bool = False,
+    companion_roots: tuple[str, ...] = (),
 ) -> Optional[str]:
     """The drafter of ``kind`` that pairs with a local GGUF, or None.
 
     A native-grant-backed load filters candidates through the native rules in
     preference order, so a root drafter it must reject still falls through to
     the in-bounds subdirectory copy instead of reading as no drafter at all.
+
+    *companion_roots* are the roots the launch searched, tried in the same order
+    ModelConfig.from_identifier tries them. The Apply dedup compares this answer
+    against the drafter the server actually opened, so a narrower search here
+    reports a widened load as drafterless and reloads it on every Apply.
     """
     if not gguf_path:
         return None
@@ -7439,7 +7445,14 @@ def _drafter_for_path(
             rejected |= not usable
             return usable
 
-    detected = detect(gguf_path, search_root = root, accept = accept)
+    detected = next(
+        (
+            found
+            for search_root in (companion_roots or (root,))
+            if (found := detect(gguf_path, search_root = search_root, accept = accept))
+        ),
+        None,
+    )
     if log_native_fallback and rejected and detected:
         logger.info(
             "Using %s subdirectory drafter for native load: %s",
@@ -7447,6 +7460,20 @@ def _drafter_for_path(
             detected,
         )
     return detected
+
+
+def _path_load_companion_roots(model_identifier: str, native_grant_backed: bool) -> tuple[str, ...]:
+    """Companion roots for a request that named a local snapshot path, else ``()``.
+
+    _maybe_auto_switch_model widens only a repo-id request. A native grant covers ONE
+    directory and is never widened: refusing a candidate after discovery read its header
+    is already too late.
+    """
+    if native_grant_backed or not model_identifier:
+        return ()
+    from core.inference.local_model_resolver import local_path_gguf_companion_roots
+
+    return local_path_gguf_companion_roots(model_identifier)
 
 
 def _native_mmproj_accept(candidate: str, gguf_path: str) -> bool:
@@ -7483,9 +7510,13 @@ def _mtp_draft_for_path(
     native_grant_backed: bool,
     *,
     log_native_fallback: bool = False,
+    companion_roots: tuple[str, ...] = (),
 ) -> Optional[str]:
     return _drafter_for_path(
-        gguf_path, native_grant_backed, log_native_fallback = log_native_fallback
+        gguf_path,
+        native_grant_backed,
+        log_native_fallback = log_native_fallback,
+        companion_roots = companion_roots,
     )
 
 
@@ -7494,12 +7525,14 @@ def _dspark_draft_for_path(
     native_grant_backed: bool,
     *,
     log_native_fallback: bool = False,
+    companion_roots: tuple[str, ...] = (),
 ) -> Optional[str]:
     return _drafter_for_path(
         gguf_path,
         native_grant_backed,
         kind = "dspark",
         log_native_fallback = log_native_fallback,
+        companion_roots = companion_roots,
     )
 
 
@@ -7508,12 +7541,14 @@ def _dflash_draft_for_path(
     native_grant_backed: bool,
     *,
     log_native_fallback: bool = False,
+    companion_roots: tuple[str, ...] = (),
 ) -> Optional[str]:
     return _drafter_for_path(
         gguf_path,
         native_grant_backed,
         kind = "dflash",
         log_native_fallback = log_native_fallback,
+        companion_roots = companion_roots,
     )
 
 
@@ -7566,6 +7601,9 @@ def _active_gguf_intent(
         hf_repo = llama_backend.hf_repo,
         hf_variant = llama_backend.hf_variant,
     )
+    # What the launch searched, not what one snapshot holds. Recorded at load, so a
+    # request that deliberately pinned one revision is still compared against one root.
+    _loaded_roots = tuple(getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ())
     return _gguf_request_intent(
         source,
         request,
@@ -7587,9 +7625,15 @@ def _active_gguf_intent(
         preserve_multi_gpu_on_layer = (
             llama_backend.layer_preserves_tensor_intent and not _is_explicit_tensor_drop(request)
         ),
-        mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, native_grant_backed),
-        dspark_draft_path = _dspark_draft_for_path(llama_backend.gguf_path, native_grant_backed),
-        dflash_draft_path = _dflash_draft_for_path(llama_backend.gguf_path, native_grant_backed),
+        mtp_draft_path = _mtp_draft_for_path(
+            llama_backend.gguf_path, native_grant_backed, companion_roots = _loaded_roots
+        ),
+        dspark_draft_path = _dspark_draft_for_path(
+            llama_backend.gguf_path, native_grant_backed, companion_roots = _loaded_roots
+        ),
+        dflash_draft_path = _dflash_draft_for_path(
+            llama_backend.gguf_path, native_grant_backed, companion_roots = _loaded_roots
+        ),
         compare_mtp_draft = True,
         extra_args_inherited = inherits_extras and not batch_overrides_inherit,
     )
@@ -10168,6 +10212,7 @@ async def _maybe_auto_switch_model(
                             try:
                                 load_request = LoadRequest(**load_kwargs)
                                 load_request._gguf_companion_roots = gguf_companion_roots
+                                load_request._gguf_companion_roots_set = True
                                 await _load_model_impl(
                                     load_request,
                                     fastapi_request,
@@ -10193,6 +10238,7 @@ async def _maybe_auto_switch_model(
                                 load_kwargs.pop("gpu_ids", None)
                                 load_request = LoadRequest(**load_kwargs)
                                 load_request._gguf_companion_roots = gguf_companion_roots
+                                load_request._gguf_companion_roots_set = True
                                 await _load_model_impl(
                                     load_request,
                                     fastapi_request,
@@ -15849,6 +15895,13 @@ async def _load_model_impl(
 
         # Keep the inventory ref public while loading the materialized artifact.
         public_model_identifier = _public_model_identifier(request.model_path, model_identifier)
+        # Only when unset: auto-switch and the idle stash own their own scope. Walks
+        # snapshots/, so off-loop.
+        if not request._gguf_companion_roots and not request._gguf_companion_roots_set:
+            request._gguf_companion_roots = await asyncio.to_thread(
+                _path_load_companion_roots, model_identifier, native_grant_backed
+            )
+            request._gguf_companion_roots_set = True
         ollama_advertised_id = (
             await asyncio.to_thread(ollama_model_ref_public_id, request.model_path)
             if resolved_ollama_path is not None
@@ -16132,12 +16185,21 @@ async def _load_model_impl(
             if speech_codec_path is not None:
                 gguf_intent = replace(gguf_intent, audio_codec_path = speech_codec_path)
             same_loaded_model = llama_backend.matches_load_source(gguf_intent)
+            _loaded_companion_roots = tuple(
+                getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ()
+            )
             if same_loaded_model and config.gguf_hf_repo and llama_backend.gguf_path:
                 gguf_intent = replace(
                     gguf_intent,
-                    mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, False),
-                    dspark_draft_path = _dspark_draft_for_path(llama_backend.gguf_path, False),
-                    dflash_draft_path = _dflash_draft_for_path(llama_backend.gguf_path, False),
+                    mtp_draft_path = _mtp_draft_for_path(
+                        llama_backend.gguf_path, False, companion_roots = _loaded_companion_roots
+                    ),
+                    dspark_draft_path = _dspark_draft_for_path(
+                        llama_backend.gguf_path, False, companion_roots = _loaded_companion_roots
+                    ),
+                    dflash_draft_path = _dflash_draft_for_path(
+                        llama_backend.gguf_path, False, companion_roots = _loaded_companion_roots
+                    ),
                     compare_mtp_draft = True,
                 )
             _effective_tensor = _effective_tensor_parallel(
@@ -17089,6 +17151,12 @@ async def validate_model(
         if native_access_deferred:
             await asyncio.to_thread(account_access.require_model_access, model_identifier)
 
+        # Same roots /load will use, or a sibling-revision projector reads as text-only here
+        # and the load then serves vision.
+        _validate_companion_roots = await asyncio.to_thread(
+            _path_load_companion_roots, model_identifier, native_grant_backed
+        )
+
         # The frontend validates before it loads, so this needs the same guard as
         # /load; otherwise the stall just moves here and /load is never reached.
         # Off-loop twice over: the guard is a network round trip, and the first
@@ -17104,6 +17172,7 @@ async def validate_model(
                     # to travel with it rather than being applied afterwards.
                     drafter_accept = _native_drafter_accept if native_grant_backed else None,
                     mmproj_accept = _native_mmproj_accept if native_grant_backed else None,
+                    gguf_companion_roots = _validate_companion_roots or None,
                 )
 
         config = await asyncio.to_thread(_resolve_config)
@@ -17996,6 +18065,9 @@ def _cached_estimate_config(
         return _ESTIMATE_NOT_ON_DISK
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
+    # Same roots /load will use: a sibling-revision head or projector is weight it maps.
+    _estimate_companion_roots = _path_load_companion_roots(model_identifier, native_grant_backed)
+
     def _resolve():
         return ModelConfig.from_identifier(
             model_id = model_identifier,
@@ -18003,6 +18075,7 @@ def _cached_estimate_config(
             gguf_variant = gguf_variant,
             drafter_accept = _native_drafter_accept if native_grant_backed else None,
             mmproj_accept = _native_mmproj_accept if native_grant_backed else None,
+            gguf_companion_roots = _estimate_companion_roots or None,
         )
 
     # Offline FIRST, not only when the Hub is unreachable. The gate above established
