@@ -38,6 +38,7 @@ from .loader_utils import (
     planner_class_mismatch_reason,
     planner_model_class,
     planner_config_overrides,
+    compressed_tensors_prepared_config,
     planner_hub_kwargs,
     planner_kwargs_with_max_memory,
     planner_quantization_kwargs,
@@ -2650,6 +2651,8 @@ class FastLlamaModel:
             fast_inference = fast_inference,
             planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
             skip_reason = _planner_skip_reason,
+            # The config this load uses once a compressed-tensors packed checkpoint is re-quantized to bitsandbytes on the fly; the repo's config.json would size it as compressed-tensors and refuse the bitsandbytes flags.
+            prepared_config = compressed_tensors_prepared_config(model_config),
             **planner_config_overrides(kwargs),
             token = token,
             trust_remote_code = trust_remote_code,

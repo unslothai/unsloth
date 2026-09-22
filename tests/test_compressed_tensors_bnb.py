@@ -186,6 +186,61 @@ def test_arm_strips_root_and_subconfigs_and_parks_the_plan():
     assert "quantization_config" not in root.to_dict()
 
 
+
+def test_prepared_config_is_the_armed_config_and_nothing_else():
+    from transformers import LlamaConfig
+    from unsloth.models.loader_utils import compressed_tensors_prepared_config
+
+    plain = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    assert compressed_tensors_prepared_config(plain) is None
+    assert compressed_tensors_prepared_config(None) is None
+    armed = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    armed.quantization_config = _w4a16()
+    if arm_compressed_tensors_bnb_loading(armed, verbose = False) is None:
+        pytest.skip("this transformers cannot arm the re-quantization")
+    assert compressed_tensors_prepared_config(armed) is armed
+
+
+def test_planner_gets_the_prepared_config_instead_of_rebuilding_it(monkeypatch):
+    """The planner rebuilds the repo's config from the model name. For a re-quantized packed
+    checkpoint that config still carries compressed-tensors, and `merge_quantization_configs`
+    then refuses the bitsandbytes flags, so Kimi-K2.7-Code lost its plan and fell back to
+    `sequential`, which spilled to CPU and bitsandbytes refused the load. The armed config
+    object is what the planner has to size."""
+    import unsloth_zoo.device_map_planner as planner
+    from unsloth.models import loader_utils
+
+    if not loader_utils.planner_accepts_prepared_config():
+        pytest.skip("this unsloth_zoo planner does not take a prepared config")
+    seen = {}
+
+    def fake_plan(model_name, *, max_memory = None, **kwargs):
+        seen.update(kwargs)
+        seen["max_memory"] = max_memory
+        return None
+
+    monkeypatch.setattr(planner, "plan_device_map_for_pretrained", fake_plan)
+    monkeypatch.setattr(loader_utils, "DEVICE_TYPE_TORCH", "cuda")
+    monkeypatch.setattr(loader_utils, "is_distributed", lambda: False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda index: (10 * 1024 ** 3, 16 * 1024 ** 3))
+    prepared = object()
+    device_map = loader_utils.resolve_unsloth_device_map(
+        loader_utils.UNSLOTH_DEVICE_MAP, "some/repo", prepared_config = prepared, load_in_4bit = True
+    )
+    assert seen["config"] is prepared
+    assert seen["load_in_4bit"] is True
+    assert device_map == loader_utils._PLANNED_DEVICE_MAPS[loader_utils.UNSLOTH_DEVICE_MAP]
+
+    # An unsloth_zoo whose planner cannot take the object declines the plan instead of handing it a config it would size wrong.
+    seen.clear()
+    monkeypatch.setattr(loader_utils, "planner_accepts_prepared_config", lambda: False)
+    device_map = loader_utils.resolve_unsloth_device_map(
+        loader_utils.UNSLOTH_DEVICE_MAP, "some/repo", prepared_config = prepared, load_in_4bit = True
+    )
+    assert seen == {}
+    assert device_map == loader_utils._PLANNED_DEVICE_MAPS[loader_utils.UNSLOTH_DEVICE_MAP]
+
 @pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
 def test_check_and_disable_keeps_4bit_for_packed_int4():
     from transformers import LlamaConfig

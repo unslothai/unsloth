@@ -250,6 +250,27 @@ def planner_quantization_kwargs(
     return kwargs
 
 
+def planner_accepts_prepared_config():
+    """Whether this unsloth_zoo's planner takes a `config` object in place of rebuilding one from the model name. Read off the signature rather than a version, since the worktree a developer runs from has no version bump."""
+    try:
+        import inspect
+        from unsloth_zoo.device_map_planner import build_meta_model
+        return "config" in inspect.signature(build_meta_model).parameters
+    except Exception:
+        return False
+
+
+def compressed_tensors_prepared_config(model_config):
+    """`model_config` when `check_and_disable_bitsandbytes_loading` armed the on-the-fly re-quantization of a compressed-tensors packed checkpoint on it, else None. The planner has to size that load from this object: the checkpoint's own quantization config is gone from it and bitsandbytes 4-bit is what the load applies."""
+    if model_config is None:
+        return None
+    try:
+        from .compressed_tensors_bnb import UNSLOTH_COMPRESSED_TENSORS_ATTR
+    except Exception:
+        return None
+    return model_config if getattr(model_config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None else None
+
+
 def planner_model_class(config, trust_remote_code = False):
     """The model class the planner's own rules pick for `config`, or None if unknown. The planner never sees the auto class the load chose: `config` is whatever the caller passed, while the planner rebuilds the repo's from `model_name`, and the two can disagree."""
     try:
@@ -312,6 +333,7 @@ def resolve_unsloth_device_map(
     full_finetuning = False,
     planner_kwargs = None,
     skip_reason = None,
+    prepared_config = None,
     **config_kwargs,
 ):
     """Plan a head-aware multi-GPU map for `device_map = "unsloth"`, else return as-is. Opt-in only, so nothing an existing caller passes changes meaning, and the plan is built on the meta device: no GPU memory, no weight download. Falls back to "sequential" wherever a plan cannot apply, since a model that loads the old way beats one that refuses to load at all; `DeviceMapInfeasible` is the exception, raised rather than spilling a bitsandbytes model to CPU, and swallowing it would hand the user an OOM instead of a diagnosis. `skip_reason` is the caller's veto, for when only the caller can tell the planner would describe a different model than the load builds."""
@@ -382,6 +404,13 @@ def resolve_unsloth_device_map(
                 # Under what is actually free: they may know of reservations we cannot measure, but planning above free is how a plan OOMs on dispatch.
                 budgets[device] = budget if measured is None else min(measured, budget)
         max_memory = budgets
+
+    # `prepared_config` is the config object this load will really use when it no longer matches the repo's config.json: a compressed-tensors packed INT4 checkpoint re-quantized to bitsandbytes on the fly has had its own quantization config dropped, and the planner rebuilding from the name would put it back and refuse the bitsandbytes runtime config. Only a planner that takes `config` gets it; an older unsloth_zoo declines the plan the way it always did.
+    if prepared_config is not None:
+        if planner_accepts_prepared_config():
+            config_kwargs = dict(config_kwargs, config = prepared_config)
+        else:
+            return _fallback("this unsloth_zoo cannot plan from the prepared config of a re-quantized checkpoint")
 
     try:
         plan = plan_device_map_for_pretrained(

@@ -88,6 +88,7 @@ from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
     planner_config_overrides,
+    compressed_tensors_prepared_config,
     planner_hub_kwargs,
     planner_kwargs_with_max_memory,
     _exclude_rope_inv_freq_from_ddp,
@@ -1534,6 +1535,8 @@ class FastBaseModel:
             full_finetuning = full_finetuning,
             planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
             skip_reason = _planner_skip_reason,
+            # The config this load uses once a compressed-tensors packed checkpoint is re-quantized to bitsandbytes on the fly; the repo's config.json would size it as compressed-tensors and refuse the bitsandbytes flags.
+            prepared_config = compressed_tensors_prepared_config(auto_config),
             **planner_config_overrides(kwargs),
             token = token,
             trust_remote_code = trust_remote_code,
