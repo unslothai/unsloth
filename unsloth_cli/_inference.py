@@ -991,6 +991,14 @@ class HttpChatBackend:
         pass
 
 
+def server_load_opts(ctx, load_opts: dict) -> dict:
+    """Drop an untyped --load-in-4bit so the server can keep a resident model's precision."""
+    opts = dict(load_opts)
+    if ctx.get_parameter_source("load_in_4bit").name != "COMMANDLINE":
+        opts["load_in_4bit"] = None
+    return opts
+
+
 def connect_studio_server(
     model: str,
     *,

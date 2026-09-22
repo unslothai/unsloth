@@ -15200,8 +15200,7 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
 
 
 def _inherit_resident_load_in_4bit(backend, request, model_identifier: str) -> None:
-    """An omitted load_in_4bit keeps the resident model's precision instead of the 4-bit default,
-    so a reload forced by another setting does not quietly requantize a 16-bit model."""
+    """An omitted load_in_4bit keeps the resident precision, not the 4-bit default."""
     if "load_in_4bit" in (getattr(request, "model_fields_set", set()) or set()):
         return
     if not _same_loaded_identifier(backend.active_model_name, model_identifier):

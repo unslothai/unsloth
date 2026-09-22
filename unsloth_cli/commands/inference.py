@@ -14,6 +14,7 @@ from unsloth_cli._inference import (
     mlx_distributed_info,
     mlx_distributed_uses_mpi,
     raise_on_streamed_error,
+    server_load_opts,
     stream_to_stdout,
 )
 
@@ -47,7 +48,12 @@ def inference(
         "and MLX, and 2048 on the transformers backend. A value that differs from a "
         "running Unsloth server's reloads the model.",
     ),
-    load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
+    load_in_4bit: bool = typer.Option(
+        True,
+        "--load-in-4bit/--no-load-in-4bit",
+        help = "Load the model in 4-bit. Left unset, a running Unsloth server that already "
+        "has this model loaded keeps its precision.",
+    ),
     tensor_parallel: bool = typer.Option(
         False,
         "--tensor-parallel/--no-tensor-parallel",
@@ -122,13 +128,10 @@ def inference(
         load_opts["speculative_type"] = speculative_type
     if spec_draft_n_max is not None:
         load_opts["spec_draft_n_max"] = spec_draft_n_max
-    server_load_opts = dict(load_opts)
-    if ctx.get_parameter_source("load_in_4bit").name != "COMMANDLINE":
-        server_load_opts["load_in_4bit"] = None
     chat_backend = (
         None
         if (no_server or is_mlx_distributed)
-        else connect_studio_server(model, **server_load_opts)
+        else connect_studio_server(model, **server_load_opts(ctx, load_opts))
     )
     if chat_backend is None:
         chat_backend = load_chat_backend(model, **load_opts)
