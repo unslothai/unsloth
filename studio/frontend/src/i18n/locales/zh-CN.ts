@@ -218,13 +218,6 @@ export const zhCN = {
       moveUp: "上移",
       moveDown: "下移",
     },
-    drag: {
-      reorder: "重新排序",
-      pin: "固定",
-      unpin: "取消固定",
-      moveTo: "移动到 {name}",
-      moveToRecents: "移动到最近",
-    },
     dialog: {
       deleteChat: {
         title: "删除聊天",

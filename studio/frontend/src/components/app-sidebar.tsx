@@ -84,7 +84,6 @@ import {
   AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
-  DragDropVerticalIcon,
   Edit03Icon,
   FolderAddIcon,
   FolderAttachmentIcon,
@@ -227,7 +226,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { createPortal } from "react-dom";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { useIsCoarsePointer } from "@/hooks/use-mobile";
@@ -1810,7 +1808,6 @@ export function AppSidebar() {
       projectChatRowIds,
     ],
   );
-  const dropHintRef = useRef<HTMLDivElement | null>(null);
   // A chat's row stays on screen while its move is written, so it can be dropped again before
   // the first move lands. Moves of one chat run one after another, and only the latest drop
   // commits its slot and pin, so an earlier drop cannot land after, or on top of, a later one.
@@ -1821,7 +1818,6 @@ export function AppSidebar() {
   const coarsePointer = useIsCoarsePointer();
   const dnd = useSidebarDrag({
     context: dropContext,
-    hintRef: dropHintRef,
     // A closed folder or section the pointer rests on opens.
     onSpringOpen: (zone) => {
       if (zone.folderId) {
@@ -1969,59 +1965,6 @@ export function AppSidebar() {
       </>
     );
   }
-
-  /** The hint beside the cursor: what the drop would do. */
-  function dropHint(plan: SidebarDropPlan): {
-    icon: typeof PinIcon;
-    text: string;
-  } {
-    switch (plan.action.kind) {
-      case "pin":
-        return { icon: PinIcon, text: t("shell.drag.pin") };
-      case "unpin":
-        return { icon: PinOffIcon, text: t("shell.drag.unpin") };
-      case "reorder":
-        return { icon: DragDropVerticalIcon, text: t("shell.drag.reorder") };
-      case "move": {
-        const projectId = plan.action.projectId;
-        if (projectId === null) {
-          return { icon: MessageCircleIcon, text: t("shell.drag.moveToRecents") };
-        }
-        const name = projects.find((project) => project.id === projectId)?.name ?? "";
-        return { icon: Folder01Icon, text: t("shell.drag.moveTo", { name }) };
-      }
-    }
-  }
-
-  /** The hint, in a portal so the sidebar cannot clip it. Positioned through the ref, hidden
-   *  between answers rather than unmounted. No inline style: a re-render would write it back
-   *  over the transform the pointer set. */
-  const dropHintPortal =
-    draggingRow && typeof document !== "undefined"
-      ? createPortal(
-          <div
-            ref={dropHintRef}
-            data-testid="sidebar-drop-hint"
-            aria-hidden
-            className={cn(
-              "pointer-events-none fixed left-0 top-0 z-[100] flex items-center gap-1.5 rounded-full border border-border bg-popover px-2.5 py-1 text-ui-12 leading-ui-16 font-medium text-popover-foreground shadow-md transition-opacity duration-100",
-              dnd.plan ? "opacity-100" : "opacity-0",
-            )}
-          >
-            {dnd.plan && (
-              <>
-                <HugeiconsIcon
-                  icon={dropHint(dnd.plan).icon}
-                  strokeWidth={1.75}
-                  className="size-3.5 shrink-0"
-                />
-                <span className="max-w-48 truncate">{dropHint(dnd.plan).text}</span>
-              </>
-            )}
-          </div>,
-          document.body,
-        )
-      : null;
 
   useEffect(() => {
     const activeVisibleThreadIdSet = new Set(
@@ -3875,7 +3818,6 @@ export function AppSidebar() {
   return (
     <>
       {slotShortcuts}
-      {dropHintPortal}
     <Sidebar
       collapsible="icon"
       collapseToZero={isTauri}

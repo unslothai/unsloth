@@ -222,13 +222,6 @@ export const ptBR = {
       moveUp: "Mover para cima",
       moveDown: "Mover para baixo",
     },
-    drag: {
-      reorder: "Reordenar",
-      pin: "Fixar",
-      unpin: "Desafixar",
-      moveTo: "Mover para {name}",
-      moveToRecents: "Mover para Recentes",
-    },
     dialog: {
       deleteChat: {
         title: "Excluir chat",

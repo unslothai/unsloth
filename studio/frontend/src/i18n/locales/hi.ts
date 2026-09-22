@@ -223,13 +223,6 @@ export const hi = {
       moveUp: "ऊपर ले जाएँ",
       moveDown: "नीचे ले जाएँ",
     },
-    drag: {
-      reorder: "क्रम बदलें",
-      pin: "पिन करें",
-      unpin: "अनपिन करें",
-      moveTo: "{name} में ले जाएँ",
-      moveToRecents: "हाल के में ले जाएँ",
-    },
     dialog: {
       deleteChat: {
         title: "चैट हटाएँ",

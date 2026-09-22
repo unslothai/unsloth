@@ -223,13 +223,6 @@ export const de = {
       moveUp: "Nach oben",
       moveDown: "Nach unten",
     },
-    drag: {
-      reorder: "Umordnen",
-      pin: "Anheften",
-      unpin: "Lösen",
-      moveTo: "Verschieben nach {name}",
-      moveToRecents: "Zu Zuletzt verschieben",
-    },
     dialog: {
       deleteChat: {
         title: "Chat löschen",
