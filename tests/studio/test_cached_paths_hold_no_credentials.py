@@ -91,6 +91,21 @@ CREDENTIAL_HOMES = {
     "GOOGLE_APPLICATION_CREDENTIALS": "service account json",
 }
 
+# Where those same tools keep credentials when nothing overrides them. Caching one of
+# these is the identical hazard reached WITHOUT setting any variable, which is the version
+# that reads as harmless: there is no HF_HOME in the file to notice.
+# unsloth-zoo's gemma4-audio-probe.yml cached ~/.cache/huggingface until 2026-09-22 for
+# exactly that reason, and the explicit-variable check below would have passed it.
+DEFAULT_CREDENTIAL_HOMES = {
+    "~/.cache/huggingface": "HF_HOME default; token, stored_tokens",
+    "~/.huggingface": "legacy HF_HOME default; token",
+    "~/.cargo": "CARGO_HOME default; credentials.toml",
+    "~/.docker": "DOCKER_CONFIG default; config.json auth entries",
+    "~/.npmrc": "npm auth tokens",
+    "~/.aws": "aws credentials",
+    "~/.config/gh": "gh CLI oauth token",
+}
+
 # Anything that makes a tool persist a credential into one of the directories above.
 # Matched against the shell body of every step, so a login added anywhere in a job that
 # caches its own credential home fails the guard.
@@ -187,6 +202,7 @@ def _normalise(path: str) -> str:
     """Strip expressions and separators so a path and an env value can be compared."""
     path = re.sub(r"\$\{\{[^}]*\}\}", "", path)
     path = path.replace("\\", "/").strip().strip("'\"")
+    path = re.sub(r"^\$(HOME|\{HOME\})/", "~/", path)
     while path.startswith("./"):
         path = path[2:]
     return path.strip("/")
@@ -282,4 +298,37 @@ def test_a_job_that_caches_its_credential_home_performs_no_login(label, var, per
         f"Read the token from the environment instead of logging in, which is what this repo "
         f"does today ({var} is set for the download path and no step authenticates), or point "
         f"{var} somewhere outside the persisted path."
+    )
+
+
+def test_no_job_persists_a_default_credential_home():
+    """The spelling that needs no variable set, and so reads as harmless.
+
+    A job can reach the same hazard by caching the location a tool uses when nothing
+    overrides it. There is then no `HF_HOME` in the workflow to notice, which is why the
+    check above cannot see it. unsloth-zoo's gemma4-audio-probe.yml cached
+    `~/.cache/huggingface` until 2026-09-22 and was invisible to the sibling guard for
+    precisely this reason; it now points HF_HOME at a workspace directory and caches that,
+    the way the model caches in this repository do.
+
+    Nothing here does it today. The test exists so the next model cache is written the
+    same way.
+    """
+    offenders = []
+    for path, doc in _docs():
+        for jid, job in _jobs(doc):
+            for persisted, _step in _persisted_paths(job):
+                for default, creds in DEFAULT_CREDENTIAL_HOMES.items():
+                    if _inside(default, persisted) or _inside(persisted, default):
+                        offenders.append(
+                            f"{path.name}:{jid}: caches {persisted!r}, a default "
+                            f"credential home ({creds})"
+                        )
+    assert not offenders, (
+        "these jobs cache or upload a tool's default credential home:\n  "
+        + "\n  ".join(sorted(set(offenders))) + "\n\n"
+        "Anything that logs in writes a token there, and the directory is then saved to a "
+        "cache every pull request can restore. Point the tool at a directory the workflow "
+        "owns and cache that instead, as the smoke workflows here do with "
+        "`HF_HOME: ${{ github.workspace }}/hf-cache` and `path: hf-cache`."
     )
