@@ -1806,6 +1806,11 @@ def test_the_measured_strix_halo_is_not_reported_as_having_no_vram(monkeypatch):
 def test_an_unreadable_sysfs_total_still_leaves_the_split_unknown(monkeypatch):
     """The other direction: WSL and anything else with no DRM sysfs must keep
     answering None, because there a zero would be an assertion nobody measured."""
+    # _rocm_linux_sysfs_vram_by_index returns {} off Linux before reading anything, so
+    # without this the assertion below is answered by the platform gate rather than by
+    # the logic under test: red on macOS and Windows where it expects a figure, and
+    # green for the wrong reason where it expects {}.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     devices = [{"index": 0, "total_gb": 100.0, "_rocm_known_unified": True}]
     monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
     monkeypatch.setattr(
@@ -1817,6 +1822,11 @@ def test_an_unreadable_sysfs_total_still_leaves_the_split_unknown(monkeypatch):
 def test_a_real_gtt_backed_excess_is_still_reported_as_host_backed(monkeypatch):
     """The case #9314 and #11366 exist for must not regress: a torch total well
     above the sysfs heap is a genuine host-backed window and keeps its figure."""
+    # _rocm_linux_sysfs_vram_by_index returns {} off Linux before reading anything, so
+    # without this the assertion below is answered by the platform gate rather than by
+    # the logic under test: red on macOS and Windows where it expects a figure, and
+    # green for the wrong reason where it expects {}.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     devices = [{"index": 0, "total_gb": 100.0, "_rocm_known_unified": True}]
     monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
     monkeypatch.setattr(
@@ -1827,6 +1837,11 @@ def test_a_real_gtt_backed_excess_is_still_reported_as_host_backed(monkeypatch):
 
 def test_a_discrete_rocm_card_is_never_given_a_host_backed_figure(monkeypatch):
     """Gated on `_rocm_known_unified`, so a dGPU keeps its discrete rendering."""
+    # _rocm_linux_sysfs_vram_by_index returns {} off Linux before reading anything, so
+    # without this the assertion below is answered by the platform gate rather than by
+    # the logic under test: red on macOS and Windows where it expects a figure, and
+    # green for the wrong reason where it expects {}.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     devices = [{"index": 0, "total_gb": 24.0}]
     monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
     monkeypatch.setattr(
