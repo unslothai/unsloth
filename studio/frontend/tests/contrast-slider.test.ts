@@ -14,6 +14,7 @@ import { readSrc, readText } from "./helpers/kit.ts";
 // by owning the tokens, so these tests pin the ownership.
 
 const CSS = readSrc("index.css");
+const HUB_CSS = readSrc("features/hub/hub.css");
 const STORE = readSrc("features/settings/stores/appearance-custom-store.ts");
 const SNAPSHOT = readText("../public/reload-snapshot.js");
 /** Every source that can carry a class, so a fixed wash cannot slip in. */
@@ -157,6 +158,43 @@ test("a lit row never sinks below the surface it sits on", () => {
   assert.ok(
     ceiling("CONTRAST_STATE_MIX_VAR") < ceiling("CONTRAST_SURFACE_MIX_VAR"),
     "hover fills flatten as fast as the surfaces under them",
+  );
+});
+
+test("a dark selection fill takes the token, not a wash", () => {
+  // A wash is scaled by --contrast-wash-gain, which falls to a quarter at the
+  // bottom of the range, while the selection token stops at --contrast-state-mix.
+  // Painted as washes, the selected tab and the selected quant sank to within a
+  // couple of levels of the surface under them there.
+  assert.match(
+    HUB_CSS,
+    /html\.dark \.hub-tab-toggle-pill,\s*html\.dark \.hub-tab-toggle-pill:hover \{[^}]*background-color: var\(--accent\)/,
+    "the selected segment is not on --accent",
+  );
+  for (const file of [
+    "features/hub/catalog/gguf-download-card.tsx",
+    "features/hub/catalog/models-table.tsx",
+  ]) {
+    const source = readSrc(file);
+    assert.match(
+      source,
+      /dark:(data-\[selected\]:)?bg-accent/,
+      `${file} does not paint its selection with --accent`,
+    );
+    // Scoped to the selection utility itself; resting chips and progress
+    // tracks in these files carry the gain on purpose.
+    assert.doesNotMatch(
+      source,
+      /dark:data-\[selected\]:bg-\[[^\]]*contrast-wash-gain/,
+      `${file} still paints a selection with a wash`,
+    );
+  }
+  // The quant row's hover is --accent held back, so it cannot reach the
+  // selected row: as its own wash it closed to a few levels at high contrast.
+  assert.match(
+    readSrc("features/hub/catalog/gguf-download-card.tsx"),
+    /dark:hover:bg-\[color-mix\(in_srgb,var\(--accent\)_\d+%,transparent\)\]/,
+    "the quant row hover is not derived from --accent",
   );
 });
 

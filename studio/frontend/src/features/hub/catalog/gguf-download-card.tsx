@@ -481,8 +481,14 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
       className={cn(
         "group relative mx-2 flex cursor-pointer items-center gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors",
         selected
-          ? "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]"
-          : "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",
+          ? // Dark: --accent, the app's one selection colour. The 12% wash it
+            // carried matched --accent at the default but was scaled by the
+            // wash gain, so it fell away from the token across the slider.
+            "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-accent"
+          : // Dark hover is --accent held back, so it stays under the selected
+            // row at every contrast. As its own wash it closed to within a few
+            // levels of the selection at the top of the slider.
+            "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_srgb,var(--accent)_55%,transparent)]",
       )}
     >
       {/* Status (On device / Partial) sits beside the quant on the
