@@ -153,3 +153,70 @@ def test_wrapper_without_a_supporting_submodel_stays_false():
     model = _Plain(_Cfg())
     assert _inherit_gradient_checkpointing_support(model) is False
     assert model.supports_gradient_checkpointing is False
+
+
+# A wrapper whose forward cannot take a text batch trains its language model.
+from unsloth.models.vision import _text_trainable_core, _required_non_text_inputs
+
+
+class _OmniWrapper(PreTrainedModel):
+    """The Nemotron-Omni shape: pixel_values has no default."""
+    config_class = _Cfg
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.language_model = _CausalLM(config)
+        self.vision_model = nn.Linear(4, 4)
+        self.mlp1 = nn.Linear(4, 4)
+
+    def forward(self, pixel_values, input_ids = None, attention_mask = None, image_flags = None, labels = None):
+        return self.language_model(input_ids = input_ids)
+
+
+class _VlmWrapper(_OmniWrapper):
+    """Every transformers VLM: image inputs default to None, so a text batch is fine."""
+    def forward(self, input_ids = None, pixel_values = None, attention_mask = None, labels = None):
+        return self.language_model(input_ids = input_ids)
+
+
+def test_required_non_text_inputs_are_listed():
+    assert _required_non_text_inputs(_OmniWrapper.forward) == ["pixel_values"]
+    assert _required_non_text_inputs(_VlmWrapper.forward) == []
+    assert _required_non_text_inputs(_CausalLM.forward) == []
+
+
+def test_omni_wrapper_trains_its_language_model():
+    """The arm that fails on a tree without the unwrap: the wrapper was trained as is."""
+    model = _OmniWrapper(_Cfg())
+    core = _text_trainable_core(model)
+    assert isinstance(core, _CausalLM)
+    assert core._unsloth_composed_parent == "_OmniWrapper"
+    assert not hasattr(model, "vision_model") and not hasattr(model, "mlp1")
+    # and the core takes a text batch
+    core(input_ids = torch.tensor([[1, 2, 3]]))
+
+
+def test_vlm_wrapper_and_plain_causal_lm_are_left_alone():
+    vlm = _VlmWrapper(_Cfg())
+    assert _text_trainable_core(vlm) is vlm
+    assert hasattr(vlm, "vision_model")
+    lm = _CausalLM(_Cfg())
+    assert _text_trainable_core(lm) is lm
+
+
+def test_ambiguous_wrapper_is_left_alone():
+    class _Two(_OmniWrapper):
+        def __init__(self, config):
+            super().__init__(config)
+            self.talker = _CausalLM(config)
+            self.listener = _CausalLM(config)
+            del self.language_model
+    model = _Two(_Cfg())
+    assert _text_trainable_core(model) is model
+
+
+def test_opt_out_env_keeps_the_wrapper(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_KEEP_COMPOSED_WRAPPER", "1")
+    model = _OmniWrapper(_Cfg())
+    assert _text_trainable_core(model) is model
+    assert hasattr(model, "vision_model")

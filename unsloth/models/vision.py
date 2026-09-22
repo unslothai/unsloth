@@ -106,6 +106,7 @@ from transformers import __version__ as transformers_version
 
 import types
 import functools
+import inspect
 import os
 import gc
 import math
@@ -1201,6 +1202,90 @@ def _inherit_gradient_checkpointing_support(model):
     return False
 
 
+_TEXT_BATCH_KEYS = frozenset((
+    "input_ids", "inputs_embeds", "attention_mask", "labels", "position_ids",
+    "past_key_values", "use_cache", "output_attentions", "output_hidden_states",
+    "return_dict", "cache_position", "logits_to_keep", "num_logits_to_keep",
+))
+
+
+def _required_non_text_inputs(forward):
+    """Parameters a text batch cannot supply: no default and not a text batch key."""
+    try:
+        parameters = inspect.signature(forward).parameters
+    except (TypeError, ValueError):
+        return []
+    return [
+        name for name, p in parameters.items()
+        if name != "self"
+        and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        and p.default is inspect.Parameter.empty
+        and name not in _TEXT_BATCH_KEYS
+    ]
+
+
+def _text_trainable_core(model):
+    """The module a text batch can train when the loaded wrapper's forward cannot take one.
+
+    nvidia/Nemotron-3-Nano-Omni-30B-A3B wraps a complete NemotronHForCausalLM as
+    `language_model` behind a forward whose first parameter, `pixel_values`, has
+    no default and whose body indexes `image_flags`; a text-only SFT batch died
+    on the first step with "missing 1 required positional argument:
+    'pixel_values'". When a wrapper's forward requires an input that a text
+    batch does not carry and exactly one direct child is a PreTrainedModel with
+    its own forward and both embedding accessors (`language_model` or `thinker`
+    when several qualify), training uses that child and the generation-time
+    siblings are dropped so their weights are freed. Wrappers whose forward
+    accepts a text batch (every transformers VLM, whose image inputs default to
+    None) are returned unchanged, as is anything ambiguous.
+    `UNSLOTH_KEEP_COMPOSED_WRAPPER=1` turns this off.
+    """
+    if os.environ.get("UNSLOTH_KEEP_COMPOSED_WRAPPER", "0") == "1":
+        return model
+    forward = getattr(type(model), "forward", None)
+    if forward is None or forward is torch.nn.Module.forward:
+        return model
+    required = _required_non_text_inputs(forward)
+    if not required:
+        return model
+    try:
+        from transformers import PreTrainedModel
+    except Exception:
+        return model
+    cores = []
+    for name, child in model.named_children():
+        if not isinstance(child, PreTrainedModel): continue
+        child_forward = getattr(type(child), "forward", None)
+        if child_forward is None or child_forward is torch.nn.Module.forward: continue
+        if _required_non_text_inputs(child_forward): continue
+        try:
+            has_embeddings = child.get_input_embeddings() is not None and child.get_output_embeddings() is not None
+        except Exception:
+            has_embeddings = False
+        if has_embeddings:
+            cores.append((name, child))
+    preferred = [core for core in cores if core[0] in ("language_model", "thinker")]
+    if len(preferred) == 1:
+        cores = preferred
+    if len(cores) != 1:
+        return model
+    name, core = cores[0]
+    dropped = [child_name for child_name, _ in model.named_children() if child_name != name]
+    for child_name in dropped:
+        delattr(model, child_name)
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    print(
+        f"Unsloth: `{type(model).__name__}.forward` requires {', '.join(required)}, which a text "
+        f"batch does not carry, so training uses its `{name}` (`{type(core).__name__}`)."
+        + (f" Dropped {', '.join(dropped)}: not used by text training." if dropped else "")
+        + " Saving writes a checkpoint of that module."
+    )
+    core._unsloth_composed_parent = type(model).__name__
+    return core
+
+
 @contextlib.contextmanager
 def _tolerate_dtype_cast_on_quantized_model(enabled):
     """Let a remote-code from_pretrained finish its own model.to(dtype) on a
@@ -1788,6 +1873,7 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         **kwargs,
                     )
+                model = _text_trainable_core(model)
                 _inherit_gradient_checkpointing_support(model)
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
                 offload_embedding = _resolve_offload_embedding(
