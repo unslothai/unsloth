@@ -1315,7 +1315,64 @@ def _text_trainable_core(model):
         + " Saving writes a checkpoint of that module."
     )
     core._unsloth_composed_parent = type(model).__name__
+    _carry_loader_state_to_core(model, core, name)
     return core
+
+
+_LOADER_STATE_ATTRIBUTES = (
+    "is_loaded_in_4bit",
+    "is_loaded_in_8bit",
+    "is_4bit_serializable",
+    "is_8bit_serializable",
+    "is_quantized",
+    "quantization_method",
+    "hf_quantizer",
+    "_is_quantized_training_enabled",
+)
+
+
+def _carry_loader_state_to_core(model, core, name):
+    """Move what from_pretrained recorded on the wrapper onto the child that replaces it.
+
+    transformers sets the bitsandbytes flags (`is_loaded_in_4bit`, `is_quantized`,
+    `quantization_method`, `hf_quantizer`) and `hf_device_map` on the object it
+    returns, not on its children. PEFT reads `is_loaded_in_4bit` off the model it
+    is given to choose `lora.bnb.Linear4bit` over the plain `lora.Linear`, so a
+    core without the flags trained through the wrong LoRA layer: forward ran, but
+    merging wrote a 16-bit delta into packed 4-bit weights and the fast QLoRA path
+    was skipped. The device map is re-keyed from the wrapper's names to the core's.
+    """
+    for attribute in _LOADER_STATE_ATTRIBUTES:
+        if attribute in vars(core):
+            continue
+        if attribute in vars(model):
+            try:
+                setattr(core, attribute, vars(model)[attribute])
+            except Exception:
+                pass
+    device_map = getattr(model, "hf_device_map", None)
+    if isinstance(device_map, dict) and getattr(core, "hf_device_map", None) is None:
+        prefix = name + "."
+        carried = {}
+        for key, device in device_map.items():
+            if key == "" or key == name:
+                carried[""] = device
+            elif key.startswith(prefix):
+                carried[key[len(prefix) :]] = device
+        if carried:
+            core.hf_device_map = carried
+    wrapper_config = getattr(model, "config", None)
+    core_config = getattr(core, "config", None)
+    quantization_config = getattr(wrapper_config, "quantization_config", None)
+    if (
+        quantization_config is not None
+        and core_config is not None
+        and getattr(core_config, "quantization_config", None) is None
+    ):
+        try:
+            core_config.quantization_config = quantization_config
+        except Exception:
+            pass
 
 
 @contextlib.contextmanager

@@ -269,6 +269,75 @@ def test_opt_out_env_keeps_the_wrapper(monkeypatch):
     assert hasattr(model, "vision_model")
 
 
+def test_core_carries_the_wrapper_loader_state():
+    """from_pretrained records the bitsandbytes flags and the device map on the object
+    it returns; the core that replaces it must carry them or PEFT picks the wrong
+    LoRA layer and saving forgets the checkpoint is 4-bit."""
+    model = _OmniWrapper(_Cfg())
+    model.is_loaded_in_4bit = True
+    model.is_quantized = True
+    model.quantization_method = "bitsandbytes"
+    model.hf_quantizer = object()
+    model.hf_device_map = {
+        "language_model.embed_tokens": 0,
+        "language_model.layers.0": 0,
+        "language_model.layers.1": 1,
+        "language_model.lm_head": 1,
+        "vision_model": 0,
+        "mlp1": 0,
+    }
+    model.config.quantization_config = {"quant_method": "bitsandbytes", "load_in_4bit": True}
+    core = _text_trainable_core(model)
+    assert isinstance(core, _CausalLM)
+    assert core.is_loaded_in_4bit is True
+    assert core.is_quantized is True
+    assert core.quantization_method == "bitsandbytes"
+    assert core.hf_quantizer is model.hf_quantizer
+    assert core.hf_device_map == {"embed_tokens": 0, "layers.0": 0, "layers.1": 1, "lm_head": 1}
+    assert core.config.quantization_config == model.config.quantization_config
+
+
+def test_core_without_loader_state_gets_none_invented():
+    model = _OmniWrapper(_Cfg())
+    core = _text_trainable_core(model)
+    assert "is_loaded_in_4bit" not in vars(core)
+    assert getattr(core, "hf_device_map", None) is None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "bitsandbytes 4-bit needs a GPU")
+def test_peft_dispatches_the_4bit_lora_layer_on_the_core():
+    """The observable failure: without the flags PEFT wraps a Linear4bit in the plain
+    lora.Linear, whose merge writes a 16-bit delta into packed 4-bit weights."""
+    from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+    from peft import LoraConfig, get_peft_model
+    import peft.tuners.lora.bnb as lora_bnb
+
+    inner = AutoModelForCausalLM.from_pretrained(
+        "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
+        device_map = {"": 0},
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit = True, bnb_4bit_compute_dtype = torch.bfloat16
+        ),
+    )
+
+    class _Composed(_OmniWrapper):
+        def __init__(self, config):
+            PreTrainedModel.__init__(self, config)
+            self.language_model = inner
+            self.vision_model = nn.Linear(4, 4)
+
+    wrapper = _Composed(_Cfg())
+    # transformers put these on the object from_pretrained returned; move them to
+    # the wrapper, which is what a composed remote-code checkpoint looks like.
+    for attribute in ("is_loaded_in_4bit", "is_quantized", "quantization_method", "hf_quantizer"):
+        setattr(wrapper, attribute, vars(inner).pop(attribute))
+    core = _text_trainable_core(wrapper)
+    assert core is inner
+    peft_model = get_peft_model(core, LoraConfig(r = 8, target_modules = ["q_proj"]))
+    layer = peft_model.base_model.model.model.layers[0].self_attn.q_proj
+    assert isinstance(layer, lora_bnb.Linear4bit), type(layer)
+
+
 # A model whose class forgot to advertise it, built on transformers' own checkpointing layer.
 def test_model_built_on_gradient_checkpointing_layer_is_recognised():
     from transformers.modeling_layers import GradientCheckpointingLayer
