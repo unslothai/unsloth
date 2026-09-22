@@ -7675,8 +7675,14 @@ if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {
     # Written BEFORE the manifest is dropped below, so an interrupted run still leaves this index.
     Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex
 }
-# A terminating error after this point reaches neither Exit-SetupFailure nor the last statement, so the merged override file, which can carry the caller's credentials, would stay on disk. The trap removes it.
-trap { Remove-WoaMergedOverrides; break }
+# A terminating error after this point reaches neither Exit-SetupFailure nor the last statement,
+# so the merged override file, which can carry the caller's credentials, would stay on disk. The
+# policy marker is current-run evidence too and must not survive in an interactive caller process.
+trap {
+    Remove-WoaMergedOverrides
+    Remove-Item Env:UNSLOTH_ROCM_TORCH_POLICY_BLOCKED -ErrorAction SilentlyContinue
+    break
+}
 Restore-WoaResolverEnvironment
 
 # install_python_stack.py drops the manifest before its own dependency pass, but
@@ -8340,6 +8346,9 @@ if (-not $NoTorchMode) {
 substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
 $stackExit = $LASTEXITCODE
+# The child has consumed the current-run verdict at both ROCm repair points. Clear it before
+# returning to an interactive caller; the ordinary installed marker remains safely re-probed.
+Remove-Item Env:UNSLOTH_ROCM_TORCH_POLICY_BLOCKED -ErrorAction SilentlyContinue
 
 # ── Intel XPU: bitsandbytes must carry XPU kernels ──
 # unsloth/bnb_availability.py binds cgemv_4bit_inference_fp16/bf16 for device_type "xpu" and only

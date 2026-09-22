@@ -413,7 +413,17 @@ Check "the Python handoff trusts only a current-run settled ROCm verdict" {
     $cleared = $setupText.IndexOf('Remove-Item Env:UNSLOTH_ROCM_TORCH_POLICY_BLOCKED')
     $set = $setupText.IndexOf('$env:UNSLOTH_ROCM_TORCH_POLICY_BLOCKED = "1"')
     $python = $setupText.IndexOf('python "$PSScriptRoot\install_python_stack.py"')
-    ($cleared -ge 0) -and ($set -gt $cleared) -and ($python -gt $set)
+    $clearedAfter = $setupText.LastIndexOf('Remove-Item Env:UNSLOTH_ROCM_TORCH_POLICY_BLOCKED')
+    ($cleared -ge 0) -and ($set -gt $cleared) -and ($python -gt $set) -and
+    ($clearedAfter -gt $python)
+}
+Check "a terminating error also clears the current-run verdict" {
+    $trapStart = $setupText.IndexOf('trap {')
+    $trapEnd = $setupText.IndexOf("`n}", $trapStart)
+    ($trapStart -ge 0) -and ($trapEnd -gt $trapStart) -and
+    $setupText.Substring($trapStart, $trapEnd - $trapStart).Contains(
+        'Remove-Item Env:UNSLOTH_ROCM_TORCH_POLICY_BLOCKED'
+    )
 }
 
 if ($failures.Count) {
