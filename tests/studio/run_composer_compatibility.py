@@ -34,9 +34,13 @@ def main():
 
 
 # Branded Chrome and Edge put `$TMPDIR/com.google.Chrome.XXXXXX/SingletonSocket` at launch and abort
-# when that passes the 107 usable bytes of a unix socket path.
-SUN_PATH_MAX = 107
+# when that does not fit sockaddr_un.sun_path, less its terminating NUL: 108 bytes on Linux, 104 on
+# macOS and the BSDs.
 CHROME_SOCKET = "/com.google.Chrome.XXXXXX/SingletonSocket"
+
+
+def sun_path_max() -> int:
+    return 107 if sys.platform.startswith("linux") else 103
 
 
 def browser_tmpdir() -> Path:
@@ -47,7 +51,7 @@ def browser_tmpdir() -> Path:
     root = Path(__file__).resolve().parents[2]
     made = Path(tempfile.mkdtemp(prefix = "uqv-"))
     if os.name == "nt" or (
-        len(os.fsencode(made)) + len(CHROME_SOCKET) <= SUN_PATH_MAX
+        len(os.fsencode(made)) + len(CHROME_SOCKET) <= sun_path_max()
         and root not in made.resolve().parents
     ):
         return made

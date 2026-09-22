@@ -25,8 +25,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "studio-composer-compatibility.yml"
-# sockaddr_un.sun_path is 108 bytes on Linux, including the terminating NUL.
-SUN_PATH_MAX = 107
+# sockaddr_un.sun_path less its terminating NUL, per hosted runner: 108 bytes on Linux, 104 on macOS.
+SUN_PATH_MAX = {"linux": 107, "macos": 103, "windows": 107}
 # What Chrome appends to TMPDIR, at its length.
 CHROME_SOCKET = "/com.google.Chrome.XXXXXX/SingletonSocket"
 
@@ -53,10 +53,14 @@ def test_the_workflow_temp_dir_does_not_grow_with_the_checkout():
 
 def test_the_workflow_socket_path_fits_on_the_hosted_runners():
     # RUNNER_TEMP on the hosted images: Linux, macOS and Windows (Git Bash spelling).
-    for runner_temp in ("/home/runner/work/_temp", "/Users/runner/work/_temp", "D:/a/_temp"):
+    for host, runner_temp in (
+        ("linux", "/home/runner/work/_temp"),
+        ("macos", "/Users/runner/work/_temp"),
+        ("windows", "D:/a/_temp"),
+    ):
         for name, value in _workflow_tmpdirs().items():
             path = value.replace("$RUNNER_TEMP", runner_temp) + CHROME_SOCKET
-            assert len(path) <= SUN_PATH_MAX, f"{name}: {path} is {len(path)} bytes"
+            assert len(path) <= SUN_PATH_MAX[host], f"{name} on {host}: {path} is {len(path)} bytes"
 
 
 def _runner(monkeypatch):
@@ -67,8 +71,8 @@ def _runner(monkeypatch):
     return runner
 
 
-def _fits(path: Path) -> bool:
-    return len(os.fsencode(path)) + len(CHROME_SOCKET) <= SUN_PATH_MAX
+def _fits(path: Path, limit: int) -> bool:
+    return len(os.fsencode(path)) + len(CHROME_SOCKET) <= limit
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "Chrome's singleton is a named pipe on Windows")
@@ -81,7 +85,7 @@ def test_the_local_runner_uses_a_short_inherited_temp_dir(monkeypatch):
         second = runner.browser_tmpdir()
         assert first.parent == short and second.parent == short, "a short TMPDIR was not honoured"
         assert first != second, "two runs must not share a temp dir"
-        assert _fits(first)
+        assert _fits(first, runner.sun_path_max())
     finally:
         shutil.rmtree(short, ignore_errors = True)
 
@@ -94,7 +98,7 @@ def test_the_local_runner_falls_back_when_the_inherited_temp_dir_is_too_long(tmp
     monkeypatch.setattr(runner.tempfile, "tempdir", str(deep))
     made = runner.browser_tmpdir()
     try:
-        assert _fits(made), f"{made} leaves Chrome's socket path over {SUN_PATH_MAX} bytes"
+        assert _fits(made, runner.sun_path_max()), f"{made} leaves Chrome's socket path too long"
         assert made.parent == Path("/tmp")
         assert not any(deep.iterdir()), "the rejected temp dir was left behind"
     finally:
@@ -114,3 +118,31 @@ def test_the_local_runner_never_uses_a_temp_dir_inside_the_checkout(monkeypatch)
             shutil.rmtree(made, ignore_errors = True)
     finally:
         shutil.rmtree(inside, ignore_errors = True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Chrome's singleton is a named pipe on Windows")
+def test_the_local_runner_applies_the_macos_limit_on_macos(monkeypatch):
+    """A path of 104 to 107 bytes fits Linux's sun_path and not macOS's, so it must fall back there."""
+    runner = _runner(monkeypatch)
+    # mkdtemp adds "/uqv-" plus 8 characters: pick the parent so the socket path lands on 105.
+    parent_len = 105 - len(CHROME_SOCKET) - len("/uqv-") - 8
+    base = Path(tempfile.mkdtemp(prefix = "m", dir = "/tmp"))
+    try:
+        parent = Path(str(base) + "/" + "p" * (parent_len - len(str(base)) - 1))
+        parent.mkdir()
+        assert len(str(parent)) == parent_len
+        monkeypatch.setattr(runner.tempfile, "tempdir", str(parent))
+        monkeypatch.setattr(runner.sys, "platform", "linux")
+        on_linux = runner.browser_tmpdir()
+        assert on_linux.parent == parent, "105 bytes fits Linux and should have been kept"
+        monkeypatch.setattr(runner.sys, "platform", "darwin")
+        on_macos = runner.browser_tmpdir()
+        try:
+            assert on_macos.parent == Path(
+                "/tmp"
+            ), "105 bytes is over macOS's limit and must fall back"
+            assert _fits(on_macos, 103)
+        finally:
+            shutil.rmtree(on_macos, ignore_errors = True)
+    finally:
+        shutil.rmtree(base, ignore_errors = True)
