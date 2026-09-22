@@ -22,6 +22,17 @@ async function copyWithTauriClipboard(text: string): Promise<boolean> {
 function copyWithExecCommand(text: string): boolean {
   if (typeof document === "undefined" || !document.body) return false;
 
+  // A modal's focus trap pulls focus back off the textarea, so the copy would
+  // take an empty selection; the copy event writes the text regardless.
+  let written = false;
+  const onCopy = (event: ClipboardEvent) => {
+    if (!event.clipboardData) return;
+    event.clipboardData.setData("text/plain", text);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    written = true;
+  };
+
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.readOnly = true;
@@ -35,13 +46,14 @@ function copyWithExecCommand(text: string): boolean {
   textarea.focus({ preventScroll: true });
   textarea.select();
 
+  document.addEventListener("copy", onCopy, true);
   try {
-    const ok = document.execCommand("copy");
-    document.body.removeChild(textarea);
-    return ok;
+    return document.execCommand("copy") && written;
   } catch {
-    document.body.removeChild(textarea);
     return false;
+  } finally {
+    document.removeEventListener("copy", onCopy, true);
+    document.body.removeChild(textarea);
   }
 }
 

@@ -1186,7 +1186,7 @@ export function useChatModelRuntime() {
           nativePathToken != null ||
           model?.isGguf === true);
       const loraIsAdapter = lora?.exportType === "lora";
-      const isLora =
+      let isLora =
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
       const displayName = model?.name || lora?.name || modelId;
       const toastDisplayName = shortModelLabel(displayName);
@@ -1208,7 +1208,7 @@ export function useChatModelRuntime() {
         previousModel?.isLora ?? (previousLora?.exportType === "lora");
       const isLocal = isLocalModelPath(modelId);
       const isCachedLora = isLora && isLocal;
-      const loadingDescription = [
+      let loadingDescription = [
         currentCheckpoint ? "Switching models." : null,
         extraLoadingDescription ?? null,
         isDownloaded ? "Loading cached model into memory." : null,
@@ -1239,6 +1239,9 @@ export function useChatModelRuntime() {
       loadAbortRef.current = abortCtrl;
       let hfToken = useChatRuntimeStore.getState().hfToken || null;
       const postLoadRefresh = { needed: false };
+      let progressModelIds = [modelId];
+      let mlxLoadProgress = false;
+      let downloadComplete = isDownloaded || isCachedLora;
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
       try {
@@ -1600,6 +1603,32 @@ export function useChatModelRuntime() {
                   }
                 : {}),
             });
+            isLora = validation.is_lora ?? isLora;
+            if (validation.mlx_loads_base_model) {
+              mlxLoadProgress = true;
+              const mlxBaseDescription = isLora
+                ? `Loading the adapter with ${validation.mlx_loads_base_model} in place of its bitsandbytes base, downloading it first if needed.`
+                : `Loading ${validation.mlx_loads_base_model} instead, downloading it first if needed.`;
+              progressModelIds = isLora && !isLocal
+                ? [modelId, validation.mlx_loads_base_model]
+                : [validation.mlx_loads_base_model];
+              downloadComplete = false;
+              loadingDescription = [
+                currentCheckpoint ? "Switching models." : null,
+                extraLoadingDescription ?? null,
+                mlxBaseDescription,
+              ]
+                .filter(Boolean)
+                .join(" ");
+              setLoadProgress({
+                percent: 0,
+                label: "Preparing download",
+                phase: "downloading",
+              });
+              toast.info("MLX cannot use 4-bit bitsandbytes weights", {
+                description: mlxBaseDescription,
+              });
+            }
             // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
             if (validation.requires_transformers_upgrade) {
               const upgraded = await confirmTransformersUpgradeIfNeeded({
@@ -2316,7 +2345,7 @@ export function useChatModelRuntime() {
           }
         }
 
-        const isCachedLoad = isDownloaded || isCachedLora;
+        const isCachedLoad = downloadComplete;
         const toastTitle = isCachedLoad ? "Starting model…" : "Downloading model…";
         const modelLoadToastOptions = (description: ReturnType<typeof renderLoadDescription>) => ({
           description,
@@ -2398,8 +2427,6 @@ export function useChatModelRuntime() {
             : `${base} • ${rateStr}`;
         }
 
-        let downloadComplete = isDownloaded || isCachedLora;
-
   // A load that believes the weights are cached can still turn into a download (#9094): the
   // backend re-fetches a blob it judged unsafe to resume. MOVEMENT is the only proof accepted,
   // since bytes below the expected total is the ordinary state of a partial revision.
@@ -2422,16 +2449,49 @@ export function useChatModelRuntime() {
             return;
           }
           try {
-            const prog =
+            const progressModelIdsAtRequest = [...progressModelIds];
+            const progressResponses =
               ggufVariant && expectedBytes > 0
-                ? await getGgufDownloadProgress(
-                    modelId,
-                    ggufVariant,
-                    expectedBytes,
-                    hfToken,
-                  )
-                : await getDownloadProgress(modelId, hfToken);
+                ? [
+                    await getGgufDownloadProgress(
+                      modelId,
+                      ggufVariant,
+                      expectedBytes,
+                      hfToken,
+                    ),
+                  ]
+                : await Promise.all(
+                    progressModelIdsAtRequest.map((progressModelId) =>
+                      getDownloadProgress(progressModelId, hfToken, mlxLoadProgress),
+                    ),
+                  );
             if (!loadingModelRef.current) return;
+            if (
+              progressModelIdsAtRequest.length !== progressModelIds.length ||
+              progressModelIdsAtRequest.some(
+                (progressModelId, index) =>
+                  progressModelId !== progressModelIds[index],
+              )
+            ) {
+              return;
+            }
+            const allDownloadsComplete = progressResponses.every(
+              ({ progress }) => progress >= 1,
+            );
+            const firstProgress = progressResponses[0];
+            if (!firstProgress) return;
+            const prog =
+              progressResponses.find(
+                ({ progress }) => progress > 0 && progress < 1,
+              ) ??
+              progressResponses.find(
+                ({ downloaded_bytes, expected_bytes, progress }) =>
+                  downloaded_bytes > 0 &&
+                  expected_bytes === 0 &&
+                  progress === 0,
+              ) ??
+              progressResponses.find(({ progress }) => progress < 1) ??
+              firstProgress;
 
             if (prog.progress > 0 && prog.progress < 1) {
               hasShownProgress = true;
@@ -2499,7 +2559,13 @@ export function useChatModelRuntime() {
                   ),
                 });
               }
-            } else if (prog.progress >= 1 && hasShownProgress) {
+            } else if (
+              allDownloadsComplete &&
+              (hasShownProgress ||
+                progressModelIds.some(
+                  (progressModelId) => progressModelId !== modelId,
+                ))
+            ) {
               downloadComplete = true;
               if (loadToastDismissedRef.current) {
                 setLoadProgress({
@@ -2513,9 +2579,11 @@ export function useChatModelRuntime() {
                   ...modelLoadToastOptions(
                     renderLoadDescription(
                       "Starting model…",
-                      "Download complete. Loading the model into memory.",
-                      100,
-                      "Download complete",
+                      hasShownProgress
+                        ? "Download complete. Loading the model into memory."
+                        : loadingDescription,
+                      hasShownProgress ? 100 : null,
+                      hasShownProgress ? "Download complete" : null,
                     ),
                   ),
                 });

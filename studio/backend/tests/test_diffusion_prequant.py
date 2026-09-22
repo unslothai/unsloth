@@ -1938,3 +1938,78 @@ def test_the_plan_only_commits_to_a_hosted_name_this_install_can_open(monkeypatc
     failures: list = []
     assert DiffusionBackend._prequant_source_hub_entry(source, None, failures, scheme = "fp8") is None
     assert failures, "an unopenable artifact has to leave the plan marked partial"
+
+
+def test_the_runtime_resolver_applies_the_same_capability_filter_as_the_plan(monkeypatch):
+    """Plan and runtime have to agree on WHICH artifact, not only on whether there is one.
+
+    With only the plan filtering, a repo hosting both containers has the plan stage the readable
+    one while the resolver fetches the other, spends a second multi-gigabyte download to fail on
+    it, and falls back to dense weights the plan had already left out.
+    """
+    asked: list = []
+
+    def _download(
+        source,
+        name,
+        hf_token,
+        cache_dir,
+        *,
+        propagate_missing,
+        local_files_only = False,
+    ):
+        asked.append(name)
+        return "/tmp/" + name
+
+    monkeypatch.setattr(pq, "_download_checkpoint_name", _download)
+    monkeypatch.setattr(
+        pq,
+        "restricted_prequant_load_supported",
+        lambda scheme = None, filename = None: not str(filename or "").endswith(".safetensors"),
+    )
+    source = pq.PrequantSource(
+        kind = "repo",
+        location = "unsloth/Model-FP8",
+        filename = "Model-FP8.safetensors",
+        fallback_filenames = ("Model-FP8.pt",),
+    )
+    assert pq._resolve_checkpoint_path(source, None, scheme = "fp8") == "/tmp/Model-FP8.pt"
+    assert asked == ["Model-FP8.pt"], f"the unreadable container was fetched anyway: {asked}"
+
+    # No scheme keeps the whole chain, for the callers that have none to offer.
+    asked.clear()
+    assert pq._resolve_checkpoint_path(source, None) == "/tmp/Model-FP8.safetensors"
+    assert asked == ["Model-FP8.safetensors"], asked
+
+
+def test_a_cached_pickle_is_not_evidence_for_a_safetensors_artifact(monkeypatch):
+    """The derived safetensors name is a guess, and the cache probe walks every candidate, so a
+    cached legacy ``.pt`` would satisfy the evidence gate for an install that cannot open one.
+    Planning would then drop the dense shards and resolve neither file."""
+    fam = DiffusionFamily(
+        name = "probe-fam",
+        pipeline_class = "ProbePipeline",
+        transformer_class = "ProbeTransformer",
+        base_repo = "probe/Probe",
+        prequant_repos = (("fp8", "unsloth/Probe-FP8"),),
+    )
+    # This install reads safetensors and cannot deserialize a pickle.
+    monkeypatch.setattr(
+        pq,
+        "restricted_prequant_load_supported",
+        lambda scheme = None, filename = None: str(filename or "").endswith(".safetensors"),
+    )
+    cached: dict = {}
+    monkeypatch.setattr(
+        pq,
+        "cached_checkpoint_path",
+        lambda source, cache_dir = None, names = None: next(
+            (v for k, v in cached.items() if names is None or k in names), None
+        ),
+    )
+    # A cached .pt only: no evidence for the derived safetensors name, so no usable source.
+    cached["Probe-FP8.pt"] = "/cache/Probe-FP8.pt"
+    assert pq.usable_prequant_source(fam, "fp8", base_repo = "probe/Probe") is None
+    # The safetensors artifact really being in the cache IS evidence.
+    cached["Probe-FP8.safetensors"] = "/cache/Probe-FP8.safetensors"
+    assert pq.usable_prequant_source(fam, "fp8", base_repo = "probe/Probe") is not None

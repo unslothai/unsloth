@@ -47,6 +47,12 @@ import {
   updateHelperPrecacheSettings,
 } from "../api/helper-precache";
 import {
+  type ManagedProviderUrlSettings,
+  loadManagedProviderUrls,
+  updateManagedProviderUrls,
+} from "../api/managed-provider-urls";
+import { isSettingsRouteAbsent } from "../api/settings-route-absent";
+import {
   type PreviewSharingSettings,
   loadPreviewSharing,
   rotatePreviewLinks,
@@ -216,6 +222,16 @@ export function GeneralTab() {
     null,
   );
   const [isSavingPreviewSharing, setIsSavingPreviewSharing] = useState(false);
+  const [managedProviderUrls, setManagedProviderUrls] =
+    useState<ManagedProviderUrlSettings | null>(null);
+  const [managedProviderUrlsError, setManagedProviderUrlsError] = useState<
+    string | null
+  >(null);
+  const [isSavingManagedProviderUrls, setIsSavingManagedProviderUrls] =
+    useState(false);
+  // A backend that does not serve the route has no such setting to show.
+  const [managedProviderUrlsAbsent, setManagedProviderUrlsAbsent] =
+    useState(false);
   const [revokePreviewOpen, setRevokePreviewOpen] = useState(false);
   const [isRevokingPreview, setIsRevokingPreview] = useState(false);
   const launchAtLoginSetting = useDesktopBooleanSetting({
@@ -335,6 +351,31 @@ export function GeneralTab() {
     };
   }, [t, isOwner]);
 
+  useEffect(() => {
+    if (!isOwner) return;
+    let cancelled = false;
+    void loadManagedProviderUrls()
+      .then((settings) => {
+        if (cancelled) return;
+        setManagedProviderUrls(settings);
+        setManagedProviderUrlsError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        if (isSettingsRouteAbsent(error)) {
+          setManagedProviderUrlsAbsent(true);
+          return;
+        }
+        setManagedProviderUrlsError(
+          error instanceof Error
+            ? error.message
+            : t("settings.general.managedProviderUrls.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t, isOwner]);
 
   const saveHelperPrecache = async (enabled: boolean) => {
     setIsSavingHelperPrecache(true);
@@ -369,6 +410,23 @@ export function GeneralTab() {
       );
     } finally {
       setIsSavingPreviewSharing(false);
+    }
+  };
+
+  const saveManagedProviderUrls = async (allowed: boolean) => {
+    setIsSavingManagedProviderUrls(true);
+    setManagedProviderUrlsError(null);
+    try {
+      const settings = await updateManagedProviderUrls(allowed);
+      setManagedProviderUrls(settings);
+    } catch (error) {
+      setManagedProviderUrlsError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.managedProviderUrls.saveError"),
+      );
+    } finally {
+      setIsSavingManagedProviderUrls(false);
     }
   };
 
@@ -666,6 +724,43 @@ export function GeneralTab() {
           </Button>
         </SettingsRow>
       </SettingsSection>
+
+      {managedProviderUrlsAbsent ? null : (
+        <SettingsSection
+          title={t("settings.general.managedProviderUrls.sectionTitle")}
+        >
+          <SettingsRow
+            label={t("settings.general.managedProviderUrls.enableLabel")}
+            description={t(
+              "settings.general.managedProviderUrls.enableDescription",
+            )}
+          >
+            <div className="flex flex-col items-end gap-1">
+              <Switch
+                checked={managedProviderUrls?.allowed ?? false}
+                disabled={
+                  !managedProviderUrls ||
+                  isSavingManagedProviderUrls ||
+                  managedProviderUrls.lockedByEnvironment
+                }
+                onCheckedChange={(allowed) =>
+                  void saveManagedProviderUrls(allowed)
+                }
+              />
+              {managedProviderUrls?.lockedByEnvironment ? (
+                <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+                  {t("settings.general.managedProviderUrls.lockedByEnvironment")}
+                </span>
+              ) : null}
+              {managedProviderUrlsError ? (
+                <span className="max-w-[260px] text-right text-xs text-destructive">
+                  {managedProviderUrlsError}
+                </span>
+              ) : null}
+            </div>
+          </SettingsRow>
+        </SettingsSection>
+      )}
 
       <DocumentsRagSection />
 
