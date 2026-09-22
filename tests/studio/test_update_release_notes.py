@@ -1340,9 +1340,9 @@ def test_only_the_notes_region_scrolls(banner):
         # item's automatic minimum size to zero. Either one back and the rail
         # squeezes the card until the action row is cut.
         for zeroes_the_floor in ("min-h-0", "overflow-hidden"):
-            assert zeroes_the_floor not in surface.split(), (
-                f"{zeroes_the_floor} puts the browser card's floor back to nothing"
-            )
+            assert (
+                zeroes_the_floor not in surface.split()
+            ), f"{zeroes_the_floor} puts the browser card's floor back to nothing"
     else:
         _assert_classes(surface, "min-h-0", "overflow-hidden")
     layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
@@ -1696,12 +1696,12 @@ def _assert_floors_itself(source: str, card: str) -> None:
     root = _card_slot(source)
     surface = _card_surface(source)
     for zeroes_the_floor in ("min-h-0", "overflow-hidden"):
-        assert zeroes_the_floor not in surface.split(), (
-            f"{zeroes_the_floor} leaves the {card} card with no floor at all"
-        )
-    assert not re.search(r"(?<![\w-])min-h-\[", surface + root), (
-        f"the {card} card names a height again, which goes stale at the next type size"
-    )
+        assert (
+            zeroes_the_floor not in surface.split()
+        ), f"{zeroes_the_floor} leaves the {card} card with no floor at all"
+    assert not re.search(
+        r"(?<![\w-])min-h-\[", surface + root
+    ), f"the {card} card names a height again, which goes stale at the next type size"
     # Unchanged from the written-floor days: the rail may only take the height
     # the notes are there to give up.
     assert _only_under(root, "shrink-0"), f"the rail can squeeze the {card} card with no notes open"
