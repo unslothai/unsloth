@@ -1568,12 +1568,19 @@ def fix_transformers_validate_rope_ignore_keys():
         return
 
     @functools.wraps(original)
-    def validate_rope(self, *args, ignore_keys = None, **kwargs):
+    def validate_rope(
+        self,
+        *args,
+        ignore_keys = None,
+        **kwargs,
+    ):
         return original(self, *args, **kwargs)
 
     validate_rope._unsloth_ignore_keys = True
     RotaryEmbeddingConfigMixin.validate_rope = validate_rope
-    logger.info("Unsloth: Patched transformers `validate_rope` to accept the 5.0 `ignore_keys` argument.")
+    logger.info(
+        "Unsloth: Patched transformers `validate_rope` to accept the 5.0 `ignore_keys` argument."
+    )
 
 
 def fix_transformers_rope_scaling_drops_theta():

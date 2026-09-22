@@ -40,7 +40,13 @@ def test_validate_rope_accepts_ignore_keys_after_the_fix():
     assert "ignore_keys" in inspect.signature(mixin.validate_rope).parameters or getattr(
         mixin.__dict__.get("validate_rope"), "_unsloth_ignore_keys", False
     )
-    config = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    config = LlamaConfig(
+        hidden_size = 8,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 8,
+        vocab_size = 16,
+    )
     # what the 5.0-era remote code does
     config.validate_rope(ignore_keys = {"rope_type"})
     config.validate_rope()
