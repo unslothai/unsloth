@@ -17315,19 +17315,43 @@ def _check_signal_escape_patterns(code: str):
                             if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
                                 skip = 1 if id(m) in self.method_self else 0
                                 self.local_methods.setdefault(m.name, []).append((m, skip))
-            self.call_bindings: "list[tuple]" = []
+            # Every (target, value) that can carry a client, indexed by the paths it reads. They
+            # are read again after the gathering pass whenever such a path gains a client:
+            # `def fetch(s): t = s` is visited before `fetch(requests.Session())` makes `s` one.
+            self.flows: "list[tuple]" = []
+            self.flows_from: "dict[str, list[int]]" = {}
+
+        def _instance_key(self, target) -> "str | None":
+            """Where `_register` stores a client bound to `target`."""
+            family = self.class_family.get(self.scope_stack[-1])
+            if family is not None and isinstance(target, ast.Name):
+                return f"{family}.{target.id}"
+            return self._receiver_path(target)
+
+        def _record_flow(self, target, value, at, node) -> None:
+            if not self.collecting or self._instance_key(target) is None:
+                return
+            index = len(self.flows)
+            self.flows.append(
+                (target, value, at, node, tuple(self.scope_stack), tuple(self.self_names))
+            )
+            for alt in _alternatives(value):
+                path = self._receiver_path(alt)
+                if path is not None:
+                    self.flows_from.setdefault(path, []).append(index)
 
         def _bind_call_arguments(self, node) -> None:
-            """Record the arguments of a call to a function defined in this file."""
+            """Record the arguments of a call to a function or method defined in this file."""
             if isinstance(node.func, ast.Name):
                 targets = [(fn, 0) for fn in self.local_functions.get(node.func.id, ())]
             elif isinstance(node.func, ast.Attribute):
-                # `obj.fetch(session)`: the receiver fills `self`, so arguments start one later.
-                targets = self.local_methods.get(node.func.attr, [])
+                # `obj.fetch(session)` fills `self` from the receiver; `A.fetch(obj, session)`
+                # passes it explicitly, so a method is bound both ways.
+                methods = self.local_methods.get(node.func.attr, [])
+                targets = methods + [(fn, 0) for fn, skip in methods if skip]
             else:
                 return
             at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
-            context = (tuple(self.scope_stack), tuple(self.self_names))
             for fn, skip in targets:
                 positional = (fn.args.posonlyargs + fn.args.args)[skip:]
                 pairs = []
@@ -17338,24 +17362,22 @@ def _check_signal_escape_patterns(code: str):
                 named = {a.arg for a in positional + fn.args.kwonlyargs}
                 pairs += [(kw.arg, kw.value) for kw in node.keywords if kw.arg in named]
                 for param, arg in pairs:
-                    self.call_bindings.append((param, arg, at, fn, context))
+                    # Bound where the parameter is, so the body's calls see it.
+                    self._record_flow(ast.Name(id = param, ctx = ast.Store()), arg, at, fn)
 
-        def resolve_call_bindings(self) -> None:
-            """Carry clients into parameters until nothing changes, so a client handed through
-            two helpers reaches the inner one."""
-            for _ in range(len(self.call_bindings) + 1):
-                changed = False
-                for param, arg, at, fn, (scopes, selves) in self.call_bindings:
-                    self.scope_stack, self.self_names = list(scopes), list(selves)
-                    found = self._instances_named_by(arg, at)
-                    held = self.instance_aliases.setdefault(param, set())
-                    if not found <= held:
-                        held.update(found)
-                        # Bound where the parameter is, so the body's calls see it.
-                        self._register_alias(param, fn)
-                        changed = True
-                if not changed:
-                    break
+        def resolve_flows(self) -> None:
+            """Carry clients along every recorded flow until nothing changes. Each pass through
+            the queue past the subset check adds a client to a path, so this terminates."""
+            queue = list(range(len(self.flows)))
+            while queue:
+                target, value, at, node, scopes, selves = self.flows[queue.pop()]
+                self.scope_stack, self.self_names = list(scopes), list(selves)
+                found = self._instances_named_by(value, at)
+                key = self._instance_key(target)
+                if key is None or found <= self.instance_aliases.get(key, set()):
+                    continue
+                self._register(target, (set(), set(), found), node)
+                queue.extend(self.flows_from.get(key, ()))
             self.scope_stack, self.self_names = [0], []
 
         def _receiver_path(self, expr) -> "str | None":
@@ -17722,6 +17744,7 @@ def _check_signal_escape_patterns(code: str):
 
         def _carry(self, target, value, at, node) -> bool:
             self._link(target, value)
+            self._record_flow(target, value, at, node)
             return self._register(target, self._named_by(value, at), node)
 
         def _link(self, target, value) -> None:
@@ -17787,6 +17810,7 @@ def _check_signal_escape_patterns(code: str):
             for target, value, named in pairs:
                 self._record_proxy(target, value)
                 self._link(target, value)
+                self._record_flow(target, value, at, node)
                 if isinstance(value, ast.Attribute) and value.attr in _DESTINATION_ATTRS:
                     owner = self._receiver_path(value.value)
                     alias = self._receiver_path(target)
@@ -18245,7 +18269,7 @@ def _check_signal_escape_patterns(code: str):
     _network_visitor = NetworkAndIoVisitor()
     if network_possible:
         _network_visitor.visit(tree)  # pass 1: gather aliases, star imports and shadows
-        _network_visitor.resolve_call_bindings()
+        _network_visitor.resolve_flows()
     _network_visitor.collecting = False
     _network_visitor.visit(tree)  # pass 2: check every call against the final maps
 
