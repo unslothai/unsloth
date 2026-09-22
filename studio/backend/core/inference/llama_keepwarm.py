@@ -857,7 +857,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             # request
             async with _unload_gate():
                 if _is_idle(ttl):
-                    await asyncio.to_thread(unload_extra_models, _user_pinned)
+                    await asyncio.to_thread(unload_extra_models, _user_pinned, True)
                     await asyncio.to_thread(release_chat_gpu_claim)
                 # Purging the stash mid-reload would race the restore.
                 current = _loaded_identity(backend)

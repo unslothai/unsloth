@@ -9,6 +9,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 
 import ast
 import atexit
+import weakref
 import contextlib
 import ctypes
 import errno
@@ -496,9 +497,20 @@ class LlamaServerNotFoundError(RuntimeError):
 
 
 class GpuMemoryShortError(RuntimeError):
-    """A load that must fit next to the loaded models does not."""
+    """A load that must fit next to the loaded models does not. ``capped``: it would, at a
+    smaller context than asked for."""
 
-    __slots__ = ()
+    __slots__ = ("capped", "short_mib")
+
+    def __init__(self, message: str, capped: bool = False, short_mib: int = 0):
+        super().__init__(message)
+        self.capped = capped
+        self.short_mib = short_mib
+
+
+# Backends that own a llama-server, so a load can price the VRAM the others hold. The driver's
+# free-memory figure alone lags a fresh launch and is virtualised away in some sandboxes.
+_live_backends: "weakref.WeakSet[LlamaCppBackend]" = weakref.WeakSet()
 
 
 class GgufDownloadCancelled(RuntimeError):
@@ -7211,8 +7223,12 @@ class LlamaCppBackend:
         # Monotonic timestamp set in _kill_process; read by load_model
         # to decide whether to wait for the VRAM reclaim to finish.
         self._last_kill_monotonic: float = 0.0
+        # Per GPU, MiB the running server holds (its plan, committed once healthy).
+        self._planned_vram_mib: dict[int, int] = {}
+        self._pending_plan_mib: dict[int, int] = {}
 
         if manages_processes:
+            _live_backends.add(self)
             _reaped = self._kill_orphaned_servers()
             if _reaped:
                 # Reaped VRAM frees lazily; arm the settle wait so the first load
@@ -22913,6 +22929,8 @@ class LlamaCppBackend:
                 # from the default unless the verdict is recorded on its own.
                 # Bound before the try for the same reason as _detected_gpus.
                 _placement_verdict_partial = False
+                # The planner shrank the context to fit the free VRAM.
+                _ctx_capped_for_vram = False
                 # Sized inputs for the tensor-spill planner, None when the fit never
                 # priced them. Bound before the try like _placement_verdict_partial:
                 # the except arm restores use_fit=True without rebinding
@@ -23008,6 +23026,12 @@ class LlamaCppBackend:
                     # so the pin happens anyway. A pinned uncovered GPU is the user's
                     # call and already reports "device kernel image is invalid".
                     _gpu_mem = self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
+                    _held = self._other_planned_vram_mib()
+                    if _held:
+                        _gpu_mem = [
+                            (idx, min(free, max(0, total - _held.get(idx, 0))), total)
+                            for idx, free, total in _gpu_mem
+                        ]
                     # Every present device gated out (#7624). Left alone the launch
                     # takes the `--fit on` arm with `gpu_indices` still None, so no
                     # mask is written, the child enumerates every unsupported card and
@@ -24444,6 +24468,7 @@ class LlamaCppBackend:
                                     or 1,
                                 ),
                             )
+                            _ctx_before_fit = effective_ctx
                             for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
                                 subset = ranked[:n_gpus]
                                 pool_budget = _pool_budget_mib(subset, pin_fraction)
@@ -24507,6 +24532,7 @@ class LlamaCppBackend:
                                     if footprint_mib > pool_budget:
                                         continue
                                 effective_ctx = capped
+                                _ctx_capped_for_vram = 0 < capped < _ctx_before_fit
                                 gpu_indices = sorted(idx for idx, _ in subset)
                                 use_fit = False
                                 break
@@ -25090,6 +25116,10 @@ class LlamaCppBackend:
                         # --fit flag state, not "does it fit": off means this subset provably fits.
                         f"GPUs free: {gpus}, selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
                     )
+                    _on = list(gpu_indices or [idx for idx, _ in gpus])
+                    if _on:
+                        _planned = (gguf_size + mmproj_size + kv_cache_bytes) // (1024 * 1024 * len(_on))
+                        self._pending_plan_mib = {idx: _planned for idx in _on}
                     if (
                         not gpus
                         and not _detected_gpus
@@ -25329,16 +25359,25 @@ class LlamaCppBackend:
 
                 if (
                     intent.refuse_partial_gpu_fit
-                    and _placement_verdict_partial
+                    and (_placement_verdict_partial or _ctx_capped_for_vram)
                     and gpu_memory_mode != "manual"
                 ):
-                    need_gb = (gguf_size + mmproj_size + kv_cache_bytes) / 1024**3
-                    free_gb = sum(free for _, free in gpus) / 1024
+                    capped_only = _ctx_capped_for_vram and not _placement_verdict_partial
+                    asked_ctx = _ctx_before_fit if capped_only else effective_ctx
+                    need_mib = (gguf_size + mmproj_size + _kv_bytes(asked_ctx)) // (1024 * 1024)
+                    free_mib = sum(free for _, free in gpus)
+                    need_gb, free_gb = need_mib / 1024, free_mib / 1024
                     raise GpuMemoryShortError(
-                        f"This model needs about {need_gb:.0f} GB of GPU memory and "
-                        f"{free_gb:.0f} GB is free next to the models already loaded. Unload a "
-                        "model or lower the context length. force_alongside loads it anyway, "
-                        "running partly from system RAM."
+                        f"This model needs about {need_gb:.0f} GB of GPU memory at a {asked_ctx} "
+                        f"context and {free_gb:.0f} GB is free next to the models already loaded. "
+                        "Unload a model or lower the context length. force_alongside loads it "
+                        + (
+                            f"anyway, with a {effective_ctx} context."
+                            if capped_only
+                            else "anyway, running partly from system RAM."
+                        ),
+                        capped = capped_only,
+                        short_mib = max(0, need_mib - free_mib),
                     )
 
                 # An unenumerated explicit Vulkan ordinal can't be pinned; fail loudly
@@ -30697,6 +30736,7 @@ class LlamaCppBackend:
                 logger.info("load no longer belongs to this lifecycle; not publishing it healthy")
                 return False
             self._healthy = True
+            self._planned_vram_mib = dict(self._pending_plan_mib)
             return True
 
     def _close_attempt_log(self) -> None:
@@ -30787,6 +30827,7 @@ class LlamaCppBackend:
         self._diffusion_requested_ngl = None
         self._child_gpu_physical_ids = None
         if self._process is None:
+            self._planned_vram_mib = {}
             return
         # Not every _process is a Popen: tests stand one in to mean "a server is
         # loaded" without spawning anything. Terminating what cannot be terminated
@@ -30848,6 +30889,7 @@ class LlamaCppBackend:
                 except Exception:
                     pass
             self._process = None
+            self._planned_vram_mib = {}
             self._clear_server_pid()
             # Clear healthy so a /load during the replacement's warm-up can't
             # short-circuit against the previous server's health (#5401).
@@ -30870,6 +30912,15 @@ class LlamaCppBackend:
                 except Exception:
                     pass
                 self._llama_log_fh = None
+
+    def _other_planned_vram_mib(self) -> dict[int, int]:
+        """MiB per GPU the other live backends' servers hold."""
+        held: dict[int, int] = {}
+        for backend in list(_live_backends):
+            if backend is not self:
+                for idx, mib in backend._planned_vram_mib.items():
+                    held[idx] = held.get(idx, 0) + mib
+        return held
 
     @staticmethod
     def _server_pidfile_path() -> Optional[Path]:
