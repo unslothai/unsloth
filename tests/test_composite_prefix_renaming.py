@@ -346,7 +346,11 @@ def forced_install(monkeypatch):
     and whether installing is done correctly -- and lets the second one be answered on any
     release. Everything the installer rebinds is restored on the way out.
     """
-    import unsloth.import_fixes as import_fixes
+    # The module this file already imported from, not a fresh `import unsloth.import_fixes`:
+    # re-entering the package import runs `unsloth/__init__` again, which needs unsloth_zoo
+    # installed. Measured on a torch 2.6.0 floor environment without it, that turned 9 of
+    # these tests into collection errors while the rest of the file ran fine.
+    import_fixes = sys.modules[_transformers_rescopes_submodule_prefix_renamings.__module__]
 
     conversion_mapping = _conversion_mapping()
     live = conversion_mapping.get_model_conversion_mapping
@@ -496,6 +500,36 @@ def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch, for
     ), "a module holding the pre-zoo function was left bound to the unscoped mapping"
 
 
+def test_a_vllm_module_holding_its_own_copy_is_rebound(monkeypatch, forced_install):
+    """vLLM's Transformers backend imports this function by value, at import time.
+
+    `vllm/model_executor/models/transformers/base.py` does `from
+    transformers.conversion_mapping import get_model_conversion_mapping` and builds its
+    `WeightsMapper` from the result, so a process that imported vllm before this repair ran
+    would map a composite model's weights with the unscoped renaming. Measured on
+    transformers 5.5.4 with the real vllm 0.30.0 module: not rebound before `vllm` joined
+    the owning packages, rebound after. Modelled here rather than importing vllm, which
+    costs half a minute and is not installed everywhere this suite runs.
+    """
+    import types
+
+    conversion_mapping = _conversion_mapping()
+    # The object the installer is about to wrap, not `_unpatched_mapping_fn()`: an earlier
+    # test in this file can leave a stand-in in place, and then the deepest function in the
+    # chain belongs to this test module rather than to transformers.
+    backend = types.ModuleType("vllm.model_executor.models.transformers.base")
+    backend.get_model_conversion_mapping = conversion_mapping.get_model_conversion_mapping
+    monkeypatch.setitem(sys.modules, backend.__name__, backend)
+
+    forced_install.fix_transformers_composite_prefix_renaming()
+
+    patched = conversion_mapping.get_model_conversion_mapping
+    assert getattr(patched, _COMPOSITE_PREFIX_RENAMING_FLAG, False), "the repair declined"
+    assert backend.get_model_conversion_mapping is patched, (
+        "vllm's own copy was left bound to the unscoped mapping"
+    )
+
+
 @pytest.mark.parametrize(
     "module_name",
     [
@@ -504,6 +538,7 @@ def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch, for
         "peft._unsloth_test_unrelated",
         "unsloth_zoo._unsloth_test_unrelated",
         "unsloth._unsloth_test_unrelated",
+        "vllm._unsloth_test_unrelated",
     ],
 )
 def test_an_unrelated_module_keeps_its_own_same_named_function(
@@ -545,7 +580,10 @@ def test_it_defers_to_the_unsloth_zoo_copy_of_the_same_repair(monkeypatch):
     -- but it is still a wrapper nobody needs, and one of the two has to yield. This one does.
     """
     conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
-    import unsloth.import_fixes as import_fixes
+    # The module this file already imported from: a fresh `import unsloth.import_fixes`
+    # re-runs `unsloth/__init__`, which needs unsloth_zoo installed, and turns this into
+    # a collection error on a minimal floor environment (measured on torch 2.6.0).
+    import_fixes = sys.modules[_transformers_rescopes_submodule_prefix_renamings.__module__]
 
     if import_fixes._transformers_rescopes_submodule_prefix_renamings():
         pytest.skip("this transformers carries the upstream fix; neither copy installs")
@@ -575,7 +613,10 @@ def test_it_finds_the_zoo_mark_under_an_unmarked_wrapper(monkeypatch):
     The detector therefore walks the whole chain rather than reading only the top object.
     """
     conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
-    import unsloth.import_fixes as import_fixes
+    # The module this file already imported from: a fresh `import unsloth.import_fixes`
+    # re-runs `unsloth/__init__`, which needs unsloth_zoo installed, and turns this into
+    # a collection error on a minimal floor environment (measured on torch 2.6.0).
+    import_fixes = sys.modules[_transformers_rescopes_submodule_prefix_renamings.__module__]
 
     def zoo_repair():
         pass
@@ -593,7 +634,10 @@ def test_it_finds_the_zoo_mark_under_an_unmarked_wrapper(monkeypatch):
 
 def test_the_zoo_detector_cannot_spin_on_a_cycle(monkeypatch):
     conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
-    import unsloth.import_fixes as import_fixes
+    # The module this file already imported from: a fresh `import unsloth.import_fixes`
+    # re-runs `unsloth/__init__`, which needs unsloth_zoo installed, and turns this into
+    # a collection error on a minimal floor environment (measured on torch 2.6.0).
+    import_fixes = sys.modules[_transformers_rescopes_submodule_prefix_renamings.__module__]
 
     def a():
         pass

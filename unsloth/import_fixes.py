@@ -1228,7 +1228,13 @@ def fix_transformers_composite_prefix_renaming():
         # restriction the sweep would replace ANY callable called
         # `get_model_conversion_mapping`, including one a notebook or a plugin defined
         # for itself before importing unsloth.
-        owning_packages = ("transformers", "peft", "unsloth_zoo", "unsloth")
+        # vllm is here because its Transformers backend really does hold its own copy:
+        # `vllm/model_executor/models/transformers/base.py` does `from
+        # transformers.conversion_mapping import get_model_conversion_mapping` at import
+        # time and builds its `WeightsMapper` from it, so a process that imported vllm
+        # before this ran would map a composite model's weights with the unscoped renaming
+        # (measured on transformers 5.5.4: binding not rebound before this line existed).
+        owning_packages = ("transformers", "peft", "unsloth_zoo", "unsloth", "vllm")
         upstream_module = getattr(conversion_mapping, "__name__", "transformers.conversion_mapping")
         for module_name, module in list(sys.modules.items()):
             if module is None or module is conversion_mapping:
