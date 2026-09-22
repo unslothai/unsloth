@@ -406,7 +406,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_vae = ("unsloth/Qwen-Image-2.1-FP8", "vae/qwen_image_2.1_vae_bf16.safetensors"),
         # Qwen3-VL 8B, not Qwen2.5-VL, and supplied through --llm rather than --qwen2vl: the
         # qwen2vl flag carries Qwen2-VL's vision preprocessing, which this encoder does not want.
-        # Q4_K_M keeps the CPU RAM win the no-GPU route exists for (bf16 is 16.4 GB, this is 4.7).
+        # UD-Q4_K_XL, the Dynamic 2.0 rung, rather than the uniform Q4_K_M: same 4-bit class and
+        # the same CPU RAM win the no-GPU route exists for (bf16 is 16.4 GB, this is 5.1 against
+        # 5.0), with the per-tensor precision the dynamic recipe assigns. Measured on this host
+        # against the 2.1-capable build, one prompt at 1024 with 20 steps and a shared seed:
+        # LPIPS 0.02894 / SSIM 0.95908 between the two, 36.5 s against 39.0 s, both coherent.
         # Text to image only, which is all this family exposes (edit is False, and there are no
         # img2img / inpaint pipelines). Upstream's docs/qwen_image_2.1.md requires a separate
         # mmproj through --llm_vision before a GGUF encoder can do image editing; turning editing
@@ -414,7 +418,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_text_encoders = (
             (
                 "unsloth/Qwen3-VL-8B-Instruct-GGUF",
-                "Qwen3-VL-8B-Instruct-Q4_K_M.gguf",
+                "Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf",
                 "llm",
             ),
         ),
