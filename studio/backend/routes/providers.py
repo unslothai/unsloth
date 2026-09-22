@@ -621,6 +621,22 @@ async def _test_custom_provider_connectivity(
             models_count = len(models),
         )
 
+    if not model_id and api_type == "responses" and models is not None:
+        for model in models:
+            candidate = model.get("id") if isinstance(model, dict) else None
+            if isinstance(candidate, str) and candidate.strip():
+                model_id = candidate.strip()
+                break
+        if not model_id:
+            return ProviderTestResult(
+                success = False,
+                message = (
+                    "Connection failed: /models responded, but no model ID was available "
+                    "to test the Responses endpoint."
+                ),
+                models_count = len(models),
+            )
+
     if not model_id:
         if models is not None:
             return ProviderTestResult(

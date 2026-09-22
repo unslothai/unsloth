@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from core.inference import external_provider as ep
 from core.inference.external_provider import ExternalProviderClient
-from models.inference import ChatCompletionRequest
+from models.inference import ChatCompletionRequest, ChatMessage
 from models.providers import ProviderCreate, ProviderUpdate
 from storage import providers_db
 
@@ -118,6 +118,7 @@ def test_endpoint_and_payload_translation(monkeypatch, provider_type, api_type, 
                             "function": {
                                 "name": "lookup",
                                 "parameters": {"type": "object", "properties": {}},
+                                "strict": True,
                             },
                         }
                     ],
@@ -146,6 +147,7 @@ def test_endpoint_and_payload_translation(monkeypatch, provider_type, api_type, 
         }
         assert body["max_output_tokens"] == 128
         assert body["tools"][0]["name"] == "lookup"
+        assert body["tools"][0]["strict"] is True
         assert "prompt_cache_retention" not in body
         assert "context_management" not in body
     else:
@@ -167,6 +169,13 @@ def test_responses_non_streaming_translation(monkeypatch):
                 "model": "gateway-model",
                 "status": "completed",
                 "output": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "summary": [{"type": "summary_text", "text": "check docs"}],
+                        "encrypted_content": "enc_blob",
+                        "status": "completed",
+                    },
                     {
                         "type": "message",
                         "role": "assistant",
@@ -227,6 +236,16 @@ def test_responses_non_streaming_translation(monkeypatch):
                 "function": {"name": "lookup", "arguments": '{"q":"docs"}'},
             }
         ],
+        "extra_content": {
+            "openai_responses_reasoning": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [{"type": "summary_text", "text": "check docs"}],
+                    "encrypted_content": "enc_blob",
+                }
+            ]
+        },
     }
     assert completion["choices"][0]["finish_reason"] == "tool_calls"
     assert completion["usage"] == {
@@ -338,6 +357,82 @@ def test_responses_non_streaming_route_returns_json(monkeypatch):
     assert monitor.active_count() == 0
     [entry] = monitor.snapshot()
     assert entry["status"] == "completed"
+
+
+def test_responses_non_streaming_transport_error_preserves_detail(monkeypatch):
+    def handle(request):
+        raise httpx.ConnectError("connection refused", request = request)
+
+    async def run():
+        from core.inference.api_monitor import ApiMonitor
+        from routes import inference
+
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inference, "api_monitor", monitor)
+            payload = ChatCompletionRequest(
+                messages = [{"role": "user", "content": "Hi"}],
+                stream = False,
+                provider_type = "custom",
+                provider_base_url = "https://gateway.example/v1",
+                provider_api_type = "responses",
+                external_model = "gateway-model",
+            )
+
+            async def disconnected():
+                return False
+
+            request = SimpleNamespace(
+                headers = {},
+                state = SimpleNamespace(skip_api_monitor = False),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+                is_disconnected = disconnected,
+            )
+            return await inference._proxy_to_external_provider(payload, request)
+
+    response = asyncio.run(run())
+    assert response.status_code == 502
+    assert "connection refused" in json.loads(response.body)["error"]["message"]
+
+
+def test_custom_responses_follow_up_preserves_reasoning_metadata():
+    from routes.inference import _build_external_messages
+
+    extra_content = {
+        "openai_responses_reasoning": [
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "summary": [{"type": "summary_text", "text": "check docs"}],
+                "encrypted_content": "enc_blob",
+            }
+        ]
+    }
+    messages = [
+        ChatMessage(
+            role = "assistant",
+            content = None,
+            tool_calls = [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+            extra_content = extra_content,
+        ),
+        ChatMessage(role = "tool", tool_call_id = "call_1", content = "result"),
+    ]
+
+    built = _build_external_messages(
+        messages,
+        supports_vision = False,
+        provider_type = "custom",
+        api_type = "responses",
+    )
+    assert built[0]["extra_content"] == extra_content
 
 
 def test_responses_non_streaming_failure_is_not_reported_as_completion(monkeypatch):
@@ -478,4 +573,39 @@ def test_responses_only_connectivity_probe(provider_api, monkeypatch, models_sta
 
     result = asyncio.run(run())
     assert result.success == (status == 200)
+    assert paths == ["/v1/models", "/v1/responses"]
+
+
+def test_responses_connectivity_uses_catalog_model_when_model_is_omitted(monkeypatch):
+    paths = []
+
+    def handle(request):
+        paths.append(request.url.path)
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json = {"data": [{"id": "responses-only"}]})
+        assert request.url.path == "/v1/responses"
+        assert json.loads(request.content)["model"] == "responses-only"
+        return httpx.Response(
+            200,
+            text = 'data: {"type":"response.output_text.delta","delta":"Hello"}\n\ndata: {"type":"response.completed","response":{"id":"resp_probe"}}\n\n',
+        )
+
+    async def run():
+        from models.providers import ProviderTestRequest
+        from routes.providers import test_provider
+
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            return await test_provider(
+                ProviderTestRequest(
+                    provider_type = "custom",
+                    base_url = "https://gateway.example/v1",
+                    api_type = "responses",
+                ),
+                _current_subject = "unsloth",
+                via_api_key = False,
+            )
+
+    result = asyncio.run(run())
+    assert result.success is True
     assert paths == ["/v1/models", "/v1/responses"]

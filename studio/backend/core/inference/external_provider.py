@@ -5297,6 +5297,8 @@ class ExternalProviderClient:
                     _entry["description"] = _fn["description"]
                 if isinstance(_fn.get("parameters"), dict):
                     _entry["parameters"] = normalize_function_schema(_fn["parameters"])
+                if _fn.get("strict") is not None:
+                    _entry["strict"] = bool(_fn["strict"])
                 responses_user_function_tools.append(_entry)
 
         # Translate tool_choice into the Responses shape.
@@ -5469,10 +5471,15 @@ class ExternalProviderClient:
                         text_parts: list[str] = []
                         refusal_parts: list[str] = []
                         tool_calls: list[dict[str, Any]] = []
+                        reasoning_replay_items: list[dict[str, Any]] = []
                         for item in response_payload.get("output") or []:
                             if not isinstance(item, dict):
                                 continue
-                            if item.get("type") == "message":
+                            if item.get("type") == "reasoning":
+                                reasoning_item = _sanitize_openai_reasoning_replay_item(item)
+                                if reasoning_item:
+                                    reasoning_replay_items.append(reasoning_item)
+                            elif item.get("type") == "message":
                                 content = item.get("content") or []
                                 if isinstance(content, str):
                                     text_parts.append(content)
@@ -5514,6 +5521,10 @@ class ExternalProviderClient:
                             message["refusal"] = "".join(refusal_parts)
                         if tool_calls:
                             message["tool_calls"] = tool_calls
+                            if reasoning_replay_items:
+                                message["extra_content"] = {
+                                    "openai_responses_reasoning": reasoning_replay_items
+                                }
 
                         completion: dict[str, Any] = {
                             "id": response_payload.get("id") or completion_id,
@@ -5921,6 +5932,14 @@ class ExternalProviderClient:
                                             pending_citation_segments.append(head_rewritten)
                                         elif head_rewritten:
                                             yield _chunk_with_text(head_rewritten)
+
+                            elif event_type == "response.refusal.delta":
+                                refusal_delta = event.get("delta", "")
+                                if isinstance(refusal_delta, str) and refusal_delta:
+                                    if reasoning_open:
+                                        yield _chunk_with_text("</think>")
+                                        reasoning_open = False
+                                    yield _chunk_with_text(refusal_delta)
 
                             elif event_type == "response.output_text.annotation.added":
                                 ann = event.get("annotation")
@@ -6454,25 +6473,28 @@ class ExternalProviderClient:
 
         except httpx.ConnectError as exc:
             logger.error("Connection error to %s: %s", self.provider_type, exc)
-            yield _error_sse_line(
+            error_line = _error_sse_line(
                 502,
                 f"Failed to connect to {self.provider_type}: {exc}",
                 self.provider_type,
             )
+            yield error_line if stream else error_line.removeprefix("data: ")
         except httpx.ReadTimeout as exc:
             logger.error("Read timeout from %s: %s", self.provider_type, exc)
-            yield _error_sse_line(
+            error_line = _error_sse_line(
                 504,
                 f"Timeout waiting for {self.provider_type} response",
                 self.provider_type,
             )
+            yield error_line if stream else error_line.removeprefix("data: ")
         except httpx.HTTPError as exc:
             logger.error("HTTP error from %s: %s", self.provider_type, exc)
-            yield _error_sse_line(
+            error_line = _error_sse_line(
                 502,
                 f"Error communicating with {self.provider_type}: {exc}",
                 self.provider_type,
             )
+            yield error_line if stream else error_line.removeprefix("data: ")
 
     async def chat_completion(
         self,
