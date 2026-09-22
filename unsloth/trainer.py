@@ -596,8 +596,8 @@ def _migrate_legacy_optimizer_state(
     return {"state": remapped_state, "param_groups": migrated_groups}
 
 
-def _unsloth_group_roles(optimizer):
-    """The roles recorded at construction, through any wrapper.
+def _unsloth_base_optimizer(optimizer):
+    """The optimizer we built, through any wrapper, or None.
 
     `accelerator.prepare` swaps `self.optimizer` for an `AcceleratedOptimizer` before
     `create_scheduler` runs, and that wrapper defines no `__getattr__`, so asking it
@@ -606,9 +606,8 @@ def _unsloth_group_roles(optimizer):
     """
     seen = 0
     while optimizer is not None and seen < 8:
-        roles = optimizer.__dict__.get("_unsloth_group_roles")
-        if roles is not None:
-            return roles
+        if "_unsloth_group_roles" in optimizer.__dict__:
+            return optimizer
         optimizer = getattr(optimizer, "optimizer", None)
         seen += 1
     return None
@@ -621,9 +620,10 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
     overwrites `base_lrs` wholesale, so a two-entry list lands next to one lambda per current
     group and the next step raises from `zip(..., strict=True)`.
     """
-    roles = _unsloth_group_roles(optimizer)
-    if roles is None:
+    built = _unsloth_base_optimizer(optimizer)
+    if built is None:
         return scheduler
+    roles = built._unsloth_group_roles
     base = type(scheduler)
     if getattr(base, "_unsloth_legacy_resume", False):
         return scheduler
@@ -636,11 +636,13 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
         state_dict = dict(state_dict)
         # min_lrs is reduce_lr_on_plateau's per-group floor; left at two entries it
         # replaces a correctly sized list and the next reduction indexes past its end.
-        # By ROLE, not by length. Two entries can mean two different things: with no
-        # trainable embedding both current groups are non-embeddings, so a saved
-        # [ordinary, embedding] pair is the same length yet would hand the second group
-        # the embedding rate and train it at the wrong lr without a word. Remapping by
-        # role is the identity whenever the roles already line up.
+        # Only when the optimizer just established the checkpoint really is the old
+        # layout. Length alone cannot tell a legacy [ordinary, embedding] pair from a
+        # current pair that is two non-embedding groups, and remapping the latter would
+        # copy the first group's value over the second: distinct per-group min_lr floors
+        # written by this very code would come back collapsed.
+        if not getattr(built, "_unsloth_loaded_legacy", False):
+            return base.load_state_dict(self, state_dict)
         for key in ("base_lrs", "_last_lr", "min_lrs"):
             saved = state_dict.get(key)
             if isinstance(saved, list) and len(saved) == len(_LEGACY_ROLE_ORDER):
@@ -671,6 +673,9 @@ def _install_legacy_resume(optimizer, legacy_params, legacy_sizes, group_roles):
         migrated = _migrate_legacy_optimizer_state(
             state_dict, optimizer, legacy_params, legacy_sizes, group_roles
         )
+        # transformers loads the optimizer before the scheduler, so this is what tells
+        # the scheduler hook whether the checkpoint it is about to see is a legacy one.
+        optimizer._unsloth_loaded_legacy = migrated is not None
         if migrated is not None:
             if [len(group["params"]) for group in saved] != [
                 len(group["params"]) for group in optimizer.param_groups

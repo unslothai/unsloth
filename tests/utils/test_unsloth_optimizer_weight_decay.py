@@ -271,6 +271,7 @@ def test_the_scheduler_survives_the_same_resume():
     saved = old_scheduler.state_dict()
 
     new_optimizer = _optimizer(torch, model, 0.1)
+    new_optimizer.load_state_dict(_legacy_optimizer(torch, model).state_dict())
     new_scheduler = _install_legacy_scheduler_resume(
         LambdaLR(new_optimizer, lambda step: 1.0), new_optimizer
     )
@@ -328,6 +329,9 @@ def test_the_plateau_scheduler_min_lrs_are_remapped_too():
     saved = old.state_dict()
 
     new_optimizer = _optimizer(torch, model, 0.1)
+    # transformers loads the optimizer before the scheduler; that is what marks the
+    # checkpoint legacy, so the sequence matters and is reproduced here.
+    new_optimizer.load_state_dict(_legacy_optimizer(torch, model).state_dict())
     new_scheduler = _install_legacy_scheduler_resume(
         ReduceLROnPlateau(new_optimizer, min_lr = 1e-7), new_optimizer
     )
@@ -385,6 +389,7 @@ def test_scheduler_state_of_equal_length_is_remapped_by_role_not_position():
         decay_parameter_names = _decay_names(torch, model),
     )
     assert new_optimizer._unsloth_group_roles == ["non_embeddings", "non_embeddings"]
+    new_optimizer.load_state_dict(old_optimizer.state_dict())
     scheduler = _install_legacy_scheduler_resume(
         LambdaLR(new_optimizer, lambda step: 1.0), new_optimizer
     )
@@ -448,6 +453,7 @@ def test_the_scheduler_hook_survives_an_optimizer_wrapper():
     scheduler = _install_legacy_scheduler_resume(LambdaLR(wrapped, lambda step: 1.0), wrapped)
     assert getattr(type(scheduler), "_unsloth_legacy_resume", False), "hook silently skipped"
 
+    optimizer.load_state_dict(_legacy_optimizer(torch, model).state_dict())
     saved = LambdaLR(_legacy_optimizer(torch, model), lambda step: 1.0).state_dict()
     scheduler.load_state_dict(saved)
     assert len(scheduler.base_lrs) == len(optimizer.param_groups)
@@ -475,3 +481,43 @@ def test_migration_keeps_optimizer_specific_group_state():
     assert all(group["weight_sum"] == 3.5 for group in new.param_groups), new.param_groups
     # but the decay is still the corrected one, not the checkpoint's 0.0
     assert all(group["weight_decay"] == 0.1 for group in new.param_groups), new.param_groups
+
+
+def test_a_current_two_group_checkpoint_is_not_mistaken_for_a_legacy_one():
+    # With no trainable embedding both current groups are non_embeddings, so a checkpoint
+    # this code wrote also has two scheduler entries. Remapping it by role would copy the
+    # first group's value over the second, and distinct per-group min_lr floors would come
+    # back collapsed. Length cannot tell the two apart; only the optimizer load can.
+    torch = pytest.importorskip("torch")
+    nn = torch.nn
+    from torch.optim.lr_scheduler import ReduceLROnPlateau
+    from unsloth.trainer import _create_unsloth_optimizer, _install_legacy_scheduler_resume
+
+    model = nn.Module()
+    model.proj = nn.Linear(4, 4)  # .weight decays, .bias does not
+
+    def build():
+        optimizer = _create_unsloth_optimizer(
+            model,
+            torch.optim.AdamW,
+            {"lr": 2e-4},
+            5e-5,
+            weight_decay = 0.1,
+            decay_parameter_names = _decay_names(torch, model),
+        )
+        assert optimizer._unsloth_group_roles == ["non_embeddings", "non_embeddings"]
+        return optimizer
+
+    written_by_this_code = build()
+    saved = _install_legacy_scheduler_resume(
+        ReduceLROnPlateau(written_by_this_code, min_lr = [1e-7, 2e-7]), written_by_this_code
+    ).state_dict()
+    assert saved["min_lrs"] == [1e-7, 2e-7]
+
+    resumed = build()
+    resumed.load_state_dict(written_by_this_code.state_dict())  # not a legacy shape
+    scheduler = _install_legacy_scheduler_resume(
+        ReduceLROnPlateau(resumed, min_lr = [1e-7, 2e-7]), resumed
+    )
+    scheduler.load_state_dict(saved)
+    assert scheduler.min_lrs == [1e-7, 2e-7], scheduler.min_lrs
