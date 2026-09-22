@@ -922,6 +922,14 @@ class TestNetworkTargetResolution:
                 "run(requests.Session())",
                 id = "client_passed_to_an_aliased_helper",
             ),
+            pytest.param(
+                f"import requests\nclass A:\n    s = requests.Session()\n    response = s.get('http://{_H}/')",
+                id = "client_used_in_its_class_body",
+            ),
+            pytest.param(
+                f"import aiohttp\naiohttp.ClientSession('https://pypi.org').get('//{_H}/x')",
+                id = "authority_relative_url",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1043,6 +1051,7 @@ class TestNetworkTargetResolution:
             # A local function named like a method does not make every such method a factory.
             "import requests\ndef get():\n    return requests.Session()\nd = {}\n"
             "y = d.get('k')\ny.get('http://203.0.113.5/')",
+            "import httpx\nhttpx.Client(base_url='https://pypi.org').get('/simple/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):

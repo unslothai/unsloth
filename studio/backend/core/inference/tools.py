@@ -17424,6 +17424,15 @@ def _check_signal_escape_patterns(code: str):
             root = next((f for name, f in reversed(self.self_names) if name == cur.id), cur.id)
             return ".".join([root] + parts)
 
+        def _roots(self, name: str) -> "list[str]":
+            """The keys a bare name can read: a method's receiver reads its class family, and a
+            name read in a class body reads that class's attribute as well as the global."""
+            roots = [next((f for n, f in reversed(self.self_names) if n == name), name)]
+            family = self.class_family.get(self.scope_stack[-1])
+            if family is not None:
+                roots.append(f"{family}.{name}")
+            return roots
+
         def _instances_named_by(self, value, at) -> "set[str]":
             """Every client class a value can hold: a constructor call, or a copy of a path that
             already holds one."""
@@ -17443,6 +17452,9 @@ def _check_signal_escape_patterns(code: str):
                 if isinstance(alt, ast.Name) and self._is_shadowed(alt.id, at):
                     continue
                 found.update(self.instance_aliases.get(path, ()))
+                if isinstance(alt, ast.Name):
+                    for root in self._roots(alt.id)[1:]:
+                        found.update(self.instance_aliases.get(root, ()))
             return found
 
         def _shadowing_names(self, node) -> "list[str]":
@@ -17758,13 +17770,10 @@ def _check_signal_escape_patterns(code: str):
             path = self._receiver_path(target)
             family = self.class_family.get(self.scope_stack[-1])
             if family is not None and isinstance(target, ast.Name):
-                # A name bound in a class body is a class attribute, read as `self.<name>`.
-                if instances:
-                    self.instance_aliases.setdefault(f"{family}.{target.id}", set()).update(
-                        instances
-                    )
-                instances = set()
-            elif path is not None and instances:
+                # A name bound in a class body is a class attribute, read as `self.<name>`
+                # and, in the body itself, as the bare name (see `_roots`).
+                path = f"{family}.{target.id}"
+            if path is not None and instances:
                 self.instance_aliases.setdefault(path, set()).update(instances)
             if not isinstance(target, ast.Name):
                 return False
@@ -17983,15 +17992,13 @@ def _check_signal_escape_patterns(code: str):
                 if parts:
                     held.append((self._instances_named_by(cur, at), parts))
             elif self.instance_aliases:
-                root = next(
-                    (f for name, f in reversed(self.self_names) if name == parts[0]), parts[0]
-                )
-                for k in range(1, len(parts)):
-                    path = ".".join([root] + parts[1:k])
-                    if path in self.instance_aliases and not (
-                        k == 1 and self._is_shadowed(parts[0], at)
-                    ):
-                        held.append((self.instance_aliases[path], parts[k:]))
+                for root in self._roots(parts[0]):
+                    for k in range(1, len(parts)):
+                        path = ".".join([root] + parts[1:k])
+                        if path in self.instance_aliases and not (
+                            k == 1 and self._is_shadowed(parts[0], at)
+                        ):
+                            held.append((self.instance_aliases[path], parts[k:]))
             for classes, rest in held:
                 for cls in sorted(classes):
                     fq = ".".join([cls] + rest)
@@ -18258,7 +18265,10 @@ def _check_signal_escape_patterns(code: str):
                             # The URL parser also drops tab, CR and LF anywhere in the URL, so
                             # `"ht\ttp://evil.example/"` is fetched from `evil.example`.
                             reading = re.sub(r"[\t\r\n]", "", head).lstrip()
-                            m = re.match(r"^\w+://([^/?#]+)", reading)
+                            # `//host/x` has no scheme but aiohttp treats it as absolute and
+                            # connects to `host` (checked on aiohttp 3.14.3), so the authority
+                            # counts with or without a scheme in front of it.
+                            m = re.match(r"^(?:\w+:)?//([^/?#]+)", reading)
                             # The host ends at the first `/?#`, so a literal truncated past that point
                             # still names it in full; one truncated inside it does not
                             # (`"http://evil." + tld`).
