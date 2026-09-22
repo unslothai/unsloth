@@ -378,6 +378,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen3-VL 8B, not Qwen2.5-VL, and supplied through --llm rather than --qwen2vl: the
         # qwen2vl flag carries Qwen2-VL's vision preprocessing, which this encoder does not want.
         # Q4_K_M keeps the CPU RAM win the no-GPU route exists for (bf16 is 16.4 GB, this is 4.7).
+        # Text to image only, which is all this family exposes (edit is False, and there are no
+        # img2img / inpaint pipelines). Upstream's docs/qwen_image_2.1.md requires a separate
+        # mmproj through --llm_vision before a GGUF encoder can do image editing; turning editing
+        # on here without adding it would load an encoder that logs "vision disabled" and carry on.
         sd_cpp_text_encoders = (
             (
                 "unsloth/Qwen3-VL-8B-Instruct-GGUF",
