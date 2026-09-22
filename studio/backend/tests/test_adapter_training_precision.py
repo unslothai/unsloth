@@ -119,13 +119,19 @@ def _forced_16bit_branches_in_load_model():
             continue
         left, ops, comparators = node.test.left, node.test.ops, node.test.comparators
         if not (
-            isinstance(left, ast.Attribute) and left.attr == "_audio_type"
-            and len(ops) == 1 and isinstance(ops[0], ast.Eq)
-            and isinstance(comparators[0], ast.Constant) and isinstance(comparators[0].value, str)
+            isinstance(left, ast.Attribute)
+            and left.attr == "_audio_type"
+            and len(ops) == 1
+            and isinstance(ops[0], ast.Eq)
+            and isinstance(comparators[0], ast.Constant)
+            and isinstance(comparators[0].value, str)
         ):
             continue
-        for call in (c for c in ast.walk(ast.Module(body = node.body, type_ignores = []))
-                     if isinstance(c, ast.Call)):
+        for call in (
+            c
+            for c in ast.walk(ast.Module(body = node.body, type_ignores = []))
+            if isinstance(c, ast.Call)
+        ):
             if not (isinstance(call.func, ast.Attribute) and call.func.attr == "from_pretrained"):
                 continue
             for kw in call.keywords:
@@ -143,7 +149,6 @@ def test_forced_16bit_audio_types_match_the_loader():
     # hardcodes a 16-bit load and is not listed, its adapter claims a 4-bit base it never used
     # and Chat reloads it in 4-bit. Read the branches rather than trusting the list.
     from core.training.trainer import _FORCED_16BIT_AUDIO_TYPES
-
     assert set(_FORCED_16BIT_AUDIO_TYPES) == _forced_16bit_branches_in_load_model()
     # snac passes the request straight through, so it must NOT be in the set.
     assert "snac" not in _FORCED_16BIT_AUDIO_TYPES
@@ -158,23 +163,30 @@ def test_load_model_records_the_forced_16bit_precision():
         n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "load_model"
     )
     fixups = [
-        node for node in ast.walk(load_model)
+        node
+        for node in ast.walk(load_model)
         if isinstance(node, ast.If)
-        and any(isinstance(n, ast.Name) and n.id == "_FORCED_16BIT_AUDIO_TYPES"
-                for n in ast.walk(node.test))
+        and any(
+            isinstance(n, ast.Name) and n.id == "_FORCED_16BIT_AUDIO_TYPES"
+            for n in ast.walk(node.test)
+        )
         and any(
             isinstance(n, ast.Assign)
             and any(isinstance(t, ast.Attribute) and t.attr == "load_in_4bit" for t in n.targets)
-            and isinstance(n.value, ast.Constant) and n.value.value is False
+            and isinstance(n.value, ast.Constant)
+            and n.value.value is False
             for n in node.body
         )
     ]
     assert len(fixups) == 1, "load_model must set self.load_in_4bit = False for the forced types"
     # It has to land before the branch chain it describes, or it records the wrong thing.
     csm = next(
-        node for node in ast.walk(load_model)
-        if isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
-        and isinstance(node.test.left, ast.Attribute) and node.test.left.attr == "_audio_type"
+        node
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and isinstance(node.test.left, ast.Attribute)
+        and node.test.left.attr == "_audio_type"
         and isinstance(node.test.comparators[0], ast.Constant)
         and node.test.comparators[0].value == "csm"
     )
