@@ -48,6 +48,7 @@ from core.training.diffusion_train_common import (
     EventCb,
     LATENT_CACHE_OVER_BUDGET,
     StopCb,
+    bitsandbytes_optimizer_supported,
     _apply_perf_flags,
     _assert_trusted_base_model,
     _emit,
@@ -2417,11 +2418,14 @@ def _make_optimizer(params, lr):
 
     if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
         return torch.optim.AdamW(params, lr = lr)
-    try:
-        import bitsandbytes as bnb
-        return bnb.optim.AdamW8bit(params, lr = lr)
-    except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
-        pass
+    # Checked before construction, not around it: on XPU the 8-bit optimizer builds fine and
+    # only dies at the first step(), which the except below would never see.
+    if bitsandbytes_optimizer_supported():
+        try:
+            import bitsandbytes as bnb
+            return bnb.optim.AdamW8bit(params, lr = lr)
+        except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
+            pass
     if torch.cuda.is_available():
         try:
             return torch.optim.AdamW(params, lr = lr, fused = True)

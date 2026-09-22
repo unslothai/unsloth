@@ -2603,3 +2603,117 @@ class TestTheFallbackNameIsOneUnslothResolves(unittest.TestCase):
             answer = get_device_map([0, 1])
         self.assertIn(answer, planned)
         self.assertEqual(planned[answer], "balanced")
+
+
+class TestXpuBitsandbytesOptimizerGate(unittest.TestCase):
+    """The diffusion trainers pick their optimizer themselves, outside the request model the
+    route normalizes, so they need the same XPU policy applied before construction."""
+
+    def _probe(self):
+        from core.training.diffusion_train_common import bitsandbytes_optimizer_supported
+
+        return bitsandbytes_optimizer_supported
+
+    def test_xpu_host_refuses_bitsandbytes_optimizers(self):
+        import torch
+
+        with patch.object(torch, "xpu", SimpleNamespace(is_available = lambda: True)):
+            self.assertFalse(self._probe()())
+
+    def test_present_but_unavailable_xpu_keeps_bitsandbytes(self):
+        import torch
+
+        with patch.object(torch, "xpu", SimpleNamespace(is_available = lambda: False)):
+            self.assertTrue(self._probe()())
+
+    def test_a_raising_probe_fails_open(self):
+        import torch
+
+        def _boom():
+            raise RuntimeError("driver exploded")
+
+        with patch.object(torch, "xpu", SimpleNamespace(is_available = _boom)):
+            self.assertTrue(self._probe()())
+
+    def test_diffusion_factories_skip_bnb_on_xpu_and_keep_it_elsewhere(self):
+        import torch
+
+        import core.training.diffusion_dit_trainer as dit_mod
+        import core.training.diffusion_lora_trainer as lora_mod
+
+        class _Bnb8bitMarker(torch.optim.AdamW):
+            """Stands in for bnb.optim.AdamW8bit: constructs fine, dies at the first step
+            exactly as the Intel Triton SYCL assertion does."""
+
+            def step(self, *args, **kwargs):
+                raise AssertionError("sycl headers not found")
+
+        fake_bnb = ModuleType("bitsandbytes")
+        fake_optim = ModuleType("bitsandbytes.optim")
+        fake_optim.AdamW8bit = _Bnb8bitMarker
+        fake_bnb.optim = fake_optim
+
+        cases = (
+            ("sdxl_lora", lora_mod, "_make_lora_optimizer"),
+            ("dit", dit_mod, "_make_optimizer"),
+        )
+        for label, module, factory_name in cases:
+            factory = getattr(module, factory_name)
+            for on_xpu in (True, False):
+                with self.subTest(trainer = label, xpu = on_xpu):
+                    param = torch.nn.Parameter(torch.zeros(2, 2))
+                    param.grad = torch.ones(2, 2)
+                    with (
+                        patch.dict(
+                            sys.modules,
+                            {"bitsandbytes": fake_bnb, "bitsandbytes.optim": fake_optim},
+                        ),
+                        patch.object(
+                            module,
+                            "bitsandbytes_optimizer_supported",
+                            lambda supported = not on_xpu: supported,
+                        ),
+                    ):
+                        optimizer = factory([param], 1e-4)
+
+                    if on_xpu:
+                        # Must not be the bnb optimizer, and must survive an actual step.
+                        self.assertNotIsInstance(optimizer, _Bnb8bitMarker)
+                        optimizer.step()
+                    else:
+                        # Unchanged off XPU: still the 8-bit optimizer, not a blanket disable.
+                        self.assertIsInstance(optimizer, _Bnb8bitMarker)
+
+
+class TestCliDefaultOptimizerFollowsTheDevicePolicy(unittest.TestCase):
+    """`unsloth train` exposes no --optim, so without this the CLI falls through to
+    trainer.py's own `adamw_8bit` literal and reproduces issue #10021 off the Studio path."""
+
+    def _resolve(self, device: DeviceType) -> str:
+        from core.training.training import (
+            DEFAULT_TRAINING_OPTIMIZER,
+            normalize_training_optimizer_for_device,
+        )
+
+        return normalize_training_optimizer_for_device(
+            DEFAULT_TRAINING_OPTIMIZER,
+            device_backend = device.value,
+        )
+
+    def test_xpu_cli_default_is_the_safe_optimizer(self):
+        self.assertEqual(self._resolve(DeviceType.XPU), XPU_SAFE_OPTIMIZER)
+
+    def test_other_backends_keep_the_historical_cli_default(self):
+        from core.training.training import DEFAULT_TRAINING_OPTIMIZER
+
+        for device in (DeviceType.CUDA, DeviceType.CPU):
+            with self.subTest(device = device):
+                self.assertEqual(self._resolve(device), DEFAULT_TRAINING_OPTIMIZER)
+
+    def test_the_cli_sets_optim_from_the_host_policy(self):
+        """The wiring, not just the helper: train.py must stamp `optim` into training_kwargs."""
+        source = (_BACKEND_ROOT.parent.parent / "unsloth_cli" / "commands" / "train.py").read_text(
+            encoding = "utf-8"
+        )
+        self.assertIn("_default_optimizer_for_host", source)
+        self.assertIn('training_kwargs.setdefault("optim", _default_optimizer_for_host())', source)

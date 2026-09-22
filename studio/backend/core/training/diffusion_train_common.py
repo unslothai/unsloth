@@ -739,6 +739,27 @@ def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
     )
 
 
+def bitsandbytes_optimizer_supported() -> bool:
+    """Whether a bitsandbytes optimizer can complete an update on this host.
+
+    False on Intel XPU: bitsandbytes registers optimizer_update_8bit_blockwise (and
+    optimizer_update_32bit) to Triton in every branch of backends/xpu/ops.py, and Intel's
+    Triton backend asserts on a SYCL toolchain we do not ship. Construction still succeeds,
+    so the trainers' try/except around the constructor never sees it -- the run dies at the
+    first optimizer.step(). Mirrors the XPU policy in core/training/training.py.
+    """
+    try:
+        import torch
+
+        xpu = getattr(torch, "xpu", None)
+        is_available = getattr(xpu, "is_available", None)
+        if callable(is_available) and bool(is_available()):
+            return False
+    except Exception:  # noqa: BLE001 -- a probe failure must not block a start
+        return True
+    return True
+
+
 def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:
     """Reason the requested DiT precision cannot run on this host, else None -- checked by the
     start route BEFORE evicting resident GPU workloads (the trainer's own checks fire only in the
