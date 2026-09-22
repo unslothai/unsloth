@@ -1859,12 +1859,14 @@ html[data-chat-font] .aui-root {
 		box-shadow: none;
 	}
 
-	/* Picker secondary text sits on the panel AND on the lighter control
-	   pills, where the app-wide #b0b0b0 drops to 5.2:1. Its labels are small
-	   or uppercase, so lift the token once here: 9.4:1 on the panel, 6.9:1 on
-	   a pill, --foreground still a step above. */
+	/* Model discovery secondary text: section labels, chips, placeholders and
+	   trigger icons. Small or uppercase, and much of it sits on control fills
+	   rather than the panel, where the app-wide #b0b0b0 drops to 5.2:1. Lift
+	   the token once per surface so the picker and the Hub read alike, with
+	   --foreground still a step above. */
 	.dark .unsloth-model-selector-menu,
-	.dark .hub-menu-instant {
+	.dark .hub-menu-instant,
+	.dark .hub-page {
 		--muted-foreground: #c9c9c9;
 		--panel-surface-fg-muted: #c9c9c9;
 	}

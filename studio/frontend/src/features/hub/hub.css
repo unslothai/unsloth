@@ -89,20 +89,20 @@
     outline: none;
   }
 
-  /* 12% of the ink over the #242424 panel = #3a3a3a, the control tone.
-     Hover and focus step above it; focus must never match the panel or the
-     field looks empty while typing. */
+  /* Rest sits below the hover tone; hover and focus take --accent, the one
+     hover colour the app uses. Focus must never fall back to the panel or
+     the field looks empty while typing. */
   .dark .field-soft {
-    background-color: color-mix(in srgb, var(--foreground) calc(12% * var(--contrast-wash-gain, 1)), transparent) !important;
+    background-color: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-wash-gain, 1)), transparent) !important;
   }
 
   .dark .field-soft:hover,
   .dark .field-soft[data-state="open"] {
-    background-color: color-mix(in srgb, var(--foreground) calc(16% * var(--contrast-wash-gain, 1)), transparent) !important;
+    background-color: var(--accent) !important;
   }
 
   .dark .field-soft:focus-visible {
-    background-color: color-mix(in srgb, var(--foreground) calc(16% * var(--contrast-wash-gain, 1)), transparent) !important;
+    background-color: var(--accent) !important;
   }
 
   /* The Hub search field is `type="search"` (so the browser won't offer saved
@@ -333,7 +333,7 @@
 
   html.dark .hub-page .hub-model-card:hover {
     /* #202020 at the default, on the same curve as the resting fill above. */
-    background-color: color-mix(in srgb, var(--foreground) calc(3.46% * var(--contrast-wash-gain, 1)), var(--background));
+    background-color: var(--accent);
     border-color: transparent;
   }
 
@@ -557,7 +557,7 @@
 
   html.dark .hub-page .hub-tag-soft:hover,
   html.dark .hub-page .hub-tag-meta:hover {
-    background-color: color-mix(in srgb, var(--foreground) calc(4% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: var(--accent);
   }
 
   /* List rows share the cards' flat neutral surface: no border, no gradient,
@@ -594,7 +594,7 @@
   }
 
   html.dark .hub-page .hub-result-row:hover {
-    background-color: color-mix(in srgb, var(--foreground) calc(10% * var(--contrast-wash-gain, 1)), var(--background));
+    background-color: var(--accent);
     box-shadow: none;
   }
 
@@ -622,7 +622,7 @@
   }
 
   html.dark .hub-page .hub-recent-item:hover {
-    background-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: var(--accent);
   }
 
   .hub-page .hub-recent-clear:hover,
@@ -656,18 +656,17 @@
     color: var(--foreground);
   }
 
-  /* 14%, not the light theme's 6%: the dark menu sits on #3a3a3a, so hover
-     has to climb further to separate from it. */
+  /* --accent, the app's one hover tone. */
   html.dark .hub-menu-instant [data-slot="select-item"]:focus,
   html.dark .hub-menu-instant [data-slot="select-item"][data-highlighted],
   html.dark .hub-menu-instant [role="option"][data-highlighted] {
-    background-color: color-mix(in srgb, var(--foreground) calc(14% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: var(--accent);
     color: var(--foreground);
   }
 
-  /* Matches the pill that opens it, so trigger and menu read as one object. */
+  /* The popover surface, like every other menu, so row hover still reads. */
   html.dark .hub-menu-instant {
-    background-color: color-mix(in oklab, #3a3a3a, var(--contrast-target, transparent) var(--contrast-surface-mix, 0%)) !important;
+    background-color: var(--popover) !important;
   }
 
   .hub-menu-instant *,
@@ -715,7 +714,7 @@
   }
 
   html.dark .hub-tab-toggle-pill:hover {
-    background-color: color-mix(in srgb, var(--foreground) calc(18% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: var(--accent);
   }
 
   html:not(.dark) .hub-page .catalog-row {
@@ -741,7 +740,7 @@
   }
 
   html.dark .hub-page .catalog-row:hover {
-    background-color: color-mix(in srgb, var(--foreground) calc(3.5% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: var(--accent);
   }
 
   html.dark .hub-page .catalog-row[data-selected="true"] {
@@ -1124,7 +1123,7 @@
   }
 
   .dark .hub-action-btn:hover:not(:disabled) {
-    background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: var(--accent);
   }
 
   .hub-action-btn:disabled {
