@@ -268,7 +268,11 @@ def compressed_tensors_prepared_config(model_config):
         from .compressed_tensors_bnb import UNSLOTH_COMPRESSED_TENSORS_ATTR
     except Exception:
         return None
-    return model_config if getattr(model_config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None else None
+    return (
+        model_config
+        if getattr(model_config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
+        else None
+    )
 
 
 def planner_model_class(config, trust_remote_code = False):
@@ -410,7 +414,9 @@ def resolve_unsloth_device_map(
         if planner_accepts_prepared_config():
             config_kwargs = dict(config_kwargs, config = prepared_config)
         else:
-            return _fallback("this unsloth_zoo cannot plan from the prepared config of a re-quantized checkpoint")
+            return _fallback(
+                "this unsloth_zoo cannot plan from the prepared config of a re-quantized checkpoint"
+            )
 
     try:
         plan = plan_device_map_for_pretrained(
@@ -1451,7 +1457,9 @@ def enable_composite_gradient_checkpointing(model, verbose = True):
     inner = [
         type(m).__name__
         for name, m in model.named_modules()
-        if name and isinstance(m, PreTrainedModel) and getattr(type(m), "supports_gradient_checkpointing", False)
+        if name
+        and isinstance(m, PreTrainedModel)
+        and getattr(type(m), "supports_gradient_checkpointing", False)
     ]
     if not inner:
         return False
@@ -1484,9 +1492,13 @@ def check_and_disable_bitsandbytes_loading(
     # 4-bit, which is the only form PEFT can attach a LoRA to. When that applies the
     # checkpoint's own quantization config is dropped from `model_config` here and
     # `load_in_4bit` stays on.
-    if requantize_packed and load_in_4bit and not load_in_8bit and quant_method == "compressed-tensors":
+    if (
+        requantize_packed
+        and load_in_4bit
+        and not load_in_8bit
+        and quant_method == "compressed-tensors"
+    ):
         from .compressed_tensors_bnb import arm_compressed_tensors_bnb_loading
-
         if arm_compressed_tensors_bnb_loading(model_config, verbose = verbose) is not None:
             return True, False, None
 

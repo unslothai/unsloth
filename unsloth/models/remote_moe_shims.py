@@ -35,6 +35,7 @@ created classes and nowhere else:
 Everything is keyed on structure (class names plus the attributes the port defines),
 never on the repo name, and is a no-op for transformers' own models.
 """
+
 import functools
 
 import torch
@@ -51,7 +52,17 @@ def is_remote_deepseek_gate(module) -> bool:
     return (
         cls.__name__ == "MoEGate"
         and _is_remote_code(cls)
-        and all(hasattr(module, a) for a in ("topk_method", "n_group", "topk_group", "routed_scaling_factor", "norm_topk_prob", "top_k"))
+        and all(
+            hasattr(module, a)
+            for a in (
+                "topk_method",
+                "n_group",
+                "topk_group",
+                "routed_scaling_factor",
+                "norm_topk_prob",
+                "top_k",
+            )
+        )
     )
 
 
@@ -122,7 +133,9 @@ def _moe_train_dispatch(block, x, topk_idx, topk_weight):
         outs = sorted_tokens.new_zeros((0, x.shape[-1]))
     unsorted = torch.empty_like(outs)
     unsorted[order] = outs
-    weighted = unsorted.view(num_tokens, top_k, -1).to(torch.float32) * topk_weight.to(torch.float32).unsqueeze(-1)
+    weighted = unsorted.view(num_tokens, top_k, -1).to(torch.float32) * topk_weight.to(
+        torch.float32
+    ).unsqueeze(-1)
     return weighted.sum(dim = 1).to(x.dtype)
 
 
@@ -192,6 +205,7 @@ def prepare_remote_moe_for_training(model, verbose = True):
     if patched and verbose:
         print(
             "Unsloth: The remote MoE code only had an inference path; added a training forward to "
-            + ", ".join(patched) + "."
+            + ", ".join(patched)
+            + "."
         )
     return patched

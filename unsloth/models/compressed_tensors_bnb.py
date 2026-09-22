@@ -96,7 +96,11 @@ def _config_and_subconfigs(config) -> list:
         for name, value in list(getattr(cfg, "__dict__", {}).items()):
             if name.startswith("_"):
                 continue
-            if hasattr(value, "to_dict") and hasattr(value, "__dict__") and not isinstance(value, (str, bytes, dict, list, tuple)):
+            if (
+                hasattr(value, "to_dict")
+                and hasattr(value, "__dict__")
+                and not isinstance(value, (str, bytes, dict, list, tuple))
+            ):
                 stack.append(value)
     return out
 
@@ -105,7 +109,6 @@ def _transformers_supports_weight_converters() -> bool:
     try:
         from transformers.core_model_loading import WeightConverter  # noqa: F401
         from transformers.quantizers.base import HfQuantizer
-
         return hasattr(HfQuantizer, "update_weight_conversions")
     except Exception:
         return False
@@ -297,13 +300,21 @@ def packed_weight_dtype_plan(keys) -> dict:
 # The quantizer subclass and its conversion ops
 # ---------------------------------------------------------------------------------------------
 
-_PACKED_SUFFIXES = ("weight_packed", "weight_scale", "weight_shape", "weight_zero_point", "weight_g_idx")
+_PACKED_SUFFIXES = (
+    "weight_packed",
+    "weight_scale",
+    "weight_shape",
+    "weight_zero_point",
+    "weight_g_idx",
+)
 
 
 def _build_quantization_config(plan: dict):
     from compressed_tensors.quantization import QuantizationConfig
 
-    clean = {k: v for k, v in plan.items() if k not in ("sparsity_config", "global_compression_ratio")}
+    clean = {
+        k: v for k, v in plan.items() if k not in ("sparsity_config", "global_compression_ratio")
+    }
     clean.setdefault("quant_method", "compressed-tensors")
     return QuantizationConfig.model_validate(clean)
 
@@ -311,7 +322,6 @@ def _build_quantization_config(plan: dict):
 def _experts_scheme(ct_config):
     try:
         from transformers.integrations.compressed_tensors import get_experts_scheme
-
         return get_experts_scheme(ct_config)
     except Exception:
         groups = list(ct_config.config_groups.values())
@@ -375,7 +385,6 @@ def _scheme_for_module(ct_config, name: str, module: Optional[torch.nn.Module]):
         return groups[0]
     try:
         from compressed_tensors.utils.match import is_match
-
         if module is not None:
             for group in groups:
                 if is_match(name, module, group.targets):
@@ -415,7 +424,13 @@ class _DecompressPackedWeights:
     """transformers ``ConversionOps`` that turns the (packed, scale, shape, zero point, g_idx)
     group of one Linear, or of a bucket of expert Linears, into the 16-bit weight."""
 
-    def __init__(self, ct_config, dtype, stacked: bool, scheme=None):
+    def __init__(
+        self,
+        ct_config,
+        dtype,
+        stacked: bool,
+        scheme = None,
+    ):
         self.ct_config = ct_config
         self.dtype = dtype
         self.stacked = stacked
@@ -423,11 +438,18 @@ class _DecompressPackedWeights:
 
     def _compressor(self, scheme):
         from compressed_tensors.compressors import BaseCompressor
-
         fmt = scheme.format or "pack-quantized"
         return BaseCompressor.get_value_from_registry(str(fmt))
 
-    def convert(self, input_dict, source_patterns=None, target_patterns=None, full_layer_name=None, model=None, **kwargs):
+    def convert(
+        self,
+        input_dict,
+        source_patterns = None,
+        target_patterns = None,
+        full_layer_name = None,
+        model = None,
+        **kwargs,
+    ):
         packed_keys = [k for k in input_dict if "weight_packed" in k]
         if not packed_keys:
             return input_dict
@@ -435,18 +457,22 @@ class _DecompressPackedWeights:
         for packed_key in packed_keys:
             packed = input_dict[packed_key]
             get = lambda suffix: input_dict.get(packed_key.replace("weight_packed", suffix))  # noqa: E731
-            scale, shape, zero_point, g_idx = (get(s) for s in ("weight_scale", "weight_shape", "weight_zero_point", "weight_g_idx"))
+            scale, shape, zero_point, g_idx = (
+                get(s)
+                for s in ("weight_scale", "weight_shape", "weight_zero_point", "weight_g_idx")
+            )
             scheme = self.scheme
             if scheme is None:
                 module = None
                 if model is not None and full_layer_name is not None and not self.stacked:
                     try:
                         from transformers.quantizers.quantizers_utils import get_module_from_name
-
                         module, _ = get_module_from_name(model, full_layer_name)
                     except Exception:
                         module = None
-                scheme = _scheme_for_module(self.ct_config, (full_layer_name or "").rsplit(".", 1)[0], module)
+                scheme = _scheme_for_module(
+                    self.ct_config, (full_layer_name or "").rsplit(".", 1)[0], module
+                )
             compressor = self._compressor(scheme)
             # The loader hands every collected source over as a list of tensors: one entry for a
             # plain Linear, one per expert for a bucket collected by a `*` pattern (in bucket order).
@@ -454,19 +480,31 @@ class _DecompressPackedWeights:
             packed_list = as_list(packed)
             n = len(packed_list)
             scales, shapes, zps, gidxs = (
-                (as_list(v) if v is not None else [None] * n) for v in (scale, shape, zero_point, g_idx)
+                (as_list(v) if v is not None else [None] * n)
+                for v in (scale, shape, zero_point, g_idx)
             )
             if self.stacked:
                 stacked_out = None
                 for i, p in enumerate(packed_list):
-                    w = _decompress_one(compressor, scheme, p, scales[i], shapes[i], zps[i], gidxs[i], self.dtype)
+                    w = _decompress_one(
+                        compressor, scheme, p, scales[i], shapes[i], zps[i], gidxs[i], self.dtype
+                    )
                     if stacked_out is None:
-                        stacked_out = torch.empty((n, *w.shape), dtype=w.dtype, device=w.device)
+                        stacked_out = torch.empty((n, *w.shape), dtype = w.dtype, device = w.device)
                     stacked_out[i].copy_(w)
                     del w
                 value = stacked_out
             else:
-                value = _decompress_one(compressor, scheme, packed_list[0], scales[0], shapes[0], zps[0], gidxs[0], self.dtype)
+                value = _decompress_one(
+                    compressor,
+                    scheme,
+                    packed_list[0],
+                    scales[0],
+                    shapes[0],
+                    zps[0],
+                    gidxs[0],
+                    self.dtype,
+                )
             if self.stacked:
                 # Downstream merge ops look the bucket up under the packed source pattern.
                 out[packed_key] = value
@@ -482,7 +520,6 @@ class _DecompressPackedWeights:
     def reverse_op(self):
         try:
             from transformers.core_model_loading import _IdentityOp
-
             return _IdentityOp()
         except Exception:
             return None
@@ -505,7 +542,13 @@ class _WithOriginalSources:
         self.original_sources = list(original_sources)
         self.weight_sources = list(weight_sources)
 
-    def convert(self, input_dict, source_patterns=None, target_patterns=None, **kwargs):
+    def convert(
+        self,
+        input_dict,
+        source_patterns = None,
+        target_patterns = None,
+        **kwargs,
+    ):
         try:
             from transformers.core_model_loading import MergeModulelist
         except Exception:  # pragma: no cover
@@ -533,7 +576,10 @@ class _WithOriginalSources:
                     break
             renamed[new_key] = value
         return self.op.convert(
-            renamed, source_patterns=self.original_sources, target_patterns=target_patterns, **kwargs
+            renamed,
+            source_patterns = self.original_sources,
+            target_patterns = target_patterns,
+            **kwargs,
         )
 
     @property
@@ -588,7 +634,11 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
 
         def _process_model_before_weight_loading(self, model, **kwargs):
             config = getattr(model, "config", None)
-            plan = getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) if config is not None else None
+            plan = (
+                getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None)
+                if config is not None
+                else None
+            )
             if plan is not None:
                 # Read, not consumed: the device-map planner runs this same hook on a meta model
                 # built from the same config object before the real load, and a plan taken off
@@ -602,7 +652,9 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     dtype = getattr(model, "dtype", None) or torch.bfloat16
                 self._unsloth_ct_dtype = dtype
                 # Keep every packed tensor in its storage dtype through materialisation.
-                self._unsloth_dtype_plan = packed_weight_dtype_plan(_checkpoint_keys(kwargs.get("checkpoint_files")))
+                self._unsloth_dtype_plan = packed_weight_dtype_plan(
+                    _checkpoint_keys(kwargs.get("checkpoint_files"))
+                )
                 self._unsloth_plan_dicts = []
                 original_get_dtype_plan = model._get_dtype_plan
                 quantizer = self
@@ -618,7 +670,10 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
 
         def _process_model_after_weight_loading(self, model, **kwargs):
             config = getattr(model, "config", None)
-            if config is not None and getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None:
+            if (
+                config is not None
+                and getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
+            ):
                 try:
                     delattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
                 except AttributeError:
@@ -647,7 +702,9 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
             dtype = self._unsloth_ct_dtype
             updated = []
             for conv in weight_conversions:
-                if isinstance(conv, WeightConverter) and any("experts" in p for p in conv.source_patterns):
+                if isinstance(conv, WeightConverter) and any(
+                    "experts" in p for p in conv.source_patterns
+                ):
                     weight_sources = [p for p in conv.source_patterns if p.endswith(".weight")]
                     if weight_sources:
                         scheme = _scheme_for_sources(ct_config, weight_sources)
@@ -664,15 +721,21 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                             + [p + "$" for p in weight_sources]
                             + other
                         )
-                        original_sources = list(getattr(conv, "_original_source_patterns", conv.source_patterns))
+                        original_sources = list(
+                            getattr(conv, "_original_source_patterns", conv.source_patterns)
+                        )
                         conv = WeightConverter(
-                            source_patterns=new_sources,
-                            target_patterns=conv._original_target_patterns,
+                            source_patterns = new_sources,
+                            target_patterns = conv._original_target_patterns,
                             # Only the op that receives the decompressed buckets is adapted; a
                             # later op in the chain (Concatenate after MergeModulelist) gets the
                             # previous op's output under the previous op's own contract.
-                            operations=[op_cls(ct_config, dtype, stacked=True, scheme=scheme)]
-                            + [with_sources_cls(conv.operations[0], original_sources, weight_sources)]
+                            operations = [op_cls(ct_config, dtype, stacked = True, scheme = scheme)]
+                            + [
+                                with_sources_cls(
+                                    conv.operations[0], original_sources, weight_sources
+                                )
+                            ]
                             + list(conv.operations[1:]),
                         )
                         self._unsloth_keep_storage_dtype(conv._original_target_patterns)
@@ -680,9 +743,9 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
             # Packed Linears nothing above claimed: remote-code MoE experts, dense layers, attention.
             updated.append(
                 WeightConverter(
-                    source_patterns=[s + "$" for s in _PACKED_SUFFIXES],
-                    target_patterns="weight",
-                    operations=[op_cls(ct_config, dtype, stacked=False)],
+                    source_patterns = [s + "$" for s in _PACKED_SUFFIXES],
+                    target_patterns = "weight",
+                    operations = [op_cls(ct_config, dtype, stacked = False)],
                 )
             )
             updated.extend(self.get_weight_conversions())
@@ -698,8 +761,14 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
         elif current is not None and not issubclass(current, Bnb4BitHfQuantizer):
             # Someone else replaced it with a foreign class; do not fight over it.
             return False
-        elif current is not None and current is not UnslothBnb4BitHfQuantizer and issubclass(current, Bnb4BitHfQuantizer):
+        elif (
+            current is not None
+            and current is not UnslothBnb4BitHfQuantizer
+            and issubclass(current, Bnb4BitHfQuantizer)
+        ):
             # Another subclass is installed; layer ours on top of it so both behaviours survive.
-            mapping[key] = type("UnslothBnb4BitHfQuantizer", (UnslothBnb4BitHfQuantizer, current), {})
+            mapping[key] = type(
+                "UnslothBnb4BitHfQuantizer", (UnslothBnb4BitHfQuantizer, current), {}
+            )
     _installed = True
     return True

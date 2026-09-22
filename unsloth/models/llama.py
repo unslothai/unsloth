@@ -2788,7 +2788,9 @@ class FastLlamaModel:
                 # object rather than re-read config.json.
                 from .compressed_tensors_bnb import UNSLOTH_COMPRESSED_TENSORS_ATTR
 
-                _ct_requant = getattr(model_config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
+                _ct_requant = (
+                    getattr(model_config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
+                )
                 if user_config is not None or _ct_requant:
                     # Transformers 5.x @strict model init rejects extra kwargs next to config=, so set the override
                     # on the config and pass the single config object through.

@@ -38,7 +38,7 @@ from unsloth.models.loader_utils import enable_composite_gradient_checkpointing
 
 def _remote_module(name = "transformers_modules.tiny_kimi.modeling_deepseek"):
     """The port's classes, verbatim in the parts that matter, under a remote-code module name."""
-    src = '''
+    src = """
 import math, torch
 import torch.nn.functional as F
 from torch import nn
@@ -117,11 +117,12 @@ class DeepseekV3MoE(nn.Module):
         outs = torch.cat(outputs, dim=0) if len(outputs) else sorted_tokens.new_empty(0)
         new_x = torch.empty_like(outs); new_x[idxs] = outs
         return (new_x.view(*topk_ids.shape, -1).type(topk_weight.dtype).mul_(topk_weight.unsqueeze(dim=-1)).sum(dim=1).type(new_x.dtype))
-'''
+"""
     mod = types.ModuleType(name)
     # A hub module always has a file behind it, and the shim predicate reads the forward's
     # source; give the exec'd fixture the same through linecache.
     import linecache
+
     filename = f"<{name}>"
     linecache.cache[filename] = (len(src), None, src.splitlines(True), filename)
     exec(compile(src, filename, "exec"), mod.__dict__)
@@ -137,7 +138,7 @@ def test_detection_is_structural_and_ignores_native_classes():
     assert is_remote_deepseek_gate(block.gate)
     assert is_remote_deepseek_moe(block)
 
-    class MoEGate(nn.Module):   # same name, not remote code
+    class MoEGate(nn.Module):  # same name, not remote code
         pass
 
     assert not is_remote_deepseek_gate(MoEGate())
@@ -154,7 +155,7 @@ def test_training_forward_matches_eval_and_backpropagates():
         block(x)
     patched = prepare_remote_moe_for_training(block, verbose = False)
     assert sorted(patched) == ["DeepseekV3MoE", "MoEGate"]
-    assert prepare_remote_moe_for_training(block, verbose = False) == []   # idempotent
+    assert prepare_remote_moe_for_training(block, verbose = False) == []  # idempotent
     block.eval()
     with torch.no_grad():
         reference = block(x)
@@ -163,10 +164,12 @@ def test_training_forward_matches_eval_and_backpropagates():
     assert torch.allclose(out, reference, atol = 1e-5, rtol = 1e-5)
     out.float().pow(2).sum().backward()
     assert block.gate.weight.grad is not None and torch.isfinite(block.gate.weight.grad).all()
-    expert_grads = [e.down_proj.weight.grad for e in block.experts if e.down_proj.weight.grad is not None]
+    expert_grads = [
+        e.down_proj.weight.grad for e in block.experts if e.down_proj.weight.grad is not None
+    ]
     assert expert_grads and any(g.abs().sum() > 0 for g in expert_grads)
     assert block.shared_experts.down_proj.weight.grad is not None
-    assert block.gate.training and block.training   # the gate flag is restored after the call
+    assert block.gate.training and block.training  # the gate flag is restored after the call
 
 
 def test_shims_reach_a_module_behind_an_accelerate_hook():
@@ -186,7 +189,7 @@ def test_shims_reach_a_module_behind_an_accelerate_hook():
     with pytest.raises(AssertionError):
         block(x)
     prepare_remote_moe_for_training(block, verbose = False)
-    out = block(x)          # goes through the hook, which must now reach the shim
+    out = block(x)  # goes through the hook, which must now reach the shim
     block.eval()
     with torch.no_grad():
         reference = block(x)
@@ -210,7 +213,15 @@ def test_composite_gradient_checkpointing_flag():
 
         def __init__(self, config):
             super().__init__(config)
-            self.language_model = LlamaForCausalLM(LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16))
+            self.language_model = LlamaForCausalLM(
+                LlamaConfig(
+                    hidden_size = 8,
+                    num_hidden_layers = 1,
+                    num_attention_heads = 2,
+                    intermediate_size = 8,
+                    vocab_size = 16,
+                )
+            )
 
     Outer.supports_gradient_checkpointing = False
     outer = Outer(OuterConfig())

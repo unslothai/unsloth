@@ -46,14 +46,12 @@ from unsloth.models.loader_utils import check_and_disable_bitsandbytes_loading
 
 try:
     import compressed_tensors  # noqa: F401
-
     HAS_CT = True
 except Exception:
     HAS_CT = False
 
 try:
     from transformers.core_model_loading import WeightConverter  # noqa: F401
-
     HAS_CONVERTERS = True
 except Exception:
     HAS_CONVERTERS = False
@@ -61,8 +59,16 @@ except Exception:
 
 def _w4a16(**overrides):
     weights = {
-        "num_bits": 4, "type": "int", "symmetric": True, "strategy": "group", "group_size": 32,
-        "block_structure": None, "dynamic": False, "actorder": None, "observer": "minmax", "observer_kwargs": {},
+        "num_bits": 4,
+        "type": "int",
+        "symmetric": True,
+        "strategy": "group",
+        "group_size": 32,
+        "block_structure": None,
+        "dynamic": False,
+        "actorder": None,
+        "observer": "minmax",
+        "observer_kwargs": {},
     }
     weights.update(overrides.pop("weights", {}))
     quant = {
@@ -70,7 +76,14 @@ def _w4a16(**overrides):
         "format": "pack-quantized",
         "quantization_status": "compressed",
         "ignore": ["lm_head"],
-        "config_groups": {"group_0": {"targets": ["Linear"], "weights": weights, "input_activations": None, "output_activations": None}},
+        "config_groups": {
+            "group_0": {
+                "targets": ["Linear"],
+                "weights": weights,
+                "input_activations": None,
+                "output_activations": None,
+            }
+        },
     }
     quant.update(overrides)
     return quant
@@ -91,8 +104,16 @@ def test_plan_accepts_w4a16_pack_quantized():
 
 
 def test_plan_accepts_int8_and_asymmetric_and_actorder():
-    for weights in ({"num_bits": 8}, {"symmetric": False}, {"actorder": "group"}, {"strategy": "channel", "group_size": None}):
-        assert compressed_tensors_bnb_plan(_Config(quantization_config = _w4a16(weights = weights))) is not None, weights
+    for weights in (
+        {"num_bits": 8},
+        {"symmetric": False},
+        {"actorder": "group"},
+        {"strategy": "channel", "group_size": None},
+    ):
+        assert (
+            compressed_tensors_bnb_plan(_Config(quantization_config = _w4a16(weights = weights)))
+            is not None
+        ), weights
 
 
 def test_plan_accepts_legacy_nested_sparseml_spelling():
@@ -100,7 +121,11 @@ def test_plan_accepts_legacy_nested_sparseml_spelling():
     inner.pop("quant_method")
     inner["quant_method"] = "sparseml"
     inner["quantization_status"] = "frozen"
-    outer = {"quantization_config": inner, "sparsity_config": {"format": "dense"}, "quant_method": "compressed-tensors"}
+    outer = {
+        "quantization_config": inner,
+        "sparsity_config": {"format": "dense"},
+        "quant_method": "compressed-tensors",
+    }
     plan = compressed_tensors_bnb_plan(_Config(quantization_config = outer))
     assert plan is not None and "config_groups" in plan
 
@@ -108,16 +133,26 @@ def test_plan_accepts_legacy_nested_sparseml_spelling():
 def test_plan_declines_other_formats_and_schemes():
     cases = {
         "no config": _Config(),
-        "bitsandbytes": _Config(quantization_config = {"quant_method": "bitsandbytes", "load_in_4bit": True}),
-        "fp8": _Config(quantization_config = {"quant_method": "fp8", "weight_block_size": [128, 128]}),
-        "float weights": _Config(quantization_config = _w4a16(weights = {"type": "float", "num_bits": 8})),
+        "bitsandbytes": _Config(
+            quantization_config = {"quant_method": "bitsandbytes", "load_in_4bit": True}
+        ),
+        "fp8": _Config(
+            quantization_config = {"quant_method": "fp8", "weight_block_size": [128, 128]}
+        ),
+        "float weights": _Config(
+            quantization_config = _w4a16(weights = {"type": "float", "num_bits": 8})
+        ),
         "nvfp4 format": _Config(quantization_config = _w4a16(format = "nvfp4-pack-quantized")),
         "activations quantized": _Config(quantization_config = _w4a16()),
-        "sparse": _Config(quantization_config = _w4a16(sparsity_config = {"format": "sparse-24-bitmask"})),
+        "sparse": _Config(
+            quantization_config = _w4a16(sparsity_config = {"format": "sparse-24-bitmask"})
+        ),
         "gptq": _Config(quantization_config = {"quant_method": "gptq", "bits": 4}),
         "no groups": _Config(quantization_config = _w4a16(config_groups = {})),
     }
-    cases["activations quantized"].quantization_config["config_groups"]["group_0"]["input_activations"] = {"num_bits": 8, "type": "int"}
+    cases["activations quantized"].quantization_config["config_groups"]["group_0"][
+        "input_activations"
+    ] = {"num_bits": 8, "type": "int"}
     for name, config in cases.items():
         assert compressed_tensors_bnb_plan(config) is None, name
 
@@ -127,7 +162,8 @@ def test_plan_declines_mixed_groups_with_a_float_scheme():
     quant["config_groups"]["group_1"] = {
         "targets": ["re:.*self_attn.*"],
         "weights": {"num_bits": 8, "type": "float", "strategy": "tensor", "symmetric": True},
-        "input_activations": None, "output_activations": None,
+        "input_activations": None,
+        "output_activations": None,
     }
     assert compressed_tensors_bnb_plan(_Config(quantization_config = quant)) is None
 
@@ -150,32 +186,56 @@ def test_packed_dtype_plan_uses_families_and_exact_names_on_collision():
         "model.layers.0.mlp.experts.12.gate_proj.weight_scale",
         "model.layers.1.mlp.experts.3.gate_proj.weight_packed",
         "model.layers.0.self_attn.q_proj.weight_packed",
-        "model.layers.1.self_attn.q_proj.weight",     # this layer's q_proj is stored unpacked
+        "model.layers.1.self_attn.q_proj.weight",  # this layer's q_proj is stored unpacked
         "model.embed_tokens.weight",
         "lm_head.weight",
     ]
     plan = packed_weight_dtype_plan(keys)
     assert all(v is None for v in plan.values())
     rx = re.compile("|".join(plan))
-    kept = [k for k in [
-        "model.layers.0.mlp.experts.12.gate_proj.weight", "model.layers.7.mlp.experts.0.gate_proj.weight",
-        "model.layers.0.self_attn.q_proj.weight", "model.layers.1.self_attn.q_proj.weight",
-        "model.embed_tokens.weight", "lm_head.weight",
-    ] if rx.search(k)]
-    assert kept == ["model.layers.0.mlp.experts.12.gate_proj.weight", "model.layers.7.mlp.experts.0.gate_proj.weight",
-                    "model.layers.0.self_attn.q_proj.weight"]
+    kept = [
+        k
+        for k in [
+            "model.layers.0.mlp.experts.12.gate_proj.weight",
+            "model.layers.7.mlp.experts.0.gate_proj.weight",
+            "model.layers.0.self_attn.q_proj.weight",
+            "model.layers.1.self_attn.q_proj.weight",
+            "model.embed_tokens.weight",
+            "lm_head.weight",
+        ]
+        if rx.search(k)
+    ]
+    assert kept == [
+        "model.layers.0.mlp.experts.12.gate_proj.weight",
+        "model.layers.7.mlp.experts.0.gate_proj.weight",
+        "model.layers.0.self_attn.q_proj.weight",
+    ]
     assert packed_weight_dtype_plan(["model.embed_tokens.weight"]) == {}
 
 
 # ----------------------------------------------------------------------------- config stripping
 
 
-@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
 def test_arm_strips_root_and_subconfigs_and_parks_the_plan():
     from transformers import LlamaConfig
 
-    root = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
-    text = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    root = LlamaConfig(
+        hidden_size = 8,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 8,
+        vocab_size = 16,
+    )
+    text = LlamaConfig(
+        hidden_size = 8,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 8,
+        vocab_size = 16,
+    )
     root.quantization_config = _w4a16()
     text.quantization_config = _w4a16()
     root.text_config = text
@@ -187,15 +247,26 @@ def test_arm_strips_root_and_subconfigs_and_parks_the_plan():
     assert "quantization_config" not in root.to_dict()
 
 
-
 def test_prepared_config_is_the_armed_config_and_nothing_else():
     from transformers import LlamaConfig
     from unsloth.models.loader_utils import compressed_tensors_prepared_config
 
-    plain = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    plain = LlamaConfig(
+        hidden_size = 8,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 8,
+        vocab_size = 16,
+    )
     assert compressed_tensors_prepared_config(plain) is None
     assert compressed_tensors_prepared_config(None) is None
-    armed = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    armed = LlamaConfig(
+        hidden_size = 8,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 8,
+        vocab_size = 16,
+    )
     armed.quantization_config = _w4a16()
     if arm_compressed_tensors_bnb_loading(armed, verbose = False) is None:
         pytest.skip("this transformers cannot arm the re-quantization")
@@ -215,7 +286,12 @@ def test_planner_gets_the_prepared_config_instead_of_rebuilding_it(monkeypatch):
         pytest.skip("this unsloth_zoo planner does not take a prepared config")
     seen = {}
 
-    def fake_plan(model_name, *, max_memory = None, **kwargs):
+    def fake_plan(
+        model_name,
+        *,
+        max_memory = None,
+        **kwargs,
+    ):
         seen.update(kwargs)
         seen["max_memory"] = max_memory
         return None
@@ -224,7 +300,7 @@ def test_planner_gets_the_prepared_config_instead_of_rebuilding_it(monkeypatch):
     monkeypatch.setattr(loader_utils, "DEVICE_TYPE_TORCH", "cuda")
     monkeypatch.setattr(loader_utils, "is_distributed", lambda: False)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
-    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda index: (10 * 1024 ** 3, 16 * 1024 ** 3))
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda index: (10 * 1024**3, 16 * 1024**3))
     prepared = object()
     device_map = loader_utils.resolve_unsloth_device_map(
         loader_utils.UNSLOTH_DEVICE_MAP, "some/repo", prepared_config = prepared, load_in_4bit = True
@@ -242,13 +318,24 @@ def test_planner_gets_the_prepared_config_instead_of_rebuilding_it(monkeypatch):
     assert seen == {}
     assert device_map == loader_utils._PLANNED_DEVICE_MAPS[loader_utils.UNSLOTH_DEVICE_MAP]
 
-@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
 def test_check_and_disable_keeps_4bit_for_packed_int4():
     from transformers import LlamaConfig
 
-    config = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    config = LlamaConfig(
+        hidden_size = 8,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 8,
+        vocab_size = 16,
+    )
     config.quantization_config = _w4a16()
-    load_in_4bit, load_in_8bit, method = check_and_disable_bitsandbytes_loading(config, load_in_4bit = True, load_in_8bit = False, verbose = False)
+    load_in_4bit, load_in_8bit, method = check_and_disable_bitsandbytes_loading(
+        config, load_in_4bit = True, load_in_8bit = False, verbose = False
+    )
     assert (load_in_4bit, load_in_8bit, method) == (True, False, None)
     assert not hasattr(config, "quantization_config")
 
@@ -259,20 +346,30 @@ def test_check_and_disable_still_disables_8bit_and_other_methods():
         ({"quant_method": "gptq", "bits": 4}, dict(load_in_4bit = True, load_in_8bit = False)),
     ):
         config = _Config(quantization_config = quant)
-        load_in_4bit, load_in_8bit, method = check_and_disable_bitsandbytes_loading(config, verbose = False, **flags)
+        load_in_4bit, load_in_8bit, method = check_and_disable_bitsandbytes_loading(
+            config, verbose = False, **flags
+        )
         assert (load_in_4bit, load_in_8bit) == (False, False)
         assert method in ("compressed-tensors", "gptq")
         assert hasattr(config, "quantization_config")
 
 
-@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
 def test_check_and_disable_does_not_arm_when_the_4bit_load_is_not_happening():
     """`fast_inference` hands the packed checkpoint to vLLM and `full_finetuning` turns 4-bit off
     right after this call: arming there stripped the checkpoint's own quantization config with
     nothing left to consume the plan, so the packed tensors loaded as unmatched keys."""
     from transformers import LlamaConfig
 
-    config = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    config = LlamaConfig(
+        hidden_size = 8,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 8,
+        vocab_size = 16,
+    )
     config.quantization_config = _w4a16()
     load_in_4bit, load_in_8bit, method = check_and_disable_bitsandbytes_loading(
         config, load_in_4bit = True, load_in_8bit = False, verbose = False, requantize_packed = False
@@ -282,22 +379,34 @@ def test_check_and_disable_does_not_arm_when_the_4bit_load_is_not_happening():
     assert not hasattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
 
 
-@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
 def test_arm_leaves_the_config_alone_when_the_quantizer_cannot_be_installed(monkeypatch):
     """A foreign class in the bitsandbytes quantizer slot would load the packed tensors without
     the converters; the config must then keep its own quantization config."""
     from transformers import LlamaConfig
     from unsloth.models import compressed_tensors_bnb
 
-    monkeypatch.setattr(compressed_tensors_bnb, "install_compressed_tensors_bnb_quantizer", lambda: False)
-    config = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    monkeypatch.setattr(
+        compressed_tensors_bnb, "install_compressed_tensors_bnb_quantizer", lambda: False
+    )
+    config = LlamaConfig(
+        hidden_size = 8,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 8,
+        vocab_size = 16,
+    )
     config.quantization_config = _w4a16()
     assert compressed_tensors_bnb.arm_compressed_tensors_bnb_loading(config, verbose = False) is None
     assert hasattr(config, "quantization_config")
     assert not hasattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
 
 
-@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
 def test_arm_declines_a_plan_the_installed_compressed_tensors_cannot_parse(monkeypatch):
     """Fields get retired between compressed-tensors releases (`actorder = "group"` left in
     0.19.0) and the parse used to happen inside `from_pretrained`, after the checkpoint's own
@@ -310,15 +419,22 @@ def test_arm_declines_a_plan_the_installed_compressed_tensors_cannot_parse(monke
         raise ValueError("actorder='group' has been removed")
 
     monkeypatch.setattr(compressed_tensors_bnb, "_build_quantization_config", cannot_parse)
-    config = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    config = LlamaConfig(
+        hidden_size = 8,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 8,
+        vocab_size = 16,
+    )
     config.quantization_config = _w4a16(weights = {"actorder": "group"})
     assert compressed_tensors_bnb.arm_compressed_tensors_bnb_loading(config, verbose = False) is None
     assert config.quantization_config["config_groups"]["group_0"]["weights"]["actorder"] == "group"
     assert not hasattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
 
 
-
-@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
 def test_the_planner_pass_does_not_consume_the_plan():
     """The device-map planner preprocesses a meta model built from the very config object the
     load uses. The plan used to be taken off the config by the first pass, so on a multi-GPU
@@ -330,29 +446,41 @@ def test_the_planner_pass_does_not_consume_the_plan():
     from accelerate import init_empty_weights
 
     assert install_compressed_tensors_bnb_quantizer()
-    config = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, intermediate_size = 8, vocab_size = 16)
+    config = LlamaConfig(
+        hidden_size = 8,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 8,
+        vocab_size = 16,
+    )
     config.quantization_config = _w4a16()
     plan = arm_compressed_tensors_bnb_loading(config, verbose = False)
     assert plan is not None
-    bnb = BitsAndBytesConfig(load_in_4bit = True, bnb_4bit_compute_dtype = torch.bfloat16, bnb_4bit_quant_type = "nf4")
+    bnb = BitsAndBytesConfig(
+        load_in_4bit = True, bnb_4bit_compute_dtype = torch.bfloat16, bnb_4bit_quant_type = "nf4"
+    )
 
     def preprocess():
         quantizer = AutoHfQuantizer.from_config(bnb, pre_quantized = False)
         with init_empty_weights():
             model = LlamaForCausalLM(config)
-        quantizer._process_model_before_weight_loading(model, dtype = torch.bfloat16, device_map = None, checkpoint_files = [])
+        quantizer._process_model_before_weight_loading(
+            model, dtype = torch.bfloat16, device_map = None, checkpoint_files = []
+        )
         return quantizer, model
 
-    first, _ = preprocess()          # the planner's meta pass
+    first, _ = preprocess()  # the planner's meta pass
     assert getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is plan
-    second, model = preprocess()     # the real load
+    second, model = preprocess()  # the real load
     assert second._unsloth_ct_config is not None
     conversions = second.update_weight_conversions([])
     assert any(
-        getattr(c, "source_patterns", None) and "weight_packed$" in c.source_patterns for c in conversions
+        getattr(c, "source_patterns", None) and "weight_packed$" in c.source_patterns
+        for c in conversions
     ), [getattr(c, "source_patterns", None) for c in conversions]
     second._process_model_after_weight_loading(model)
     assert not hasattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
+
 
 @pytest.mark.skipif(not HAS_CONVERTERS, reason = "needs the transformers 5 loader")
 def test_quantizer_registration_is_idempotent_and_a_subclass():
@@ -369,7 +497,13 @@ def test_quantizer_registration_is_idempotent_and_a_subclass():
 # ----------------------------------------------------------------------------- GPU: real loads
 
 
-def _write_tiny_packed_llama(root, asymmetric = False, actorder = False, num_bits = 4, group_size = 32):
+def _write_tiny_packed_llama(
+    root,
+    asymmetric = False,
+    actorder = False,
+    num_bits = 4,
+    group_size = 32,
+):
     """A 2-layer Llama with every Linear but lm_head packed by compressed-tensors' compressor.
     Returns (packed_dir, bf16_dir) where bf16_dir holds the exact decompressed weights."""
     from safetensors.torch import save_file
@@ -379,14 +513,29 @@ def _write_tiny_packed_llama(root, asymmetric = False, actorder = False, num_bit
     from compressed_tensors.quantization.utils import calculate_qparams
 
     torch.manual_seed(0)
-    config = LlamaConfig(hidden_size = 64, num_hidden_layers = 2, num_attention_heads = 4, num_key_value_heads = 2,
-                         intermediate_size = 128, vocab_size = 256, max_position_embeddings = 128, tie_word_embeddings = False)
+    config = LlamaConfig(
+        hidden_size = 64,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        intermediate_size = 128,
+        vocab_size = 256,
+        max_position_embeddings = 128,
+        tie_word_embeddings = False,
+    )
     model = LlamaForCausalLM(config).to(torch.bfloat16)
     sd = {k: v.detach().contiguous() for k, v in model.state_dict().items()}
     # `actorder = "group"` was deprecated in compressed-tensors 0.18.0 and removed in 0.19.0;
     # "weight" is the spelling its validator still accepts and exercises the same `weight_g_idx`
     # path in the compressor.
-    quant = _w4a16(weights = {"num_bits": num_bits, "group_size": group_size, "symmetric": not asymmetric, "actorder": "weight" if actorder else None})
+    quant = _w4a16(
+        weights = {
+            "num_bits": num_bits,
+            "group_size": group_size,
+            "symmetric": not asymmetric,
+            "actorder": "weight" if actorder else None,
+        }
+    )
     ctc = QuantizationConfig.model_validate(quant)
     scheme = list(ctc.config_groups.values())[0]
     comp = BaseCompressor.get_value_from_registry("pack-quantized")
@@ -417,10 +566,13 @@ def _write_tiny_packed_llama(root, asymmetric = False, actorder = False, num_bit
         out = comp.compress(state, scheme)
         for pk, pv in out.items():
             packed[mod + "." + pk] = pv.contiguous()
-        dec = comp.decompress({k2: v2 for k2, v2 in out.items()}, scheme)["weight"].to(torch.bfloat16)
+        dec = comp.decompress({k2: v2 for k2, v2 in out.items()}, scheme)["weight"].to(
+            torch.bfloat16
+        )
         plain[k] = dec.contiguous()
     packed_dir, bf16_dir = os.path.join(root, "packed"), os.path.join(root, "bf16")
-    os.makedirs(packed_dir); os.makedirs(bf16_dir)
+    os.makedirs(packed_dir)
+    os.makedirs(bf16_dir)
     save_file(packed, os.path.join(packed_dir, "model.safetensors"), metadata = {"format": "pt"})
     save_file(plain, os.path.join(bf16_dir, "model.safetensors"), metadata = {"format": "pt"})
     cfg = config.to_dict()
@@ -442,7 +594,9 @@ def _same_linear4bit(a, b):
         assert isinstance(o, bnb.nn.Linear4bit), name
         qa, qb = m.weight.quant_state, o.weight.quant_state
         assert torch.equal(m.weight.data.view(-1), o.weight.data.view(-1)), name
-        assert torch.equal(qa.absmax, qb.absmax) and qa.shape == qb.shape and qa.dtype == qb.dtype, name
+        assert (
+            torch.equal(qa.absmax, qb.absmax) and qa.shape == qb.shape and qa.dtype == qb.dtype
+        ), name
         n += 1
     return n
 
@@ -453,20 +607,26 @@ def _tokenizer_free_load(path, root):
 
     tok_dir = os.path.join(root, "tok")
     if not os.path.isdir(tok_dir):
-        AutoTokenizer.from_pretrained("hf-internal-testing/llama-tokenizer").save_pretrained(tok_dir)
+        AutoTokenizer.from_pretrained("hf-internal-testing/llama-tokenizer").save_pretrained(
+            tok_dir
+        )
     for f in os.listdir(tok_dir):
         if not os.path.exists(os.path.join(path, f)):
             shutil.copy(os.path.join(tok_dir, f), os.path.join(path, f))
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
-@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
 @pytest.mark.parametrize("variant", ["symmetric", "asymmetric", "actorder", "int8"])
 def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(variant, tmp_path):
     from unsloth import FastLanguageModel
 
     packed_dir, bf16_dir = _write_tiny_packed_llama(
-        str(tmp_path), asymmetric = variant == "asymmetric", actorder = variant == "actorder",
+        str(tmp_path),
+        asymmetric = variant == "asymmetric",
+        actorder = variant == "actorder",
         num_bits = 8 if variant == "int8" else 4,
     )
     for d in (packed_dir, bf16_dir):
@@ -475,26 +635,32 @@ def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(varia
     model_a, _ = FastLanguageModel.from_pretrained(packed_dir, **kw)
     model_b, _ = FastLanguageModel.from_pretrained(bf16_dir, **kw)
     n = _same_linear4bit(model_a, model_b)
-    assert n == 2 * 7, n   # q k v o gate up down per layer
+    assert n == 2 * 7, n  # q k v o gate up down per layer
     assert not any(k.endswith("weight_packed") for k, _ in model_a.named_parameters())
     ids = torch.randint(0, 256, (1, 16), device = "cuda:0")
     with torch.no_grad():
         assert torch.equal(model_a(input_ids = ids).logits, model_b(input_ids = ids).logits)
     # The stripped checkpoint config never carries the plan or the old quantization config.
     assert not hasattr(model_a.config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
-    assert getattr(model_a.config, "quantization_config", None) is not None   # the bitsandbytes one
+    assert getattr(model_a.config, "quantization_config", None) is not None  # the bitsandbytes one
     assert "compressed" not in str(model_a.config.quantization_config).lower()
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
-@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
 def test_packed_checkpoint_trains_with_lora(tmp_path):
     from unsloth import FastLanguageModel
 
     packed_dir, _ = _write_tiny_packed_llama(str(tmp_path))
     _tokenizer_free_load(packed_dir, str(tmp_path))
-    model, _ = FastLanguageModel.from_pretrained(packed_dir, max_seq_length = 64, dtype = torch.bfloat16, load_in_4bit = True)
-    model = FastLanguageModel.get_peft_model(model, r = 4, lora_alpha = 8, target_modules = ["q_proj", "v_proj", "down_proj"])
+    model, _ = FastLanguageModel.from_pretrained(
+        packed_dir, max_seq_length = 64, dtype = torch.bfloat16, load_in_4bit = True
+    )
+    model = FastLanguageModel.get_peft_model(
+        model, r = 4, lora_alpha = 8, target_modules = ["q_proj", "v_proj", "down_proj"]
+    )
     model.train()
     ids = torch.randint(0, 256, (1, 16), device = "cuda:0")
     loss = model(input_ids = ids, labels = ids).loss
@@ -504,7 +670,9 @@ def test_packed_checkpoint_trains_with_lora(tmp_path):
     assert any(g.abs().sum() > 0 for g in grads)
 
 
-@pytest.mark.skipif(not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader")
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
 def test_many_to_many_expert_op_keeps_its_source_contract():
     """transformers' ErnieFuseAndSplitTextVisionExperts iterates the converter's
     source_patterns and requires every one of them in the collected dict. After
@@ -526,7 +694,12 @@ def test_many_to_many_expert_op_keeps_its_source_contract():
 
     plain, packed = {}, {}
     for p in sources:
-        plain[p], packed[p + "_packed$"], packed[p + "_scale$"], packed[p + "_shape$"] = [], [], [], []
+        plain[p], packed[p + "_packed$"], packed[p + "_scale$"], packed[p + "_shape$"] = (
+            [],
+            [],
+            [],
+            [],
+        )
         for _ in range(4):  # two text experts then two vision experts
             w = torch.randn(16, 64)
             grouped = w.reshape(16, 2, 32)
@@ -541,21 +714,40 @@ def test_many_to_many_expert_op_keeps_its_source_contract():
     want = ernie.convert(dict(plain), source_patterns = sources, target_patterns = targets, config = None)
 
     # The rebuilt converter: decompression first, then the converter's own op under its contract.
-    rebuilt_sources = [p + "_packed$" for p in sources] + [p + "_scale$" for p in sources] + [p + "_shape$" for p in sources] + [p + "$" for p in sources]
+    rebuilt_sources = (
+        [p + "_packed$" for p in sources]
+        + [p + "_scale$" for p in sources]
+        + [p + "_shape$" for p in sources]
+        + [p + "$" for p in sources]
+    )
     ops = [
         _DecompressPackedWeights(ctc, torch.bfloat16, stacked = True, scheme = scheme),
         _WithOriginalSources(ernie, sources, sources),
     ]
     got = dict(packed)
     for op in ops:
-        got = op.convert(got, source_patterns = rebuilt_sources, target_patterns = targets, full_layer_name = "model.layers.0", model = None, config = None)
+        got = op.convert(
+            got,
+            source_patterns = rebuilt_sources,
+            target_patterns = targets,
+            full_layer_name = "model.layers.0",
+            model = None,
+            config = None,
+        )
     assert set(got) == set(targets)
     for k in targets:
         assert torch.equal(got[k], want[k]), k
 
     # Without the adapter the many-to-many op fails on the consumed metadata patterns.
     got = dict(packed)
-    got = ops[0].convert(got, source_patterns = rebuilt_sources, target_patterns = targets, full_layer_name = "model.layers.0", model = None, config = None)
+    got = ops[0].convert(
+        got,
+        source_patterns = rebuilt_sources,
+        target_patterns = targets,
+        full_layer_name = "model.layers.0",
+        model = None,
+        config = None,
+    )
     with pytest.raises((ValueError, TypeError)):
         ernie.convert(got, source_patterns = rebuilt_sources, target_patterns = targets, config = None)
 
@@ -565,6 +757,7 @@ def test_classification_load_under_fast_inference_still_requantizes():
     head), so the packed re-quantization must stay armed there."""
     import inspect
     from unsloth.models import llama
+
     assert llama._vllm_will_load_weights(True, num_labels = 2) is False
     assert llama._vllm_will_load_weights(False, None) is False
     source = inspect.getsource(llama.FastLlamaModel.from_pretrained)
@@ -583,8 +776,14 @@ def test_wrapped_many_to_many_op_still_passes_the_converter_type_check():
     sources = ["mlp.experts.*.gate_proj.weight", "mlp.experts.*.up_proj.weight"]
     targets = ["mlp.text_experts.gate_up_proj", "mlp.vision_experts.gate_up_proj"]
     wrapped = _with_original_sources(op, sources, sources)
-    assert isinstance(wrapped, _WithOriginalSources) and isinstance(wrapped, ErnieFuseAndSplitTextVisionExperts)
-    WeightConverter(source_patterns = [s + "_packed$" for s in sources] + [s + "$" for s in sources], target_patterns = targets, operations = [wrapped])
+    assert isinstance(wrapped, _WithOriginalSources) and isinstance(
+        wrapped, ErnieFuseAndSplitTextVisionExperts
+    )
+    WeightConverter(
+        source_patterns = [s + "_packed$" for s in sources] + [s + "$" for s in sources],
+        target_patterns = targets,
+        operations = [wrapped],
+    )
 
 
 def test_a_pickled_shard_is_refused_rather_than_read_in_the_model_dtype():
@@ -601,13 +800,21 @@ def test_load_only_converters_are_dropped_before_save():
     """transformers reverses every converter on model._weight_conversions in save_pretrained;
     the decompression converters must not be there, or a bitsandbytes model is saved under
     the packed names."""
-    from unsloth.models.compressed_tensors_bnb import _DecompressPackedWeights, drop_load_only_conversions
+    from unsloth.models.compressed_tensors_bnb import (
+        _DecompressPackedWeights,
+        drop_load_only_conversions,
+    )
 
     class Conv:
         def __init__(self, ops):
             self.operations = ops
 
-    model = SimpleNamespace(_weight_conversions = [Conv([object()]), Conv([_DecompressPackedWeights.__new__(_DecompressPackedWeights)])])
+    model = SimpleNamespace(
+        _weight_conversions = [
+            Conv([object()]),
+            Conv([_DecompressPackedWeights.__new__(_DecompressPackedWeights)]),
+        ]
+    )
     assert drop_load_only_conversions(model) == 1
     assert len(model._weight_conversions) == 1
     assert drop_load_only_conversions(SimpleNamespace()) == 0
@@ -622,7 +829,12 @@ def test_partially_packed_expert_bucket_is_refused():
 
     adapter = _WithOriginalSources(Op(), ["experts.*.up_proj.weight"], ["experts.*.up_proj.weight"])
     with pytest.raises(RuntimeError, match = "partially packed"):
-        adapter.convert({"experts.*.up_proj.weight_packed$": [torch.zeros(2, 2)], "experts.*.up_proj.weight$": [torch.zeros(2, 2)]})
+        adapter.convert(
+            {
+                "experts.*.up_proj.weight_packed$": [torch.zeros(2, 2)],
+                "experts.*.up_proj.weight$": [torch.zeros(2, 2)],
+            }
+        )
 
 
 @pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
@@ -632,8 +844,18 @@ def test_scheme_is_resolved_per_converter_source_and_mixed_buckets_are_refused()
 
     quant = _w4a16()
     quant["config_groups"] = {
-        "group_0": {"targets": ["re:.*gate_proj.*"], "weights": dict(quant["config_groups"]["group_0"]["weights"], num_bits = 4), "input_activations": None, "output_activations": None},
-        "group_1": {"targets": ["re:.*up_proj.*"], "weights": dict(quant["config_groups"]["group_0"]["weights"], num_bits = 8), "input_activations": None, "output_activations": None},
+        "group_0": {
+            "targets": ["re:.*gate_proj.*"],
+            "weights": dict(quant["config_groups"]["group_0"]["weights"], num_bits = 4),
+            "input_activations": None,
+            "output_activations": None,
+        },
+        "group_1": {
+            "targets": ["re:.*up_proj.*"],
+            "weights": dict(quant["config_groups"]["group_0"]["weights"], num_bits = 8),
+            "input_activations": None,
+            "output_activations": None,
+        },
     }
     ctc = QuantizationConfig.model_validate(quant)
     assert _scheme_for_sources(ctc, ["mlp.experts.*.gate_proj.weight"]).weights.num_bits == 4
