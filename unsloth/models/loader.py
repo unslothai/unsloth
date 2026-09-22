@@ -234,18 +234,20 @@ def _is_mistral_format_checkpoint(
     make it in. AutoConfig cannot read it, so the generic "both configs failed" message
     sends the user chasing a transformers version that does not exist. Answers False on
     any doubt, including offline, so the generic path is never hidden."""
+    # `params.json` alone is not enough: Meta's original Llama checkpoints ship one too, next to
+    # `consolidated.00.pth`. Mistral's format also carries its tokenizer as `tekken.json` and its
+    # weights as `consolidated.safetensors` (or the index of that), so one of those must be there.
+    markers = ("tekken.json", "consolidated.safetensors", "consolidated.safetensors.index.json")
     try:
         if os.path.isdir(model_name):
-            return os.path.isfile(os.path.join(model_name, "params.json")) and not os.path.isfile(
-                os.path.join(model_name, "config.json")
-            )
-        if local_files_only:
-            return False
-        from huggingface_hub import file_exists
+            has = lambda name: os.path.isfile(os.path.join(model_name, name))
+        else:
+            if local_files_only:
+                return False
+            from huggingface_hub import file_exists
 
-        return file_exists(
-            model_name, "params.json", revision = revision, token = token
-        ) and not file_exists(model_name, "config.json", revision = revision, token = token)
+            has = lambda name: file_exists(model_name, name, revision = revision, token = token)
+        return has("params.json") and not has("config.json") and any(has(m) for m in markers)
     except Exception:
         return False
 

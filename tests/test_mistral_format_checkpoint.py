@@ -22,7 +22,16 @@ def _write(tmp_path, names):
 
 def test_params_json_without_config_json_is_mistral_format(tmp_path):
     from unsloth.models.loader import _is_mistral_format_checkpoint
-    assert _is_mistral_format_checkpoint(_write(tmp_path, ["params.json"])) is True
+    assert _is_mistral_format_checkpoint(_write(tmp_path, ["params.json", "tekken.json"])) is True
+
+
+def test_a_params_json_without_a_mistral_marker_is_not_claimed(tmp_path):
+    """Meta's original Llama layout: params.json next to consolidated.00.pth and
+    tokenizer.model. Not Mistral's format, so the generic message must stay."""
+    from unsloth.models.loader import _is_mistral_format_checkpoint
+
+    assert _is_mistral_format_checkpoint(_write(tmp_path, ["params.json", "consolidated.00.pth", "tokenizer.model"])) is False
+    assert _is_mistral_format_checkpoint(_write(tmp_path, ["params.json", "consolidated.safetensors.index.json"])) is True
 
 
 def test_a_config_json_next_to_params_json_is_a_transformers_repo(tmp_path):
@@ -54,7 +63,7 @@ def test_loader_raises_the_specific_message(tmp_path):
     import unsloth  # noqa: F401
     from unsloth import FastLanguageModel
 
-    path = _write(tmp_path, ["params.json"])
+    path = _write(tmp_path, ["params.json", "tekken.json"])
     with pytest.raises(RuntimeError) as info:
         FastLanguageModel.from_pretrained(path, max_seq_length = 64)
     assert "Mistral's own format" in str(info.value), str(info.value)[:400]

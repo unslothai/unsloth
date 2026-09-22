@@ -201,3 +201,16 @@ def test_the_synthesized_loss_is_the_first_ordered_entry(model):
     out = model(input_ids = ids, labels = ids)
     assert list(out.keys())[0] == "loss"
     assert out[0] is out.loss and out.to_tuple()[0] is out.loss
+
+
+def test_positional_labels_reach_the_synthesized_loss(model):
+    """The wrapped signature takes labels positionally too; a caller using that form must get
+    the same loss as the keyword form, not the original forward's missing loss."""
+    from unsloth.models.remote_code_shims import apply_remote_code_shims
+
+    apply_remote_code_shims(model)
+    ids = torch.randint(0, 32, (2, 6))
+    by_keyword = model(input_ids = ids, labels = ids)
+    by_position = model(ids, ids)
+    assert by_position.loss is not None
+    torch.testing.assert_close(by_position.loss, by_keyword.loss)

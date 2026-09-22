@@ -213,8 +213,37 @@ def _fill_missing_loss(cls):
             num_items_in_batch = kwargs.get("num_items_in_batch", None),
         )
 
+    try:
+        signature = inspect.signature(original)
+    except (TypeError, ValueError):
+        signature = None
+    self_placeholder = object()
+
+    def _bind(args, kwargs):
+        """`labels` given positionally, as the wrapped signature permits, lands in kwargs so the
+        lookup and the pop below see it. Anything unbindable is left exactly as it came."""
+        if not args or signature is None:
+            return args, kwargs
+        try:
+            bound = signature.bind_partial(self_placeholder, *args, **kwargs)
+        except TypeError:
+            return args, kwargs
+        flat = {}
+        for name, parameter in signature.parameters.items():
+            if name not in bound.arguments:
+                continue
+            if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+                flat.update(bound.arguments[name])
+            elif parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+                return args, kwargs
+            else:
+                flat[name] = bound.arguments[name]
+        flat.pop(next(iter(signature.parameters)), None)  # self
+        return (), flat
+
     @functools.wraps(original)
     def forward(self, *args, **kwargs):
+        args, kwargs = _bind(args, kwargs)
         labels = kwargs.get("labels", None)
         if labels is None or state["returns_loss"] is True:
             return original(self, *args, **kwargs)
