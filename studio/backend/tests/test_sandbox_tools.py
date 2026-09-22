@@ -912,6 +912,16 @@ class TestNetworkTargetResolution:
                 f"async def go():\n    c = await make()\n    await c.get('http://{_H}/')",
                 id = "client_from_an_awaited_factory",
             ),
+            pytest.param(
+                "import requests\ndef make():\n    return requests.Session()\nfactory = make\n"
+                f"s = factory()\ns.get('http://{_H}/')",
+                id = "aliased_local_factory",
+            ),
+            pytest.param(
+                f"import requests\ndef fetch(s):\n    s.get('http://{_H}/')\nrun = fetch\n"
+                "run(requests.Session())",
+                id = "client_passed_to_an_aliased_helper",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):

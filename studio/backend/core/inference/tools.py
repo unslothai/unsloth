@@ -17309,6 +17309,8 @@ def _check_signal_escape_patterns(code: str):
             # Function name -> its local definitions, and every (parameter, argument) a call to
             # one passes, so `fetch(requests.Session())` makes `s` in `def fetch(s)` a session.
             self.local_functions: "dict[str, list[ast.AST]]" = {}
+            # Name -> the local functions assigned to it, so `factory = make` calls `make`.
+            self.callable_aliases: "dict[str, set[str]]" = {}
             # Function id -> its name, so a `return` knows whose return value it sets.
             self.def_names: "dict[int, str]" = {}
             # Method name -> (definition, parameters the receiver fills: 1, or 0 for a static).
@@ -17345,23 +17347,32 @@ def _check_signal_escape_patterns(code: str):
             )
             for alt in _alternatives(value):
                 path = self._receiver_path(alt)
-                if isinstance(alt, ast.Call) and self._local_callee(alt.func):
-                    path = _returns_of(self._local_callee(alt.func))
-                if path is not None:
+                if isinstance(alt, ast.Call):
+                    for callee in self._local_callees(alt.func):
+                        self.flows_from.setdefault(_returns_of(callee), []).append(index)
+                elif path is not None:
                     self.flows_from.setdefault(path, []).append(index)
 
-        def _local_callee(self, func) -> "str | None":
-            """The local function `make()`, or local method `obj.make()`, a call reaches."""
-            if isinstance(func, ast.Name) and func.id in self.local_functions:
-                return func.id
+        def _local_callees(self, func) -> "set[str]":
+            """The local functions `make()`, `factory()` after `factory = make`, or the local
+            method `obj.make()`, a call can reach."""
+            if isinstance(func, ast.Name):
+                names = set(self.callable_aliases.get(func.id, ()))
+                if func.id in self.local_functions:
+                    names.add(func.id)
+                return names
             if isinstance(func, ast.Attribute) and func.attr in self.local_methods:
-                return func.attr
-            return None
+                return {func.attr}
+            return set()
 
         def _bind_call_arguments(self, node) -> None:
             """Record the arguments of a call to a function or method defined in this file."""
             if isinstance(node.func, ast.Name):
-                targets = [(fn, 0) for fn in self.local_functions.get(node.func.id, ())]
+                targets = [
+                    (fn, 0)
+                    for name in sorted(self._local_callees(node.func))
+                    for fn in self.local_functions.get(name, ())
+                ]
             elif isinstance(node.func, ast.Attribute):
                 # `obj.fetch(session)` fills `self` from the receiver; `A.fetch(obj, session)`
                 # passes it explicitly, so a method is bound both ways.
@@ -17422,8 +17433,7 @@ def _check_signal_escape_patterns(code: str):
                     found.update(
                         c for c in self._fq_candidates(alt.func, at) if c in _CLIENT_CLASSES
                     )
-                    callee = self._local_callee(alt.func)
-                    if callee:
+                    for callee in self._local_callees(alt.func):
                         # A local factory: `make()` or `f.make()` holds whatever `make` returns.
                         found.update(self.instance_aliases.get(_returns_of(callee), ()))
                     continue
@@ -17836,6 +17846,12 @@ def _check_signal_escape_patterns(code: str):
                 self._record_proxy(target, value)
                 self._link(target, value)
                 self._record_flow(target, value, at, node)
+                if isinstance(target, ast.Name):
+                    for alt in _alternatives(value):
+                        if isinstance(alt, ast.Name):
+                            called = self._local_callees(alt)
+                            if called:
+                                self.callable_aliases.setdefault(target.id, set()).update(called)
                 if isinstance(value, ast.Attribute) and value.attr in _DESTINATION_ATTRS:
                     owner = self._receiver_path(value.value)
                     alias = self._receiver_path(target)
