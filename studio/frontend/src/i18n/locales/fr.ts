@@ -1470,6 +1470,13 @@ export const fr = {
             hfHub: "Cache des modèles Hugging Face",
           },
         },
+        lowDisk: {
+          title: "L'espace disque est presque épuisé",
+          criticalTitle: "L'espace disque est critique",
+          description:
+            "{free} libres sur {total}. Vider les caches peut libérer de l'espace.",
+          action: "Voir les caches",
+        },
         futureDownloads: "Nouveaux téléchargements uniquement",
         environmentManaged: "Géré par la variable d'environnement {variable}.",
         locationFree: "Espace libre : {free}",

@@ -10,6 +10,7 @@ the delete step is run here with curl stubbed and its requests inspected.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -30,11 +31,15 @@ def delete_step() -> str:
         if s.get("name") == "Delete the probe tag"
     ]
     assert len(steps) == 1, "the delete step disappeared or was renamed"
-    return steps[0]["run"]
+    return steps[0]
+
+
+# The stand-in for DOCKER_API_KEY, named so an assertion can look for it.
+SECRET = "not-a-secret"
 
 
 def _run(
-    step: str,
+    step: dict,
     tmp_path: Path,
     *,
     still_there: bool,
@@ -46,14 +51,13 @@ def _run(
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {log}\n"
-        # The auth body goes to curl on STDIN (`--data-binary @-`) so the key is never a
-        # command-line argument. A stub that logs only "$*" therefore cannot see the
-        # identifier at all, and the assertion that the token authenticates as the ORG
-        # passed vacuously until the body moved off argv, then failed with nothing wrong.
-        # Capture the body too, and only when curl was actually told to read stdin.
-        'case "$*" in\n'
-        f"  *--data-binary\\ @-*) cat >> {log} ;;\n"
-        "esac\n"
+        # The request body does not always travel in argv. #11511 moved the token
+        # request onto stdin (`--data-binary @-`) so the org secret stops showing up
+        # in the process list, and a stub that logs only "$*" then records a call
+        # whose payload is simply absent: every assertion about what was SENT passes
+        # vacuously or fails for the wrong reason. Read it where it actually is, and
+        # only when the arguments say there is one, since `cat` with no stdin hangs.
+        f"case \"$*\" in *'--data-binary @-'*) cat >> {log} ;; esac\n"
         'case "$*" in\n'
         f'  *auth/token*) printf \'{{"access_token": "{token}"}}\' ;;\n'
         "  *-X\\ DELETE*) printf '204' ;;\n"
@@ -62,20 +66,28 @@ def _run(
         encoding = "utf-8",
     )
     (bin_dir / "curl").chmod(0o755)
-    script = step.replace("${{ secrets.DOCKER_API_KEY }}", "not-a-secret")
+    script = step["run"].replace("${{ secrets.DOCKER_API_KEY }}", SECRET)
     assert "${{" not in script, "unexpanded expression in the delete step"
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env.update(
         REGISTRY_USERNAME = "unsloth", IMAGE_NAME = "unsloth/unsloth", PROBE_TAG = "credential-probe"
     )
-    # The key reaches the script through the step's `env:` block, not through a `${{ }}`
-    # inside the `run:`, so the replace above matches nothing and only this line supplies
-    # it. Without it the body builder dies with KeyError, curl is handed an empty request,
-    # and the step still exits 0 because the failure is inside a pipeline. The env block is
-    # pinned by test_the_step_env_is_what_this_harness_supplies so a rename cannot put it
-    # back to silently sending no credential at all.
-    env["DOCKER_API_KEY"] = "not-a-secret"
+    # Whatever the step declares in its own `env:`, bound here too. #11511 moved the
+    # secret out of the run body and into `env: DOCKER_API_KEY`, read with
+    # `os.environ`, so rewriting the body alone hands the script an environment it
+    # cannot run in and the request goes out with an empty payload.
+    # Only the secret this step is supposed to read is expanded. Standing in for any
+    # `secrets.*` would make the harness agree with a workflow that names the wrong
+    # one: `${{ secrets.TYPO }}` would still produce a valid payload here, while
+    # Actions would hand the real step an empty value. Anything else is left for the
+    # assertion below to reject by name.
+    for name, value in (step.get("env") or {}).items():
+        env[name] = re.sub(r"\$\{\{\s*secrets\.DOCKER_API_KEY\s*\}\}", SECRET, str(value))
+        assert "${{" not in env[name], (
+            f"the step's env {name} reads {value!r}, which is not the secret this "
+            f"harness knows how to supply"
+        )
     res = subprocess.run(
         ["bash", "-e", "-c", script],
         capture_output = True,
@@ -87,35 +99,8 @@ def _run(
     return res, log.read_text(encoding = "utf-8") if log.exists() else ""
 
 
-def test_the_step_env_is_what_this_harness_supplies():
-    """The harness hands the script its credential; this pins that it hands the RIGHT one.
-
-    The secret moved out of the `run:` body into the step's `env:` so it is never a command
-    line argument. That is a real improvement, but it also means a `.replace()` on the body
-    silently stops supplying anything, and the step exits 0 regardless because the builder
-    fails inside a pipeline. Renaming the variable must fail here, loudly, rather than
-    downgrading the assertions below to statements about an empty request.
-    """
-    doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
-    steps = [
-        s
-        for job in doc["jobs"].values()
-        for s in job["steps"]
-        if s.get("name") == "Delete the probe tag"
-    ]
-    env = steps[0].get("env") or {}
-    assert "DOCKER_API_KEY" in env, (
-        f"the delete step no longer takes DOCKER_API_KEY from `env:` (it declares "
-        f"{sorted(env)}). _run supplies that exact name; update both together."
-    )
-    assert "secrets.DOCKER_API_KEY" in env["DOCKER_API_KEY"]
-    assert (
-        "${{" not in steps[0]["run"]
-    ), "the credential is back in the `run:` body, where it becomes a command-line argument"
-
-
 def test_the_delete_uses_the_namespace_route_the_org_token_is_allowed_on(
-    delete_step: str, tmp_path: Path
+    delete_step: dict, tmp_path: Path
 ):
     res, log = _run(delete_step, tmp_path, still_there = False)
     assert res.returncode == 0, res.stdout + res.stderr
@@ -126,17 +111,22 @@ def test_the_delete_uses_the_namespace_route_the_org_token_is_allowed_on(
     assert (
         "/v2/repositories/" not in log
     ), "the legacy route answers every organization token with 403"
+    # A non-empty body first: an empty request carries no identifier either, so the
+    # check below cannot otherwise tell the wrong identity from no request at all.
+    assert (
+        f'"secret": "{SECRET}"' in log
+    ), "the token request carried no body, so this proves nothing about who it authenticates as"
     assert '"identifier": "unsloth"' in log
     assert "Authorization: Bearer tok" in log
 
 
-def test_a_tag_that_survives_the_delete_fails_the_step(delete_step: str, tmp_path: Path):
+def test_a_tag_that_survives_the_delete_fails_the_step(delete_step: dict, tmp_path: Path):
     res, _ = _run(delete_step, tmp_path, still_there = True)
     assert res.returncode != 0
     assert "still resolves" in res.stdout + res.stderr
 
 
-def test_no_token_means_no_delete_and_a_failure(delete_step: str, tmp_path: Path):
+def test_no_token_means_no_delete_and_a_failure(delete_step: dict, tmp_path: Path):
     res, log = _run(delete_step, tmp_path, still_there = True, token = "")
     assert res.returncode != 0
     assert "DELETE" not in log
