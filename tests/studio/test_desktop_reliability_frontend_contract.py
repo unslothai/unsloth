@@ -2525,9 +2525,9 @@ def test_the_header_band_these_contracts_measure_still_follows_the_ui_scale():
     for path, expected in _BANDS_THAT_MUST_KEEP_THE_SCALE:
         source = path.read_text(encoding = "utf-8")
         scaled = source.count("h-[calc(48px*var(--ui-space-scale,1))]")
-        assert scaled == expected, (
-            f"{path.name} states {scaled} scaled 48px header bands, not {expected}"
-        )
-        assert "h-[48px]" not in source, (
-            f"{path.name} has a bare 48px header band, which stays put while its labels grow"
-        )
+        assert (
+            scaled == expected
+        ), f"{path.name} states {scaled} scaled 48px header bands, not {expected}"
+        assert (
+            "h-[48px]" not in source
+        ), f"{path.name} has a bare 48px header band, which stays put while its labels grow"
