@@ -63,6 +63,23 @@ def cached_gguf_source_partial(repo_id: str, quant: str, snapshot: Path) -> bool
     )
 
 
+def _prefer_duplicate(repo_id: str, quant: str, previous: Path, candidate: Path) -> bool:
+    """Whether *candidate* should replace *previous* as this quant's source.
+
+    Manifest verification alone misses a copy that its own snapshot state marks partial -- a
+    cancel marker or an unfinished companion -- which the merge then reports as unusable even
+    though a complete duplicate of the same quant exists. Rank on the full per-snapshot verdict
+    so the healthy copy wins, and keep the completed-vs-incomplete manifest rule it refines.
+    """
+    if not cached_gguf_manifest_complete(
+        repo_id, quant, previous
+    ) and cached_gguf_manifest_complete(repo_id, quant, candidate):
+        return True
+    return cached_gguf_source_partial(repo_id, quant, previous) and not cached_gguf_source_partial(
+        repo_id, quant, candidate
+    )
+
+
 def cached_gguf_manifest_complete(repo_id: str, quant: str, snapshot: Path) -> bool:
     """Prefer completed downloads without applying a newer revision's manifest to an older copy."""
     from hub.services.models.catalog_classification import _gguf_path_task
@@ -104,9 +121,8 @@ def cached_gguf_sources(repo_id: str) -> dict[str, CachedGgufSource]:
             if variant.quant and variant.quant in complete:
                 key = variant.quant.lower()
                 previous = sources.get(key)
-                if previous is None or (
-                    not cached_gguf_manifest_complete(repo_id, variant.quant, previous.snapshot)
-                    and cached_gguf_manifest_complete(repo_id, variant.quant, snapshot)
+                if previous is None or _prefer_duplicate(
+                    repo_id, variant.quant, previous.snapshot, snapshot
                 ):
                     sources[key] = CachedGgufSource(variant, snapshot, has_vision)
     return sources
