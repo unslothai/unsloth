@@ -23,7 +23,6 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { useId, useMemo, useState } from "react";
 import type { ModelPickTarget } from "../components/model-selector/types";
-import { formatExtraArgs } from "../model-config/llama-extra-args";
 import {
   DEFAULT_PER_MODEL_CONFIG,
   type PerModelConfig,
@@ -33,6 +32,7 @@ import {
   SHARED_CONFIG_FIELDS,
   SHARED_CONFIG_KEYS,
   type SharedConfigKey,
+  formatSharedConfigValue,
 } from "./fields";
 import {
   DESKTOP_RUN_CONFIG_URL_WARNING_LENGTH,
@@ -64,19 +64,12 @@ function configDetail(
   config: PerModelConfig,
   error: string | null,
 ) {
-  const value = config[key];
   if (error !== null) {
     return key === "llamaExtraArgs"
       ? `Excluded: ${error} Edit Extra Arguments in Run settings to share them.`
       : error;
   }
-  if (key === "llamaExtraArgs") {
-    return formatExtraArgs(config.llamaExtraArgs) || "No extra arguments";
-  }
-  if (value === null) {
-    return "Default";
-  }
-  return typeof value === "string" ? value : JSON.stringify(value);
+  return formatSharedConfigValue(key, config);
 }
 
 export function ShareRunConfigDialog({

@@ -60,7 +60,10 @@ export function createRunConfigInbox() {
       };
     },
     submit: (request: RunConfigRequest) => publish(request),
-    retainEditor: (draftKey: string) => {
+    retainEditor: (
+      draftKey: string,
+      onCancel?: (request: RunConfigRequest) => void,
+    ) => {
       editors.set(draftKey, (editors.get(draftKey) ?? 0) + 1);
       let released = false;
       return () => {
@@ -77,11 +80,15 @@ export function createRunConfigInbox() {
         const request = pending;
         queueMicrotask(() => {
           if (
+            request &&
             pending === request &&
             !editors.has(draftKey) &&
             pending?.draftKey === draftKey
           ) {
             publish(null);
+            if (Object.keys(request.value.config).length > 0) {
+              onCancel?.(request);
+            }
           }
         });
       };

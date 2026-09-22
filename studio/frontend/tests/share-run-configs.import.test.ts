@@ -162,16 +162,22 @@ for (const reason of [
   });
 }
 
-test("failed hydration consumes the import without changing settings or remembered state", async (t) => {
+test("failed hydration preserves the import without changing settings or remembered state", async (t) => {
   const app = harness(t);
   const before = drafts.readModelConfigDraft(app.key);
   app.schedule({ ...app.options, hydrated: false });
   await Promise.resolve();
   assert.equal(drafts.readModelConfigDraft(app.key), before);
   assert.equal(drafts.isModelConfigDraftEdited(app.key), false);
-  assert.equal(app.inbox.getSnapshot(), null);
+  assert.equal(app.inbox.getSnapshot(), app.options.pending);
   assert.equal(app.errors.length, 1);
   assert.deepEqual(app.changes, []);
+  app.schedule(app.options);
+  await Promise.resolve();
+  assert.equal(app.inbox.getSnapshot(), null);
+  assert.deepEqual(app.changes, [{ nParallel: 3 }]);
+  assert.equal(app.successes.length, 1);
+  assert.equal(drafts.readModelConfigDraft(app.key)?.remember, true);
 });
 
 test("model-only links do not mark settings edited or report a settings import", async (t) => {
@@ -182,6 +188,40 @@ test("model-only links do not mark settings edited or report a settings import",
   assert.equal(drafts.isModelConfigDraftEdited(app.key), false);
   assert.deepEqual(app.successes, []);
 });
+
+for (const reason of ["edit", "closed editor", "new link"] as const) {
+  test(`late hydration cannot revive an import cancelled by ${reason}`, async (t) => {
+    const app = harness(t);
+    const release = app.inbox.retainEditor(app.key);
+    t.after(release);
+    app.schedule({ ...app.options, hydrated: false });
+    await Promise.resolve();
+    if (reason === "closed editor") {
+      release();
+    } else if (reason === "new link") {
+      app.inbox.submit({
+        id: "new",
+        draftKey: app.key,
+        value: { config: { nParallel: 8 } },
+      });
+    } else {
+      app.inbox.clear("import");
+      drafts.patchModelConfigDraft(app.key, (config) => ({
+        ...config,
+        nParallel: 7,
+      }));
+    }
+    await Promise.resolve();
+    app.schedule(app.options);
+    await Promise.resolve();
+    assert.deepEqual(app.changes, []);
+    assert.deepEqual(app.successes, []);
+    assert.equal(app.errors.length, 1);
+    if (reason === "edit")
+      assert.equal(drafts.readModelConfigDraft(app.key)?.config.nParallel, 7);
+    if (reason === "new link") assert.equal(app.inbox.getSnapshot()?.id, "new");
+  });
+}
 
 test("review lists only changed fields including cleared context aliases and exact prompt/argv values", async (t) => {
   const patch = {

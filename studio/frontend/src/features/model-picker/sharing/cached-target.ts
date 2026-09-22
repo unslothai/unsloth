@@ -101,6 +101,7 @@ export async function resolveCachedRunConfigTarget(
       listing = await runBoundedVariantsRequest(
         options.signal,
         async (signal) => {
+          // Check resident variants without falling back to a Hub request.
           const query = ggufVariantsQuery(candidate.loadId, candidate, true);
           const response = await authFetch(`/api/hub/gguf-variants?${query}`, {
             headers: hubTokenHeader(options.hfToken),

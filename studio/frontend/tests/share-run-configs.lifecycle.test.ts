@@ -154,8 +154,9 @@ function harness() {
     routeReady: true,
     inventoryVersion: 0,
   };
+  assert.ok(pending.value.model);
   const target: Target = {
-    id: pending.value.model!,
+    id: pending.value.model,
     meta: {
       source: "hub",
       isLora: false,
@@ -167,7 +168,9 @@ function harness() {
   };
   const prepare = async () => {
     lifecycle.openRunConfigTarget({ ...open, location: context.location });
-    lookups.at(-1)!.result.resolve(target);
+    const lookup = lookups.at(-1);
+    assert.ok(lookup);
+    lookup.result.resolve(target);
     await settle();
     const prepared = inbox.getSnapshot();
     assert.ok(prepared?.target);
@@ -196,7 +199,7 @@ for (const pathname of ["/chat", "/hub", "/settings"]) {
     test(`review keeps the new chat and its draft from ${pathname}: ${newChatId}`, async () => {
       const app = harness();
       app.runtime.params.checkpoint = "owner/Model-GGUF";
-      delete app.nav.pending.value.model;
+      Reflect.deleteProperty(app.nav.pending.value, "model");
       const destination = {
         href: newChatId ? `/chat?new=${newChatId}` : "/chat",
         pathname: "/chat",
@@ -275,16 +278,19 @@ for (const chatSearch of [
     await app.prepare();
     assert.equal(app.inbox.getSnapshot()?.newChatId, undefined);
     app.navigateRunConfig(app.nav);
-    assert.deepEqual([...app.calls], [
+    assert.deepEqual(
+      [...app.calls],
       [
-        "navigate",
-        {
-          to: "/chat",
-          search: { new: "first" },
-          replace: false,
-        },
+        [
+          "navigate",
+          {
+            to: "/chat",
+            search: { new: "first" },
+            replace: false,
+          },
+        ],
       ],
-    ]);
+    );
     app.openRunConfigTarget(app.open);
     assert.equal(app.calls.includes("clear draft"), true);
     assert.deepEqual(app.calls.at(-1), [
@@ -332,7 +338,8 @@ for (const reason of [
     if (reason === "login") app.nav.canOpen = app.open.canOpen = false;
     if (reason === "settings")
       app.nav.settingsHydrated = app.open.settingsHydrated = false;
-    if (reason === "model") delete app.nav.pending.value.model;
+    if (reason === "model")
+      Reflect.deleteProperty(app.nav.pending.value, "model");
     if (reason === "bound") app.nav.pending.draftKey = "already bound";
     if (reason === "superseded") app.inbox.clear("first");
     app.navigateRunConfig(app.nav);

@@ -19,9 +19,7 @@ const { SHARED_CONFIG_KEYS } = await import(
 const { createRunConfigInbox, mergeSharedRunConfig } = await import(
   "../src/features/model-picker/sharing/inbox.ts"
 );
-const { resolveRunConfigTarget } = await import(
-  "./helpers/sharing-target.ts"
-);
+const { resolveRunConfigTarget } = await import("./helpers/sharing-target.ts");
 const { DEFAULT_PER_MODEL_CONFIG } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
@@ -62,6 +60,44 @@ const fullConfig: PerModelConfig = {
   selectedGpuIndexKind: "physical",
 };
 
+test("native schemes accept case variations without relaxing address validation", () => {
+  const value = { model: "owner/model", config: { nParallel: 3 } };
+  const link = createRunConfigLink(value);
+  for (const scheme of ["unsloth:", "UNSLOTH:", "UnSlOtH:"]) {
+    const url = link.replace("unsloth:", scheme);
+    assert.deepEqual(parseRunConfigLink(url), { kind: "valid", value });
+    assert.equal(parseRunConfigLink(`${url}#ignored`).kind, "invalid");
+    assert.equal(
+      parseRunConfigLink(
+        `${url}&reasoningBudgetMessage=${"a".repeat(MAX_RUN_CONFIG_URL_LENGTH)}`,
+      ).kind,
+      "invalid",
+    );
+    assert.equal(
+      parseRunConfigLink(`${scheme}//hub?model=owner/model`).kind,
+      "unrelated",
+    );
+  }
+});
+
+test("both link formats require exactly one supported version", () => {
+  for (const prefix of ["unsloth://run", "https://example.com/chat#run"]) {
+    for (const query of ["", "?", "?model=owner/model", "?nParallel=3"]) {
+      assert.deepEqual(parseRunConfigLink(`${prefix}${query}`), {
+        kind: "invalid",
+        error: "This run configuration link is missing its version.",
+      });
+    }
+    for (const query of ["v=", "v=0", "v=2", "v=01", "v=1&v=1", "v=1&%76=1"]) {
+      assert.equal(parseRunConfigLink(`${prefix}?${query}`).kind, "invalid");
+    }
+    assert.deepEqual(parseRunConfigLink(`${prefix}?nParallel=3&v=1`), {
+      kind: "valid",
+      value: { config: { nParallel: 3 } },
+    });
+  }
+});
+
 test("every field round-trips independently in browser and desktop links", () => {
   assert.deepEqual(
     Object.keys(fullConfig).sort(),
@@ -83,10 +119,10 @@ test("every field round-trips independently in browser and desktop links", () =>
 
 test("an empty link and independently omitted model identity fields are valid", () => {
   for (const url of [
-    "unsloth://run",
-    "unsloth://run/",
-    "http://localhost:8888/chat#run",
-    "https://example.com/chat#run?",
+    "unsloth://run?v=1",
+    "unsloth://run/?v=1",
+    "http://localhost:8888/chat#run?v=1",
+    "https://example.com/chat#run?v=1",
   ]) {
     assert.deepEqual(parseRunConfigLink(url), {
       kind: "valid",
@@ -253,16 +289,18 @@ test("invalid input never produces a partial configuration", () => {
   ];
   for (const query of invalid) {
     assert.equal(
-      parseRunConfigLink(`unsloth://run?${query}`).kind,
+      parseRunConfigLink(
+        `unsloth://run?${query.startsWith("v=") ? "" : "v=1&"}${query}`,
+      ).kind,
       "invalid",
       query,
     );
   }
   for (const url of [
-    "unsloth://run/extra",
-    "unsloth://run?model=owner/model#ignored",
-    "unsloth://user@run",
-    "unsloth://run:80",
+    "unsloth://run/extra?v=1",
+    "unsloth://run?v=1&model=owner/model#ignored",
+    "unsloth://user@run?v=1",
+    "unsloth://run:80?v=1",
   ]) {
     assert.equal(parseRunConfigLink(url).kind, "invalid", url);
   }
@@ -334,21 +372,26 @@ test("pending imports are scoped, replaced by newer links and consumed once", ()
 
 test("closing the last editor cancels a delayed import without breaking StrictMode remounts", async () => {
   const inbox = createRunConfigInbox();
+  const cancelled: string[] = [];
+  const onCancel = (request: { id: string }) => cancelled.push(request.id);
   inbox.submit({ id: "first", value: { config: { nParallel: 2 } } });
   inbox.bind("first", "model-A");
-  const release = inbox.retainEditor("model-A");
+  const release = inbox.retainEditor("model-A", onCancel);
   release();
-  const releaseRemount = inbox.retainEditor("model-A");
+  const releaseRemount = inbox.retainEditor("model-A", onCancel);
   await Promise.resolve();
   assert.equal(inbox.getSnapshot()?.id, "first");
-  const releasePeer = inbox.retainEditor("model-A");
+  assert.deepEqual(cancelled, []);
+  const releasePeer = inbox.retainEditor("model-A", onCancel);
   releaseRemount();
   await Promise.resolve();
   assert.equal(inbox.getSnapshot()?.id, "first");
+  assert.deepEqual(cancelled, []);
   releasePeer();
   releasePeer();
   await Promise.resolve();
   assert.equal(inbox.getSnapshot(), null);
+  assert.deepEqual(cancelled, ["first"]);
 });
 
 test("an editor cleanup cannot cancel a newer link for a different model", async () => {
@@ -361,6 +404,24 @@ test("an editor cleanup cannot cancel a newer link for a different model", async
   inbox.bind("second", "model-B");
   await Promise.resolve();
   assert.equal(inbox.getSnapshot()?.id, "second");
+});
+
+test("editor cleanup reports no cancellation for completed or model-only imports", async () => {
+  for (const completed of [false, true]) {
+    const inbox = createRunConfigInbox();
+    inbox.submit({
+      id: "first",
+      draftKey: "model-A",
+      value: { config: completed ? { nParallel: 2 } : {} },
+    });
+    const release = inbox.retainEditor("model-A", () =>
+      assert.fail("Unexpected cancellation"),
+    );
+    if (completed) inbox.take("first", "model-A");
+    release();
+    await Promise.resolve();
+    assert.equal(inbox.getSnapshot(), null);
+  }
 });
 
 test("an editor cleanup cannot cancel a newer request for the same model", async () => {

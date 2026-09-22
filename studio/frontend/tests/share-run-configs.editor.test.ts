@@ -22,9 +22,6 @@ import {
 registerBundlerResolver();
 installLocalStorageFake();
 const fields = await import("../src/features/model-picker/sharing/fields.ts");
-const extraArgs = await import(
-  "../src/features/model-picker/model-config/llama-extra-args.ts"
-);
 const sharedArgs = await import(
   "../src/features/model-picker/sharing/extra-args.ts"
 );
@@ -112,7 +109,6 @@ test("sharing empty arguments preserves recipient arguments unless explicitly se
       "@/lib/api-base": { isTauri: true },
       "@/lib/copy-to-clipboard": {},
       "@/lib/toast": {},
-      "../model-config/llama-extra-args": extraArgs,
       "../model-config/per-model-config": { DEFAULT_PER_MODEL_CONFIG },
       "./extra-args": sharedArgs,
       "./fields": fields,
@@ -183,7 +179,7 @@ test("sharing empty arguments preserves recipient arguments unless explicitly se
   }
 });
 
-test("only an open Share dialog protects the popover; pending imports allow focus dismissal", () => {
+test("only an open Share dialog protects the popover; dismissing a pending import gives feedback", async () => {
   const inbox = createRunConfigInbox();
   const target = {
     id: "owner/Model-GGUF",
@@ -200,6 +196,8 @@ test("only an open Share dialog protects the popover; pending imports allow focu
     value: { config: { nParallel: 3 } },
   });
   let sharing = false;
+  let release: (() => void) | undefined;
+  const notices: { message: string; id: string; description: string }[] = [];
   const dialog = Symbol("share dialog");
   const button = Symbol("button");
   const { SharedRunConfigControls } = loadWithStubs<{
@@ -223,14 +221,23 @@ test("only an open Share dialog protects the popover; pending imports allow focu
         useSyncExternalStore: (_subscribe: unknown, get: () => unknown) =>
           get(),
         useEffect: () => undefined,
-        useLayoutEffect: () => undefined,
+        useLayoutEffect: (effect: () => (() => void) | undefined) => {
+          release ??= effect();
+        },
       },
       "@/components/ui/button": { Button: button },
+      "@/lib/toast": {
+        toast: {
+          info: (
+            message: string,
+            options: { id: string; description: string },
+          ) => notices.push({ message, ...options }),
+        },
+      },
       "../model-config/model-config-draft": {
         modelConfigDraftKey,
       },
       "./inbox": { runConfigInbox: inbox },
-      "./editor-events": events,
       "./import-config": { scheduleRunConfigImport: () => undefined },
     },
   );
@@ -273,6 +280,17 @@ test("only an open Share dialog protects the popover; pending imports allow focu
   (shownDialog.props.onClose as () => void)();
   assert.equal(guarded(render()), false);
   assert.equal(events.keepSharedRunConfigOpen(null), false);
+  assert.ok(release);
+  assert.equal(notices.length, 0);
+  release();
+  await Promise.resolve();
+  assert.equal(inbox.getSnapshot(), null);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].id, "pending");
+  assert.match(
+    notices[0].description,
+    /editor closed before the settings were imported/,
+  );
 });
 
 test("edit cancellation includes contained controls and excludes portaled dialog controls", (t) => {
@@ -324,7 +342,6 @@ test("review renders field labels and full prompt/argument values as text withou
     {
       "react/jsx-runtime": stubJsxRuntime(),
       "./fields": fields,
-      "../model-config/llama-extra-args": extraArgs,
     },
   );
   assert.equal(
@@ -422,7 +439,6 @@ test("GPU reconciliation keeps imported settings visible and explains removed or
     {
       "react/jsx-runtime": stubJsxRuntime(),
       "./fields": fields,
-      "../model-config/llama-extra-args": extraArgs,
     },
   );
   const imported = {
@@ -590,7 +606,7 @@ test("settings-only chooser keeps the import while accepting recipient-local mod
 test("startup intake waits for mount effects and survives strict effect replay", async () => {
   const browser = installLocalStorageFake();
   const inbox = createRunConfigInbox();
-  const effects: (() => void | (() => void))[] = [];
+  const effects: (() => undefined | (() => void))[] = [];
   let received = 0;
   const editor = Symbol("lazy link editor");
   let authChanged: (() => void) | undefined;
@@ -620,7 +636,8 @@ test("startup intake waits for mount effects and survives strict effect replay",
         ],
         useSyncExternalStore: (_subscribe: unknown, get: () => unknown) =>
           get(),
-        useEffect: (effect: () => void | (() => void)) => effects.push(effect),
+        useEffect: (effect: () => undefined | (() => void)) =>
+          effects.push(effect),
       },
       "./inbox": { runConfigInbox: inbox },
       "./receive-link": {
@@ -651,7 +668,7 @@ test("startup intake waits for mount effects and survives strict effect replay",
   assert.equal(received, 1);
   for (const event of ["hashchange", "popstate"]) {
     window.location.href =
-      "http://localhost/chat#run?model=owner/model&nParallel=3";
+      "http://localhost/chat#run?v=1&model=owner/model&nParallel=3";
     browser.fireWindowEvent(event, {});
     assert.equal(inbox.getSnapshot(), null);
     assert.equal(received, 1);

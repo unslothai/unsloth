@@ -26,7 +26,7 @@ const { DEFAULT_PER_MODEL_CONFIG } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
 
-const prefixes = ["unsloth://run?", "http://localhost:8888/chat#run?"];
+const prefixes = ["unsloth://run?v=1&", "http://localhost:8888/chat#run?v=1&"];
 const query = (key: string, value: unknown) =>
   new URLSearchParams({
     nParallel: "2",
@@ -315,7 +315,7 @@ test("sharing diagnostics identify the offending option without exposing its val
   for (const token of [
     "--metrics\u202e",
     '<img src="/attack">',
-    "--" + "x".repeat(1000),
+    `--${"x".repeat(1000)}`,
     "C:\\private\\adapter.gguf",
   ]) {
     assert.equal(
@@ -464,17 +464,17 @@ test("malformed encodings, noncanonical addresses and URL control normalization 
     rejects(`reasoningBudgetMessage=${sequence}`);
   }
   for (const url of [
-    "unsloth://run/a/../?nParallel=2",
-    "unsloth://run/%2e/?nParallel=2",
-    "unsloth://run/%2e%2e/?nParallel=2",
-    "unsloth://user@run?nParallel=2",
-    "unsloth://run:1?nParallel=2",
-    "unsloth://run?nParallel=2#anything",
-    " unsloth://run?nParallel=2",
-    "unsloth://run?nParallel=2\n",
-    "un\nsloth://run?nParallel=2",
-    "unsloth://run?nParallel=\t2",
-    "https://user:pass@localhost/chat#run?nParallel=2",
+    "unsloth://run/a/../?v=1&nParallel=2",
+    "unsloth://run/%2e/?v=1&nParallel=2",
+    "unsloth://run/%2e%2e/?v=1&nParallel=2",
+    "unsloth://user@run?v=1&nParallel=2",
+    "unsloth://run:1?v=1&nParallel=2",
+    "unsloth://run?v=1&nParallel=2#anything",
+    " unsloth://run?v=1&nParallel=2",
+    "unsloth://run?v=1&nParallel=2\n",
+    "un\nsloth://run?v=1&nParallel=2",
+    "unsloth://run?v=1&nParallel=\t2",
+    "https://user:pass@localhost/chat#run?v=1&nParallel=2",
   ])
     assert.equal(parseRunConfigLink(url).kind, "invalid", url);
   for (const protocol of [
@@ -484,7 +484,7 @@ test("malformed encodings, noncanonical addresses and URL control normalization 
     "vbscript:",
   ]) {
     assert.notEqual(
-      parseRunConfigLink(`${protocol}#run?nParallel=2`).kind,
+      parseRunConfigLink(`${protocol}#run?v=1&nParallel=2`).kind,
       "valid",
     );
   }
@@ -606,7 +606,10 @@ test("shared reasoning messages reject invisible separators and format controls"
     rejects(`reasoningBudgetMessage=${encodeURIComponent(message)}`);
     for (const base of [undefined, "http://localhost:8888/chat"]) {
       assert.throws(() =>
-        createRunConfigLink({ config: { reasoningBudgetMessage: message } }, base),
+        createRunConfigLink(
+          { config: { reasoningBudgetMessage: message } },
+          base,
+        ),
       );
     }
   }

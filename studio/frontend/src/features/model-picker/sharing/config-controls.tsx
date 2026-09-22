@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { toast } from "@/lib/toast";
 import {
   Suspense,
   lazy,
@@ -50,7 +51,13 @@ export function SharedRunConfigControls({
   );
   useLayoutEffect(() => {
     if (canImport) {
-      return runConfigInbox.retainEditor(key);
+      return runConfigInbox.retainEditor(key, (request) => {
+        toast.info("Run settings import cancelled", {
+          id: request.id,
+          description:
+            "The editor closed before the settings were imported. Reopen the link to try again.",
+        });
+      });
     }
   }, [canImport, key]);
   useEffect(

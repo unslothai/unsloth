@@ -41,18 +41,23 @@ export function scheduleRunConfigImport({
   let cancelled = false;
   queueMicrotask(() => {
     const draft = readModelConfigDraft(key);
-    if (cancelled || !draft) {
+    if (cancelled || !draft || runConfigInbox.getSnapshot() !== pending) {
       return;
     }
-    const patch = runConfigInbox.take(pending.id, key);
-    if (!patch || Object.keys(patch).length === 0) {
+    if (Object.keys(pending.value.config).length === 0) {
+      runConfigInbox.take(pending.id, key);
       return;
     }
     if (!hydrated) {
       toast.error("Could not import run settings", {
+        id: pending.id,
         description:
           "Saved model settings are unavailable. Close the editor and reopen this link to retry.",
       });
+      return;
+    }
+    const patch = runConfigInbox.take(pending.id, key);
+    if (!patch) {
       return;
     }
     const merged = mergeSharedRunConfig(draft.config, patch);
@@ -71,6 +76,7 @@ export function scheduleRunConfigImport({
     );
     onImport(changes);
     toast.success("Settings imported from link", {
+      id: pending.id,
       description: "Review before loading.",
     });
   });

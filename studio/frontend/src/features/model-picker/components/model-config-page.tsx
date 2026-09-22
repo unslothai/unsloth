@@ -2537,9 +2537,12 @@ export function ModelConfigPage({
       config.nUbatch != null);
   const gpuIndexKind =
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
-  const update = (patch: Partial<PerModelConfig>) => {
+  const handleSharedConfigEdit = () => {
     cancelRunConfigImportForEdit(draftKey);
     setImportedConfig(null);
+  };
+  const update = (patch: Partial<PerModelConfig>) => {
+    handleSharedConfigEdit();
     // Every control lands here and nothing else does: the hydration effect's own sanitising
     // writes go through setConfig, and marking those would have the read refuse its result.
     markModelConfigDraftEdited(draftKey);
@@ -3118,8 +3121,7 @@ export function ModelConfigPage({
       className="hint-on-hover flex flex-col"
       onChange={(event) => {
         if (isRunConfigEditorChange(event)) {
-          cancelRunConfigImportForEdit(draftKey);
-          setImportedConfig(null);
+          handleSharedConfigEdit();
         }
       }}
     >
@@ -3333,8 +3335,7 @@ export function ModelConfigPage({
             id={rememberId}
             checked={remember}
             onCheckedChange={(checked) => {
-              cancelRunConfigImportForEdit(draftKey);
-              setImportedConfig(null);
+              handleSharedConfigEdit();
               // Not in setRemember, which the save path calls again to settle the box. An
               // unticked Remember is a pending Forget the next read would otherwise re-tick.
               markModelConfigDraftEdited(draftKey);
@@ -3382,8 +3383,7 @@ export function ModelConfigPage({
             className={`${FOOTER_BUTTON_CLASS} text-muted-foreground`}
             disabled={atDefault}
             onClick={() => {
-              cancelRunConfigImportForEdit(draftKey);
-              setImportedConfig(null);
+              handleSharedConfigEdit();
               // Reset writes through setConfig, not update, so it marks the draft itself.
               markModelConfigDraftEdited(draftKey);
               // And drops the raw edit: token equality alone would make the discarded text

@@ -132,8 +132,9 @@ export function modelConfigHandoffForDestination(
     destination.threadId ||
     destination.compareId ||
     destination.projectId ||
-    (request.newChatId === undefined ? request.requestId : request.newChatId) !==
-      (destination.newChatId ?? null)
+    (request.newChatId === undefined
+      ? request.requestId
+      : request.newChatId) !== (destination.newChatId ?? null)
   ) {
     return null;
   }

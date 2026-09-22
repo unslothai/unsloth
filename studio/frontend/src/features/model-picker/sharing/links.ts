@@ -26,7 +26,7 @@ const repoSegment = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 const variantSegment = /^[A-Za-z0-9_][A-Za-z0-9._ -]*$/;
 const windowsDevice = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9]) *(?:\.|$)/i;
 const malformedEscape = /%(?![0-9a-f]{2})/i;
-const nativeAddress = /^unsloth:\/\/run\/?(?:\?|$)/;
+const nativeAddress = /^unsloth:\/\/run\/?(?:\?|$)/i;
 const webAddress = /^https?:\/\//i;
 
 function oversizedRunLink(raw: string): RunConfigLinkResult {
@@ -196,6 +196,9 @@ function parseParameters(query: string): SharedRunConfig {
     }
     seen.add(key);
     readParameter(result, key, value);
+  }
+  if (!seen.has("v")) {
+    throw new Error("This run configuration link is missing its version.");
   }
   if (result.isGguf === false && result.ggufVariant !== undefined) {
     throw new Error("A GGUF variant requires a GGUF model.");

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { formatExtraArgs } from "../model-config/llama-extra-args";
 import {
   CACHE_RAM_MAX,
   CACHE_RAM_MIN,
@@ -183,4 +184,19 @@ export const SHARED_CONFIG_KEYS = Object.keys(
 
 export function isSharedConfigKey(key: string): key is SharedConfigKey {
   return Object.hasOwn(SHARED_CONFIG_FIELDS, key);
+}
+
+export function formatSharedConfigValue(
+  key: SharedConfigKey,
+  config: Partial<PerModelConfig>,
+): string {
+  if (key === "llamaExtraArgs") {
+    return formatExtraArgs(config.llamaExtraArgs) || "No extra arguments";
+  }
+  const value = config[key];
+  return value == null
+    ? "Default"
+    : typeof value === "string" && value !== ""
+      ? value
+      : JSON.stringify(value);
 }

@@ -20,10 +20,11 @@ const { createRunConfigInbox } = await import(
 );
 const events = await import("../src/features/auth/session-events.ts");
 const sessionMark = "unsloth_auth_session_mark";
-const run = "unsloth://run?model=owner/model&nParallel=3";
-const browserRun = "http://localhost/chat#run?model=owner/model&nParallel=3";
+const run = "unsloth://run?v=1&model=owner/model&nParallel=3";
+const browserRun =
+  "http://localhost/chat#run?v=1&model=owner/model&nParallel=3";
 const otherBrowserRun =
-  "http://localhost/chat#run?model=owner/other&nParallel=4";
+  "http://localhost/chat#run?v=1&model=owner/other&nParallel=4";
 
 function harness({ url = "http://localhost/chat", desktop = false } = {}) {
   const browser = installLocalStorageFake();
@@ -154,7 +155,7 @@ for (const change of ["session", "expired", "invalid", "newer"] as const) {
       const saved = JSON.parse(raw);
       if (change === "session") saved.session = "other-account";
       if (change === "expired") saved.expiresAt = 0;
-      if (change === "invalid") saved.url = "unsloth://run?hfToken=secret";
+      if (change === "invalid") saved.url = "unsloth://run?v=1&hfToken=secret";
       app.recovery.set(key, JSON.stringify(saved));
     }
     const after = app.loadDocument();
@@ -209,7 +210,11 @@ test("startup consumes valid and invalid fragments so dismissal and reload canno
     "?keep=value",
     "?run=2&keep=value",
   ]) {
-    for (const fragment of ["#run?nParallel=3", "#run?unknown=true", "#run"]) {
+    for (const fragment of [
+      "#run?v=1&nParallel=3",
+      "#run?v=1&unknown=true",
+      "#run",
+    ]) {
       const app = harness({ url: `http://localhost/chat${query}${fragment}` });
       app.signIn();
       const doc = app.loadDocument();
@@ -219,7 +224,7 @@ test("startup consumes valid and invalid fragments so dismissal and reload canno
         `http://localhost/chat${query.replace("run=1&", "")}`,
       );
       const pending = doc.inbox.getSnapshot();
-      if (fragment.includes("unknown")) {
+      if (fragment.includes("unknown") || fragment === "#run") {
         assert.equal(pending, null);
         assert.equal(app.errors.length, 1);
       } else {
@@ -307,7 +312,7 @@ for (const origin of [
 ]) {
   test(`desktop startup ignores web fragments at ${origin} and still accepts native links`, () => {
     const app = harness({
-      url: `${origin}/chat#run?model=owner/model&nParallel=4`,
+      url: `${origin}/chat#run?v=1&model=owner/model&nParallel=4`,
       desktop: true,
     });
     const doc = app.loadDocument();
@@ -323,7 +328,7 @@ for (const origin of [
 
 for (const newer of [
   run,
-  "unsloth://run?unknown=true",
+  "unsloth://run?v=1&unknown=true",
   "unsloth://open_from_hf?model=owner/other",
 ]) {
   test(`startup cannot supersede the newer native intent ${newer}`, () => {

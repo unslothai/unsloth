@@ -21,9 +21,9 @@ const { parseRunConfigLink, createRunConfigLink } = await import(
 );
 
 const hub = "unsloth://open_from_hf?model=owner/model";
-const run = "unsloth://run?model=owner/model&nParallel=3";
+const run = "unsloth://run?v=1&model=owner/model&nParallel=3";
 const invalid =
-  "unsloth://run?llamaExtraArgs=%5B%22--host%22%2C%220.0.0.0%22%5D";
+  "unsloth://run?v=1&llamaExtraArgs=%5B%22--host%22%2C%220.0.0.0%22%5D";
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 function harness(sharedLinks = true) {
@@ -196,14 +196,14 @@ test("desktop intake ignores web fragments without replacing pending native inte
   const pending = app.inbox.getSnapshot();
   assert.ok(pending);
   for (const url of [
-    "https://example.invalid/chat#run?model=owner/other&nParallel=4",
-    "http://localhost/chat#run?model=owner/other&nParallel=4",
-    "https://example.invalid/chat#run?unknown=true",
+    "https://example.invalid/chat#run?v=1&model=owner/other&nParallel=4",
+    "http://localhost/chat#run?v=1&model=owner/other&nParallel=4",
+    "https://example.invalid/chat#run?v=1&unknown=true",
   ]) {
     app.emit([url]);
     assert.equal(app.inbox.getSnapshot(), pending);
   }
-  app.emit([hub, "https://example.invalid/chat#run?nParallel=4"]);
+  app.emit([hub, "https://example.invalid/chat#run?v=1&nParallel=4"]);
   assert.equal(app.inbox.getSnapshot(), null);
   assert.equal(app.navigations.length, 1);
   assert.deepEqual(app.errors, []);
