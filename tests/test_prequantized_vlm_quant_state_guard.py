@@ -437,3 +437,37 @@ def test_pyproject_still_allows_a_working_version():
             f"pyproject excludes 5.5.0 while unsloth_zoo still caps transformers at "
             f"5.5.0 and Gemma 4 requires >= 5.5.0, so this resolves backwards: {req}"
         )
+
+
+# --------------------------------------------------------------------------------------
+# Where the check is called from
+# --------------------------------------------------------------------------------------
+
+
+def test_the_check_runs_after_the_torchaudio_guard():
+    """This is the only check in `_gpu_init` that imports transformers, not just its metadata.
+
+    `from transformers import conversion_mapping` pulls in 271 transformers submodules.
+    `disable_torchaudio_if_cuda_mismatched` exists because anything reaching
+    `transformers.processing_utils` -> `transformers.audio_utils` -> `torchaudio` before it
+    runs takes the whole `import unsloth` down on a torchaudio that raises at extension init
+    (measured: Kaggle-Muse_Glimmer_(30B)-GRPO died at cell 4). The probe's import does not
+    reach those modules on transformers 5.17.0, and nothing holds that true for the next
+    release, so the call belongs below the guard and this keeps it there.
+    """
+    import ast
+
+    source = (_ROOT / "unsloth" / "_gpu_init.py").read_text(encoding = "utf-8")
+    order = []
+    for node in ast.parse(source).body:
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+        ):
+            order.append(node.value.func.id)
+    assert "disable_torchaudio_if_cuda_mismatched" in order, order
+    assert "check_transformers_prequantized_vlm_quant_state" in order, order
+    assert order.index("check_transformers_prequantized_vlm_quant_state") > order.index(
+        "disable_torchaudio_if_cuda_mismatched"
+    ), "the quant_state check imports transformers and must not precede the torchaudio guard"
