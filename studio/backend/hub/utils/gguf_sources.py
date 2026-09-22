@@ -98,6 +98,10 @@ class CachedGgufSource:
     variant: "GgufVariantInfo"
     snapshot: Path
     has_vision: bool
+    # Listed by the snapshot but incomplete by its own manifest, marker or shards. The
+    # fallback pass keeps such a source so a resume can name its folder; the merge then
+    # reports it partial instead of as a loadable copy.
+    incomplete: bool = False
 
     @property
     def cache_path(self) -> str:
@@ -111,6 +115,7 @@ def cached_gguf_sources(repo_id: str) -> dict[str, CachedGgufSource]:
     from hub.utils.inventory_scan import complete_snapshot_variants
 
     sources = {}
+    partials: dict[str, CachedGgufSource] = {}
     for snapshot in gguf_cache_snapshots(repo_id):
         # Media GGUFs have a separate download/load pipeline and retain their existing scope.
         if _gguf_path_task(snapshot, (repo_id,)) not in CHAT_GGUF_TASKS:
@@ -118,13 +123,25 @@ def cached_gguf_sources(repo_id: str) -> dict[str, CachedGgufSource]:
         variants, has_vision = list_local_gguf_variants(str(snapshot))
         complete = complete_snapshot_variants(str(snapshot)) or set()
         for variant in variants:
-            if variant.quant and variant.quant in complete:
-                key = variant.quant.lower()
+            if not variant.quant:
+                continue
+            key = variant.quant.lower()
+            if variant.quant in complete:
                 previous = sources.get(key)
                 if previous is None or _prefer_duplicate(
                     repo_id, variant.quant, previous.snapshot, snapshot
                 ):
                     sources[key] = CachedGgufSource(variant, snapshot, has_vision)
+                partials.pop(key, None)
+                continue
+            # An interrupted split quant is listed but not complete. Keep it as a fallback
+            # instead of dropping it, so the merge can still show the row, mark it partial
+            # and point a resume at the folder that holds it.
+            partials.setdefault(
+                key, CachedGgufSource(variant, snapshot, has_vision, incomplete = True)
+            )
+    for key, source in partials.items():
+        sources.setdefault(key, source)
     return sources
 
 

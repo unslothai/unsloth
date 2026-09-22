@@ -26,7 +26,6 @@ from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_errors import hf_error_status
 from hub.utils.hf_tokens import cached_read_refused as hub_cached_read_refused
-from hub.utils.hf_tokens import is_anonymous
 from hub.utils.hf_cache_state import (
     incomplete_blob_hash,
     iter_destructive_repo_cache_dirs,
@@ -1925,7 +1924,9 @@ async def get_gguf_variants_answer(
         if (
             include_cache_locations
             and not skip
-            and not is_anonymous(hf_token)
+            # No separate anonymous gate: hub_cached_read_refused above already refused the
+            # callers that may not read this cache, and it authorizes a public repo's for
+            # the sentinel. Re-testing it here dropped an authorized anonymous read.
             and (not local_path or local_path == repo_id)
         ):
             from hub.utils.gguf_sources import (
@@ -1970,10 +1971,15 @@ async def get_gguf_variants_answer(
                     display_label = v.display_label,
                     size_bytes = v.size_bytes,
                     download_size_bytes = v.size_bytes,
-                    downloaded = True,
+                    # A source the snapshot itself lists as incomplete is a row to resume,
+                    # not a copy to load, even before the per-source readiness checks run.
+                    downloaded = not source.incomplete,
+                    partial = source.incomplete,
                     cache_path = source.cache_path,
                     dependency_key = _variant_dependency_key(repo_id, v.filename),
                 )
+                if source.incomplete:
+                    variant_context_sources.pop(key, None)
                 if online_answer:
                     # Apply the same readiness and update checks as a request for this snapshot.
                     if source.snapshot not in scoped_responses:
@@ -2006,7 +2012,10 @@ async def get_gguf_variants_answer(
                 variants[key] = detail
             response.variants = list(variants.values())
             response.has_vision = response.has_vision or any(s.has_vision for s in sources.values())
-            if not response.default_variant:
+            # Merging changes which rows are root-level, and _default_variant_candidates picks
+            # among root rows, so a default chosen from the active cache alone can name the
+            # wrong checkpoint once a remembered folder contributes a root row.
+            if sources or not response.default_variant:
                 best = pick_best_gguf(_default_variant_candidates(response.variants))
                 response.default_variant = gguf_variant_key(best) if best else None
         if skip or answered_locally[0]:

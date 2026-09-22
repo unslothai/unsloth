@@ -1820,3 +1820,37 @@ def test_a_media_load_progress_error_does_not_publish_the_resolved_path():
     # BOUNDARY.
     assert redact_load_progress(progress, via_api_key = False) == progress
     assert redact_load_progress({"phase": "ready"}, via_api_key = True) == {"phase": "ready"}
+
+
+@pytest.mark.parametrize(
+    ("client", "route"),
+    [(_hub, "/api/hub/gguf-variants"), (_models, "/api/models/gguf-variants")],
+    ids = ("hub", "compat"),
+)
+def test_a_listed_variant_keeps_its_opaque_reference(monkeypatch, client, route):
+    """Both variant routes redact cache_path to cache_ref, so both response models must declare
+    the sibling: FastAPI serializes through them and otherwise drops the only handle an API-key
+    caller has for pinning a later delete to the copy it listed."""
+    from hub.schemas.inventory import (
+        GgufVariantDetail as HubVariantDetail,
+        GgufVariantsResponse as HubVariantsResponse,
+    )
+    from hub.services.models import account_access, gguf_variants as hub_gguf_variants
+
+    async def _variants(repo_id, **kwargs):
+        detail = HubVariantDetail(filename = "Model-Q4_K_M.gguf", quant = "Q4_K_M")
+        detail.cache_path = REPO_DIR
+        return HubVariantsResponse(repo_id = repo_id, variants = [detail])
+
+    async def _answer(repo_id, **kwargs):
+        return hub_gguf_variants.VariantsAnswer(await _variants(repo_id), None, True)
+
+    monkeypatch.setattr(hub_gguf_variants, "get_gguf_variants_response", _variants)
+    monkeypatch.setattr(hub_gguf_variants, "get_gguf_variants_answer", _answer)
+    monkeypatch.setattr(account_access, "managed_account", lambda: False)
+    answered = client(via_api_key = True).get(route, params = {"repo_id": "unsloth/Llama-3.2-1B"})
+    assert answered.status_code == 200, answered.text
+    row = answered.json()["variants"][0]
+    assert row["cache_path"] in (None, ""), row
+    assert HOST_ROOT not in json.dumps(row), row
+    assert host_paths.resolve_host_path_reference(row["cache_ref"]) == REPO_DIR

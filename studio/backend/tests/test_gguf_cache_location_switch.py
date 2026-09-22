@@ -646,3 +646,80 @@ def test_a_healthy_duplicate_is_preferred_over_a_cancelled_copy(cache_locations)
     assert variant.downloaded
     assert not variant.partial
     assert variant.cache_path == str(healthy.parent.parent)
+
+def test_an_authorized_anonymous_caller_still_sees_remembered_caches(cache_locations, monkeypatch):
+    """hub_cached_read_refused authorizes a public repo for the sentinel; a second anonymous
+    test here re-refused it and dropped a quant that exists only in a remembered folder."""
+    repo_id, expected = cache_locations
+    active = hf_cache_settings.get_hf_cache_paths().hub_cache
+    quant, (repo, _path) = next(
+        (q, value) for q, value in expected.items() if value[0].parent != active
+    )
+    monkeypatch.setattr("hub.utils.hf_tokens._explicit_token_reaches_repo", lambda *a, **k: True)
+    monkeypatch.setattr(gguf_variants, "list_gguf_variants", lambda *a, **k: ([], False, []))
+    inventory_scan.invalidate_hf_cache_scans()
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(
+            repo_id,
+            hf_token = False,
+            prefer_local_cache = True,
+            offline = True,
+            include_cache_locations = True,
+        )
+    )
+    found = next(v for v in response.variants if v.quant == quant)
+    assert found.cache_path == str(repo)
+
+
+def test_an_interrupted_split_quant_is_still_offered_from_its_folder(cache_locations):
+    """list_local_gguf_variants sees the quant while complete_snapshot_variants excludes it, so
+    the merge must keep it as a partial source with its folder rather than drop the row."""
+    from hub.utils.gguf_sources import cached_gguf_source_partial, cached_gguf_sources
+
+    repo_id, expected = cache_locations
+    active = hf_cache_settings.get_hf_cache_paths().hub_cache
+    remembered = next(repo for repo, _ in expected.values() if repo.parent != active)
+    quant = "Q4_K_M"
+    snap = remembered / "snapshots" / ("d" * 40)
+    (snap / f"Model-{quant}-00001-of-00002.gguf").write_bytes(b"0" * 256)
+    inventory_scan.invalidate_hf_cache_scans()
+
+    # Listed by the scan but excluded as incomplete, so it is the fallback that carries it.
+    source = cached_gguf_sources(repo_id)[quant.lower()]
+    assert source.snapshot == snap
+
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(
+            repo_id,
+            prefer_local_cache = True,
+            offline = True,
+            include_cache_locations = True,
+        )
+    )
+    variant = next(v for v in response.variants if v.quant == quant)
+    assert not variant.downloaded
+    assert variant.partial
+    assert variant.cache_path == str(remembered)
+
+
+def test_merging_a_root_row_recomputes_the_default(cache_locations, monkeypatch):
+    """The default is chosen among ROOT rows, so a default picked from the active cache alone
+    must be recomputed once a remembered folder contributes a root checkpoint."""
+    from hub.utils.gguf import GgufVariantInfo
+
+    repo_id, expected = cache_locations
+    active = hf_cache_settings.get_hf_cache_paths().hub_cache
+    remembered = next(repo for repo, _ in expected.values() if repo.parent != active)
+    quant = "Q6_K"
+    (remembered / "snapshots" / ("d" * 40) / f"Model-{quant}.gguf").write_bytes(b"0" * 256)
+    distilled = GgufVariantInfo(
+        filename = "distilled/Model-Q6_K.gguf", quant = "distilled/Model-Q6_K", size_bytes = 256
+    )
+    monkeypatch.setattr(gguf_variants, "list_gguf_variants", lambda *a, **k: ([distilled], False, []))
+    inventory_scan.invalidate_hf_cache_scans()
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(
+            repo_id, prefer_local_cache = True, offline = True, include_cache_locations = True
+        )
+    )
+    assert response.default_variant == quant, response.default_variant

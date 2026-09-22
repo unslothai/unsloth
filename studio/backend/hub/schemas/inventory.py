@@ -22,6 +22,12 @@ class GgufVariantDetail(BaseModel):
     cache_path: Optional[str] = Field(
         None, description = "Owning cache repository for this complete variant"
     )
+    # Declared so the host-path boundary's redacted stand-in survives response-model
+    # serialization: without it an API-key caller loses both the path and the reference
+    # that would pin a later delete to this copy.
+    cache_ref: Optional[str] = Field(
+        None, description = "Opaque stand-in for cache_path, stable for the server's life"
+    )
     display_label: Optional[str] = Field(
         None, description = "Optional user-facing label when quant is an internal key"
     )
