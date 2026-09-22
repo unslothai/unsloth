@@ -1320,12 +1320,8 @@ def _text_trainable_core(model, text_intent = True):
     accepts a text batch (every transformers VLM, whose image inputs default to
     None) are returned unchanged, as is anything ambiguous.
 
-    A wrapper with no forward of its own is the same case: Qwen3-Omni's
-    `Qwen3OmniMoeForConditionalGeneration` composes a thinker, a talker and a
-    speech decoder and only generates, so a trainer's `model(input_ids = ...)`
-    reached `nn.Module.forward` and failed with "_forward_unimplemented() got an
-    unexpected keyword argument 'input_ids'". Its `thinker` is what fine-tuning
-    targets (transformers' own recipes train it and save a thinker checkpoint).
+    A wrapper with no forward of its own (Qwen3-Omni) is the same case; its
+    `thinker` is what fine-tuning targets.
     `UNSLOTH_KEEP_COMPOSED_WRAPPER=1` turns this off.
 
     `text_intent` is True only when the caller passed `text_only = True`: a
@@ -1342,8 +1338,7 @@ def _text_trainable_core(model, text_intent = True):
     if not has_no_forward and not required:
         return model
     if not text_intent:
-        # A multimodal load may still generate through the wrapper (Qwen3-Omni's talker and
-        # speech decoder), and dropping those is irreversible, so the wrapper stays whole.
+        # A multimodal load may still generate through the wrapper, so keep it whole.
         if has_no_forward:
             print(
                 f"Unsloth: `{type(model).__name__}` has no forward of its own, so it cannot be "
@@ -1375,9 +1370,7 @@ def _text_trainable_core(model, text_intent = True):
         except Exception:
             output_embeddings = None
         if output_embeddings is None:
-            # transformers 4.x returns None from PreTrainedModel.get_output_embeddings unless
-            # the class overrides it, and Qwen3-Omni's thinker only overrides the input side
-            # while owning an lm_head.
+            # transformers 4.x returns None unless overridden; Qwen3-Omni's thinker has an lm_head.
             output_embeddings = getattr(child, "lm_head", None)
             if not isinstance(output_embeddings, torch.nn.Module):
                 output_embeddings = None

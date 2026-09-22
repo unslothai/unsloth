@@ -1,11 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""A composition with no forward of its own (Qwen3-Omni) trains through its thinker.
-
-`Qwen3OmniMoeForConditionalGeneration` composes a thinker, a talker and a
-speech decoder and defines no `forward`, so a trainer's `model(input_ids=...)`
-reached `nn.Module.forward` and failed with
-`_forward_unimplemented() got an unexpected keyword argument 'input_ids'`.
-"""
+"""A composition with no forward of its own (Qwen3-Omni) trains through its thinker."""
 
 import pytest
 import torch
@@ -127,8 +121,7 @@ def test_the_off_switch_keeps_the_wrapper(monkeypatch):
 
 
 def test_a_multimodal_load_keeps_the_composition_for_generation(capsys):
-    """text_intent = False is an inference or multimodal load: the talker and the speech
-    decoder must survive, so the composition is returned whole with the text_only hint."""
+    """text_intent = False keeps the composition whole and prints the text_only hint."""
     from unsloth.models.vision import _text_trainable_core
 
     model = Composed(TinyConfig())
