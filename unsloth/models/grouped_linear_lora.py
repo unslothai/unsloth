@@ -82,6 +82,14 @@ def _grouped_lora_layer():
             for active_adapter in self.active_adapters:
                 if active_adapter not in self.lora_A:
                     continue
+                if active_adapter in getattr(self, "lora_variant", {}):
+                    # DoRA and the other PEFT variants replace the plain LoRA sum with their
+                    # own forward; this layer computes only the plain sum, so a variant would
+                    # train without its magnitude vector and merge to a different weight.
+                    raise NotImplementedError(
+                        "Unsloth: DoRA and other LoRA variants are not supported on grouped "
+                        "linears (block-diagonal `o_a_proj`). Use plain LoRA for these layers."
+                    )
                 lora_A = self.lora_A[active_adapter]
                 lora_B = self.lora_B[active_adapter]
                 dropout = self.lora_dropout[active_adapter]
@@ -109,6 +117,13 @@ def register_grouped_linear_lora(lora_config, model):
     classes = grouped_linear_classes(model)
     if not classes or not hasattr(lora_config, "_register_custom_module"):
         return []
+    if getattr(lora_config, "use_dora", False):
+        raise NotImplementedError(
+            "Unsloth: `use_dora = True` is not supported on a model with block-diagonal grouped "
+            "linears (" + ", ".join(cls.__name__ for cls in classes) + "): the grouped LoRA "
+            "forward computes the plain LoRA sum only, so the DoRA magnitude vector would never "
+            "train. Use plain LoRA."
+        )
     layer = _grouped_lora_layer()
     lora_config._register_custom_module({cls: layer for cls in classes})
     return classes

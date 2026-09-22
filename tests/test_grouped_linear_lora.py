@@ -103,3 +103,33 @@ def test_state_dict_is_a_plain_lora_checkpoint():
     state = peft.get_peft_model_state_dict(model)
     assert state["base_model.model.o_a_proj.lora_A.weight"].shape == (4, 16)
     assert state["base_model.model.o_a_proj.lora_B.weight"].shape == (32, 4)
+
+
+def test_dora_is_refused_on_a_grouped_linear():
+    """The grouped forward computes the plain LoRA sum only. With `use_dora = True` PEFT would
+    still create the magnitude vector, which then never trains, and PEFT's DoRA-aware merge
+    would produce a weight the training forward never used. Refuse rather than train wrong."""
+    from peft import LoraConfig
+    from unsloth.models.grouped_linear_lora import register_grouped_linear_lora
+
+    model = Block()
+    config = LoraConfig(r = 4, lora_alpha = 8, target_modules = ["o_a_proj"], use_dora = True)
+    with pytest.raises(NotImplementedError, match = "DoRA"):
+        register_grouped_linear_lora(config, model)
+
+
+def test_a_variant_reaching_the_forward_is_refused():
+    from peft import LoraConfig, get_peft_model
+
+    model = Block()
+    config = LoraConfig(r = 4, lora_alpha = 8, target_modules = ["o_a_proj"], init_lora_weights = False)
+    from unsloth.models.grouped_linear_lora import register_grouped_linear_lora
+
+    register_grouped_linear_lora(config, model)
+    peft_model = get_peft_model(model, config)
+    layer = peft_model.base_model.model.o_a_proj
+    if not hasattr(layer, "lora_variant"):
+        pytest.skip("this PEFT has no LoRA variants")
+    layer.lora_variant["default"] = object()
+    with pytest.raises(NotImplementedError, match = "variants"):
+        peft_model(torch.randn(2, 4, 16))
