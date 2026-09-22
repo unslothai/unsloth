@@ -17878,7 +17878,10 @@ def _check_signal_escape_patterns(code: str):
                 ):
                     # `s.proxies.update({...})`, `update(https = ...)`, `setdefault(k, v)` and the
                     # dunder spellings of a subscript store and `|=`.
-                    for value in [*node.args, *(kw.value for kw in node.keywords)]:
+                    args = node.args
+                    if func.attr in ("setdefault", "__setitem__"):
+                        args = args[1:2]  # the key is a scheme name, not a destination
+                    for value in [*args, *(kw.value for kw in node.keywords)]:
                         self._record_proxy(func.value, value, mutated = True)
                 self.generic_visit(node)
                 return
@@ -18022,7 +18025,10 @@ def _check_signal_escape_patterns(code: str):
                         found = next(
                             (kw.value for kw in node.keywords or [] if kw.arg in keywords), None
                         )
-                    if found is not None:
+                    # `ClientSession(base_url = None)` is the disabled default, not a destination.
+                    if found is not None and not (
+                        isinstance(found, ast.Constant) and found.value is None
+                    ):
                         destinations.append((found, True, kind))
                 # Proxies passed to this call, and proxies or a base URL configured on its client.
                 proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]

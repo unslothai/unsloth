@@ -812,6 +812,11 @@ class TestNetworkTargetResolution:
                 f"import requests\nrequests.get('https://pypi.org/', proxies={{'https': '{_H}:8080'}})",
                 id = "proxy_without_scheme",
             ),
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                f"s.proxies.setdefault('https', 'http://{_H}')\ns.get('https://pypi.org/')",
+                id = "proxy_mapping_setdefault",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -905,6 +910,12 @@ class TestNetworkTargetResolution:
             "c.get('https://pypi.org/')",
             "from requests.utils import quote\nquote('http://203.0.113.5/')",
             "import requests\nrequests.get('https://pypi.org/', proxies={'https': 'pypi.org:443'})",
+            "import requests\ns = requests.Session()\ns.proxies.setdefault('https', 'https://pypi.org')\n"
+            "s.get('https://pypi.org/')",
+            "import requests\ns = requests.Session()\ns.proxies.__setitem__('https', 'https://pypi.org')\n"
+            "s.get('https://pypi.org/')",
+            "import aiohttp\naiohttp.ClientSession(base_url=None).get('https://pypi.org/')",
+            "import aiohttp\naiohttp.ClientSession(None).get('https://pypi.org/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):
