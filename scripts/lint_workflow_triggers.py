@@ -189,26 +189,35 @@ def _resolved_inputs(caller_paths: list, target: str) -> dict:
     configuration is one that gets switched off.
     """
     values: dict = {}
-    seen_any = False
+    sites: list = []
     for pth in caller_paths:
-        for site in _call_sites(pth, target):
-            seen_any = True
-            for name, raw in site.items():
-                literal = str(raw).strip().strip("'\"")
-                bucket = values.setdefault(str(name), [set(), 0])
-                if re.fullmatch(r"[A-Za-z0-9][\w.-]*", literal):
-                    bucket[0].add(literal)
-                elif _DELEGATED_KEY.fullmatch(literal):
-                    pass
-                else:
-                    bucket[1] += 1
-            for name, bucket in values.items():
-                if name not in site:
-                    # Omitted, so the action's default applies and is not visible here.
-                    bucket[1] += 1
-    if not seen_any:
+        sites.extend(_call_sites(pth, target))
+    if not sites:
         return {}
-    return {name: (vals, unresolved == 0) for name, (vals, unresolved) in values.items()}
+    # Every input named anywhere, collected BEFORE counting omissions. Doing both in one
+    # pass made the answer depend on call-site order: a site that omitted an input had no
+    # bucket yet, so the omission went unrecorded, and a later site supplying a literal
+    # made the input look fully resolved. Verified before fixing -- a composite called
+    # first with no `name` and then with `name: safe` reported ({'safe'}, True), so the
+    # namespace narrowed to `safe` and the real default namespace was left undefended.
+    names = {str(name) for site in sites for name in site}
+    for name in names:
+        literals: set = set()
+        unresolved = 0
+        for site in sites:
+            if name not in site:
+                # Omitted, so the action's default applies and is not visible here.
+                unresolved += 1
+                continue
+            literal = str(site[name]).strip().strip("'\"")
+            if re.fullmatch(r"[A-Za-z0-9][\w.-]*", literal):
+                literals.add(literal)
+            elif _DELEGATED_KEY.fullmatch(literal):
+                pass
+            else:
+                unresolved += 1
+        values[name] = (literals, unresolved == 0)
+    return values
 
 
 def _literal_prefix(key: str) -> str:
@@ -268,9 +277,7 @@ def _prefix_compatible(pr_head: str, publish_prefix: str) -> bool:
 
 
 def _shell_built_key_prefixes(
-    text: str,
-    inputs: set | None = None,
-    all_literal: bool = True,
+    text: str, inputs: set | None = None, all_literal: bool = True,
 ) -> list[str]:
     """Literal key heads assembled in a composite action's shell, not in its YAML.
 
@@ -301,12 +308,67 @@ def _shell_built_key_prefixes(
         r"""echo\s+["']?(?:key|prefix)=([A-Za-z0-9][A-Za-z0-9._-]*?-)(?=\$|\{)""", text
     ):
         heads.append(m.group(1))
+    # A prefix whose literal head does not come FIRST yields nothing above, because the
+    # pattern requires the head to begin with an alphanumeric, and
+    # `prefix="${name}-pip-..."` puts its literal part after the variable. Substituting
+    # the values callers actually pass makes it readable. Without this the composite
+    # contributed no head at all, while the `steps.*` key reading its output was
+    # dismissed as delegation, so a publish `restore-keys: shared-pip-` had nothing to be
+    # compared against.
+    for value in sorted(inputs or ()):
+        substituted = re.sub(
+            r"\$\{\s*[\w-]+\s*\}|\$\{\{\s*inputs\.[\w-]+\s*\}\}", value, text
+        )
+        for found in pattern.findall(substituted) + re.findall(
+            r"""echo\s+["']?(?:key|prefix)=([A-Za-z0-9][A-Za-z0-9._-]*?-)(?=\$|\{)""",
+            substituted,
+        ):
+            if found not in heads:
+                heads.append(found)
     if inputs and all_literal:
-        return [f"{h}{v}-" for h in heads for v in sorted(inputs)]
+        # Narrowed heads, plus any head that already CARRIES a caller value because it
+        # was recovered by substitution above and needs no further narrowing.
+        return [f"{h}{v}-" for h in heads for v in sorted(inputs)] + [
+            h for h in heads if any(h.startswith(v) for v in inputs)
+        ]
     # An unresolved call site means the broad head still has to be carried, or narrowing
     # would silently drop the namespace that caller writes.
     return heads + [f"{h}{v}-" for h in heads for v in sorted(inputs or ())]
 
+
+
+
+
+def _input_namespaces(callers: list, targets: list) -> dict:
+    """{input name: (literal values, every call site resolved)} across several targets."""
+    merged: dict = {}
+    for target in targets:
+        name = (
+            target.parent.name
+            if target.name.startswith("action.")
+            else target.name
+        )
+        for field, pair in _resolved_inputs(callers, name).items():
+            vals, ok = merged.get(field, (set(), True))
+            merged[field] = (vals | pair[0], ok and pair[1])
+    return merged
+
+
+def _expand_input_key(key: str, namespaces: dict) -> list[str]:
+    """The literal keys a `key: ${{ inputs.X }}` can take, given its call sites.
+
+    Needed on BOTH sides of the exact comparison, not just the prefix one. A pull request
+    writing `shared-key` directly, against a dispatch workflow that calls a reusable
+    workflow whose key is `${{ inputs.cache_key }}` with `cache_key: shared-key`, is an
+    exact collision with no `restore-keys` anywhere, and comparing a literal against an
+    unexpanded expression never matches. Resolution reached the prefix comparison through
+    `pr_heads` and stopped there, so this plainest of all the shapes stayed open.
+    """
+    match = _INPUT_KEY.fullmatch(key.strip())
+    if match is None:
+        return [key]
+    values, _resolved = namespaces.get(match.group(1), (set(), False))
+    return sorted(values) or [key]
 
 def _pr_reachable_action_dirs(workflows_dir: Path, pr_paths: list) -> set:
     """Composite actions a PR-triggered workflow actually uses.
@@ -698,23 +760,41 @@ def main() -> int:
 
     # The publish side delegates to local actions exactly as the pull-request side does,
     # and reading only the top-level workflow file left that half unexamined. A publish
-    # workflow whose composite holds the `actions/cache/restore` declares its keys and its
-    # `restore-keys` in the action, so a PR writing `shared-*` against a publish-only
+    # workflow whose composite holds the `actions/cache/restore` declares its keys and
+    # its `restore-keys` in the action, so a PR writing `shared-*` against a publish-only
     # composite restoring `shared-` passed: the prefix was never collected, and a
     # comparison that collects nothing on one side reports success.
     for action_path in sorted(
         _pr_reachable_action_dirs(workflows_dir, [pth for pth, _ in publish_triggered])
     ):
         publish_triggered.append((action_path, _extract_cache_keys(action_path)))
-        publish_restore_prefixes.append((action_path, _extract_restore_key_prefixes(action_path)))
+        publish_restore_prefixes.append(
+            (action_path, _extract_restore_key_prefixes(action_path))
+        )
 
     # Composite keys belong in the exact comparison as well, not only the prefix one. A
     # PR-reachable action declaring `key: shared-key`, against a publish workflow using
-    # that same key and no restore-keys at all, is the original cache-poisoning shape, and
-    # it was invisible while this set held workflow-declared keys only.
-    pr_keys = {key for _, keys in pr_triggered for key in keys} | set(composite_keys)
+    # that same key and no restore-keys at all, is the original cache-poisoning shape,
+    # and it was invisible while this set held workflow-declared keys only.
+    # Inputs each side's targets are called with, so an input-backed key resolves to the
+    # namespace its callers actually produce before either comparison runs.
+    input_namespaces = _input_namespaces(pr_callers, pr_reachable)
+    publish_callers = [pth for pth, _ in publish_triggered]
+    publish_namespaces = _input_namespaces(
+        publish_callers,
+        sorted(_pr_reachable_action_dirs(workflows_dir, publish_callers)),
+    )
+
+    pr_keys = {
+        expanded
+        for key in (
+            {k for _, keys in pr_triggered for k in keys} | set(composite_keys)
+        )
+        for expanded in _expand_input_key(key, input_namespaces)
+    }
     for pub_path, pub_keys in publish_triggered:
-        for k in pub_keys:
+        for raw in pub_keys:
+          for k in _expand_input_key(raw, publish_namespaces):
             if k in pr_keys:
                 findings.append(
                     f"{pub_path.name}: cache key {k!r} is also declared in a "
@@ -730,15 +810,6 @@ def main() -> int:
     # equal, which is the only thing the check above compares.
     pr_heads: set = set()
     undecidable_pr_keys: list[str] = []
-    # Inputs any PR-reachable target is called with, so a `key: ${{ inputs.X }}` can be
-    # resolved to the namespace its callers actually produce.
-    input_namespaces: dict = {}
-    for target in pr_reachable:
-        for field, pair in _resolved_inputs(
-            pr_callers, target.parent.name if target.name.startswith("action.") else target.name
-        ).items():
-            vals, ok = input_namespaces.get(field, (set(), True))
-            input_namespaces[field] = (vals | pair[0], ok and pair[1])
     for k in list(pr_keys) + composite_keys:
         cands = _prefix_candidates(k)
         if cands:

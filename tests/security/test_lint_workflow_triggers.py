@@ -1896,3 +1896,167 @@ def test_inputs_are_collected_through_a_wrapper_action(tmp_path):
         f"dropped that namespace:\n{proc.stdout}\n{proc.stderr}"
     )
     assert "pip-v3-" in proc.stderr
+
+
+def test_an_omission_before_the_first_literal_is_counted(tmp_path):
+    """Counting omissions in the same pass made the answer depend on call-site order.
+
+    A site that omitted an input had no bucket yet, so the omission went unrecorded, and
+    a later site supplying a literal made the input look fully resolved. Verified before
+    fixing: a composite called first with no `name` and then with `name: safe` reported
+    `({'safe'}, True)`, so the namespace narrowed to `safe` and the action's real default
+    namespace was left undefended.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "pipc"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: pipc\n"
+        "inputs:\n"
+        "  name:\n"
+        "    default: shared\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - id: probe\n"
+        "      shell: bash\n"
+        "      run: |\n"
+        "        name=\"${{ inputs.name }}\"\n"
+        "        prefix=\"pipx-${name}-\"\n"
+        "        echo \"key=${prefix}abc\" >> \"$GITHUB_OUTPUT\"\n"
+    )
+    # The omitting call site comes FIRST, which is the ordering that used to be lost.
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  defaulted:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/pipc\n"
+        "  named:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/pipc\n"
+        "        with:\n"
+        "          name: safe\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("pipx-pub-${{ runner.os }}", "            pipx-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the first call site omits `name`, so the namespace is not fully resolved and "
+        f"the broad `pipx-` head must still be defended:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "pipx-" in proc.stderr
+
+
+def test_a_prefix_that_opens_with_a_variable_is_recovered(tmp_path):
+    """`prefix="${name}-pip-..."` put its literal part after the variable.
+
+    The head pattern requires an alphanumeric start, so this composite contributed no
+    head at all, while the `steps.*` key reading its output was dismissed as delegation.
+    A publish `restore-keys: shared-pip-` then had nothing to be compared against, which
+    is the failure mode where a check reports success having looked at nothing.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "varfirst"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: varfirst\n"
+        "inputs:\n"
+        "  name:\n"
+        "    required: true\n"
+        "outputs:\n"
+        "  key:\n"
+        "    value: ${{ steps.probe.outputs.key }}\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - id: probe\n"
+        "      shell: bash\n"
+        "      run: |\n"
+        "        name=\"${{ inputs.name }}\"\n"
+        "        prefix=\"${name}-pip-${{ runner.os }}-\"\n"
+        "        echo \"key=${prefix}abc\" >> \"$GITHUB_OUTPUT\"\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - id: vf\n"
+        "        uses: ./.github/actions/varfirst\n"
+        "        with:\n"
+        "          name: shared\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n"
+        "          path: wheels\n"
+        "          key: ${{ steps.vf.outputs.key }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("shared-pip-pub-${{ runner.os }}", "            shared-pip-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the namespace is `shared-pip-` once `name` is substituted, so the publish "
+        f"fallback over it must be rejected:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "shared-pip-" in proc.stderr
+
+
+def test_an_input_backed_key_is_resolved_before_the_exact_comparison(tmp_path):
+    """The plainest shape of all: an equal key, with no `restore-keys` anywhere.
+
+    Input resolution reached the prefix comparison through `pr_heads` and stopped there,
+    so a pull request writing `shared-key` directly, against a dispatch workflow calling
+    a reusable workflow whose key is `${{ inputs.cache_key }}` with
+    `cache_key: shared-key`, compared a literal against an unexpanded expression and
+    matched nothing.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "shared-build.yml").write_text(
+        "name: shared-build\n"
+        "on:\n"
+        "  workflow_call:\n"
+        "    inputs:\n"
+        "      cache_key:\n"
+        "        required: true\n"
+        "        type: string\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n"
+        "          path: wheels\n"
+        "          key: ${{ inputs.cache_key }}\n"
+    )
+    (wf / "pr-build.yml").write_text(_pr_workflow("shared-key"))
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  call:\n"
+        "    uses: ./.github/workflows/shared-build.yml\n"
+        "    with:\n"
+        "      cache_key: shared-key\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the publish side's key resolves to `shared-key`, which the PR writes directly, "
+        f"so this exact collision must be caught:\n{proc.stdout}\n{proc.stderr}"
+    )
+    assert "shared-key" in proc.stderr
