@@ -30,19 +30,27 @@ const SOURCES = (function walk(dir: string): string[] {
 /** Fills first, then lines. Every one is authored by the palettes as -base. */
 const SURFACE_TOKENS = [
   "card",
+  // The sidebar is a surface like the rest. Left off the curve it held its
+  // authored tone while its own rows washed past it, and the lit row came out
+  // darker than the sidebar behind it.
+  "sidebar",
   "popover",
   "secondary",
   "muted",
+  "panel-input-surface",
+  "panel-input-surface-hover",
+  "tabs-line-indicator",
+];
+/** Hover and selection fills, on a shorter curve so the state stays findable. */
+const STATE_TOKENS = [
   "accent",
   "nav-surface-hover",
   "panel-surface-hover",
-  "panel-input-surface",
-  "panel-input-surface-hover",
   "sidebar-accent",
   "chat-icon-bg-hover",
-  "tabs-line-indicator",
 ];
 const LINE_TOKENS = ["border", "input", "sidebar-border"];
+const FILL_TOKENS = [...SURFACE_TOKENS, ...STATE_TOKENS];
 
 function block(marker: string): string {
   const at = CSS.indexOf(marker);
@@ -52,7 +60,7 @@ function block(marker: string): string {
 }
 
 test("the palettes author base values, never the token the app reads", () => {
-  for (const token of [...SURFACE_TOKENS, ...LINE_TOKENS]) {
+  for (const token of [...FILL_TOKENS, ...LINE_TOKENS]) {
     const authored = CSS.match(new RegExp(`^\\t--${token}-base:`, "gm")) ?? [];
     assert.ok(
       authored.length >= 2,
@@ -72,7 +80,7 @@ test("the palettes author base values, never the token the app reads", () => {
 
 test("at the default the derivation is the identity", () => {
   const identity = block("--card: var(--card-base);");
-  for (const token of [...SURFACE_TOKENS, ...LINE_TOKENS]) {
+  for (const token of [...FILL_TOKENS, ...LINE_TOKENS]) {
     assert.ok(
       identity.includes(`--${token}: var(--${token}-base);`),
       `--${token} does not fall back to its authored value`,
@@ -88,6 +96,15 @@ test("off the default, fills and lines each take their own curve", () => {
         `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-target) var(--contrast-surface-mix));`,
       ),
       `--${token} is not on the surface curve`,
+    );
+  }
+  // A hover nobody can find is the same failure as an outline nobody can find.
+  for (const token of STATE_TOKENS) {
+    assert.ok(
+      adjusted.includes(
+        `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-target) var(--contrast-state-mix, var(--contrast-surface-mix)));`,
+      ),
+      `--${token} is not on the state curve`,
     );
   }
   assert.ok(
@@ -117,11 +134,30 @@ test("lowering flattens further than raising lifts", () => {
     "CONTRAST_SURFACE_MIX_VAR",
     "CONTRAST_LINE_MIX_VAR",
     "CONTRAST_CONTROL_MIX_VAR",
+    "CONTRAST_STATE_MIX_VAR",
   ]) {
     const { raising, lowering } = ceilings(name);
     assert.ok(raising < lowering, `${name} is symmetric`);
     assert.ok(lowering < 100, `${name} flattens all the way to the page`);
   }
+});
+
+test("a lit row never sinks below the surface it sits on", () => {
+  // Both fall toward the page when contrast drops. While they shared a ceiling
+  // they fell together, and since the fills start closer to the page the lit
+  // row reached it first and went under: at the bottom of the slider the active
+  // sidebar row was darker than the sidebar. A shorter curve keeps the order.
+  const ceiling = (name: string) => {
+    const hit = new RegExp(`${name}, mix\\(raising \\? \\d+ : (\\d+)\\)`).exec(
+      STORE,
+    );
+    assert.ok(hit, `${name} is not set from the two ceilings`);
+    return Number(hit[1]);
+  };
+  assert.ok(
+    ceiling("CONTRAST_STATE_MIX_VAR") < ceiling("CONTRAST_SURFACE_MIX_VAR"),
+    "hover fills flatten as fast as the surfaces under them",
+  );
 });
 
 test("panel sliders move with the slider too", () => {

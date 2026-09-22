@@ -288,6 +288,8 @@ export const CONTRAST_SURFACE_MIX_VAR = "--contrast-surface-mix";
 export const CONTRAST_LINE_MIX_VAR = "--contrast-line-mix";
 /** Control outlines and switch tracks, which fade less far than a divider. */
 export const CONTRAST_CONTROL_MIX_VAR = "--contrast-control-mix";
+/** Hover and selection fills, which fade less far than the surface under them. */
+export const CONTRAST_STATE_MIX_VAR = "--contrast-state-mix";
 export const CONTRAST_TEXT_MIX_VAR = "--contrast-text-mix";
 /** Multipliers for the hand-written washes that stand in for those tokens. */
 export const CONTRAST_WASH_GAIN_VAR = "--contrast-wash-gain";
@@ -965,6 +967,11 @@ export function applyCustomizationToDocument(
     setVar(CONTRAST_SURFACE_MIX_VAR, mix(raising ? 8 : 70));
     setVar(CONTRAST_LINE_MIX_VAR, mix(raising ? 45 : 80));
     setVar(CONTRAST_CONTROL_MIX_VAR, mix(raising ? 45 : 55));
+    // Hover and selection fills stop well short of the surfaces they sit on.
+    // On the surface curve they collapsed toward the page faster than the
+    // sidebar and cards did, so at the bottom the lit row was darker than its
+    // own background: the pointer stopped telling you where it was.
+    setVar(CONTRAST_STATE_MIX_VAR, mix(raising ? 8 : 30));
     // Text sits on a gentler curve at both ends: it has to stay readable.
     setVar(CONTRAST_TEXT_MIX_VAR, mix(40));
     // Controls that wash the page with translucent white or black instead of
@@ -980,6 +987,7 @@ export function applyCustomizationToDocument(
     setVar(CONTRAST_SURFACE_MIX_VAR, null);
     setVar(CONTRAST_LINE_MIX_VAR, null);
     setVar(CONTRAST_CONTROL_MIX_VAR, null);
+    setVar(CONTRAST_STATE_MIX_VAR, null);
     setVar(CONTRAST_TEXT_MIX_VAR, null);
     setVar(CONTRAST_WASH_GAIN_VAR, null);
     setVar(CONTRAST_EDGE_GAIN_VAR, null);

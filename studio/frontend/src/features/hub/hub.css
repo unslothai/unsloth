@@ -91,9 +91,15 @@
 
   /* Rest sits below the hover tone; hover and focus take --accent, the one
      hover colour the app uses. Focus must never fall back to the panel or
-     the field looks empty while typing. */
+     the field looks empty while typing.
+
+     Rest is the hover colour held back, not a separate wash: a translucent
+     --accent cannot reach an opaque one over any backdrop, so the two keep
+     their order at every contrast setting. Carrying its own foreground wash,
+     rest was scaled by the wash gain while the hover token only nudged, and
+     the pair met at the top of the slider. Matches the old resting tone. */
   .dark .field-soft {
-    background-color: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-wash-gain, 1)), transparent) !important;
+    background-color: color-mix(in srgb, var(--accent) 60%, transparent) !important;
   }
 
   .dark .field-soft:hover,
