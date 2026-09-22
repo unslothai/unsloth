@@ -180,8 +180,10 @@ test("a light wash follows the slider as its dark twin does", () => {
   // index.css authors the same washes in @apply, in black and white rather
   // than the token, and both of those take an arbitrary alpha or Tailwind's
   // shorthand, so all four spellings are swept.
+  // The arbitrary value is a fifth spelling: the colour and its alpha both sit
+  // inside the brackets, so neither /alpha form above sees it.
   const FIXED_WASH =
-    /(bg-foreground\/(\[[\d.]+\]|\d+)|bg-(white|black)\/(\[0?\.\d+\]|\d+))/;
+    /(bg-foreground\/(\[[\d.]+\]|\d+)|bg-(white|black)\/(\[0?\.\d+\]|\d+)|bg-\[rgba?\([^\]]*[\s,\/]0?\.\d+\s*\)\])/;
   // A stylesheet can also write the wash out longhand, with no class in sight.
   const RAW_WASH =
     /background(-color)?:\s*rgba?\([\d\s,]+[\s,\/]+0?\.\d+\s*\)/;
