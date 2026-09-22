@@ -618,3 +618,12 @@ def test_meta_charset_in_headerless_non_html_body_is_ignored(monkeypatch):
     out = _fetch_with(monkeypatch, body, None)
     assert text.strip() in out
     assert "�" not in out
+
+
+def test_xml_prolog_encoding_read_when_content_type_missing(monkeypatch):
+    body = (
+        '<?xml version="1.0" encoding="Shift_JIS"?>\n<doc><p>' + _JAPANESE * 40 + "</p></doc>"
+    ).encode("cp932")
+    out = _fetch_with(monkeypatch, body, None)
+    assert _JAPANESE in out
+    assert "�" not in out
