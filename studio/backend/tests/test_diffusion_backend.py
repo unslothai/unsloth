@@ -5686,7 +5686,7 @@ _HOSTED_PREQUANT = types.SimpleNamespace(
     kind = "repo",
     location = "unsloth/Z-Image-Turbo-FP8",
     filename = "Z-Image-Turbo-FP8.pt",
-    fallback_filename = "transformer_fp8.pt",
+    fallback_filenames = ("transformer_fp8.pt",),
 )
 
 
@@ -6660,7 +6660,7 @@ def test_plan_memory_sizes_a_pipeline_load_from_the_other_root_snapshot(monkeypa
     # Same hole on the full-pipeline branch, where the whole repo IS the base: _cache_bytes walks
     # the live root's blobs, so a repo served from the other root sizes as unknown and a 4 GiB
     # pipeline that does not fit stays resident.
-    from core.inference.diffusion_memory import OFFLOAD_MODEL, OFFLOAD_NONE
+    from core.inference.diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE
 
     snapshot = _other_root_base_snapshot(tmp_path, monkeypatch)
     target = _small_card(monkeypatch)
@@ -6680,7 +6680,12 @@ def test_plan_memory_sizes_a_pipeline_load_from_the_other_root_snapshot(monkeypa
     plan = _plan(base_local_dir = str(snapshot))
     # A pipeline load keeps transformer/: 4096 + 150 + 50 = 4296 MiB, well past the 2509 MiB margin.
     assert plan.estimates["model_dense_mib"] == 4296
-    assert plan.offload_policy == OFFLOAD_MODEL
+    # Group, not whole-module: this branch now hands the planner the companion split too, so the
+    # 2348 MiB group floor (200 companions + 100 headroom + 2048 overhead) is sized and fits. The
+    # assertion read OFFLOAD_MODEL while that split was None, which made every group tier fail the
+    # `is not None` check rather than lose on its arithmetic.
+    assert plan.estimates["companion_dense_mib"] == 200
+    assert plan.offload_policy == OFFLOAD_GROUP
 
 
 def test_plan_memory_keeps_companions_a_partial_staged_snapshot_omits(monkeypatch, tmp_path):
@@ -8171,7 +8176,7 @@ def test_download_plan_counts_a_cached_lower_auto_prequant(monkeypatch):
         kind = "repo",
         location = "unsloth/Qwen-Image-FP8",
         filename = "Qwen-Image-INT8.pt",
-        fallback_filename = "transformer_int8.pt",
+        fallback_filenames = ("transformer_int8.pt",),
     )
     _fake_hf_api(
         monkeypatch,
@@ -11622,7 +11627,7 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
         kind = "repo",
         location = "unsloth/some-prequant",
         filename = "transformer_fp8.safetensors",
-        fallback_filename = "transformer.fp8.safetensors",
+        fallback_filenames = ("transformer.fp8.safetensors",),
     )
     monkeypatch.setattr(diffusion_mod, "usable_prequant_source", lambda *a, **k: source)
     monkeypatch.setattr(diffusion_mod, "select_transformer_quant_scheme", lambda *a, **k: "fp8")

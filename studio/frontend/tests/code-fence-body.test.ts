@@ -49,7 +49,7 @@ test("a blank line is one line tall, not nothing", () => {
   assert.equal(isBlankLine([{ content: " " }]), false);
   assert.equal(isBlankLine([{ content: "" }, { content: "" }]), false);
   assert.ok(
-    /if \(isBlankLine\(line\)\) \{\s*return <span className=\{LINE_CLASS\}>\{"\\n"\}<\/span>;/
+    /if \(!inline && isBlankLine\(line\)\) \{\s*return <span className=\{LINE_CLASS\}>\{"\\n"\}<\/span>;/
       .test(DEFER),
     "a blank line must render the newline streamdown renders for it",
   );

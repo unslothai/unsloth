@@ -1449,6 +1449,13 @@ export const it = {
             hfHub: "Cache dei modelli Hugging Face",
           },
         },
+        lowDisk: {
+          title: "Lo spazio su disco sta per esaurirsi",
+          criticalTitle: "Lo spazio su disco è quasi esaurito",
+          description:
+            "{free} liberi su {total}. Svuotare le cache può liberare spazio.",
+          action: "Controlla le cache",
+        },
       },
       environment: {
         title: "Ambiente",

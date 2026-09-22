@@ -31,6 +31,10 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "flux.2-klein": ("--llm",),
     "flux.2-dev": ("--llm",),
     "qwen-image": ("--qwen2vl",),
+    # 2.1 conditions on Qwen3-VL, which sd-cli takes through --llm. --qwen2vl is an alias of --llm
+    # that also turns on Qwen2-VL's vision path, so it is the wrong door even though both names
+    # reach the same field.
+    "qwen-image-2.1": ("--llm",),
     "flux.1": ("--clip_l", "--t5xxl"),
 }
 
