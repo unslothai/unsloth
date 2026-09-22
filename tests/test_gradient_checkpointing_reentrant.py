@@ -1,18 +1,4 @@
-# Unsloth - Open source fine-tuning for LLMs
-# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+# SPDX-License-Identifier: AGPL-3.0-only
 """Generated RL configs must keep the reentrant gradient checkpoint path.
 
 Unsloth gradient checkpointing needs `use_reentrant=True`. The non-reentrant
@@ -89,6 +75,33 @@ def test_other_checkpoint_kwargs_are_preserved():
     assert config.gradient_checkpointing_kwargs == {
         "determinism_check": "none",
         "use_reentrant": True,
+    }
+
+
+def test_a_config_asking_for_context_fn_is_left_alone():
+    # torch/utils/checkpoint.py raises "Passing `context_fn` or `debug` is only
+    # supported when use_reentrant=False" as soon as a checkpointed forward
+    # runs, so pinning here would turn a working setup into a crash.
+    sentinel = object()
+    config = _run_post(_Config(kwargs = {"use_reentrant": False,
+                                         "context_fn": sentinel}))
+    assert config.gradient_checkpointing_kwargs == {
+        "use_reentrant": False, "context_fn": sentinel,
+    }
+
+
+def test_a_config_asking_for_debug_is_left_alone():
+    config = _run_post(_Config(kwargs = {"use_reentrant": False, "debug": True}))
+    assert config.gradient_checkpointing_kwargs == {
+        "use_reentrant": False, "debug": True,
+    }
+
+
+def test_a_falsy_debug_does_not_block_the_pin():
+    # debug=False is the torch default, so it is not a non-reentrant request.
+    config = _run_post(_Config(kwargs = {"debug": False}))
+    assert config.gradient_checkpointing_kwargs == {
+        "debug": False, "use_reentrant": True,
     }
 
 

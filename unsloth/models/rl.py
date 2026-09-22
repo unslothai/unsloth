@@ -2738,13 +2738,17 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     #
     # Only touched when gradient checkpointing is actually on, since otherwise
     # transformers never reads these kwargs.
+    # A config asking for context_fn or debug is left alone. torch accepts
+    # neither under use_reentrant=True and raises as soon as a checkpointed
+    # forward runs, so pinning those would turn a working non-reentrant setup
+    # into a crash. determinism_check carries over fine and is not excluded.
     RLConfig_post = (
         "        # Unsloth: keep the reentrant checkpoint path\n"
         "        if getattr(self, 'gradient_checkpointing', False):\n"
-        "            _gc_kwargs = getattr(self, 'gradient_checkpointing_kwargs', None)\n"
-        "            if _gc_kwargs is None: _gc_kwargs = {}\n"
-        "            _gc_kwargs['use_reentrant'] = True\n"
-        "            self.gradient_checkpointing_kwargs = _gc_kwargs\n"
+        "            _gc_kwargs = getattr(self, 'gradient_checkpointing_kwargs', None) or {}\n"
+        "            if _gc_kwargs.get('context_fn') is None and not _gc_kwargs.get('debug', False):\n"
+        "                _gc_kwargs['use_reentrant'] = True\n"
+        "                self.gradient_checkpointing_kwargs = _gc_kwargs\n"
     )
 
     RLTrainer_extras = patch_functions(
