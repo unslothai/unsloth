@@ -890,13 +890,32 @@ _COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_patched_composite_prefix_renaming"
 # imported, so a zoo too old to define it cannot turn a skipped repair into an ImportError.
 _ZOO_COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_zoo_patched_composite_prefix_renaming"
 
+# zoo's `temporary_patches/common.py:WRAPPER_INNER_ATTR`: the explicit link a wrapper on that
+# same function publishes to whatever it wrapped. Following it matters because zoo's MoE
+# wrapper (`temporary_patches/moe_utils_bnb4bit.py`) deliberately does NOT publish
+# `__wrapped__` -- zoo's re-scope unwraps `__wrapped__` to pick what to wrap, so a MoE wrapper
+# carrying one would be replaced rather than sat on top of, dropping its per-expert converters.
+# zoo registers the re-scope BEFORE the MoE patch, so the MoE wrapper is on top in the normal
+# case, and a `__wrapped__`-only walk stops there and reports no repair for one that is
+# running underneath. Spelled as a literal, like the flag above, so a zoo too old to define it
+# cannot turn a skipped repair into an ImportError.
+_ZOO_WRAPPER_INNER_ATTR = "_unsloth_wrapper_inner"
+
+
+def _next_in_wrapper_chain(function):
+    """The callable `function` wraps, by either link, or None at the end of the chain."""
+    return (
+        getattr(function, "__wrapped__", None)
+        or getattr(function, _ZOO_WRAPPER_INNER_ATTR, None)
+    )
+
 
 def _composite_prefix_renaming_repaired():
     """Is the live conversion mapping repaired, by either copy of the fix?
 
     Ours and unsloth_zoo's are interchangeable here: whichever installed first, the mapping
-    is re-scoped and the downgrade advice would contradict it. The whole `__wrapped__` chain,
-    for the reason `_zoo_composite_prefix_renaming_installed` gives.
+    is re-scoped and the downgrade advice would contradict it. The whole chain, by either
+    link, for the reason `_zoo_composite_prefix_renaming_installed` gives.
     """
     try:
         from transformers import conversion_mapping
@@ -908,7 +927,23 @@ def _composite_prefix_renaming_repaired():
         for flag in (_COMPOSITE_PREFIX_RENAMING_FLAG, _ZOO_COMPOSITE_PREFIX_RENAMING_FLAG):
             if getattr(function, flag, False):
                 return True
-        function = getattr(function, "__wrapped__", None)
+        function = _next_in_wrapper_chain(function)
+        seen += 1
+    return False
+
+
+def _own_composite_prefix_renaming_installed(function):
+    """Is THIS repair already somewhere in the chain hanging off `function`?
+
+    Through the chain rather than on the top object, because another library may have wrapped
+    us since we installed, and a top-only test would then stack a second copy of this repair
+    that walks every submodule again for nothing. Same bound as the zoo check.
+    """
+    seen = 0
+    while function is not None and seen < 8:
+        if getattr(function, _COMPOSITE_PREFIX_RENAMING_FLAG, False):
+            return True
+        function = _next_in_wrapper_chain(function)
         seen += 1
     return False
 
@@ -916,9 +951,12 @@ def _composite_prefix_renaming_repaired():
 def _zoo_composite_prefix_renaming_installed():
     """Has unsloth_zoo's copy of this repair already wrapped the function?
 
-    The whole `__wrapped__` chain, because zoo also wraps the same function in
-    `temporary_patches/moe_utils_bnb4bit.py` without setting `__wrapped__`, so the repair can
-    sit under another wrapper. Bounded, so a malformed chain cannot spin.
+    The whole chain, following `__wrapped__` OR `_unsloth_wrapper_inner`, because zoo also
+    wraps the same function in `temporary_patches/moe_utils_bnb4bit.py` and that wrapper
+    publishes only the latter -- see `_ZOO_WRAPPER_INNER_ATTR`. Since zoo installs the repair
+    first, the MoE wrapper is normally on top, so a `__wrapped__`-only walk answers False for a
+    repair that is live and stacks a second wrapper for nothing. Bounded, so a malformed chain
+    cannot spin.
     """
     try:
         from transformers import conversion_mapping
@@ -929,7 +967,7 @@ def _zoo_composite_prefix_renaming_installed():
     while function is not None and seen < 8:
         if getattr(function, _ZOO_COMPOSITE_PREFIX_RENAMING_FLAG, False):
             return True
-        function = getattr(function, "__wrapped__", None)
+        function = _next_in_wrapper_chain(function)
         seen += 1
     return False
 
@@ -1215,11 +1253,15 @@ def fix_transformers_composite_prefix_renaming():
         return
     # The mark travels on the wrapper, so a reload of conversion_mapping -- which puts the
     # upstream function back in a namespace any flag we set would survive -- re-patches rather
-    # than being skipped.
-    if getattr(original, _COMPOSITE_PREFIX_RENAMING_FLAG, False):
+    # than being skipped. Read through the chain, because another library may have wrapped us
+    # since, and wrapping ourselves twice costs a second walk of every submodule per load.
+    if _own_composite_prefix_renaming_installed(original):
         return
-    # Probe and wrap the ORIGINAL, never a wrapper of ours that lost its mark.
-    original = getattr(original, "__wrapped__", original)
+    # Wrap whatever is live, never `original.__wrapped__`. An unconditional unwrap took one
+    # level off the chain, and any third-party wrapper that plays by the rules and uses
+    # functools.wraps publishes `__wrapped__`, so that level was THEIRS: measured on
+    # transformers 5.5.4, such a wrapper stopped being called entirely, and the alias sweep
+    # then spread the replacement to every module holding it.
 
     @functools.wraps(original)
     def get_model_conversion_mapping(*args, **kwargs):
