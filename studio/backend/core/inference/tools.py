@@ -16280,8 +16280,7 @@ def _check_signal_escape_patterns(code: str):
         }
     )
     _NETWORK_DESTINATION_ARG["httpx.stream"] = (1, ("url",), "url")
-    # Constructors whose instances carry the methods below, so `s = requests.Session(); s.get(url)`
-    # reads as `requests.Session.get`. `requests.session()` is a factory for the same object.
+    # Constructors whose instances own the methods below; `requests.session()` returns a Session.
     _VERB_CLIENTS = (
         "requests.Session",
         "requests.sessions.Session",
@@ -17220,20 +17219,16 @@ def _check_signal_escape_patterns(code: str):
             self.collecting = True
             # Whether any alias map can ever be non-empty. See `_NETWORK_SOURCE_HINTS`.
             self.aliases_possible = network_possible
-            # Receiver path -> every client class ever stored there, accumulated like the maps
-            # above, so `s = requests.Session(); s.get(url)` reads as `requests.Session.get`. A path
-            # is a name or a dotted attribute chain. A method's own first parameter is written as
-            # its class family, `<A>`, so `self.s` set in one method and `this.s` read in another,
-            # or in a subclass, are the same attribute, while an unrelated class's `self.s` is not.
+            # Receiver path (a name or dotted chain) -> every client class ever stored there,
+            # accumulated like the maps above. A method's first parameter is written as its class
+            # family, `<A>`, so `self.s` and `this.s` match across methods and subclasses only.
             self.instance_aliases: "dict[str, set[str]]" = {}
-            # Receiver path -> every value stored in its `proxies` / `proxy` attribute, including
-            # through `update()` and a subscript, since a session sends through them.
+            # Receiver path -> every value stored in its `proxies` / `proxy`, including by
+            # `update()` and subscript.
             self.proxy_values: "dict[str, list[ast.AST]]" = {}
-            # Class id -> its family: the classes in this file joined through their base names,
-            # since an attribute set in a base is read through a subclass and the other way round.
+            # Class id -> its family: the classes in this file joined through their base names.
             self.class_family: "dict[int, str]" = {}
-            # Method id -> (its first parameter, its class family), and the stack of those in
-            # effect while visiting.
+            # Method id -> (first parameter, class family); `self_names` is the stack in effect.
             self.method_self: "dict[int, tuple[str, str]]" = {}
             if network_possible:
                 classes = [n for n in nodes if isinstance(n, ast.ClassDef)]
@@ -17693,8 +17688,7 @@ def _check_signal_escape_patterns(code: str):
                 starred = self._star_imported_fq(parts[0], at)
                 if starred:
                     candidates.append(starred)
-            # A method on a client, reached through the constructor call itself or through a path
-            # that holds one: `requests.Session().get` and `s.get` both read as
+            # A client method: `requests.Session().get` and `s.get` both read as
             # `requests.Session.get`.
             held: "list[tuple[set[str], list[str]]]" = []
             if not isinstance(cur, ast.Name):
@@ -17898,8 +17892,7 @@ def _check_signal_escape_patterns(code: str):
                         )
                     if found is not None:
                         destinations.append((found, True, kind))
-                # A proxy is where the socket really connects: one passed to this call, or one
-                # configured on the client it is called on.
+                # Proxies passed to this call or configured on its client.
                 proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
                 if isinstance(node.func, ast.Attribute):
                     receiver = self._receiver_path(node.func.value)
