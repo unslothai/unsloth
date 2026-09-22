@@ -234,8 +234,8 @@ def test_a_failed_main_build_degrades_instead_of_failing_the_install(monkeypatch
 
     assert attempted and attempted[0].name == "diffusers-main.txt"
     assert (
-        steps["diffusers-main.txt"] == "skipped"
-    ), "a failed build recorded as 'ran' would report an install that never happened"
+        steps["diffusers-main.txt"] == "failed"
+    ), "the setup fast path reads 'failed' to stop forcing a pass that cannot succeed"
     assert notes and "keeps the pinned" in notes[0]
 
 
@@ -610,3 +610,76 @@ def test_the_full_deps_escape_hatch_reaches_both_diffusers_steps(monkeypatch):
     assert installed == [], installed
     assert len(calls) == 1 and "opted out" in calls[0], calls
     assert module._diffusers_main_supersedes_release() is False
+
+
+def _fast_path_probe_module(
+    monkeypatch,
+    *,
+    resident,
+    git = True,
+    last = None,
+    requested = True,
+):
+    module = _probe_module("install_python_stack_fastpath_probe")
+    if requested:
+        monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", "0")
+    monkeypatch.setattr(module, "_has_working_git", lambda: git)
+    monkeypatch.setattr(module, "_diffusers_main_resident", lambda *a, **k: resident)
+    manifest = {"step_results": {"diffusers-main.txt": last}} if last else {}
+    monkeypatch.setattr(module.install_manifest, "read_manifest", lambda *a, **k: manifest)
+    return module
+
+
+def test_the_fast_path_is_forced_when_the_main_build_never_went_in(monkeypatch):
+    """An install updated by an installer that predates 11c is current and still on the release."""
+    module = _fast_path_probe_module(monkeypatch, resident = False)
+    assert module._diffusers_main_needs_dependency_pass() is True
+
+
+def test_a_resident_main_build_keeps_the_fast_path(monkeypatch):
+    module = _fast_path_probe_module(monkeypatch, resident = True)
+    assert module._diffusers_main_needs_dependency_pass() is False
+
+
+def test_a_host_without_git_keeps_the_fast_path(monkeypatch):
+    """11c skips without git, so forcing the pass there would repeat it on every update."""
+    module = _fast_path_probe_module(monkeypatch, resident = False, git = False)
+    assert module._diffusers_main_needs_dependency_pass() is False
+
+
+def test_a_recorded_failed_build_keeps_the_fast_path(monkeypatch):
+    """A host that cannot reach github.com would otherwise run the whole pass on every update."""
+    module = _fast_path_probe_module(monkeypatch, resident = False, last = "failed")
+    assert module._diffusers_main_needs_dependency_pass() is False
+    module = _fast_path_probe_module(monkeypatch, resident = False, last = "skipped")
+    assert module._diffusers_main_needs_dependency_pass() is True
+
+
+def test_opting_out_forces_the_pass_only_while_the_main_build_is_resident(monkeypatch):
+    """11b reinstates the release, but only if the pass runs."""
+    module = _fast_path_probe_module(monkeypatch, resident = True, requested = False)
+    assert module._diffusers_main_needs_dependency_pass() is True
+    module = _fast_path_probe_module(monkeypatch, resident = False, requested = False)
+    assert module._diffusers_main_needs_dependency_pass() is False
+
+
+@pytest.mark.parametrize("script", ["setup.sh", "setup.ps1"])
+def test_both_fast_paths_consult_the_probe(script):
+    source = (REPO_ROOT / "studio" / script).read_text(encoding = "utf-8")
+    assert "--diffusers-main-needs-dependency-pass" in source
+
+
+def test_the_probe_flag_answers_without_a_traceback():
+    """A crash also exits 1, which setup.sh reads as 'keep the fast path'."""
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, str(STACK), "--diffusers-main-needs-dependency-pass"],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert result.returncode in (0, 1), result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
