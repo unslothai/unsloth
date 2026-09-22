@@ -857,7 +857,15 @@ def plan_diffusion_memory(
         reasons.append(_STREAMED_TE_REASON)
     else:
         policy = OFFLOAD_MODEL
-        reasons.append("companions exceed budget; whole-module offload of every component")
+        # Both group tiers also fail when the companion split is simply UNKNOWN, and reporting that as "exceeds
+        # budget" sends anyone reading the log looking for a card that is too small.
+        if group_floor is None:
+            reasons.append(
+                "companion size unknown, so no streamed tier can be sized; "
+                "whole-module offload of every component"
+            )
+        else:
+            reasons.append("companions exceed budget; whole-module offload of every component")
 
     # The legacy cpu_offload flag applies only when no memory_mode was supplied, so an explicit `fast` stays resident.
     if (
