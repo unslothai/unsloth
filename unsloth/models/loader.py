@@ -207,6 +207,29 @@ def _loaded_skip_modules(model_config):
     )
 
 
+def _config_uses_remote_code(config):
+    """Whether this config resolves to model code that lives outside transformers.
+
+    `trust_remote_code = True` only matters when the checkpoint ships its own
+    modeling files: an `auto_map` on the config (or one of its sub-configs), or a
+    config class loaded out of `transformers_modules`. Passing the flag for an
+    architecture transformers itself ships (a habit, and what most notebooks do)
+    changes nothing about where the code comes from, so the compiler can still
+    read and rewrite it. Skipping the compiler in that case silently drops the
+    fast LoRA forward, the fused loss and the compiled norms, which is where the
+    speed is. Unknown (no config) keeps the old, conservative answer.
+    """
+    if config is None:
+        return True
+    if (getattr(type(config), "__module__", "") or "").startswith("transformers_modules"):
+        return True
+    for sub in ("text_config", "vision_config", "audio_config"):
+        cfg = getattr(config, sub, None)
+        if cfg is not None and getattr(cfg, "auto_map", None):
+            return True
+    return bool(getattr(config, "auto_map", None))
+
+
 def _config_diff(config):
     if isinstance(config, dict):
         return config
@@ -1800,7 +1823,9 @@ class FastModel(FastBaseModel):
                 import_from_cache = False,
                 disable = False,
                 return_logits = return_logits,
-                trust_remote_code = trust_remote_code,
+                # Only real remote code is untraceable. A native architecture loaded
+                # with trust_remote_code = True keeps every optimization.
+                trust_remote_code = trust_remote_code and _config_uses_remote_code(model_config),
                 unsloth_force_compile = unsloth_force_compile,
             )
         for model_type in DISABLE_SDPA_MODEL_NAMES:
