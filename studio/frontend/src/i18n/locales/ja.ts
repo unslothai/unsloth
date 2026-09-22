@@ -166,6 +166,8 @@ export const ja = {
       noChatsYet: "チャットがまだありません",
       // Shown under an empty project folder in the sidebar.
       noChats: "チャットなし",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "すべてのプロジェクトをピン留め済み",
       showMore: "もっと見る",
       showLess: "表示を減らす",
       settings: "設定",
