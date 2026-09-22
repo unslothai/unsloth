@@ -1020,10 +1020,19 @@ def _guard_kbit_prep_against_peft_models():
     """
     try:
         import trl
+    except Exception:
+        return False
+    try:
         if Version(trl.__version__) >= Version("0.24.0"):
             return False
     except Exception:
-        return False
+        # A TRL run from a source tree with no distribution metadata sets
+        # __version__ = "unknown", which does not parse. Fall through to the
+        # source check rather than bailing, because bailing leaves exactly the
+        # pre-0.24 installs this exists for on the upcast. The source check is
+        # self-guarding: 0.24.0 and above already carry the clause, so they
+        # spell the branch differently and never match OLD.
+        pass
     try:
         from trl.models import utils as trl_models_utils
     except Exception:

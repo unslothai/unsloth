@@ -169,3 +169,29 @@ def test_an_unrecognised_branch_is_left_alone(trl_modules, monkeypatch):
     original = trl_modules.utils.prepare_peft_model
     assert _guard_kbit_prep_against_peft_models() is False
     assert trl_modules.utils.prepare_peft_model is original
+
+
+def test_a_source_checkout_with_no_metadata_is_still_guarded(trl_modules):
+    """TRL run from a source tree sets ``__version__ = "unknown"``, which does
+    not parse. Bailing there would leave exactly the pre-0.24 installs this
+    exists for on the upcast."""
+    trl_modules.trl.__version__ = "unknown"
+    assert _guard_kbit_prep_against_peft_models() is True
+    trl_modules.utils.prepare_peft_model(FakePeftModel(), None, Args())
+    assert "kbit_prep" not in trl_modules.calls
+
+
+def test_an_unparseable_version_does_not_patch_an_already_guarded_trl(trl_modules):
+    """Falling through on an unparseable version is only safe because the
+    source check is self-guarding: 0.24.0 and above spell the branch with the
+    clause already in it, so there is nothing for us to match."""
+    trl_modules.trl.__version__ = "unknown"
+    src = TRL_0_22_2_SOURCE.replace(
+        "if is_qlora and not is_sharded_qlora:",
+        "if is_qlora and not is_sharded_qlora and not isinstance(model, PeftModel):",
+    )
+    _seed_linecache("<trl-0.24-fixture>", src)
+    exec(compile(src, "<trl-0.24-fixture>", "exec"), vars(trl_modules.utils))
+    original = trl_modules.utils.prepare_peft_model
+    assert _guard_kbit_prep_against_peft_models() is False
+    assert trl_modules.utils.prepare_peft_model is original
