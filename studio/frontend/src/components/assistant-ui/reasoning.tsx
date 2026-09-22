@@ -7,16 +7,13 @@
 
 import {
   MarkdownText,
-  MarkdownTextSource,
   SearchImagesEnabledContext,
 } from "@/components/assistant-ui/markdown-text";
 import {
-  type ReasoningPageBoundary,
-  ReasoningPageSelector,
-  createReasoningPageBoundary,
-  isReasoningPageBoundaryValid,
-  shouldPaginateReasoning,
-} from "@/components/assistant-ui/reasoning-pagination";
+  REASONING_TRANSCRIPT_THRESHOLD,
+  type ReasoningReadingAnchor,
+} from "./reasoning-transcript-index";
+import { ReasoningTranscript } from "./reasoning-transcript";
 import {
   Collapsible,
   CollapsibleContent,
@@ -32,6 +29,7 @@ import {
 import {
   clearReasoningRound,
   foldIsActive,
+  isRenderableRenderHtmlToolPart,
   resolveReasoningGroupDuration,
   resolveReasoningOpen,
   resolveReasoningToggle,
@@ -53,7 +51,6 @@ import {
   reasoningRoundKey,
 } from "@/components/assistant-ui/thinking-fold";
 import { toolRunIsExempt } from "@/components/assistant-ui/tool-fold-exemptions";
-import { isRenderableRenderHtmlToolPart } from "@/features/chat/artifacts/html-fences";
 import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { formatWorkedFor } from "@/lib/format-worked-for";
@@ -79,14 +76,11 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { ScrollPane } from "./scroll-pane";
 const ANIMATION_DURATION = 200;
-const AUTO_SCROLL_THRESHOLD_PX = 24;
 
 function selectionIntersectsElement(
   selection: Selection | null,
@@ -173,7 +167,10 @@ function ReasoningRoot({
     "data-variant": variant,
     open: isOpen,
     onOpenChange: handleOpenChange,
-    className: cn("group/reasoning-root", reasoningVariants({ variant, className })),
+    className: cn(
+      "group/reasoning-root",
+      reasoningVariants({ variant, className }),
+    ),
     style: {
       "--animation-duration": `${ANIMATION_DURATION}ms`,
     } as CSSProperties,
@@ -273,6 +270,7 @@ function ReasoningContent({
     return (
       <UnmeasuredCollapsibleContent
         data-slot="reasoning-content"
+        data-streaming={streaming ? "" : undefined}
         closeDurationMs={ANIMATION_DURATION}
         className={cn(
           shared,
@@ -298,6 +296,7 @@ function ReasoningContent({
   return (
     <CollapsibleContent
       data-slot="reasoning-content"
+      data-streaming={streaming ? "" : undefined}
       className={cn(
         shared,
         "data-[state=closed]:animate-collapsible-up",
@@ -315,79 +314,14 @@ function ReasoningContent({
 }
 
 function ReasoningText({
-  autoScroll,
   className,
-  pageKey,
   streaming,
+  virtualized = false,
   children,
   ...props
-}: ComponentProps<"div"> & {
-  autoScroll?: boolean;
-  pageKey?: string;
-  streaming?: boolean;
-}) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const shouldAutoScrollRef = useRef(true);
-  const detachedFromBottomRef = useRef(false);
-  const lastScrollTopRef = useRef(0);
-
-  useEffect(() => {
-    if (!(streaming && (autoScroll ?? true) && scrollRef.current)) {
-      return;
-    }
-    const el = scrollRef.current;
-    el.scrollTop = el.scrollHeight;
-    const updateAutoScroll = () => {
-      const currentScrollTop = el.scrollTop;
-      if (currentScrollTop < lastScrollTopRef.current) {
-        detachedFromBottomRef.current = true;
-      }
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      if (
-        detachedFromBottomRef.current &&
-        distanceFromBottom <= AUTO_SCROLL_THRESHOLD_PX
-      ) {
-        detachedFromBottomRef.current = false;
-      }
-      shouldAutoScrollRef.current = !detachedFromBottomRef.current;
-      lastScrollTopRef.current = currentScrollTop;
-    };
-    const handleWheel = (event: WheelEvent) => {
-      if (event.deltaY < 0) {
-        detachedFromBottomRef.current = true;
-        shouldAutoScrollRef.current = false;
-      }
-    };
-    const observer = new MutationObserver(() => {
-      if (shouldAutoScrollRef.current) {
-        el.scrollTop = el.scrollHeight;
-      }
-    });
-    el.addEventListener("scroll", updateAutoScroll);
-    el.addEventListener("wheel", handleWheel, { passive: true });
-    observer.observe(el, {
-      childList: true,
-      subtree: true,
-      characterData: true,
-    });
-    lastScrollTopRef.current = el.scrollTop;
-    detachedFromBottomRef.current = false;
-    updateAutoScroll();
-    return () => {
-      observer.disconnect();
-      el.removeEventListener("scroll", updateAutoScroll);
-      el.removeEventListener("wheel", handleWheel);
-    };
-  }, [autoScroll, streaming]);
-
-  useEffect(() => {
-    if (autoScroll === false && scrollRef.current) {
-      scrollRef.current.scrollTop = 0;
-    }
-  }, [autoScroll, pageKey]);
+}: ComponentProps<"div"> & { streaming?: boolean; virtualized?: boolean }) {
   return (
     <div
-      ref={scrollRef}
       data-slot="reasoning-text"
       data-streaming={streaming ? "" : undefined}
       className={cn(
@@ -395,15 +329,18 @@ function ReasoningText({
         // fade. The thread's own follow-scroll tracks it while it streams.
         "aui-reasoning-text relative z-0 pt-4 pb-0 leading-relaxed",
         "[&_p]:my-0 [&_p+p]:mt-4 [&_ul]:my-4 [&_ol]:my-4 [&_pre]:my-4",
-        "transform-gpu transition-[transform,opacity]",
-        "group-data-[state=open]/collapsible-content:animate-in",
-        "group-data-[state=closed]/collapsible-content:animate-out",
-        "group-data-[state=open]/collapsible-content:fade-in-0",
-        "group-data-[state=closed]/collapsible-content:fade-out-0",
-        "group-data-[state=open]/collapsible-content:slide-in-from-top-4",
-        "group-data-[state=closed]/collapsible-content:slide-out-to-top-4",
-        "group-data-[state=open]/collapsible-content:duration-(--animation-duration)",
-        "group-data-[state=closed]/collapsible-content:duration-(--animation-duration)",
+        !virtualized &&
+          cn(
+            "transform-gpu transition-[transform,opacity]",
+            "group-data-[state=open]/collapsible-content:animate-in",
+            "group-data-[state=closed]/collapsible-content:animate-out",
+            "group-data-[state=open]/collapsible-content:fade-in-0",
+            "group-data-[state=closed]/collapsible-content:fade-out-0",
+            "group-data-[state=open]/collapsible-content:slide-in-from-top-4",
+            "group-data-[state=closed]/collapsible-content:slide-out-to-top-4",
+            "group-data-[state=open]/collapsible-content:duration-(--animation-duration)",
+            "group-data-[state=closed]/collapsible-content:duration-(--animation-duration)",
+          ),
         className,
       )}
       {...props}
@@ -421,80 +358,6 @@ const ReasoningImpl: ReasoningMessagePartComponent = () => (
 
 const COPY_RESET_MS = 2000;
 
-function ReasoningPageNavigation({
-  hasEarlier,
-  hasNewer,
-  onEarlier,
-  onLatest,
-  onNewer,
-  start,
-  end,
-  total,
-}: {
-  hasEarlier: boolean;
-  hasNewer: boolean;
-  onEarlier: () => void;
-  onLatest: () => void;
-  onNewer: () => void;
-  start: number;
-  end: number;
-  total: number;
-}) {
-  const buttonClass =
-    "rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40";
-  return (
-    <nav
-      data-slot="reasoning-page-navigation"
-      aria-label="Reasoning pages"
-      className="flex min-w-0 flex-wrap items-center gap-1 border-b border-border/60 py-1"
-    >
-      <button
-        type="button"
-        className={buttonClass}
-        disabled={!hasEarlier}
-        onClick={onEarlier}
-      >
-        Earlier
-      </button>
-      <button
-        type="button"
-        className={buttonClass}
-        disabled={!hasNewer}
-        onClick={onNewer}
-      >
-        Newer
-      </button>
-      <button
-        type="button"
-        className={buttonClass}
-        disabled={!hasNewer}
-        onClick={onLatest}
-      >
-        Latest
-      </button>
-      <span className="ml-auto truncate text-xs text-muted-foreground tabular-nums">
-        {start + 1}–{end} of {total}
-      </span>
-    </nav>
-  );
-}
-
-function OversizedReasoningCode({ source }: { source: string }) {
-  return (
-    <div data-slot="reasoning-oversized-code" className="min-w-0">
-      <p className="mb-2 rounded bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
-        Showing part of an oversized code block. Copy reasoning preserves the
-        full source.
-      </p>
-      <ScrollPane
-        className="max-w-full rounded-md bg-muted/40 p-3"
-        scrollerClassName="overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs"
-      >
-        {source}
-      </ScrollPane>
-    </div>
-  );
-}
 function ReasoningCopyButton({
   startIndex,
   endIndex,
@@ -532,54 +395,57 @@ function ReasoningCopyButton({
   );
 }
 
-// Paging for a long trace, shared by the lead block and the rounds folded inside it so a long
-// later round is protected the same way the first one is.
-function useReasoningPages({
+// Keep an existing selection intact when a live trace crosses the windowing threshold.
+// An already-long saved trace is bounded on its first render.
+function useReasoningTranscriptMode({
   messageId,
   reasoningDocuments,
-  isStreaming,
   reasoningContentRef,
 }: {
   messageId: string;
   reasoningDocuments: readonly string[];
-  isStreaming: boolean;
   reasoningContentRef: RefObject<HTMLDivElement | null>;
 }) {
-  const reasoningText = reasoningDocuments.join("");
-  const wantsPagination = shouldPaginateReasoning(reasoningText);
-  const [storedPaginationSession, setPaginationSession] = useState(() => ({
-    history: [] as ReasoningPageBoundary[],
-    messageId,
-    started: wantsPagination,
-  }));
-  const paginationSession =
-    storedPaginationSession.messageId === messageId
-      ? storedPaginationSession
-      : { history: [], messageId, started: wantsPagination };
-  if (paginationSession !== storedPaginationSession) {
-    setPaginationSession(paginationSession);
-  }
-  const pageSelector = useMemo(() => new ReasoningPageSelector(), [messageId]);
-
-  // An already-long saved trace paginates on its first render. Only the live
-  // transition from short to long waits for an active selection to finish.
+  const wantsWindow =
+    reasoningDocuments.reduce((sum, text) => sum + text.length, 0) >
+    REASONING_TRANSCRIPT_THRESHOLD;
+  const [session, setSession] = useState<{
+    messageId: string;
+    active: boolean;
+    anchor?: ReasoningReadingAnchor;
+  }>({ messageId, active: wantsWindow });
+  if (session.messageId !== messageId || (!wantsWindow && session.active))
+    setSession({ messageId, active: wantsWindow });
   useEffect(() => {
-    if (!wantsPagination) {
-      if (paginationSession.started || paginationSession.history.length > 0) {
-        setPaginationSession({ history: [], messageId, started: false });
-      }
-      return;
-    }
-    if (paginationSession.started) {
-      return;
-    }
-
-    const startPagination = () => {
-      setPaginationSession((current) =>
-        current.messageId === messageId
-          ? { ...current, started: true }
-          : { history: [], messageId, started: true },
-      );
+    if (!wantsWindow) return;
+    if (session.active) return;
+    const activate = () => {
+      const content = reasoningContentRef.current;
+      const viewport = content?.closest(".aui-thread-viewport");
+      const top = viewport?.getBoundingClientRect().top ?? 0;
+      const passage =
+        content &&
+        [
+          ...content.querySelectorAll<HTMLElement>(
+            "p, pre, li, h1, h2, h3, h4, h5, h6",
+          ),
+        ].find(
+          (node) =>
+            node.textContent &&
+            node.getBoundingClientRect().top >= top &&
+            node.getBoundingClientRect().top <
+              top + (viewport?.clientHeight ?? 0),
+        );
+      setSession({
+        messageId,
+        active: true,
+        anchor: passage
+          ? {
+              text: passage.textContent!.slice(0, 200),
+              top: passage.getBoundingClientRect().top,
+            }
+          : undefined,
+      });
     };
     if (
       !selectionIntersectsElement(
@@ -587,8 +453,8 @@ function useReasoningPages({
         reasoningContentRef.current,
       )
     ) {
-      startPagination();
-      return;
+      const timer = setTimeout(activate, 0);
+      return () => clearTimeout(timer);
     }
     const handleSelectionChange = () => {
       if (
@@ -596,93 +462,23 @@ function useReasoningPages({
           window.getSelection(),
           reasoningContentRef.current,
         )
-      ) {
-        startPagination();
-      }
+      )
+        activate();
     };
     document.addEventListener("selectionchange", handleSelectionChange);
     return () =>
       document.removeEventListener("selectionchange", handleSelectionChange);
-  }, [messageId, paginationSession, wantsPagination]);
-
-  const historyIsValid = paginationSession.history.every((boundary) =>
-    isReasoningPageBoundaryValid(reasoningText, boundary),
-  );
-  useEffect(() => {
-    if (!historyIsValid) {
-      setPaginationSession((current) =>
-        current.messageId === messageId
-          ? { ...current, history: [] }
-          : current,
-      );
-    }
-  }, [historyIsValid, messageId]);
-  const validHistory = historyIsValid ? paginationSession.history : [];
-  const selectedEnd = validHistory.at(-1)?.end ?? null;
-  const paginationActive = paginationSession.started && wantsPagination;
-  const page = useMemo(
-    () =>
-      pageSelector.selectDocument(reasoningDocuments, {
-        end: paginationActive ? selectedEnd : reasoningText.length,
-
-        streaming:
-          paginationActive && isStreaming && selectedEnd === null,
-      }),
-    [
-      isStreaming,
-      pageSelector,
-      paginationActive,
-      reasoningDocuments,
-      reasoningText,
-      selectedEnd,
-    ],
-  );
-  const viewingLatestPage = !(paginationActive && page.hasNewer);
-
-  const showEarlierPage = useCallback(() => {
-    if (!page.hasEarlier) {
-      return;
-    }
-    setPaginationSession((current) =>
-      current.messageId === messageId
-        ? {
-            ...current,
-            history: [
-              ...current.history,
-              createReasoningPageBoundary(reasoningText, page.start),
-            ],
-          }
-        : current,
-    );
-  }, [messageId, page.hasEarlier, page.start, reasoningText]);
-  const showNewerPage = useCallback(() => {
-    setPaginationSession((current) =>
-      current.messageId === messageId
-        ? { ...current, history: current.history.slice(0, -1) }
-        : current,
-    );
-  }, [messageId]);
-  const showLatestPage = useCallback(() => {
-    setPaginationSession((current) =>
-      current.messageId === messageId ? { ...current, history: [] } : current,
-    );
-  }, [messageId]);
-
+  }, [messageId, reasoningContentRef, session.active, wantsWindow]);
   return {
-    reasoningText,
-    paginationActive,
-    page,
-    viewingLatestPage,
-    showEarlierPage,
-    showNewerPage,
-    showLatestPage,
+    active:
+      wantsWindow && (session.messageId === messageId ? session.active : true),
+    documents: reasoningDocuments,
+    anchor: session.anchor,
   };
 }
 
-type ReasoningPages = ReturnType<typeof useReasoningPages>;
-
 function ReasoningBody({
-  pages,
+  transcript,
   messageId,
   messageHasRenderableRenderHtmlTool,
   isStreaming,
@@ -690,7 +486,7 @@ function ReasoningBody({
   textClassName,
   children,
 }: {
-  pages: ReasoningPages;
+  transcript: ReturnType<typeof useReasoningTranscriptMode>;
   messageId: string;
   messageHasRenderableRenderHtmlTool: boolean;
   isStreaming: boolean;
@@ -698,50 +494,27 @@ function ReasoningBody({
   textClassName?: string;
   children: ReactNode;
 }) {
-  const { page, paginationActive, reasoningText, viewingLatestPage } = pages;
   return (
-    <>
-      {paginationActive && (
-        <ReasoningPageNavigation
-          hasEarlier={page.hasEarlier}
-          hasNewer={page.hasNewer}
-          onEarlier={pages.showEarlierPage}
-          onNewer={pages.showNewerPage}
-          onLatest={pages.showLatestPage}
-          start={page.start}
-          end={page.end}
-          total={reasoningText.length}
+    <ReasoningText
+      className={textClassName}
+      streaming={isStreaming || retainStreamingHeight}
+      virtualized={transcript.active}
+    >
+      {transcript.active ? (
+        <ReasoningTranscript
+          key={messageId}
+          initialAnchor={transcript.anchor}
+          documents={transcript.documents}
+          messageId={messageId}
+          messageHasRenderableRenderHtmlTool={
+            messageHasRenderableRenderHtmlTool
+          }
+          streaming={isStreaming}
         />
+      ) : (
+        children
       )}
-      <ReasoningText
-        autoScroll={viewingLatestPage}
-        className={textClassName}
-        pageKey={paginationActive ? `${page.start}:${page.end}` : undefined}
-        streaming={isStreaming || retainStreamingHeight}
-      >
-        {paginationActive ? (
-          <>
-            {page.oversizedCode ? (
-              <OversizedReasoningCode source={page.markdown} />
-            ) : (
-              <SearchImagesEnabledContext.Provider value={false}>
-                <MarkdownTextSource
-                  key={`${page.documentIndex}:${page.start}`}
-                  messageHasRenderableRenderHtmlTool={
-                    messageHasRenderableRenderHtmlTool
-                  }
-                  messageId={messageId}
-                  sourceText={page.markdown}
-                  streaming={isStreaming && viewingLatestPage}
-                />
-              </SearchImagesEnabledContext.Provider>
-            )}
-          </>
-        ) : (
-          children
-        )}
-      </ReasoningText>
-    </>
+    </ReasoningText>
   );
 }
 
@@ -754,7 +527,8 @@ const ReasoningGroupImpl: ReasoningGroupComponent = (props) => {
   );
   const folded = useAuiState(
     ({ message }) =>
-      foldToolActivity && isFoldedReasoningGroup(message.parts, props.startIndex),
+      foldToolActivity &&
+      isFoldedReasoningGroup(message.parts, props.startIndex),
   );
   if (folded) {
     return <FoldedReasoningRound {...props} />;
@@ -810,10 +584,9 @@ const FoldedReasoningRound: ReasoningGroupComponent = ({
         .map((part) => ("text" in part ? (part as { text: string }).text : "")),
     ),
   );
-  const pages = useReasoningPages({
+  const transcript = useReasoningTranscriptMode({
     messageId,
     reasoningDocuments,
-    isStreaming,
     reasoningContentRef,
   });
   const closesTrace = useAuiState(({ message }) =>
@@ -827,7 +600,7 @@ const FoldedReasoningRound: ReasoningGroupComponent = ({
       className={cn(!open && "hidden")}
     >
       <ReasoningBody
-        pages={pages}
+        transcript={transcript}
         messageId={messageId}
         messageHasRenderableRenderHtmlTool={messageHasRenderableRenderHtmlTool}
         isStreaming={isStreaming}
@@ -900,10 +673,9 @@ const ReasoningGroupBlock = ({
         .map((part) => ("text" in part ? (part as { text: string }).text : "")),
     ),
   );
-  const pages = useReasoningPages({
+  const transcript = useReasoningTranscriptMode({
     messageId,
     reasoningDocuments,
-    isStreaming: isReasoningStreaming,
     reasoningContentRef,
   });
 
@@ -1062,9 +834,11 @@ const ReasoningGroupBlock = ({
         ref={reasoningContentRef}
       >
         <ReasoningBody
-          pages={pages}
+          transcript={transcript}
           messageId={messageId}
-          messageHasRenderableRenderHtmlTool={messageHasRenderableRenderHtmlTool}
+          messageHasRenderableRenderHtmlTool={
+            messageHasRenderableRenderHtmlTool
+          }
           isStreaming={isReasoningStreaming}
           retainStreamingHeight={retainStreamingHeight}
         >

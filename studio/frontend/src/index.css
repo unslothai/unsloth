@@ -2814,6 +2814,44 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* Flatten code blocks: single border, language label, then code directly */
+	/* Reasoning fence fragments form one continuous surface. Interior fragments have
+	   no padding, border, or rounding at their seams. */
+	.aui-reasoning-code-fragment {
+		padding-inline: calc(1rem * var(--ui-space-scale, 1));
+		background: var(--color-background);
+		border-inline: 1px solid var(--color-border);
+		font-size: calc(0.8125rem * var(--ui-font-scale, 1));
+		line-height: 1.55;
+	}
+	.aui-reasoning-code-first {
+		margin-top: calc(1rem * var(--ui-space-scale, 1));
+		border-top: 1px solid var(--color-border);
+		padding-top: calc(0.75rem * var(--ui-space-scale, 1));
+		border-radius: 1.5rem 1.5rem 0 0;
+	}
+	.aui-reasoning-code-last {
+		border-bottom: 1px solid var(--color-border);
+		padding-bottom: calc(0.75rem * var(--ui-space-scale, 1));
+		border-bottom-left-radius: 1.5rem;
+		border-bottom-right-radius: 1.5rem;
+	}
+	.aui-reasoning-code-fragment pre,
+	.aui-reasoning-code-fragment code {
+		font-family: var(--custom-code-font, "Fira Code", ui-monospace, monospace);
+	}
+	.dark .aui-reasoning-code-fragment {
+		background: var(--color-code-block);
+	}
+	.aui-reasoning-code-fragment code > span::before {
+		display: none !important;
+	}
+	.aui-reasoning-prose-fragment > div > :first-child {
+		margin-top: 0;
+	}
+	[data-reasoning-fragment][data-index="0"] > .aui-reasoning-prose-fragment {
+		padding-top: 0;
+	}
+
 	[data-streamdown="code-block-body"] {
 		border: none !important;
 		border-radius: 0 !important;

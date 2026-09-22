@@ -379,7 +379,7 @@ test("later thinking rounds render inside the lead, with no header of their own"
     reasoning.indexOf("const FoldedReasoningRound"),
     reasoning.indexOf("const ReasoningGroupBlock"),
   );
-  assert.match(foldedRound, /const pages = useReasoningPages\(/);
+  assert.match(foldedRound, /const transcript = useReasoningTranscriptMode\(/);
   assert.match(foldedRound, /<ReasoningBody\n/);
   // Copy on the lead reaches the folded rounds, which have no Copy of their own.
   assert.match(

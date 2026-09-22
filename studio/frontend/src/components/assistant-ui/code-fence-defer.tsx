@@ -686,7 +686,7 @@ const tokenStyle = (
  * moves far enough for the window to move. A fence growing by a character re-renders its last line
  * and nothing else.
  */
-const FenceLine = memo(function FenceLine({
+export const FenceLine = memo(function FenceLine({
   line,
   windowed,
 }: {
