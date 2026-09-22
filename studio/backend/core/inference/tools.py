@@ -16396,6 +16396,8 @@ def _check_signal_escape_patterns(code: str):
     _NETWORK_ROOTS = frozenset(p.partition(".")[0] for p in _NETWORK_FQ_PREFIXES)
     # An explicit proxy is where the socket connects, whatever the request URL says.
     _PROXY_KEYWORDS = ("proxy", "proxies")
+    # Client attributes that decide where later calls on it connect.
+    _DESTINATION_ATTRS = (*_PROXY_KEYWORDS, "base_url")
     _UPLOAD_HTTP_METHODS = (
         *(
             f"{owner}.{verb}"
@@ -17223,9 +17225,9 @@ def _check_signal_escape_patterns(code: str):
             # accumulated like the maps above. A method's first parameter is written as its class
             # family, `<A>`, so `self.s` and `this.s` match across methods and subclasses only.
             self.instance_aliases: "dict[str, set[str]]" = {}
-            # Receiver path -> every value stored in its `proxies` / `proxy`, including by
-            # `update()` and subscript.
-            self.proxy_values: "dict[str, list[ast.AST]]" = {}
+            # Receiver path -> every value stored in its `_DESTINATION_ATTRS`, including by
+            # `update()`, `|=` and subscript.
+            self.receiver_destinations: "dict[str, list[ast.AST]]" = {}
             # Receiver path -> the paths copied to or from it, which may be the same client: a
             # proxy set through `t` after `t = s` is used by `s.get(...)`.
             self.path_links: "dict[str, set[str]]" = {}
@@ -17651,11 +17653,11 @@ def _check_signal_escape_patterns(code: str):
             value,
             mutated = False,
         ) -> None:
-            """`s.proxies = {...}`, `s.proxies["https"] = ...`, and the same mutation through
-            `p = s.proxies`, configure where `s` connects."""
+            """`s.proxies = {...}`, `s.proxies["https"] = ...`, `c.base_url = ...`, and the same
+            mutation through `p = s.proxies`, configure where the client connects."""
             if isinstance(target, ast.Subscript):
                 target, mutated = target.value, True
-            if isinstance(target, ast.Attribute) and target.attr in _PROXY_KEYWORDS:
+            if isinstance(target, ast.Attribute) and target.attr in _DESTINATION_ATTRS:
                 owners = {self._receiver_path(target.value)}
             elif mutated and self._receiver_path(target) is not None:
                 owners = set().union(
@@ -17668,7 +17670,7 @@ def _check_signal_escape_patterns(code: str):
                 return
             for owner in owners:
                 if owner is not None:
-                    self.proxy_values.setdefault(owner, []).append(value)
+                    self.receiver_destinations.setdefault(owner, []).append(value)
 
         def visit_Assign(self, node):
             if not self.collecting:
@@ -17694,6 +17696,12 @@ def _check_signal_escape_patterns(code: str):
                 if self._register(target, named, node):
                     registered.add(target.id)
             self._rebind(node, exempt = registered)
+            self.generic_visit(node)
+
+        def visit_AugAssign(self, node):
+            # `s.proxies |= {...}` mutates the mapping the session sends through.
+            if self.collecting:
+                self._record_proxy(node.target, node.value, mutated = True)
             self.generic_visit(node)
 
         def visit_AnnAssign(self, node):
@@ -17818,8 +17826,14 @@ def _check_signal_escape_patterns(code: str):
         def visit_Call(self, node):
             if self.collecting:
                 func = node.func
-                if isinstance(func, ast.Attribute) and func.attr in ("update", "setdefault"):
-                    # `s.proxies.update({...})`, `update(https = ...)` and `setdefault(k, v)`.
+                if isinstance(func, ast.Attribute) and func.attr in (
+                    "update",
+                    "setdefault",
+                    "__setitem__",
+                    "__ior__",
+                ):
+                    # `s.proxies.update({...})`, `update(https = ...)`, `setdefault(k, v)` and the
+                    # dunder spellings of a subscript store and `|=`.
                     for value in [*node.args, *(kw.value for kw in node.keywords)]:
                         self._record_proxy(func.value, value, mutated = True)
                 self.generic_visit(node)
@@ -17966,12 +17980,12 @@ def _check_signal_escape_patterns(code: str):
                         )
                     if found is not None:
                         destinations.append((found, True, kind))
-                # Proxies passed to this call or configured on its client.
+                # Proxies passed to this call, and proxies or a base URL configured on its client.
                 proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
                 if isinstance(node.func, ast.Attribute):
                     receiver = self._receiver_path(node.func.value)
                     for path in self._linked_paths(receiver) if receiver else ():
-                        proxies.extend(self.proxy_values.get(path, ()))
+                        proxies.extend(self.receiver_destinations.get(path, ()))
                 for proxy in proxies:
                     if isinstance(proxy, ast.Dict):
                         if None in proxy.keys:

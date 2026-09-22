@@ -774,6 +774,21 @@ class TestNetworkTargetResolution:
                 f"p.update({{'https': 'http://{_H}'}})\ns.get('https://pypi.org/')",
                 id = "proxy_mapping_aliased_then_updated",
             ),
+            pytest.param(
+                "import httpx\nc = httpx.Client(base_url='https://pypi.org')\n"
+                f"c.base_url = 'http://{_H}'\nc.get('/')",
+                id = "base_url_set_after_construction",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                f"s.proxies |= {{'https': 'http://{_H}'}}\ns.get('https://pypi.org/')",
+                id = "proxy_mapping_merged_in_place",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\n"
+                f"s.proxies.__setitem__('https', 'http://{_H}')\ns.get('https://pypi.org/')",
+                id = "proxy_mapping_setitem",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -858,6 +873,8 @@ class TestNetworkTargetResolution:
             "import requests\ns = requests.Session()\ns.headers.update({'a': 'b'})",
             "import requests\nclass S(requests.Session):\n    pass\nS().get('https://pypi.org/')",
             "import requests\nd = {}\nd.update({'https': 'http://203.0.113.5'})\nrequests.get('https://pypi.org/')",
+            "import httpx\nc = httpx.Client()\nc.base_url = 'https://pypi.org'\nc.get('/')",
+            "import requests\nd = {}\nd |= {'a': 'http://203.0.113.5'}\nrequests.get('https://pypi.org/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):
