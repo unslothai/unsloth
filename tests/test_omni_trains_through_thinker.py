@@ -130,6 +130,7 @@ def test_a_multimodal_load_keeps_the_composition_for_generation(capsys):
     """text_intent = False is an inference or multimodal load: the talker and the speech
     decoder must survive, so the composition is returned whole with the text_only hint."""
     from unsloth.models.vision import _text_trainable_core
+
     model = Composed(TinyConfig())
     assert _text_trainable_core(model, text_intent = False) is model
     assert hasattr(model, "talker")
