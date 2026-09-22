@@ -2507,24 +2507,32 @@ class TestXpuBitsandbytesOptimizerGate(unittest.TestCase):
         return bitsandbytes_optimizer_supported
 
     def test_xpu_host_refuses_bitsandbytes_optimizers(self):
-        import torch
-
-        with patch.object(torch, "xpu", SimpleNamespace(is_available = lambda: True)):
+        with patch("utils.hardware.get_device", return_value = DeviceType.XPU):
             self.assertFalse(self._probe()())
 
-    def test_present_but_unavailable_xpu_keeps_bitsandbytes(self):
+    def test_selected_backends_other_than_xpu_keep_bitsandbytes(self):
+        for device in (DeviceType.CUDA, DeviceType.CPU, DeviceType.MLX):
+            with self.subTest(device = device):
+                with patch("utils.hardware.get_device", return_value = device):
+                    self.assertTrue(self._probe()())
+
+    def test_a_hybrid_host_that_selected_cuda_keeps_bitsandbytes(self):
+        """An Intel iGPU beside an NVIDIA card reports torch.xpu.is_available() True while
+        detection selects CUDA. Keying on presence would drop 8-bit on a CUDA run and make
+        restore_resume_state refuse every existing AdamW8bit checkpoint."""
         import torch
 
-        with patch.object(torch, "xpu", SimpleNamespace(is_available = lambda: False)):
+        with (
+            patch.object(torch, "xpu", SimpleNamespace(is_available = lambda: True)),
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+        ):
             self.assertTrue(self._probe()())
 
     def test_a_raising_probe_fails_open(self):
-        import torch
-
         def _boom():
             raise RuntimeError("driver exploded")
 
-        with patch.object(torch, "xpu", SimpleNamespace(is_available = _boom)):
+        with patch("utils.hardware.get_device", side_effect = _boom):
             self.assertTrue(self._probe()())
 
     def test_diffusion_factories_skip_bnb_on_xpu_and_keep_it_elsewhere(self):
