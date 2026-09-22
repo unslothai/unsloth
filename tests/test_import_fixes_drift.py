@@ -1715,21 +1715,10 @@ def test_a_per_layer_snapshot_never_becomes_a_scalar_rope_theta():
 
 
 def test_the_torchvision_backend_still_breaks_the_4x_numpy_contract():
-    """DRIFT DETECTOR for `fix_transformers5_image_processing_reexports`'s method shim.
-
-    The shim exists because transformers 5 put a torchvision backend in every
-    image processor's MRO, so a remote-code subclass that hands channel-last
-    numpy to the methods the 4.x docs told it to call gets two different kinds
-    of wrong:
-
-    - `normalize` raises, because torchvision's functional refuses ndarray
-    - `rescale` silently returns float64, where transformers 4.x returned float32
-
-    Both halves are asserted, because a gate that only caught the raising one
-    would leave a checkpoint's pixel_values in float64 with nothing to notice.
-    If upstream restores either contract, this goes red and the corresponding
-    entry in `_LEGACY_NUMPY_IMAGE_METHODS` should be dropped rather than left to
-    wrap a method with itself.
+    """DRIFT DETECTOR for the method shim: `normalize` refuses ndarray and
+    `rescale` silently returns float64 where 4.x returned float32. Both halves
+    are asserted; if upstream restores either, drop that entry from
+    `_LEGACY_NUMPY_IMAGE_METHODS` rather than wrap a method with itself.
     """
     transformers = pytest.importorskip("transformers")
     np = pytest.importorskip("numpy")
@@ -1737,11 +1726,8 @@ def test_the_torchvision_backend_still_breaks_the_4x_numpy_contract():
 
     if Version(transformers.__version__) < Version("5.0.0"):
         pytest.skip("the torchvision backend does not exist before transformers 5")
-    # Asked of transformers' own probe, not of `import torchvision`. On a runner
-    # whose torchvision wheel is unusable the import still succeeds while
-    # transformers never binds `tvF`, and the backend then raises
-    # `NameError: name 'tvF' is not defined` -- a fact about the runner, not
-    # about the upstream pathology this detector is watching.
+    # transformers' own probe, not `import torchvision`: an unusable wheel still
+    # imports while `tvF` goes unbound, and the backend then raises NameError.
     backends = pytest.importorskip("transformers.image_processing_backends")
     from transformers.utils import is_torchvision_available
 
@@ -1775,10 +1761,8 @@ def test_the_torchvision_backend_still_breaks_the_4x_numpy_contract():
 def test_the_4x_numpy_helpers_the_method_shim_forwards_to_still_exist():
     """DRIFT DETECTOR: the shim forwards to transformers' own 4.x functions.
 
-    `_legacy_rescale` / `_legacy_normalize` are replicas of the 4.x
-    `BaseImageProcessor` methods, which were four-line forwards to these. If
-    transformers ever drops them there is no verified 4.x implementation left to
-    restore, and the shim must be reconsidered rather than reimplemented.
+    Drop them upstream and there is no verified implementation left to restore,
+    so the shim must be reconsidered rather than reimplemented.
     """
     pytest.importorskip("transformers")
     np = pytest.importorskip("numpy")

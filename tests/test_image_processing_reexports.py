@@ -1,27 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Remote code that reads image helpers off a model's image_processing module.
+"""Remote code reading image helpers off a model's image_processing module.
 
-transformers 5 stopped re-exporting the generic image helpers from each model's
-``image_processing_*`` module. Checkpoints whose own modeling file was written
-against the 4.x layout do
-
-    import transformers.models.siglip2.image_processing_siglip2 as siglip2_ips
-    ...
-    @siglip2_ips.filter_out_non_signature_kwargs()
-
-and raise ``AttributeError`` while the class body is executing, so the model
-cannot be loaded at all. Measured on transformers 5.17.0 with
-microsoft/Phi-4-reasoning-vision-15B: ten of the sixteen names that file reads
-off that module are gone, and ``AutoProcessor.from_pretrained`` fails with
-``module 'transformers.models.siglip2.image_processing_siglip2' has no
-attribute 'filter_out_non_signature_kwargs'``.
-
-Every test here drives the real functions against the real transformers module.
-Nothing asserts on a literal list of names, because the set that was dropped
-differs per release and a hardcoded list would pass while the fix was doing
-nothing.
+Nothing asserts on a literal list of names: the set transformers 5 dropped
+differs per release, so a hardcoded list would pass while the fix did nothing.
 """
 
 import importlib
@@ -68,7 +51,6 @@ def test_homes_are_importable():
 
 
 def test_probe_matches_reality(siglip2_module):
-    """The probe must agree with a direct attribute read, not with a version."""
     missing = _image_processing_reexports_are_missing(siglip2_module)
     assert missing == (not hasattr(siglip2_module, "filter_out_non_signature_kwargs"))
 
@@ -105,7 +87,6 @@ def test_fix_restores_every_name_the_remote_code_reads(siglip2_module):
 
 
 def test_resolved_symbol_is_the_real_one(siglip2_module):
-    """The forwarded object must be transformers' own, not a stand-in."""
     if not _image_processing_reexports_are_missing(siglip2_module):
         pytest.skip("this transformers still re-exports the image helpers")
     _install_legacy_image_reexports(SIGLIP2)
@@ -122,14 +103,12 @@ def test_unknown_names_still_raise(siglip2_module):
 
 
 def test_private_names_are_not_forwarded(siglip2_module):
-    """Underscore names are never re-exports, and forwarding them hides bugs."""
     _install_legacy_image_reexports(SIGLIP2)
     with pytest.raises(AttributeError):
         siglip2_module._unsloth_definitely_not_a_transformers_symbol
 
 
 def test_fix_is_idempotent(siglip2_module):
-    """A second call must not stack another layer of forwarding."""
     if not _image_processing_reexports_are_missing(siglip2_module):
         pytest.skip("this transformers still re-exports the image helpers")
     assert _install_legacy_image_reexports(SIGLIP2) is True
@@ -163,16 +142,9 @@ def test_import_unsloth_does_not_pull_in_the_image_stack():
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True)
     if out.returncode != 0:
-        # `import unsloth` did not finish here, so there is no import whose
-        # laziness could be measured. Skip rather than fail: asserting tests the
-        # runner, not the fix.
-        #
-        # Not keyed on one message or one raising function. Observed on CPU
-        # runners: `NotImplementedError` from unsloth_zoo's `get_device_type`,
-        # worded two different ways by version, and separately `ImportError:
-        # cannot import name 'get_quant_type' from 'unsloth_zoo.utils'` on a
-        # version-skewed runner. The stderr tail goes into the skip reason so
-        # `-rs` still says which hosts opted out and why.
+        # No import happened, so there is no laziness to measure; asserting here
+        # would test the runner. Not keyed on one exception: CPU runners produce
+        # at least two unrelated ones.
         pytest.skip(
             "import unsloth does not complete on this host; nothing to measure. "
             + out.stderr.strip()[-400:]
@@ -180,42 +152,19 @@ def test_import_unsloth_does_not_pull_in_the_image_stack():
     assert out.stdout.strip().splitlines()[-1] == "False", out.stdout[-2000:]
 
 
-# The tests above drive `_install_legacy_image_reexports` directly, so every one
-# of them still passes with the `fix_transformers5_image_processing_reexports()`
-# call reverted out of `_gpu_init.py`: they prove the helper works, never that
-# it is wired up. The two below close that gap and are the ones that fail when
-# the functional hunk is removed.
+# Everything above passes with the `_gpu_init.py` call reverted: it proves the
+# helper works, never that it is wired up. The tests below close that gap.
 
 
 def _unsloth_import_or_skip():
     """Skip when this host cannot finish `import unsloth` at all.
 
-    The tests that use this assert on state `import unsloth` installs, but they
-    do not own that import: the module-level `from unsloth.import_fixes import
-    ...` above is what triggers it, and on a host with no supported accelerator
-    it ends at `_gpu_init.py`'s device check, BEFORE the line that installs this
-    fix. The assertion then reports the fix missing for a reason that has
-    nothing to do with re-exports.
-
-    Measured on GitHub's `macos-15` (Apple Silicon, mlx present but
-    `is_mlx_available()` false, so neither import path completes):
-    `NotImplementedError: Unsloth currently only works on NVIDIA GPUs and Intel
-    GPUs` from `_gpu_init.py`, three red tests, while `ubuntu-latest`,
-    `ubuntu-24.04-arm`, `windows-latest` and `macos-15-intel` were green on the
-    same commit.
-
-    Not keyed on one exception. A first version matched only the accelerator
-    `NotImplementedError`, and the very next cross-platform pass failed
-    `ubuntu-24.04-arm` and `windows-latest` on a different one entirely,
-    `ImportError: cannot import name 'get_quant_type' from 'unsloth_zoo.utils'`,
-    with the same three tests red for the same reason: no import happened. Any
-    reason `import unsloth` cannot finish leaves nothing here to measure.
-
-    This does not make the tests unfailable. The defect they exist to catch is a
-    host that CAN import unsloth and still has no wrap, and that host does not
-    skip. The skip reason names the exception so `-rs` shows which hosts opted
-    out and why, and `test_every_import_path_installs_the_fix` keeps the wiring
-    covered from any of them.
+    Callers assert on state that import installs without owning it, and a host
+    that never gets past `_gpu_init.py`'s device check would report the fix
+    missing for an unrelated reason. Any exception skips, not one keyed family:
+    CPU runners produced an accelerator NotImplementedError and an unrelated
+    unsloth_zoo ImportError in consecutive passes. Still failable, since a host
+    that CAN import unsloth does not skip.
     """
     try:
         import unsloth  # noqa: F401
@@ -227,7 +176,6 @@ def _unsloth_import_or_skip():
 
 
 def test_the_fix_is_actually_installed_on_import():
-    """`import unsloth` must leave get_class_in_module wrapped."""
     from packaging.version import Version
 
     _unsloth_import_or_skip()
@@ -241,12 +189,9 @@ def test_the_fix_is_actually_installed_on_import():
 
 
 def test_remote_code_reading_siglip_helpers_loads(tmp_path):
-    """End to end through the entry point transformers really uses.
+    """End to end through `get_class_in_module`, where the lazy fix installs.
 
-    A stand-in for microsoft/Phi-4-reasoning-vision-15B's own image processing
-    file: same module, same decorator, same class-body timing. Driving
-    `get_class_in_module` rather than importing the siglip module directly is
-    the point, because the fix is deliberately lazy and only installs there.
+    Same module, decorator and class-body timing as the real checkpoint.
     """
     import pathlib
 
@@ -282,11 +227,9 @@ def test_remote_code_reading_siglip_helpers_loads(tmp_path):
         shutil.rmtree(package, ignore_errors = True)
 
 
-# Helpers transformers 5 KEPT but re-specified from numpy (channel-last) to
-# torch (channel-first). A module __getattr__ never fires for a name that still
-# resolves, so forwarding cannot reach these: they need replacing. Phi-4's
-# modeling_phi4_visionr.py builds numpy arrays at line 302 and hands them to
-# both at lines 347-348.
+# Helpers transformers 5 kept but re-specified numpy -> torch. A module
+# __getattr__ never fires for a name that still resolves, so these need
+# replacing rather than forwarding.
 
 
 def _numpy_image():
@@ -482,16 +425,10 @@ REMOTE_MODULE = "transformers_modules.unsloth_probe.image_processing_probe"
 def _backend_module():
     """transformers 5's torchvision backend, or a skip where it cannot run.
 
-    Two separate reasons to skip, and the second is not obvious. The module
-    imports cleanly on transformers 5 even when torchvision is unusable, but it
-    binds `tvF` (torchvision.transforms.v2.functional) only behind
-    `is_torchvision_available()`, so its methods then raise
-    `NameError: name 'tvF' is not defined` from inside transformers.
-
-    Live on GitHub's `macos-15-intel`, where `pip install torch torchvision`
-    resolves but the wheels are unusable: three tests here failed on that
-    NameError, which says nothing about the shim. Asked of transformers' own
-    probe rather than of `import torchvision`, which succeeds there.
+    The module imports cleanly even when torchvision is unusable but binds `tvF`
+    only behind `is_torchvision_available()`, so its methods then raise
+    `NameError: name 'tvF' is not defined` from inside transformers. Hence
+    transformers' own probe, not `import torchvision`, which succeeds anyway.
     """
     module = pytest.importorskip("transformers.image_processing_backends")
     from transformers.utils import is_torchvision_available
@@ -503,11 +440,10 @@ def _backend_module():
 
 @pytest.fixture
 def remote_processor_class():
-    """A subclass that looks exactly like one a checkpoint's own file defined.
+    """A real `Siglip2ImageProcessor` subclass with a remote `__module__`.
 
-    A real subclass of the real `Siglip2ImageProcessor`, with `__module__` set to
-    where transformers puts remote code. Faking only the module string is the
-    point: everything the classifier and the probe look at is genuine.
+    Only the module string is faked, so everything the classifier and probe read
+    is genuine.
     """
     siglip2 = importlib.import_module(SIGLIP2)
     base = siglip2.Siglip2ImageProcessor
@@ -561,12 +497,9 @@ def test_the_numpy_contract_is_restored_on_a_remote_subclass(remote_processor_cl
 
 
 def test_rescale_is_in_scope_because_it_is_wrong_not_because_it_raises(remote_processor_class):
-    """Pins the exact reason the gate cannot be "did it raise".
-
-    `TorchvisionBackend.rescale` is `image * scale`, which numpy accepts and
-    returns as float64 where transformers 4.x returned float32. Patching only
-    the method that RAISES leaves the checkpoint's pixel_values float64, with
-    nothing to notice.
+    """Pins why the gate cannot be "did it raise": rescale accepts numpy and
+    returns float64 where 4.x returned float32, so patching only the raising
+    method leaves pixel_values float64 with nothing to notice.
     """
     np = pytest.importorskip("numpy")
     siglip2 = importlib.import_module(SIGLIP2)
@@ -619,11 +552,9 @@ def test_transformers_own_image_processor_is_untouched(remote_processor_class):
 
 
 def test_the_probe_decides_not_the_version(remote_processor_class):
-    """A class whose methods already honour numpy must be left alone.
-
-    Built by subclassing `BaseImageProcessor` directly, skipping the torchvision
-    backend, which is what the 4.x MRO looked like. If anyone swaps the probe
-    for a `Version(...)` comparison, this goes red on transformers 5.
+    """A class already honouring numpy is left alone: subclassing
+    `BaseImageProcessor` directly reproduces the 4.x MRO, so swapping the probe
+    for a `Version(...)` compare turns this red on transformers 5.
     """
     utils = importlib.import_module("transformers.image_processing_utils")
     cls = type("ProbeLegacyEraProcessor", (utils.BaseImageProcessor,), {})
@@ -640,7 +571,6 @@ def test_the_probe_decides_not_the_version(remote_processor_class):
 
 
 def test_the_torch_contract_is_untouched_on_the_patched_class(remote_processor_class):
-    """Anything that is not a numpy array still reaches the inherited method."""
     torch = pytest.importorskip("torch")
     backends = _backend_module()
 
@@ -659,7 +589,6 @@ def test_the_torch_contract_is_untouched_on_the_patched_class(remote_processor_c
 
 
 def test_the_classifier_rejects_everything_that_is_not_remote_remote(remote_processor_class):
-    """Negative controls for `_is_remote_image_processor_class`."""
     siglip2 = importlib.import_module(SIGLIP2)
     configuration_utils = importlib.import_module("transformers.configuration_utils")
     processing_utils = importlib.import_module("transformers.processing_utils")
@@ -685,7 +614,6 @@ def test_the_classifier_rejects_everything_that_is_not_remote_remote(remote_proc
 
 
 def test_a_method_the_remote_code_owns_is_never_replaced():
-    """A checkpoint that wrote its own `normalize` keeps it."""
     np = pytest.importorskip("numpy")
     _backend_module()
     siglip2 = importlib.import_module(SIGLIP2)
@@ -765,7 +693,6 @@ def test_the_method_shim_is_fully_removable(remote_processor_class):
 
 
 def test_the_dispatch_keeps_wraps_and_wrapped(remote_processor_class):
-    """`functools.wraps` plus an explicit `__wrapped__`, and the flag survives both."""
     import inspect
 
     backends = _backend_module()
@@ -781,7 +708,6 @@ def test_the_dispatch_keeps_wraps_and_wrapped(remote_processor_class):
 
 
 def test_no_shim_state_reaches_the_saved_config(remote_processor_class):
-    """`_IMAGE_METHOD_BOUND` is a class attribute, so `to_dict` must not see it."""
     _backend_module()
     siglip2 = importlib.import_module(SIGLIP2)
 
@@ -863,10 +789,9 @@ def test_remote_code_calling_the_backend_methods_on_numpy_loads_and_runs(tmp_pat
         shutil.rmtree(package, ignore_errors = True)
 
 
-# The unpickle path. `pickle` stores a processor as (module path, qualname), so a
-# spawn-started DataLoader worker rebuilds the class by IMPORTING the remote
-# module, never through `get_class_in_module`. Without the meta-path finder the
-# child gets an upstream class and the first numpy `normalize` raises again.
+# The unpickle path: pickle stores a processor by (module, qualname), so a spawn
+# worker rebuilds the class by IMPORTING the remote module, never through
+# `get_class_in_module`.
 
 
 def _remote_probe_package():
@@ -876,9 +801,7 @@ def _remote_probe_package():
     from transformers.dynamic_module_utils import init_hf_modules
     from transformers.utils import HF_MODULES_CACHE
 
-    # Puts HF_MODULES_CACHE on sys.path and makes it a package; without it
-    # `transformers_modules` is not importable and the spawn test errors on the
-    # harness rather than on the fix.
+    # Puts HF_MODULES_CACHE on sys.path, or the spawn test errors on the harness.
     init_hf_modules()
 
     root = pathlib.Path(HF_MODULES_CACHE) / "transformers_modules"
@@ -886,12 +809,9 @@ def _remote_probe_package():
     package.mkdir(parents = True, exist_ok = True)
     (root / "__init__.py").touch(exist_ok = True)
     (package / "__init__.py").write_text("")
-    # The decorator on the method is not decoration: it is read while the CLASS
-    # BODY executes, which is what a checkpoint written against the 4.x layout
-    # does (Phi-4's own file, verbatim shape). An earlier version of this probe
-    # omitted it and passed while the loader patched only AFTER delegating to
-    # the real `exec_module`, so the real spawn path raised AttributeError
-    # before the method shim was ever reached.
+    # The decorator is load-bearing: it is read while the CLASS BODY executes,
+    # as the real checkpoint's file does. Without it this probe passed while the
+    # loader still patched after delegating to the real `exec_module`.
     (package / "image_processing_probe.py").write_text(
         "import transformers.models.siglip2.image_processing_siglip2 as siglip2_ips\n"
         "\n"
@@ -978,11 +898,9 @@ def test_a_spawn_started_worker_without_unsloth_is_the_documented_limit(pickled_
     """
     out = _run_spawn_child(pickled_remote_processor, "")
     assert out.returncode != 0, out.stdout
-    # Either failure mode counts, and which one it is says where the child got
-    # to. Unpatched it now dies earlier, on the class-body decorator during the
-    # unpickle import (`AttributeError: ... filter_out_non_signature_kwargs`),
-    # rather than later on the numpy `normalize`. Asserting only the second
-    # would pin the shallower break and go red on the deeper one.
+    # Either failure mode counts: unpatched, the child now dies earlier on the
+    # class-body decorator rather than later on numpy `normalize`, and pinning
+    # only the second would go red on the deeper break.
     assert (
         "filter_out_non_signature_kwargs" in out.stderr
         or "Functional F.normalize" in out.stderr
