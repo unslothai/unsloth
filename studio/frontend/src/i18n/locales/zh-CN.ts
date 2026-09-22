@@ -211,17 +211,10 @@ export const zhCN = {
       priority: "优先级",
       lastUpdated: "最近更新",
       manualOrder: "手动排序",
-      priorityHint: "进行中和未读优先",
-      lastUpdatedHint: "最新优先",
-      manualOrderHint: "拖动行即可重新排序",
       switchedToManual: "已改为手动排序，拖动行即可重新排序",
       organizeChats: "整理对话",
       organizeProjects: "整理项目",
       sortPinnedChats: "对置顶对话排序",
-      dragDrop: "拖放",
-      dragHints: "拖动时显示提示",
-      reorderSwitchesSort: "重新排序时切换为手动排序",
-      dragOpensFolders: "打开指针下方的文件夹",
       moveUp: "上移",
       moveDown: "下移",
     },
@@ -574,7 +567,16 @@ export const zhCN = {
       sourceHint: "模型运行器会各自写入日志，因此加载或生成失败的原因通常记录在那里，而不是服务器日志中。",
       path: "位置",
       pathCopy: "复制路径",
-      refreshSection: "刷新",
+      currentSession: "当前",
+      statusLive: "实时",
+      statusPaused: "已暂停",
+      statusStale: "已过期",
+      filterPlaceholder: "筛选行",
+      lineCount: "{count} 行",
+      filteredLineCount: "共 {total} 行，显示 {shown} 行",
+      wrapLines: "自动换行",
+      jumpToLatest: "跳到最新",
+      noMatches: "没有与筛选条件匹配的行。",
       mode: "模式",
       modeLive: "实时",
       modeInterval: "每 3 秒",
@@ -876,6 +878,16 @@ export const zhCN = {
         revoked: "所有预览链接已撤销",
         revokeError: "无法撤销预览链接",
       },
+      managedProviderUrls: {
+        sectionTitle: "受管账户",
+        enableLabel: "本地和网络连接",
+        enableDescription:
+          "允许受管账户将连接指向本地或网络地址，例如本机或局域网中的 Ollama 或 llama.cpp 服务器。默认关闭，因为开启后这些账户可以访问在你的计算机和网络中运行的服务。",
+        lockedByEnvironment:
+          "由本服务器上的 UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 决定，该设置会对所有账户拒绝私有地址。",
+        loadError: "无法加载受管账户的连接设置。",
+        saveError: "无法保存受管账户的连接设置。",
+      },
       notifications: {
         sectionTitle: "通知",
         showLlamaUpdates: "llama.cpp 更新通知",
@@ -1116,7 +1128,7 @@ export const zhCN = {
       custom: {
         chatWidth: {
           label: "聊天宽度",
-          description: "设置消息和输入框的宽度。全宽会使用侧边栏之间的可用空间。",
+          description: "消息和输入框的宽度。",
           standard: "标准",
           wide: "宽",
           full: "全宽",
@@ -1187,7 +1199,6 @@ export const zhCN = {
         },
         contrast: {
           label: "对比度",
-          description: "边框和次要文本的强度。",
         },
         reduceMotion: {
           label: "减少动态效果",
@@ -1209,7 +1220,7 @@ export const zhCN = {
       sidebarNav: {
         title: "侧边栏导航",
         description:
-          "固定并重新排序侧边栏标签。取消固定的标签会收进“更多”菜单；若只有一个取消固定，则直接隐藏，而不是为它单独建一个菜单。新聊天保持固定。",
+          "固定并重新排序侧边栏标签。未固定的标签会进入“更多”菜单。",
         dragToReorder: "拖动以重新排序",
         pinToSidebar: "将{name}固定到侧边栏",
         moreHolds: "更多（{count}）",
@@ -1217,7 +1228,7 @@ export const zhCN = {
       sidebarMenu: {
         title: "个人菜单",
         description:
-          "选择点击侧边栏底部你的名字时显示哪些快捷项及其顺序。设置、帮助、退出登录和关闭始终显示。",
+          "选择并排序个人资料菜单中的快捷项。",
         darkModeToggle: "深色模式切换",
         dragToReorder: "拖动以重新排序",
       },
@@ -1355,6 +1366,51 @@ export const zhCN = {
         copied: "路径已复制",
         openError: "无法打开文件夹",
         copyError: "无法复制路径",
+        caches: {
+          label: "缓存文件",
+          description: "缓存共占用{size}，其中{reclaimable}可立即清理。",
+          hint: "包下载、已编译内核和传输缓存，Unsloth 在需要时会重新生成。已下载的模型、项目、对话、设置以及你的 Hugging Face 令牌不会在此被清理。",
+          keywords:
+            "缓存 清理 清除 清空 删除 释放 空间 磁盘 临时 已编译 cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "正在统计缓存大小...",
+          measureFailed: "无法统计缓存大小",
+          empty: "未找到缓存文件。",
+          detailsAction: "详情",
+          recheckAction: "重新检查",
+          hideDetailsAction: "隐藏详情",
+          clearAction: "清理缓存",
+          clearOneAction: "清理",
+          clearingAction: "正在清理...",
+          confirmTitle: "要清理缓存文件吗？",
+          confirmDescription: "这将释放约{size}。",
+          confirmOneTitle: "要清理{name}吗？",
+          safety:
+            "Unsloth 会在下次需要时重新生成缓存。已下载的模型、项目、对话、设置以及你的 Hugging Face 令牌不会受到影响。",
+          hubCost: "这是模型缓存。清理后，下次使用这些模型时会重新下载。",
+          datasetsCost: "清理后，下次使用这些数据集时会重新下载。",
+          blocked: "未清理：{reason}",
+          cleared: "已清理{size}",
+          partial: "部分缓存文件无法删除",
+          clearFailed: "无法清理缓存",
+          names: {
+            uv: "uv 包缓存",
+            pip: "pip 下载缓存",
+            npm: "npm 包缓存",
+            bun: "Bun 包缓存",
+            torchInductor: "Torch Inductor 编译缓存",
+            torchExtensions: "Torch 扩展构建",
+            triton: "Triton 内核缓存",
+            cuda: "CUDA 内核缓存",
+            numba: "Numba 编译缓存",
+            matplotlib: "Matplotlib 字体缓存",
+            vllm: "vLLM 缓存",
+            unslothCompiled: "Unsloth 编译模块",
+            hfXet: "Hugging Face 传输缓存",
+            hfAssets: "Hugging Face 资源缓存",
+            hfDatasets: "Hugging Face 数据集缓存",
+            hfHub: "Hugging Face 模型缓存",
+          },
+        },
         futureDownloads: "仅对新下载生效",
         environmentManaged: "由环境变量 {variable} 管理。",
         locationFree: "{free} 可用",
@@ -1501,10 +1557,6 @@ export const zhCN = {
         "粘贴的文本达到 {count} 个字符时会转为 .txt 附件，较短的文本则保留在消息输入框中。",
       pastedTextOffDescription:
         "无论长度如何，粘贴的文本都会保留在消息输入框中。",
-      compactionDescriptionInherit: "遵循服务器的上下文策略。",
-      compactionDescriptionCheckpoint: "保留最新一轮对话和放得下的持续生效指令，其余内容归档以便检索。",
-      compactionDescriptionRolling:
-        "归档最早的对话轮次，保留近期记录并预留所选的额外空间。",
       projectsSection: "显示项目分区",
       projectsSectionDescription:
         "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
@@ -1551,21 +1603,19 @@ export const zhCN = {
       autoCompact: "自动压缩长聊天",
       autoCompactDescription:
         "聊天填满上下文时，较早的轮次会转入可检索的归档。",
-      compactionStyle: "上下文已满时",
-      compactionStyleDescription:
-        "使用服务器默认值会保留 UNSLOTH_CONTEXT_POLICY。重置对话会保留最新轮次和放得下的持续指令。滑动窗口会丢弃最早的轮次，并可保留更多近期历史。",
-      compactionStyleInherit: "使用服务器默认值",
-      compactionStyleCheckpoint: "重置对话",
-      compactionStyleRollingDefault: "归档最早的轮次（约 25% 额外空间）",
-      compactionStyleRolling10: "归档最早的轮次（约 10% 额外空间）",
-      compactionStyleRolling5: "归档最早的轮次（约 5% 额外空间）",
-      compactionStyleRollingNone: "归档最早的轮次（不额外裁剪）",
       autoCompactKeywords:
         "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "折叠",
+        auto: "运行时展开",
+        expanded: "始终展开",
+      },
+      visibilityKeywords:
+        "折叠 展开 打开 关闭 思考 推理 工具调用 工具活动 分组 流式",
       thinking: {
-        collapseByDefault: "默认折叠思考过程",
-        collapseByDefaultDescription:
-          "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
+        visibility: "思考过程",
+        visibilityDescription:
+          "思考过程如何展开。你仍可自行展开或折叠任意区块。",
       },
       currentDate: {
         label: "告诉模型今天的日期",
@@ -1575,12 +1625,14 @@ export const zhCN = {
         saveError: "无法更新当前日期设置",
       },
       tools: {
-        collapseByDefault: "默认折叠工具活动",
-        collapseByDefaultDescription:
-          "工具运行时保持输入和输出折叠。需要检查时展开对应工具行。",
-        foldIntoThinking: "将工具调用折叠进思考",
+        visibility: "工具调用",
+        visibilityDescription:
+          "工具活动如何展开。你仍可自行展开或折叠任意调用。",
+        foldIntoThinking: "将工具调用归入思考过程",
         foldIntoThinkingDescription:
-          "在展开思考块之前隐藏该轮的工具调用。",
+          "把该轮的工具调用显示在思考区块内，而不是各自独立成行。",
+        foldIntoThinkingBlocked:
+          "当工具调用设置为“始终展开”时不可用，该设置会让它们保持独立成行。",
       },
       webSearch: {
         title: "网页搜索",

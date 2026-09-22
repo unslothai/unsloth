@@ -215,17 +215,10 @@ export const es = {
       priority: "Prioridad",
       lastUpdated: "Última actualización",
       manualOrder: "Orden manual",
-      priorityHint: "Activos y no leídos primero",
-      lastUpdatedHint: "Más recientes primero",
-      manualOrderHint: "Arrastra las filas para reordenarlas",
       switchedToManual: "Orden manual: arrastra las filas para reordenarlas",
       organizeChats: "Organizar chats",
       organizeProjects: "Organizar proyectos",
       sortPinnedChats: "Ordenar chats fijados",
-      dragDrop: "Arrastrar y soltar",
-      dragHints: "Mostrar una pista al arrastrar",
-      reorderSwitchesSort: "Reordenar cambia a orden manual",
-      dragOpensFolders: "Abrir carpetas bajo el puntero",
       moveUp: "Subir",
       moveDown: "Bajar",
     },
@@ -579,7 +572,16 @@ export const es = {
       sourceHint: "Los ejecutores de modelos escriben sus propios registros, así que un fallo al cargar o al generar suele explicarse ahí y no en el registro del servidor.",
       path: "Ubicación",
       pathCopy: "Copiar ruta",
-      refreshSection: "Actualización",
+      currentSession: "Actual",
+      statusLive: "En vivo",
+      statusPaused: "En pausa",
+      statusStale: "Obsoleto",
+      filterPlaceholder: "Filtrar líneas",
+      lineCount: "{count} líneas",
+      filteredLineCount: "{shown} de {total} líneas",
+      wrapLines: "Ajustar líneas",
+      jumpToLatest: "Ir al final",
+      noMatches: "Ninguna línea coincide con el filtro.",
       mode: "Modo",
       modeLive: "En vivo",
       modeInterval: "Cada 3 segundos",
@@ -910,6 +912,18 @@ export const es = {
         revoked: "Todos los enlaces de vista previa revocados",
         revokeError: "No se pudieron revocar los enlaces de vista previa",
       },
+      managedProviderUrls: {
+        sectionTitle: "Cuentas gestionadas",
+        enableLabel: "Conexiones locales y de red",
+        enableDescription:
+          "Permite que las cuentas gestionadas apunten sus conexiones a direcciones locales o de red, como un servidor Ollama o llama.cpp en este equipo o en tu red local. Desactivado de forma predeterminada, porque permite a esas cuentas alcanzar servicios que se ejecutan en tu equipo y en tu red.",
+        lockedByEnvironment:
+          "Definido por UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 en este servidor, que rechaza las direcciones privadas para todas las cuentas.",
+        loadError:
+          "No se pudo cargar la configuración de conexiones de las cuentas gestionadas.",
+        saveError:
+          "No se pudo guardar la configuración de conexiones de las cuentas gestionadas.",
+      },
       notifications: {
         sectionTitle: "Notificaciones",
         showLlamaUpdates: "Notificaciones de actualización de llama.cpp",
@@ -1151,7 +1165,7 @@ export const es = {
       custom: {
         chatWidth: {
           label: "Ancho del chat",
-          description: "Ajusta el ancho de los mensajes y del cuadro de texto. El ancho completo usa el espacio entre las barras laterales.",
+          description: "Ancho de los mensajes y del cuadro de texto.",
           standard: "Estándar",
           wide: "Amplio",
           full: "Ancho completo",
@@ -1224,7 +1238,6 @@ export const es = {
         },
         contrast: {
           label: "Contraste",
-          description: "Intensidad de los bordes y del texto secundario.",
         },
         reduceMotion: {
           label: "Reducir el movimiento",
@@ -1254,7 +1267,7 @@ export const es = {
       sidebarNav: {
         title: "Navegación de la barra lateral",
         description:
-          "Fija y reordena las pestañas de la barra lateral. Las pestañas sin fijar se agrupan en el menú «Más»; si solo queda una pestaña sin fijar, se oculta en lugar de crear un menú de un único elemento. «Nuevo chat» queda fijo.",
+          "Fija y reordena las pestañas de la barra lateral. Las que no fijes pasan al menú «Más».",
         dragToReorder: "Arrastra para reordenar",
         pinToSidebar: "Fijar {name} en la barra lateral",
         moreHolds: "Más ({count})",
@@ -1262,7 +1275,7 @@ export const es = {
       sidebarMenu: {
         title: "Menú de la barra lateral",
         description:
-          "Muestra, oculta y reordena los elementos del menú de perfil de la barra lateral. Configuración, Ayuda, Cerrar sesión y Apagar quedan fijos.",
+          "Elige y reordena los accesos del menú de perfil.",
         darkModeToggle: "Modo oscuro",
         dragToReorder: "Arrastra para reordenar",
       },
@@ -1405,6 +1418,54 @@ export const es = {
         copied: "Ruta copiada",
         openError: "No se pudo abrir la carpeta",
         copyError: "No se pudo copiar la ruta",
+        caches: {
+          label: "Archivos de caché",
+          description:
+            "{size} en cachés, de los cuales {reclaimable} se pueden borrar ahora.",
+          hint: "Descargas de paquetes, kernels compilados y cachés de transferencia que Unsloth vuelve a crear cuando los necesita. Los modelos descargados, los proyectos, los chats, los ajustes y tu token de Hugging Face nunca se borran aquí.",
+          keywords:
+            "caché cachés borrar limpiar vaciar purgar liberar espacio disco temporal compilado cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Midiendo el tamaño de las cachés...",
+          measureFailed: "No se pudieron medir las cachés",
+          empty: "No se encontraron archivos de caché.",
+          detailsAction: "Detalles",
+          recheckAction: "Volver a comprobar",
+          hideDetailsAction: "Ocultar detalles",
+          clearAction: "Borrar cachés",
+          clearOneAction: "Borrar",
+          clearingAction: "Borrando...",
+          confirmTitle: "¿Borrar los archivos en caché?",
+          confirmDescription: "Esto libera unos {size}.",
+          confirmOneTitle: "¿Borrar {name}?",
+          safety:
+            "Unsloth vuelve a crear una caché la próxima vez que la necesita. Los modelos descargados, los proyectos, los chats, los ajustes y tu token de Hugging Face no se tocan.",
+          hubCost:
+            "Esta es la caché de modelos. Si la borras, esos modelos se descargarán de nuevo la próxima vez que los uses.",
+          datasetsCost:
+            "Si borras esto, esos conjuntos de datos se descargarán de nuevo la próxima vez que los uses.",
+          blocked: "No se borró: {reason}",
+          cleared: "Se borraron {size}",
+          partial: "Algunos archivos de caché no se pudieron eliminar",
+          clearFailed: "No se pudieron borrar las cachés",
+          names: {
+            uv: "Caché de paquetes de uv",
+            pip: "Caché de descargas de pip",
+            npm: "Caché de paquetes de npm",
+            bun: "Caché de paquetes de Bun",
+            torchInductor: "Caché de compilación de Torch Inductor",
+            torchExtensions: "Compilaciones de extensiones de Torch",
+            triton: "Caché de kernels de Triton",
+            cuda: "Caché de kernels de CUDA",
+            numba: "Caché de compilación de Numba",
+            matplotlib: "Caché de fuentes de Matplotlib",
+            vllm: "Caché de vLLM",
+            unslothCompiled: "Módulos compilados de Unsloth",
+            hfXet: "Caché de transferencia de Hugging Face",
+            hfAssets: "Caché de recursos de Hugging Face",
+            hfDatasets: "Caché de conjuntos de datos de Hugging Face",
+            hfHub: "Caché de modelos de Hugging Face",
+          },
+        },
         futureDownloads: "Solo las descargas nuevas",
         environmentManaged: "Gestionado por la variable de entorno {variable}.",
         locationFree: "{free} libres",
@@ -1562,11 +1623,6 @@ export const es = {
         "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt. El texto más corto queda en el cuadro de mensaje.",
       pastedTextOffDescription:
         "Todo el texto pegado queda en el cuadro de mensaje, sin importar su longitud.",
-      compactionDescriptionInherit: "Sigue la política de contexto del servidor.",
-      compactionDescriptionCheckpoint:
-        "Conserva el último intercambio y las instrucciones permanentes que quepan, y archiva el resto para poder consultarlo.",
-      compactionDescriptionRolling:
-        "Archiva los turnos más antiguos para conservar el historial reciente y el espacio adicional seleccionado.",
       projectsSection: "Mostrar la sección Proyectos",
       projectsSectionDescription:
         "Agrupa los chats de proyecto bajo un encabezado Proyectos. Desactívalo para listarlos en Recientes.",
@@ -1614,25 +1670,19 @@ export const es = {
       autoCompact: "Compactar automáticamente chats largos",
       autoCompactDescription:
         "Los turnos antiguos pasan a un archivo consultable al llenarse el contexto de un chat.",
-      compactionStyle: "Cuando se llena el contexto",
-      compactionStyleDescription:
-        "Usar el valor del servidor conserva UNSLOTH_CONTEXT_POLICY. Restablecer la conversación mantiene el último turno y las instrucciones permanentes que quepan. Una ventana deslizante descarta los turnos más antiguos y puede conservar más historial reciente.",
-      compactionStyleInherit: "Usar valor del servidor",
-      compactionStyleCheckpoint: "Restablecer conversación",
-      compactionStyleRollingDefault:
-        "Archivar turnos antiguos (~25% de espacio extra)",
-      compactionStyleRolling10:
-        "Archivar turnos antiguos (~10% de espacio extra)",
-      compactionStyleRolling5:
-        "Archivar turnos antiguos (~5% de espacio extra)",
-      compactionStyleRollingNone:
-        "Archivar turnos antiguos (sin recorte adicional)",
       autoCompactKeywords:
         "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen archivo recuperación búsqueda compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Contraído",
+        auto: "Expandir mientras se ejecuta",
+        expanded: "Siempre expandido",
+      },
+      visibilityKeywords:
+        "contraer contraído expandir expandido abierto cerrado razonamiento pensamiento llamadas de herramientas actividad agrupar streaming",
       thinking: {
-        collapseByDefault: "Contraer el razonamiento de forma predeterminada",
-        collapseByDefaultDescription:
-          "Mantén el razonamiento contraído mientras el modelo piensa, en lugar de abrirlo automáticamente. Expande cualquier bloque para leerlo.",
+        visibility: "Razonamiento",
+        visibilityDescription:
+          "Cómo se abre el razonamiento. Puedes expandir o contraer cualquier bloque por tu cuenta.",
       },
       currentDate: {
         label: "Indicar al modelo la fecha de hoy",
@@ -1642,12 +1692,14 @@ export const es = {
         saveError: "No se pudieron actualizar los ajustes de fecha actual",
       },
       tools: {
-        collapseByDefault: "Contraer la actividad de herramientas por defecto",
-        collapseByDefaultDescription:
-          "Mantén contraídas las entradas y salidas de las herramientas mientras se ejecutan. Expande cualquier fila para inspeccionarla.",
-        foldIntoThinking: "Plegar las llamadas de herramientas en Pensamiento",
+        visibility: "Llamadas de herramientas",
+        visibilityDescription:
+          "Cómo se abre la actividad de herramientas. Puedes expandir o contraer cualquier llamada por tu cuenta.",
+        foldIntoThinking: "Agrupar las llamadas de herramientas en Razonamiento",
         foldIntoThinkingDescription:
-          "Oculta las llamadas de herramientas de un turno hasta abrir su bloque de Pensamiento.",
+          "Muestra las llamadas de herramientas de un turno dentro de su bloque de Razonamiento en lugar de en filas propias.",
+        foldIntoThinkingBlocked:
+          "No disponible mientras las llamadas de herramientas estén en «Siempre expandido», que las mantiene en filas propias.",
       },
       webSearch: {
         title: "Búsqueda web",

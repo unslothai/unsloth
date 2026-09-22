@@ -420,8 +420,8 @@ export function RunPreviewCard({
     <aside
       data-tour="studio-run-preview"
       className={cn(
-        "elevated-card elevated-card-dark-border flex flex-col gap-7 bg-foreground/[0.012] p-6",
-        "dark:bg-white/[0.018]",
+        "elevated-card elevated-card-dark-border flex flex-col gap-7 bg-[color-mix(in_oklab,var(--foreground)_calc(1.2%*var(--contrast-wash-gain,1)),transparent)] p-6",
+        "dark:bg-[rgb(255_255_255_/_calc(0.018*var(--contrast-wash-gain,1)))]",
       )}
     >
       <header className="flex items-center justify-between gap-3">
@@ -432,8 +432,8 @@ export function RunPreviewCard({
           className={cn(
             "inline-flex h-5 items-center rounded-full px-2 text-ui-10 font-medium tracking-nav",
             isReady
-              ? "bg-foreground/[0.06] text-foreground/90 dark:bg-white/[0.08]"
-              : "bg-foreground/[0.03] text-muted-foreground/70 dark:bg-white/[0.04]",
+              ? "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] text-foreground/90 dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]"
+              : "bg-[color-mix(in_oklab,var(--foreground)_calc(3%*var(--contrast-wash-gain,1)),transparent)] text-muted-foreground/70 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
           )}
         >
           {isReady ? t("studio.preview.ready") : t("studio.preview.notReady")}
@@ -529,7 +529,7 @@ export function RunPreviewCard({
 
       <TransformersUpgradeNotice />
 
-      <div className="-mx-6 h-px bg-foreground/[0.07] dark:bg-white/[0.06]" />
+      <div className="-mx-6 h-px bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]" />
 
       <div className="-mt-2">{startCta}</div>
     </aside>

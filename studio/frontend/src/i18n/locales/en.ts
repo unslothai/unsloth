@@ -218,17 +218,10 @@ export const en = {
       priority: "Priority",
       lastUpdated: "Last updated",
       manualOrder: "Manual order",
-      priorityHint: "Active and unread first",
-      lastUpdatedHint: "Newest first",
-      manualOrderHint: "Drag rows to reorder",
       switchedToManual: "Sorted manually: drag rows to reorder",
       organizeChats: "Organize chats",
       organizeProjects: "Organize projects",
       sortPinnedChats: "Sort pinned chats",
-      dragDrop: "Drag and drop",
-      dragHints: "Show a hint while dragging",
-      reorderSwitchesSort: "Reordering sets Manual order",
-      dragOpensFolders: "Open folders while hovering",
       moveUp: "Move up",
       moveDown: "Move down",
     },
@@ -581,7 +574,16 @@ export const en = {
       sourceHint: "The model runners write their own logs, so a failed load or generation is often explained there rather than in the server log.",
       path: "Location",
       pathCopy: "Copy path",
-      refreshSection: "Refresh",
+      currentSession: "Current",
+      statusLive: "Live",
+      statusPaused: "Paused",
+      statusStale: "Stale",
+      filterPlaceholder: "Filter lines",
+      lineCount: "{count} lines",
+      filteredLineCount: "{shown} of {total} lines",
+      wrapLines: "Wrap lines",
+      jumpToLatest: "Jump to latest",
+      noMatches: "No lines match the filter.",
       mode: "Mode",
       modeLive: "Live",
       modeInterval: "Every 3 seconds",
@@ -894,6 +896,16 @@ export const en = {
         revoked: "All preview links revoked",
         revokeError: "Couldn't revoke preview links",
       },
+      managedProviderUrls: {
+        sectionTitle: "Managed accounts",
+        enableLabel: "Local and network connections",
+        enableDescription:
+          "Let managed accounts point their connections at local or network addresses, such as an Ollama or llama.cpp server on this computer or your LAN. Off by default, because it lets those accounts reach services running on your computer and your network.",
+        lockedByEnvironment:
+          "Set by UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 on this server, which refuses private addresses for every account.",
+        loadError: "Failed to load managed account connection settings.",
+        saveError: "Failed to save managed account connection settings.",
+      },
       permissions: {
         sectionTitle: "Permissions",
         bypassLabel: "Tool permissions",
@@ -1131,7 +1143,7 @@ export const en = {
       custom: {
         chatWidth: {
           label: "Chat width",
-          description: "Set the width of messages and the composer. Full width uses the space between sidebars.",
+          description: "Width of messages and the composer.",
           standard: "Standard",
           wide: "Wide",
           full: "Full width",
@@ -1204,7 +1216,6 @@ export const en = {
         },
         contrast: {
           label: "Contrast",
-          description: "Strength of borders and secondary text.",
         },
         reduceMotion: {
           label: "Reduce motion",
@@ -1234,7 +1245,7 @@ export const en = {
       sidebarNav: {
         title: "Sidebar navigation",
         description:
-          "Pin and reorder the sidebar tabs. Unpinned tabs collect in the More menu; a single unpinned tab is hidden instead of getting a menu of one. New chat stays fixed.",
+          "Pin and reorder the sidebar tabs. Unpinned tabs go to the More menu.",
         dragToReorder: "Drag to reorder",
         pinToSidebar: "Pin {name} to the sidebar",
         moreHolds: "More ({count})",
@@ -1242,7 +1253,7 @@ export const en = {
       sidebarMenu: {
         title: "Profile menu",
         description:
-          "Choose which shortcuts appear when you click your name at the bottom of the sidebar, and in what order. Settings, Help, Log out, and Shutdown always appear.",
+          "Pick and reorder the shortcuts under your name.",
         darkModeToggle: "Dark mode toggle",
         dragToReorder: "Drag to reorder",
       },
@@ -1393,6 +1404,54 @@ export const en = {
         copied: "Path copied",
         openError: "Couldn't open the folder",
         copyError: "Couldn't copy the path",
+        caches: {
+          label: "Cache files",
+          description: "{size} in caches, of which {reclaimable} can be cleared now.",
+          hint: "Package downloads, compiled kernels and transfer caches that Unsloth rebuilds when it needs them. Downloaded models, projects, chats, settings and your Hugging Face token are never cleared here.",
+          // Not rendered: extra terms the settings search matches this row on.
+          keywords:
+            "cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Measuring cache sizes...",
+          measureFailed: "Couldn't measure the caches",
+          empty: "No cache files found.",
+          detailsAction: "Details",
+          recheckAction: "Recheck",
+          hideDetailsAction: "Hide details",
+          clearAction: "Clear caches",
+          clearOneAction: "Clear",
+          clearingAction: "Clearing...",
+          confirmTitle: "Clear cached files?",
+          confirmDescription: "This frees about {size}.",
+          confirmOneTitle: "Clear {name}?",
+          safety:
+            "Unsloth rebuilds a cache the next time it needs it. Downloaded models, projects, chats, settings and your Hugging Face token are not touched.",
+          hubCost:
+            "This is the model cache. Clearing it downloads those models again the next time you use them.",
+          datasetsCost:
+            "Clearing this downloads those datasets again the next time you use them.",
+          blocked: "Not cleared: {reason}",
+          cleared: "Cleared {size}",
+          partial: "Some cache files could not be removed",
+          clearFailed: "Couldn't clear the caches",
+          names: {
+            uv: "uv package cache",
+            pip: "pip download cache",
+            npm: "npm package cache",
+            bun: "Bun package cache",
+            torchInductor: "Torch Inductor compile cache",
+            torchExtensions: "Torch extension builds",
+            triton: "Triton kernel cache",
+            cuda: "CUDA kernel cache",
+            numba: "Numba compile cache",
+            matplotlib: "Matplotlib font cache",
+            vllm: "vLLM cache",
+            unslothCompiled: "Unsloth compiled modules",
+            hfXet: "Hugging Face transfer cache",
+            hfAssets: "Hugging Face asset cache",
+            hfDatasets: "Hugging Face dataset cache",
+            hfHub: "Hugging Face model cache",
+          },
+        },
       },
       environment: {
         title: "Environment",
@@ -1531,11 +1590,6 @@ export const en = {
       pastedTextShortDescription:
         "Pastes of {count} characters or more become .txt attachments.",
       pastedTextOffDescription: "Pasted text always stays in the message box.",
-      compactionDescriptionInherit: "Follow the server's context policy.",
-      compactionDescriptionCheckpoint:
-        "Keep the latest turn and the standing instructions that fit, and archive the rest for retrieval.",
-      compactionDescriptionRolling:
-        "Archive the oldest turns to keep recent history and the selected amount of extra room.",
       projectsSection: "Show projects section",
       projectsSectionDescription:
         "Group project chats under Projects. When off, show them in Recents.",
@@ -1582,21 +1636,19 @@ export const en = {
       autoCompact: "Auto-compact long chats",
       autoCompactDescription:
         "Older turns move to a searchable archive when a chat fills its context.",
-      compactionStyle: "When context fills",
-      compactionStyleDescription:
-        "Use server default keeps UNSLOTH_CONTEXT_POLICY. Reset conversation keeps the latest turn and the standing instructions that fit. A sliding window drops oldest turns and can keep more recent history.",
-      compactionStyleInherit: "Use server default",
-      compactionStyleCheckpoint: "Reset conversation",
-      compactionStyleRollingDefault: "Archive oldest turns (~25% extra room)",
-      compactionStyleRolling10: "Archive oldest turns (~10% extra room)",
-      compactionStyleRolling5: "Archive oldest turns (~5% extra room)",
-      compactionStyleRollingNone: "Archive oldest turns (no extra trim)",
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
+      visibility: {
+        collapsed: "Collapsed",
+        auto: "Expand while running",
+        expanded: "Always expanded",
+      },
+      visibilityKeywords:
+        "collapse collapsed expand expanded open closed reasoning thinking tool calls tool activity fold group streaming",
       thinking: {
-        collapseByDefault: "Collapse Thinking by default",
-        collapseByDefaultDescription:
-          "Keep reasoning collapsed. Expand a block to read it.",
+        visibility: "Thinking",
+        visibilityDescription:
+          "How reasoning opens. You can still expand or collapse any block yourself.",
       },
       currentDate: {
         label: "Tell the model today's date",
@@ -1606,12 +1658,14 @@ export const en = {
         saveError: "Failed to update current date settings",
       },
       tools: {
-        collapseByDefault: "Collapse tool activity by default",
-        collapseByDefaultDescription:
-          "Keep tool details collapsed. Expand a row to inspect it.",
-        foldIntoThinking: "Fold tool calls into Thinking",
+        visibility: "Tool calls",
+        visibilityDescription:
+          "How tool activity opens. You can still expand or collapse any call yourself.",
+        foldIntoThinking: "Group tool calls under Thinking",
         foldIntoThinkingDescription:
-          "Hide a turn's tool calls until its Thinking block is opened.",
+          "Show a turn's tool calls inside its Thinking block instead of on their own rows.",
+        foldIntoThinkingBlocked:
+          "Unavailable while tool calls are set to Always expanded, which keeps them on their own rows.",
       },
       webSearch: {
         title: "Web search",
