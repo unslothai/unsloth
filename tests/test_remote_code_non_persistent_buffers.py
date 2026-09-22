@@ -212,6 +212,50 @@ def test_native_modules_and_unrecoverable_constructors_are_left_alone():
     assert module.b.eq(0).all()
 
 
+def test_stored_tensor_arguments_skip_the_module():
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+
+    class OptionalTable(nn.Module):
+        def __init__(self, table = None):
+            super().__init__()
+            self.table = table
+            base = torch.ones(2) if table is None else table
+            self.register_buffer("b", base * 2, persistent = False)
+
+    OptionalTable.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    module = OptionalTable(torch.full((2,), 5.0))
+    module.b.zero_()
+    # Rebuilding with table=None would write 2.0 instead of 10.0, so the module is skipped.
+    assert helper._constructor_kwargs(module, None) is None
+    assert helper.restore_remote_code_non_persistent_buffers(module) == 0
+    assert module.b.eq(0).all()
+
+
+def test_a_stored_meta_device_is_not_passed_back():
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+
+    class StoresDevice(nn.Module):
+        def __init__(
+            self,
+            scale = 3.0,
+            device = None,
+        ):
+            super().__init__()
+            self.scale = scale
+            self.device = device
+            self.register_buffer("b", torch.full((2,), scale, device = device), persistent = False)
+
+    StoresDevice.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    module = StoresDevice(scale = 4.0, device = torch.device("meta"))
+    module._buffers["b"] = torch.zeros(2)
+    assert helper.restore_remote_code_non_persistent_buffers(module) == 1
+    torch.testing.assert_close(module.b, torch.full((2,), 4.0))
+
+
 def test_loaders_restore_right_after_from_pretrained():
     for relative, calls in (("unsloth/models/vision.py", 1), ("unsloth/models/llama.py", 2)):
         with open(os.path.join(_ROOT, relative), encoding = "utf-8") as file:

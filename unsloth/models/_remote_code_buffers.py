@@ -62,10 +62,11 @@ def _constructor_kwargs(module, model_config):
             continue
         if name == "config":
             value = module.__dict__.get("config", None) or model_config
+        elif name in _PLACEMENT_ARGUMENTS:
+            # A stored `self.device` can be the meta device transformers built on.
+            value = None if parameter.default is inspect.Parameter.empty else parameter.default
         elif name in module.__dict__:
             value = module.__dict__[name]
-        elif name in _PLACEMENT_ARGUMENTS:
-            value = parameter.default
         else:
             # An argument the module did not keep may have had a non-default value; guessing
             # the default could rebuild plausible but wrong buffers, so skip the module.
@@ -73,9 +74,8 @@ def _constructor_kwargs(module, model_config):
         if value is inspect.Parameter.empty:
             return None
         if isinstance(value, (torch.Tensor, torch.nn.Module)):
-            if parameter.default is inspect.Parameter.empty:
-                return None
-            continue
+            # The buffers may be derived from it and it cannot be reproduced safely.
+            return None
         kwargs[name] = value
     return kwargs
 
