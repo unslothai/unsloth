@@ -3970,7 +3970,7 @@ export function AppSidebar() {
                   >
                     {t("shell.navigation.search")}
                     {searchShortcutLabel && (
-                      <kbd className="rounded bg-black/10 px-1 py-px text-ui-10 font-medium leading-none dark:bg-white/15">
+                      <kbd className="rounded bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] px-1 py-px text-ui-10 font-medium leading-none dark:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]">
                         {searchShortcutLabel}
                       </kbd>
                     )}
@@ -4264,7 +4264,7 @@ export function AppSidebar() {
                           decides what lives here vs. on the sidebar itself.
                           my-1 matches the menu's own p-1, so the gap either side
                           of the rule equals the one under the last row. */}
-                      <DropdownMenuSeparator className="mx-1! my-1! h-0! border-t border-border/70 bg-transparent! dark:border-white/15" />
+                      <DropdownMenuSeparator className="mx-1! my-1! h-0! border-t border-border/70 bg-transparent! dark:border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))]" />
                       <DropdownMenuItem
                         onSelect={() =>
                           useSettingsDialogStore
@@ -4730,7 +4730,7 @@ export function AppSidebar() {
               side="top"
               align="center"
               sideOffset={8}
-              className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] rounded-[20px] border border-transparent px-2.5 py-2.5 font-heading dark:border-white/[0.05]"
+              className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] rounded-[20px] border border-transparent px-2.5 py-2.5 font-heading dark:border-[rgb(255_255_255_/_calc(0.05*var(--contrast-edge-gain,1)))]"
               trigger={(triggerRef) => (
                 <SidebarMenuButton
                   ref={triggerRef}
@@ -4831,7 +4831,7 @@ export function AppSidebar() {
                   );
                 })}
               </DropdownMenuGroup>
-              <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent! dark:border-white/15" />
+              <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent! dark:border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))]" />
               <DropdownMenuItem
                 onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
               >
@@ -4868,7 +4868,7 @@ export function AppSidebar() {
               type="button"
               aria-label={t("shell.navigation.settings")}
               onClick={() => useSettingsDialogStore.getState().openDialog()}
-              className="absolute right-2 top-1/2 flex size-[calc(32px*var(--ui-space-scale,1))] -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
+              className="absolute right-2 top-1/2 flex size-[calc(32px*var(--ui-space-scale,1))] -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
             >
               <HugeiconsIcon
                 icon={Settings02Icon}

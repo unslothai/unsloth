@@ -197,7 +197,7 @@ function ModelSelectorTrigger({
                 onEject();
               }}
               // Hit area larger than the icon, with a hover circle; negative margin keeps the icon in place.
-              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-black/10 dark:hover:bg-white/10 [@media(hover:none)]:pointer-events-none"
+              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
             >
               <HugeiconsIcon
                 icon={CheckmarkCircle02Icon}

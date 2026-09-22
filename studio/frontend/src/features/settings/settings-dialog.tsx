@@ -486,7 +486,7 @@ export function SettingsDialog() {
                   }}
                   placeholder={t("settings.dialog.searchPlaceholder")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
-                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06]"
+                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
                 />
                 {query && (
                   <button

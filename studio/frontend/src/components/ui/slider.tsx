@@ -112,7 +112,7 @@ function Slider({
     >
       <SliderPrimitive.Track
         data-slot="slider-track"
-        className="bg-black/10 dark:bg-black/12 rounded-4xl data-horizontal:h-2 data-horizontal:w-full data-vertical:h-full data-vertical:w-2 relative grow overflow-hidden cursor-pointer"
+        className="bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:bg-[rgb(0_0_0_/_calc(0.12*var(--contrast-wash-gain,1)))] rounded-4xl data-horizontal:h-2 data-horizontal:w-full data-vertical:h-full data-vertical:w-2 relative grow overflow-hidden cursor-pointer"
       >
         <SliderPrimitive.Range
           data-slot="slider-range"

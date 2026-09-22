@@ -163,7 +163,10 @@ import {
   recordAutoContinue,
   shouldAutoContinueMessage,
 } from "@/features/chat/utils/continuation";
-import { holdAutoContinueRun } from "@/features/chat/utils/auto-continue-run-keeper";
+import {
+  holdAutoContinueRun,
+  watchAutoContinueRun,
+} from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-accept";
 import {
@@ -2476,7 +2479,7 @@ const PendingAudioChip: FC = () => {
   }
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
-      <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
+      <div className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
         <HeadphonesIcon className="size-3.5 text-muted-foreground" />
         <span className="max-w-48 truncate">{audioName}</span>
         <button
@@ -7166,15 +7169,16 @@ const ContinueMessageBarForLastMessage: FC = () => {
     return index > 0 ? thread.messages[index - 1].id : null;
   });
 
-  const startContinuation = useCallback(() => {
+  // Hands the started run back, untyped: the only handle identified with THIS run.
+  const startContinuation = useCallback((): unknown => {
     const messages = aui.thread().getState().messages;
     const index = messages.findIndex((message) => message.id === messageId);
     if (index < 0) {
-      return;
+      return undefined;
     }
     // Sibling of the truncated turn, so the branch picker can still reach the partial.
     const parent = index > 0 ? messages[index - 1].id : null;
-    aui.thread().startRun({
+    return aui.thread().startRun({
       parentId: parent,
       runConfig: {
         custom: {
@@ -7289,7 +7293,8 @@ const ContinueMessageBarForLastMessage: FC = () => {
         // Recorded BEFORE the run, so a round that produces nothing still spends its
         // budget instead of re-firing this effect forever.
         recordAutoContinue(parentId);
-        startContinuation();
+        // The run's own promise is what ends the hold if this preflight is stopped.
+        watchAutoContinueRun(messageId, runThreadId, startContinuation());
         return;
       }
       // `skipped` is this tab's own duplicate call, where the run is coming from the
@@ -8416,7 +8421,7 @@ const UserMessageAudio: FC = () => {
   }
   return (
     <div className="col-start-2 flex justify-end">
-      <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
+      <div className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
         <HeadphonesIcon className="size-3.5 text-muted-foreground" />
         <span className="max-w-48 truncate">{audioName}</span>
       </div>
