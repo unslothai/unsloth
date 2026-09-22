@@ -14,6 +14,7 @@ the model it wraps.
 
 Small models, no downloads; each test states which arm it measures.
 """
+
 import pytest
 import torch
 import torch.nn as nn
@@ -25,28 +26,45 @@ from unsloth.models.vision import _inherit_gradient_checkpointing_support
 
 class _Fixed(nn.Module):
     """The Phi-4 shape: named arguments only."""
-    def forward(self, input_ids = None, attention_mask = None, labels = None):
+
+    def forward(
+        self,
+        input_ids = None,
+        attention_mask = None,
+        labels = None,
+    ):
         return input_ids
 
 
 class _Kwargs(nn.Module):
-    def forward(self, input_ids = None, **kwargs):
+    def forward(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
         return input_ids
 
 
 class _Explicit(nn.Module):
-    def forward(self, input_ids = None, packed_seq_lengths = None):
+    def forward(
+        self,
+        input_ids = None,
+        packed_seq_lengths = None,
+    ):
         return input_ids
 
 
 class _PeftLike(nn.Module):
     """PEFT forwards every keyword to the wrapped model."""
+
     def __init__(self, inner):
         super().__init__()
         self.inner = inner
         self.peft_config = {"default": None}
+
     def get_base_model(self):
         return self.inner
+
     def forward(self, *args, **kwargs):
         return self.inner(*args, **kwargs)
 
@@ -81,6 +99,7 @@ class _Layer(nn.Module):
         super().__init__()
         self.linear = nn.Linear(4, 4)
         self.gradient_checkpointing = False
+
     def forward(self, x):
         return self.linear(x)
 
@@ -98,14 +117,20 @@ class _CausalLM(PreTrainedModel):
     def get_input_embeddings(self):
         return self.embed_tokens
 
-    def forward(self, input_ids = None, **kwargs):
+    def forward(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
         x = self.embed_tokens(input_ids)
-        for layer in self.layers: x = layer(x)
+        for layer in self.layers:
+            x = layer(x)
         return self.lm_head(x)
 
 
 class _Wrapper(PreTrainedModel):
     """The Nemotron-Omni shape: transformers' default False around a model that supports it."""
+
     config_class = _Cfg
 
     def __init__(self, config):
@@ -116,7 +141,11 @@ class _Wrapper(PreTrainedModel):
     def get_input_embeddings(self):
         return self.language_model.embed_tokens
 
-    def forward(self, input_ids = None, **kwargs):
+    def forward(
+        self,
+        input_ids = None,
+        **kwargs,
+    ):
         return self.language_model(input_ids = input_ids)
 
 
@@ -147,9 +176,11 @@ def test_models_that_already_answer_are_left_alone():
 def test_wrapper_without_a_supporting_submodel_stays_false():
     class _Plain(PreTrainedModel):
         config_class = _Cfg
+
         def __init__(self, config):
             super().__init__(config)
             self.encoder = nn.Linear(4, 4)
+
     model = _Plain(_Cfg())
     assert _inherit_gradient_checkpointing_support(model) is False
     assert model.supports_gradient_checkpointing is False
@@ -161,6 +192,7 @@ from unsloth.models.vision import _text_trainable_core, _required_non_text_input
 
 class _OmniWrapper(PreTrainedModel):
     """The Nemotron-Omni shape: pixel_values has no default."""
+
     config_class = _Cfg
 
     def __init__(self, config):
@@ -169,13 +201,27 @@ class _OmniWrapper(PreTrainedModel):
         self.vision_model = nn.Linear(4, 4)
         self.mlp1 = nn.Linear(4, 4)
 
-    def forward(self, pixel_values, input_ids = None, attention_mask = None, image_flags = None, labels = None):
+    def forward(
+        self,
+        pixel_values,
+        input_ids = None,
+        attention_mask = None,
+        image_flags = None,
+        labels = None,
+    ):
         return self.language_model(input_ids = input_ids)
 
 
 class _VlmWrapper(_OmniWrapper):
     """Every transformers VLM: image inputs default to None, so a text batch is fine."""
-    def forward(self, input_ids = None, pixel_values = None, attention_mask = None, labels = None):
+
+    def forward(
+        self,
+        input_ids = None,
+        pixel_values = None,
+        attention_mask = None,
+        labels = None,
+    ):
         return self.language_model(input_ids = input_ids)
 
 
@@ -211,6 +257,7 @@ def test_ambiguous_wrapper_is_left_alone():
             self.talker = _CausalLM(config)
             self.listener = _CausalLM(config)
             del self.language_model
+
     model = _Two(_Cfg())
     assert _text_trainable_core(model) is model
 
@@ -230,16 +277,20 @@ def test_model_built_on_gradient_checkpointing_layer_is_recognised():
         def __init__(self):
             super().__init__()
             self.linear = nn.Linear(4, 4)
+
         def forward(self, x):
             return self.linear(x)
 
     class _RemoteCausalLM(PreTrainedModel):
         """The NemotronHForCausalLM shape: blocks checkpoint, the class says False."""
+
         config_class = _Cfg
+
         def __init__(self, config):
             super().__init__(config)
             self.embed_tokens = nn.Embedding(8, 4)
             self.layers = nn.ModuleList([_Block(), _Block()])
+
         def get_input_embeddings(self):
             return self.embed_tokens
 

@@ -1168,8 +1168,11 @@ def _cast_unquantized_floats(model, dtype):
             continue
         # bitsandbytes keeps its packed weights in Params4bit / Int8Params with a
         # quant_state (or CB/SCB); those must not move.
-        if hasattr(tensor, "quant_state") or hasattr(tensor, "SCB") or \
-                type(tensor).__name__ in ("Params4bit", "Int8Params"):
+        if (
+            hasattr(tensor, "quant_state")
+            or hasattr(tensor, "SCB")
+            or type(tensor).__name__ in ("Params4bit", "Int8Params")
+        ):
             continue
         tensor.data = tensor.data.to(dtype)
     return model
@@ -1195,12 +1198,15 @@ def _inherit_gradient_checkpointing_support(model):
     except Exception:
         GradientCheckpointingLayer = ()
     for name, module in model.named_modules():
-        if module is model or not name: continue
+        if module is model or not name:
+            continue
         # A nested model that says yes, or a layer built on transformers' own
         # checkpointing layer (a remote NemotronHBlock is one) that the wrapper
         # class simply forgot to advertise.
-        if (getattr(module, "supports_gradient_checkpointing", False) and hasattr(module, "gradient_checkpointing_enable")) \
-            or (GradientCheckpointingLayer and isinstance(module, GradientCheckpointingLayer)):
+        if (
+            getattr(module, "supports_gradient_checkpointing", False)
+            and hasattr(module, "gradient_checkpointing_enable")
+        ) or (GradientCheckpointingLayer and isinstance(module, GradientCheckpointingLayer)):
             model.supports_gradient_checkpointing = True
             logger.info(
                 f"Unsloth: {type(model).__name__} inherits gradient checkpointing support from {name}."
@@ -1209,11 +1215,23 @@ def _inherit_gradient_checkpointing_support(model):
     return False
 
 
-_TEXT_BATCH_KEYS = frozenset((
-    "input_ids", "inputs_embeds", "attention_mask", "labels", "position_ids",
-    "past_key_values", "use_cache", "output_attentions", "output_hidden_states",
-    "return_dict", "cache_position", "logits_to_keep", "num_logits_to_keep",
-))
+_TEXT_BATCH_KEYS = frozenset(
+    (
+        "input_ids",
+        "inputs_embeds",
+        "attention_mask",
+        "labels",
+        "position_ids",
+        "past_key_values",
+        "use_cache",
+        "output_attentions",
+        "output_hidden_states",
+        "return_dict",
+        "cache_position",
+        "logits_to_keep",
+        "num_logits_to_keep",
+    )
+)
 
 
 def _required_non_text_inputs(forward):
@@ -1223,7 +1241,8 @@ def _required_non_text_inputs(forward):
     except (TypeError, ValueError):
         return []
     return [
-        name for name, p in parameters.items()
+        name
+        for name, p in parameters.items()
         if name != "self"
         and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
         and p.default is inspect.Parameter.empty
@@ -1261,12 +1280,18 @@ def _text_trainable_core(model):
         return model
     cores = []
     for name, child in model.named_children():
-        if not isinstance(child, PreTrainedModel): continue
+        if not isinstance(child, PreTrainedModel):
+            continue
         child_forward = getattr(type(child), "forward", None)
-        if child_forward is None or child_forward is torch.nn.Module.forward: continue
-        if _required_non_text_inputs(child_forward): continue
+        if child_forward is None or child_forward is torch.nn.Module.forward:
+            continue
+        if _required_non_text_inputs(child_forward):
+            continue
         try:
-            has_embeddings = child.get_input_embeddings() is not None and child.get_output_embeddings() is not None
+            has_embeddings = (
+                child.get_input_embeddings() is not None
+                and child.get_output_embeddings() is not None
+            )
         except Exception:
             has_embeddings = False
         if has_embeddings:
@@ -1310,11 +1335,13 @@ def _tolerate_dtype_cast_on_quantized_model(enabled):
         yield
         return
     from transformers.modeling_utils import PreTrainedModel
+
     original_to = PreTrainedModel.to
 
     def to(self, *args, **kwargs):
-        quantized = getattr(self, "quantization_method", None) is not None or \
-            getattr(self, "is_quantized", False)
+        quantized = getattr(self, "quantization_method", None) is not None or getattr(
+            self, "is_quantized", False
+        )
         dtype = kwargs.pop("dtype", None)
         rest = []
         for arg in args:

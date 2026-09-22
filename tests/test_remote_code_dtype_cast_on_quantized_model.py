@@ -9,6 +9,7 @@ load, that call now casts only the floating tensors that are not quantized weigh
 Built on a small PreTrainedModel with a fake packed weight, no downloads; each test
 states which arm it measures.
 """
+
 import pytest
 import torch
 import torch.nn as nn
@@ -39,7 +40,7 @@ class _Model(PreTrainedModel):
 
     def __init__(self, config):
         super().__init__(config)
-        self.norm = nn.LayerNorm(4)                       # plain float parameters
+        self.norm = nn.LayerNorm(4)  # plain float parameters
         self.packed = _Params4bit(torch.zeros(8, dtype = torch.uint8))
         self.register_buffer("scale", torch.ones(4, dtype = torch.float32))
 
@@ -50,6 +51,7 @@ class _Model(PreTrainedModel):
 def _quantized_model():
     m = _Model(_Cfg())
     from transformers.utils.quantization_config import QuantizationMethod
+
     m.quantization_method = QuantizationMethod.BITS_AND_BYTES
     m.is_quantized = True
     return m
@@ -85,11 +87,11 @@ def test_disabled_context_changes_nothing():
 def test_unquantized_model_and_device_moves_pass_through():
     m = _Model(_Cfg())
     with _tolerate_dtype_cast_on_quantized_model(True):
-        m.to(torch.bfloat16)                 # plain model: transformers' own path
+        m.to(torch.bfloat16)  # plain model: transformers' own path
         assert m.norm.weight.dtype == torch.bfloat16
         q = _quantized_model()
-        q.to("cpu")                          # device only: untouched, no error
-        q.to(device = "cpu", dtype = torch.bfloat16)   # both: cast floats, then move
+        q.to("cpu")  # device only: untouched, no error
+        q.to(device = "cpu", dtype = torch.bfloat16)  # both: cast floats, then move
         assert q.norm.weight.dtype == torch.bfloat16
         assert q.packed.dtype == torch.uint8
 
