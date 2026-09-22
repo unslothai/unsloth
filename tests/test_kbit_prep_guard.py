@@ -12,6 +12,7 @@ The fixture is TRL 0.22.2's real function body, not a paraphrase, so a change in
 how the branch is spelled shows up as a failure here rather than as a silent
 no-op in the field.
 """
+
 import linecache
 import sys
 import types
@@ -54,13 +55,18 @@ def _seed_linecache(filename, source):
 
 class FakePeftModel:
     """Stands in for a model Unsloth has already applied LoRA to."""
+
     is_loaded_in_4bit = True
-    def named_parameters(self): return iter(())
+
+    def named_parameters(self):
+        return iter(())
 
 
 class PlainModel:
     is_loaded_in_4bit = True
-    def named_parameters(self): return iter(())
+
+    def named_parameters(self):
+        return iter(())
 
 
 class Args:
@@ -84,7 +90,8 @@ def trl_modules(monkeypatch):
     _seed_linecache(utils.__file__, TRL_0_22_2_SOURCE)
     exec(compile(TRL_0_22_2_SOURCE, utils.__file__, "exec"), vars(utils))
 
-    trl = types.ModuleType("trl"); trl.__version__ = "0.22.2"
+    trl = types.ModuleType("trl")
+    trl.__version__ = "0.22.2"
     models = types.ModuleType("trl.models")
     models.utils = utils
     models.prepare_peft_model = utils.prepare_peft_model
@@ -92,8 +99,14 @@ def trl_modules(monkeypatch):
 
     # Every trainer module that does `from ..models import prepare_peft_model`.
     trainers = {}
-    for name in ("sft_trainer", "grpo_trainer", "rloo_trainer", "prm_trainer",
-                 "online_dpo_trainer", "reward_trainer"):
+    for name in (
+        "sft_trainer",
+        "grpo_trainer",
+        "rloo_trainer",
+        "prm_trainer",
+        "online_dpo_trainer",
+        "reward_trainer",
+    ):
         m = types.ModuleType(f"trl.trainer.{name}")
         m.prepare_peft_model = utils.prepare_peft_model
         trainers[name] = m
@@ -102,8 +115,9 @@ def trl_modules(monkeypatch):
     monkeypatch.setitem(sys.modules, "trl", trl)
     monkeypatch.setitem(sys.modules, "trl.models", models)
     monkeypatch.setitem(sys.modules, "trl.models.utils", utils)
-    return types.SimpleNamespace(trl=trl, utils=utils, models=models,
-                                 trainers=trainers, calls=calls)
+    return types.SimpleNamespace(
+        trl = trl, utils = utils, models = models, trainers = trainers, calls = calls
+    )
 
 
 def test_an_already_peft_model_skips_the_upcast(trl_modules):

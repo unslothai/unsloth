@@ -1020,7 +1020,8 @@ def _guard_kbit_prep_against_peft_models():
     """
     try:
         import trl
-        if Version(trl.__version__) >= Version("0.24.0"): return False
+        if Version(trl.__version__) >= Version("0.24.0"):
+            return False
     except Exception:
         return False
     try:
@@ -1040,8 +1041,10 @@ def _guard_kbit_prep_against_peft_models():
         return False
     # Bail rather than guess: if the branch is not spelled the way we expect, a
     # blind edit is worse than leaving the upcast in place.
-    if source.count(OLD) != 1: return False
+    if source.count(OLD) != 1:
+        return False
     import functools, textwrap
+
     source = textwrap.dedent(source).replace(OLD, NEW)
 
     # exec against the module's LIVE __dict__, not a copy of it. The body closes
@@ -1054,7 +1057,8 @@ def _guard_kbit_prep_against_peft_models():
     namespace = vars(trl_models_utils)
     exec(compile(source, getattr(trl_models_utils, "__file__", "<unsloth>"), "exec"), namespace)
     patched = namespace.get("prepare_peft_model")
-    if patched is None: return False
+    if patched is None:
+        return False
     functools.update_wrapper(patched, original)
     setattr(patched, _UNSLOTH_KBIT_PREP_GUARD_FLAG, True)
 
@@ -1064,7 +1068,8 @@ def _guard_kbit_prep_against_peft_models():
     # one GKD actually inherits.
     rebound = 0
     for module in list(sys.modules.values()):
-        if module is None: continue
+        if module is None:
+            continue
         try:
             if getattr(module, "prepare_peft_model", None) is original:
                 setattr(module, "prepare_peft_model", patched)
