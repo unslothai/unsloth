@@ -42,6 +42,51 @@ test("the page track is left on its own wash", () => {
   assert.match(base[1] ?? "", /var\(--foreground\)/);
 });
 
+test("the panel track lands on the tone the page toolbar already reads at", () => {
+  const rule = HUB_CSS.match(MENU_TRACK);
+  // 13% of #181818 over #272727 is #252525, the page toolbar's track.
+  assert.match(rule?.[1] ?? "", /var\(--background\) 13%/);
+});
+
+test("only an unselected segment takes a hover", () => {
+  const dark = HUB_CSS.match(
+    /html\.dark \.hub-tab-toggle \[role="tab"\]\[aria-selected="false"\]:hover \{([^}]*)\}/,
+  );
+  assert.ok(dark, "unselected segment hover is missing");
+  // Toward the selection, held back so it never arrives there.
+  assert.match(dark[1] ?? "", /var\(--accent\) 55%/);
+  assert.doesNotMatch(
+    HUB_CSS,
+    /\[aria-selected="true"\]:hover/,
+    "the selected segment must show no hover at all",
+  );
+});
+
+test("the segmented control carries no hand-written hover on its active tab", () => {
+  const tabs = readSrc(
+    "features/model-picker/components/model-selector/pill-tabs.tsx",
+  );
+  // This wash landed below the pill, so pointing at the selected tab darkened
+  // it. The pill rules hold it still on their own.
+  assert.doesNotMatch(tabs, /hover:!bg-/);
+});
+
+test("an option menu rests at its trigger's tone, not the panel's", () => {
+  const menu = HUB_CSS.match(/html\.dark \.hub-menu-instant \{([^}]*)\}/);
+  assert.ok(menu);
+  // The same 60% .field-soft rests at, made opaque for a floating surface.
+  assert.match(menu[1] ?? "", /var\(--accent\) 60%, var\(--popover\)/);
+});
+
+test("a highlighted row still lifts clear of the lighter menu", () => {
+  const row = HUB_CSS.match(
+    /html\.dark \.hub-menu-instant \[data-slot="select-item"\]:focus,[\s\S]*?\{([^}]*)\}/,
+  );
+  assert.ok(row);
+  // Bare --accent would sit 8 levels above the menu, too close to pick out.
+  assert.match(row[1] ?? "", /var\(--foreground\) 6%, var\(--accent\)/);
+});
+
 test("a button borrowing the pill look gets the hover the pill pins away", () => {
   const hover = HUB_CSS.match(
     /html\.dark \.hub-tab-toggle-pill\.hub-pill-action:hover \{([^}]*)\}/,

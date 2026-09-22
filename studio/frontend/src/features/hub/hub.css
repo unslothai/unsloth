@@ -671,17 +671,22 @@
     color: var(--foreground);
   }
 
-  /* --accent, the app's one hover tone. */
+  /* --accent, the app's one hover tone, carrying a little --foreground: the
+     menu now rests at the tone --accent alone would sit 8 levels above, which
+     is not enough to pick a row out. Same step the track keeps from the pill. */
   html.dark .hub-menu-instant [data-slot="select-item"]:focus,
   html.dark .hub-menu-instant [data-slot="select-item"][data-highlighted],
   html.dark .hub-menu-instant [role="option"][data-highlighted] {
-    background-color: var(--accent);
+    background-color: color-mix(in srgb, var(--foreground) 6%, var(--accent));
     color: var(--foreground);
   }
 
-  /* The popover surface, like every other menu, so row hover still reads. */
+  /* The trigger's resting tone, not the panel's, so an open menu reads as the
+     control it came from instead of a hole in the panel. Opaque rather than
+     .field-soft's translucent rest, because a floating menu has no fixed
+     backdrop and would land on a different colour per surface. */
   html.dark .hub-menu-instant {
-    background-color: var(--popover) !important;
+    background-color: color-mix(in srgb, var(--accent) 60%, var(--popover)) !important;
   }
 
   .hub-menu-instant *,
@@ -717,12 +722,13 @@
      the selected pill depends on that surface: 21 levels below --accent on the
      page, but only 7 on an elevated panel, where the two halves of the control
      stop reading apart. Panels therefore sink the track toward the page
-     instead of lifting it off the panel. No wash gain here: that guard keeps
-     lit washes from fading out, and this one darkens. */
+     instead of lifting it off the panel, landing on the same #252525 the page
+     toolbar reads at. No wash gain here: that guard keeps lit washes from
+     fading out, and this one darkens. */
   html.dark .menu-soft-surface .hub-tab-toggle,
   html.dark .menu-soft-surface-up .hub-tab-toggle,
   html.dark [data-slot="dialog-content"] .hub-tab-toggle {
-    background-color: color-mix(in srgb, var(--background) 40%, transparent);
+    background-color: color-mix(in srgb, var(--background) 13%, transparent);
   }
 
   html:not(.dark) .hub-tab-toggle-pill {
@@ -746,6 +752,18 @@
     background-color: var(--accent);
     border: 0;
     box-shadow: none;
+  }
+
+  /* Only the unselected segments take a hover, and it moves toward the
+     selected look rather than away from it: held-back --accent in dark, toward
+     the white pill in light. The selected segment is pinned above and shows no
+     hover at all, so pointing at the tab you are already on does nothing. */
+  html:not(.dark) .hub-tab-toggle [role="tab"][aria-selected="false"]:hover {
+    background-color: color-mix(in srgb, var(--background) 55%, transparent);
+  }
+
+  html.dark .hub-tab-toggle [role="tab"][aria-selected="false"]:hover {
+    background-color: color-mix(in srgb, var(--accent) 55%, transparent);
   }
 
   /* Standalone buttons borrow the pill look without being a segment, so they
