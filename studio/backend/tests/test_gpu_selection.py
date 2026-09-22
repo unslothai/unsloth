@@ -2503,7 +2503,6 @@ class TestXpuBitsandbytesOptimizerGate(unittest.TestCase):
 
     def _probe(self):
         from core.training.diffusion_train_common import bitsandbytes_optimizer_supported
-
         return bitsandbytes_optimizer_supported
 
     def test_xpu_host_refuses_bitsandbytes_optimizers(self):
@@ -2521,7 +2520,6 @@ class TestXpuBitsandbytesOptimizerGate(unittest.TestCase):
         detection selects CUDA. Keying on presence would drop 8-bit on a CUDA run and make
         restore_resume_state refuse every existing AdamW8bit checkpoint."""
         import torch
-
         with (
             patch.object(torch, "xpu", SimpleNamespace(is_available = lambda: True)),
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
@@ -2594,7 +2592,6 @@ class TestCliDefaultOptimizerFollowsTheDevicePolicy(unittest.TestCase):
             DEFAULT_TRAINING_OPTIMIZER,
             normalize_training_optimizer_for_device,
         )
-
         return normalize_training_optimizer_for_device(
             DEFAULT_TRAINING_OPTIMIZER,
             device_backend = device.value,
@@ -2605,7 +2602,6 @@ class TestCliDefaultOptimizerFollowsTheDevicePolicy(unittest.TestCase):
 
     def test_other_backends_keep_the_historical_cli_default(self):
         from core.training.training import DEFAULT_TRAINING_OPTIMIZER
-
         for device in (DeviceType.CUDA, DeviceType.CPU):
             with self.subTest(device = device):
                 self.assertEqual(self._resolve(device), DEFAULT_TRAINING_OPTIMIZER)
@@ -2616,7 +2612,9 @@ class TestCliDefaultOptimizerFollowsTheDevicePolicy(unittest.TestCase):
             encoding = "utf-8"
         )
         self.assertIn("_optimizer_for_host", source)
-        self.assertIn('training_kwargs["optim"] = _optimizer_for_host(training_kwargs.get("optim"))', source)
+        self.assertIn(
+            'training_kwargs["optim"] = _optimizer_for_host(training_kwargs.get("optim"))', source
+        )
 
     def test_an_undetectable_host_keeps_the_historical_default(self):
         """The CLI helper must fail open: a device lookup that raises cannot stop a run."""

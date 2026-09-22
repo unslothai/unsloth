@@ -718,7 +718,6 @@ def bitsandbytes_optimizer_supported() -> bool:
     """
     try:
         from utils.hardware import DeviceType, get_device
-
         return get_device() != DeviceType.XPU
     except Exception:  # noqa: BLE001 -- a probe failure must not block a start
         return True
