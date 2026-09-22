@@ -11,7 +11,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { hasAuthToken, mustChangePassword } from "@/features/auth";
-import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
+import {
+  type ChatSearch,
+  isExternalModelId,
+  useChatRuntimeStore,
+} from "@/features/chat";
 import { useHfTokenStore, useInventoryVersion } from "@/features/hub";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -25,7 +29,8 @@ import { isRunConfigModelInput } from "./target";
 
 export function SharedRunConfigLinkEditor({
   pending,
-}: { pending: RunConfigRequest }) {
+  chatSearch,
+}: { pending: RunConfigRequest; chatSearch: ChatSearch | null }) {
   const navigate = useNavigate();
   const location = useRouterState({ select: (state) => state.location });
   const routeReady = useRouterState({
@@ -65,6 +70,7 @@ export function SharedRunConfigLinkEditor({
     () =>
       openRunConfigTarget({
         pending,
+        chatSearch,
         canOpen,
         settingsHydrated,
         currentModel,
@@ -75,6 +81,7 @@ export function SharedRunConfigLinkEditor({
       }),
     [
       canOpen,
+      chatSearch,
       currentModel,
       location,
       pending,

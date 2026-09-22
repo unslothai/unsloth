@@ -126,8 +126,10 @@ export function ShareRunConfigDialog({
           .filter(
             ({ key, valid }) =>
               valid &&
-              JSON.stringify(config[key]) !==
-                JSON.stringify(DEFAULT_PER_MODEL_CONFIG[key]),
+              (key === "llamaExtraArgs"
+                ? (config.llamaExtraArgs?.length ?? 0) > 0
+                : JSON.stringify(config[key]) !==
+                  JSON.stringify(DEFAULT_PER_MODEL_CONFIG[key])),
           )
           .map(({ key }) => key),
       ),
@@ -300,10 +302,10 @@ export function ShareRunConfigDialog({
           )}
           {destination === "desktop" &&
             link.length > DESKTOP_RUN_CONFIG_URL_WARNING_LENGTH && (
-              <p role="status" className="text-sm text-muted-foreground">
+              <output className="block text-sm text-muted-foreground">
                 Long desktop links may not open on Windows. Include fewer
                 settings{!isTauri && " or use a browser link"}.
-              </p>
+              </output>
             )}
           <p className="text-xs text-muted-foreground">
             Anyone with the link can read the included settings. Check extra

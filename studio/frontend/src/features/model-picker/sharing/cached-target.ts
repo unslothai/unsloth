@@ -6,15 +6,15 @@ import { ggufVariantsQuery, runBoundedVariantsRequest } from "@/features/chat";
 import {
   type GgufVariantsResponse,
   INVENTORY_FRESHNESS_WINDOW_MS,
-  isInventoryStampFresh,
-  withAbort,
   buildLocalInventoryRows,
   fetchInventorySource,
   ggufVariantsMatch,
   hubTokenHeader,
+  isInventoryStampFresh,
   listGgufVariants,
   residentModelIdMatches,
   useDeviceInventoryStore,
+  withAbort,
 } from "@/features/hub";
 import type { resolveRunConfigTarget } from "./target";
 

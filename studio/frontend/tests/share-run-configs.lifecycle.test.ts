@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { ChatSearch } from "../src/features/chat/chat-page.tsx";
 import type * as CachedTarget from "../src/features/model-picker/sharing/cached-target.ts";
 import type * as Lifecycle from "../src/features/model-picker/sharing/link-lifecycle.ts";
 import {
@@ -148,6 +149,7 @@ function harness() {
   };
   const open = {
     ...context,
+    chatSearch: null as ChatSearch | null,
     location: destination,
     routeReady: true,
     inventoryVersion: 0,
@@ -189,45 +191,109 @@ function harness() {
   };
 }
 
-for (const newChatId of [null, "current-draft"]) {
-  test(`review keeps the current new chat and its draft: ${newChatId}`, async () => {
-    const app = harness();
-    app.runtime.params.checkpoint = "owner/Model-GGUF";
-    delete app.nav.pending.value.model;
-    const location = {
-      href: newChatId ? `/chat?new=${newChatId}` : "/chat",
-      pathname: "/chat",
-      searchStr: newChatId ? `?new=${newChatId}` : "",
-    };
-    const context = { location, currentModel: app.runtime.params.checkpoint };
-    app.navigateRunConfig({ ...app.nav, ...context });
-    app.openRunConfigTarget({ ...app.open, ...context });
-    app.lookups[0].result.resolve(app.target);
-    await settle();
-    const pending = app.inbox.getSnapshot();
-    assert.equal(pending?.newChatId, newChatId);
-    app.navigateRunConfig({ ...app.nav, ...context, pending });
-    app.openRunConfigTarget({ ...app.open, ...context, pending });
-    const handoff = { requestId: "first", newChatId, ...app.target };
-    assert.deepEqual(app.calls, [["handoff", handoff]]);
-    assert.equal(
-      modelConfigHandoffForDestination(handoff, { active: true, newChatId }),
-      handoff,
-    );
-    for (const destination of [
-      { active: false, newChatId },
-      { active: true, newChatId: "another-chat" },
-      { active: true, newChatId, threadId: "thread" },
-      { active: true, newChatId, compareId: "compare" },
-      { active: true, newChatId, projectId: "project" },
-    ]) {
+for (const pathname of ["/chat", "/hub", "/settings"]) {
+  for (const newChatId of [null, "current-draft"]) {
+    test(`review keeps the new chat and its draft from ${pathname}: ${newChatId}`, async () => {
+      const app = harness();
+      app.runtime.params.checkpoint = "owner/Model-GGUF";
+      delete app.nav.pending.value.model;
+      const destination = {
+        href: newChatId ? `/chat?new=${newChatId}` : "/chat",
+        pathname: "/chat",
+        searchStr: newChatId ? `?new=${newChatId}` : "",
+      };
+      const location =
+        pathname === "/chat"
+          ? destination
+          : {
+              href: `${pathname}?new=unrelated&project=unrelated`,
+              pathname,
+              searchStr: "?new=unrelated&project=unrelated",
+            };
+      const context = {
+        location,
+        chatSearch: { new: newChatId ?? undefined },
+        currentModel: app.runtime.params.checkpoint,
+      };
+      app.navigateRunConfig({ ...app.nav, ...context });
+      app.openRunConfigTarget({ ...app.open, ...context });
+      app.lookups[0].result.resolve(app.target);
+      await settle();
+      const pending = app.inbox.getSnapshot();
+      assert.equal(pending?.newChatId, newChatId);
+      app.navigateRunConfig({ ...app.nav, ...context, pending });
+      if (pathname !== "/chat") {
+        assert.deepEqual(app.calls.splice(0), [
+          [
+            "navigate",
+            {
+              to: "/chat",
+              search: { new: newChatId ?? undefined },
+              replace: false,
+            },
+          ],
+        ]);
+      }
+      app.openRunConfigTarget({
+        ...app.open,
+        ...context,
+        location: destination,
+        pending,
+      });
+      const handoff = { requestId: "first", newChatId, ...app.target };
+      assert.deepEqual(app.calls, [["handoff", handoff]]);
       assert.equal(
-        modelConfigHandoffForDestination(handoff, destination),
-        null,
+        modelConfigHandoffForDestination(handoff, { active: true, newChatId }),
+        handoff,
       );
-    }
-    app.inbox.clear("first");
-    assert.deepEqual(app.calls, [["handoff", handoff]]);
+      for (const destination of [
+        { active: false, newChatId },
+        { active: true, newChatId: "another-chat" },
+        { active: true, newChatId, threadId: "thread" },
+        { active: true, newChatId, compareId: "compare" },
+        { active: true, newChatId, projectId: "project" },
+      ]) {
+        assert.equal(
+          modelConfigHandoffForDestination(handoff, destination),
+          null,
+        );
+      }
+      app.inbox.clear("first");
+      assert.deepEqual(app.calls, [["handoff", handoff]]);
+    });
+  }
+}
+
+for (const chatSearch of [
+  { thread: "saved-chat" },
+  { compare: "comparison" },
+  { project: "project" },
+]) {
+  test(`review opens a fresh chat after leaving ${JSON.stringify(chatSearch)}`, async () => {
+    const app = harness();
+    app.open.chatSearch = { new: "previous", ...chatSearch };
+    await app.prepare();
+    assert.equal(app.inbox.getSnapshot()?.newChatId, undefined);
+    app.navigateRunConfig(app.nav);
+    assert.deepEqual([...app.calls], [
+      [
+        "navigate",
+        {
+          to: "/chat",
+          search: { new: "first" },
+          replace: false,
+        },
+      ],
+    ]);
+    app.openRunConfigTarget(app.open);
+    assert.equal(app.calls.includes("clear draft"), true);
+    assert.deepEqual(app.calls.at(-1), [
+      "handoff",
+      {
+        requestId: "first",
+        ...app.target,
+      },
+    ]);
   });
 }
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ChatSearch } from "@/features/chat";
 import {
   Suspense,
   lazy,
@@ -20,7 +21,9 @@ const SharedRunConfigLinkEditor = lazy(() =>
   })),
 );
 
-export function SharedRunConfigLinkHandler() {
+export function SharedRunConfigLinkHandler({
+  chatSearch,
+}: { chatSearch: ChatSearch | null }) {
   const pending = useSyncExternalStore(
     runConfigInbox.subscribe,
     runConfigInbox.getSnapshot,
@@ -44,7 +47,7 @@ export function SharedRunConfigLinkHandler() {
 
   return pending ? (
     <Suspense fallback={null}>
-      <SharedRunConfigLinkEditor pending={pending} />
+      <SharedRunConfigLinkEditor pending={pending} chatSearch={chatSearch} />
     </Suspense>
   ) : null;
 }

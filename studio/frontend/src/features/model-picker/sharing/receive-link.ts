@@ -7,12 +7,12 @@ import {
   AUTH_SESSION_STORED_EVENT,
   hasAuthToken,
 } from "@/features/auth";
-import { isTauri } from "@/lib/api-base";
-import { toast } from "@/lib/toast";
 import {
   createDeepLinkIntentGate,
   parseUnslothDeepLink,
 } from "@/features/deep-links";
+import { isTauri } from "@/lib/api-base";
+import { toast } from "@/lib/toast";
 import { markModelConfigDraftEdited } from "../model-config/model-config-draft";
 import {
   clearModelConfigHandoff,

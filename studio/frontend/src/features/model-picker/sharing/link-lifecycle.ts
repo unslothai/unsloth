@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { clearNewChatDraft, useChatRuntimeStore } from "@/features/chat";
+import {
+  type ChatSearch,
+  clearNewChatDraft,
+  useChatRuntimeStore,
+} from "@/features/chat";
 import { toast } from "@/lib/toast";
 import { modelConfigDraftKey } from "../model-config/model-config-draft";
 import {
@@ -55,7 +59,7 @@ export function navigateRunConfig({
   navigation: { current: RunConfigNavigation | null };
   navigate: (options: {
     to: "/chat";
-    search: { new: string };
+    search: { new?: string };
     replace: boolean;
   }) => Promise<unknown>;
 }): void {
@@ -94,7 +98,12 @@ export function navigateRunConfig({
   }
   navigate({
     to: "/chat",
-    search: { new: pending.id },
+    search: {
+      new:
+        pending.newChatId === undefined
+          ? pending.id
+          : (pending.newChatId ?? undefined),
+    },
     replace: pending.replaceHistory === true,
   }).catch(() => {
     if (runConfigInbox.getSnapshot()?.id !== pending.id) {
@@ -108,6 +117,7 @@ export function navigateRunConfig({
 
 export function openRunConfigTarget({
   pending,
+  chatSearch,
   canOpen,
   settingsHydrated,
   currentModel,
@@ -116,6 +126,7 @@ export function openRunConfigTarget({
   hfToken,
   inventoryVersion,
 }: LinkContext & {
+  chatSearch: ChatSearch | null;
   routeReady: boolean;
   hfToken?: string;
   inventoryVersion: number;
@@ -153,12 +164,11 @@ export function openRunConfigTarget({
     return;
   }
   const runtime = useChatRuntimeStore.getState();
-  const search = new URLSearchParams(location.searchStr);
   const preserveDraft =
-    location.pathname === "/chat" &&
-    !search.has("thread") &&
-    !search.has("compare") &&
-    !search.has("project");
+    chatSearch !== null &&
+    !chatSearch.thread &&
+    !chatSearch.compare &&
+    !chatSearch.project;
   const target = resolveRunConfigTarget(
     pending.value,
     runtime,
@@ -184,7 +194,7 @@ export function openRunConfigTarget({
       runConfigInbox.submit({
         ...pending,
         target: resolved,
-        ...(preserveDraft && { newChatId: search.get("new") }),
+        ...(preserveDraft && { newChatId: chatSearch.new ?? null }),
       });
     })
     .catch((error: unknown) => {

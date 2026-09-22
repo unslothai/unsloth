@@ -5,8 +5,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { SharedRunConfigControls as Controls } from "../src/features/model-picker/sharing/config-controls.tsx";
 import type { SharedRunConfigReview as Review } from "../src/features/model-picker/sharing/config-review.tsx";
-import type { SharedRunConfigLinkEditor as LinkEditor } from "../src/features/model-picker/sharing/link-editor.tsx";
 import * as events from "../src/features/model-picker/sharing/editor-events.ts";
+import type { SharedRunConfigLinkEditor as LinkEditor } from "../src/features/model-picker/sharing/link-editor.tsx";
+import type { SharedRunConfigLinkHandler as LinkHandler } from "../src/features/model-picker/sharing/link-handler.tsx";
+import type { ShareRunConfigDialog as ShareDialog } from "../src/features/model-picker/sharing/share-dialog.tsx";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -20,18 +22,23 @@ import {
 registerBundlerResolver();
 installLocalStorageFake();
 const fields = await import("../src/features/model-picker/sharing/fields.ts");
+const extraArgs = await import(
+  "../src/features/model-picker/model-config/llama-extra-args.ts"
+);
+const sharedArgs = await import(
+  "../src/features/model-picker/sharing/extra-args.ts"
+);
+const links = await import("../src/features/model-picker/sharing/links.ts");
 const { DEFAULT_PER_MODEL_CONFIG } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
 const { modelConfigDraftKey } = await import(
   "../src/features/model-picker/model-config/model-config-draft.ts"
 );
-const { createRunConfigInbox } = await import(
+const { createRunConfigInbox, mergeSharedRunConfig } = await import(
   "../src/features/model-picker/sharing/inbox.ts"
 );
-const targetModule = await import(
-  "./helpers/sharing-target.ts"
-);
+const targetModule = await import("./helpers/sharing-target.ts");
 const { reconcileGpuSelection } = await import("../src/hooks/gpu-selection.ts");
 
 function elements(node: unknown): StubElement[] {
@@ -49,6 +56,132 @@ function text(node: unknown): string {
     ? String(node)
     : "";
 }
+
+test("sharing empty arguments preserves recipient arguments unless explicitly selected", () => {
+  const checkbox = Symbol("checkbox");
+  const textarea = Symbol("textarea");
+  let states: unknown[] = [];
+  let cursor = 0;
+  const { ShareRunConfigDialog } = loadWithStubs<{
+    ShareRunConfigDialog: typeof ShareDialog;
+  }>(
+    new URL(
+      "../src/features/model-picker/sharing/share-dialog.tsx",
+      import.meta.url,
+    ),
+    {
+      "react/jsx-runtime": stubJsxRuntime(),
+      react: {
+        useId: () => "share",
+        useMemo: (create: () => unknown) => create(),
+        useState: <T>(initial: T | (() => T)) => {
+          const index = cursor++;
+          if (index >= states.length) {
+            states.push(
+              typeof initial === "function" ? (initial as () => T)() : initial,
+            );
+          }
+          return [
+            states[index],
+            (update: T | ((current: T) => T)) => {
+              states[index] =
+                typeof update === "function"
+                  ? (update as (current: T) => T)(states[index] as T)
+                  : update;
+            },
+          ];
+        },
+      },
+      "@/components/ui/button": { Button: "button" },
+      "@/components/ui/checkbox": { Checkbox: checkbox },
+      "@/components/ui/dialog": {
+        Dialog: "dialog",
+        DialogContent: "content",
+        DialogDescription: "description",
+        DialogHeader: "header",
+        DialogTitle: "title",
+      },
+      "@/components/ui/select": {
+        Select: "select",
+        SelectContent: "options",
+        SelectItem: "option",
+        SelectTrigger: "trigger",
+        SelectValue: "value",
+      },
+      "@/components/ui/textarea": { Textarea: textarea },
+      "@/lib/api-base": { isTauri: true },
+      "@/lib/copy-to-clipboard": {},
+      "@/lib/toast": {},
+      "../model-config/llama-extra-args": extraArgs,
+      "../model-config/per-model-config": { DEFAULT_PER_MODEL_CONFIG },
+      "./extra-args": sharedArgs,
+      "./fields": fields,
+      "./links": links,
+    },
+  );
+  const recipient = {
+    ...DEFAULT_PER_MODEL_CONFIG,
+    llamaExtraArgs: ["--threads", "8"],
+  };
+  for (const llamaExtraArgs of [undefined, null, [], ["--threads", "4"]]) {
+    states = [];
+    const config = { ...DEFAULT_PER_MODEL_CONFIG, llamaExtraArgs };
+    const render = () => {
+      cursor = 0;
+      return elements(
+        ShareRunConfigDialog({
+          target: {
+            id: "owner/Model-GGUF",
+            displayName: "Model",
+            ggufVariant: "Q4_K_M",
+            isGguf: true,
+            apiLoadable: true,
+            meta: { source: "hub", isLora: false },
+          },
+          config,
+          onClose: () => undefined,
+        }),
+      );
+    };
+    const importedConfig = (tree: StubElement[]) => {
+      const link = tree.find((element) => element.type === textarea)?.props
+        .value;
+      assert.equal(typeof link, "string");
+      const parsed = links.parseRunConfigLink(link as string);
+      assert.equal(parsed.kind, "valid");
+      assert.ok(parsed.kind === "valid");
+      return mergeSharedRunConfig(recipient, parsed.value.config);
+    };
+    const tree = render();
+    const choice = tree.find(
+      (element) =>
+        element.type === checkbox &&
+        element.props.id === "share-llamaExtraArgs",
+    );
+    const nonempty = (llamaExtraArgs?.length ?? 0) > 0;
+    assert.deepEqual(
+      importedConfig(tree).llamaExtraArgs,
+      nonempty ? llamaExtraArgs : recipient.llamaExtraArgs,
+    );
+    if (llamaExtraArgs === undefined) {
+      assert.equal(choice, undefined);
+      continue;
+    }
+    assert.ok(choice);
+    assert.equal(choice.props.checked, nonempty);
+    if (!nonempty) {
+      (choice.props.onCheckedChange as (checked: boolean) => void)(true);
+      const selected = render();
+      assert.equal(
+        selected.find((element) => element.props.id === "share-llamaExtraArgs")
+          ?.props.checked,
+        true,
+      );
+      assert.ok(text(selected).includes("No extra arguments"));
+      assert.deepEqual(importedConfig(selected).llamaExtraArgs, llamaExtraArgs);
+    }
+  }
+});
 
 test("only an open Share dialog protects the popover; pending imports allow focus dismissal", () => {
   const inbox = createRunConfigInbox();
@@ -188,7 +321,11 @@ test("review renders field labels and full prompt/argument values as text withou
       "../src/features/model-picker/sharing/config-review.tsx",
       import.meta.url,
     ),
-    { "react/jsx-runtime": stubJsxRuntime(), "./fields": fields },
+    {
+      "react/jsx-runtime": stubJsxRuntime(),
+      "./fields": fields,
+      "../model-config/llama-extra-args": extraArgs,
+    },
   );
   assert.equal(
     SharedRunConfigReview({
@@ -213,7 +350,7 @@ test("review renders field labels and full prompt/argument values as text withou
   assert.ok(text(tree).includes("Settings changed by link (3)"));
   assert.ok(text(tree).includes("Reasoning budget message"));
   assert.ok(text(tree).includes(prompt));
-  assert.ok(text(tree).includes(JSON.stringify(args)));
+  assert.ok(text(tree).includes("--rope-scaling yarn"));
   assert.ok(text(tree).includes("Default"));
   assert.ok(
     elements(tree).every(
@@ -255,6 +392,23 @@ test("review renders field labels and full prompt/argument values as text withou
     }),
     null,
   );
+  for (const llamaExtraArgs of [null, []]) {
+    const config = { llamaExtraArgs };
+    const draftConfig = { ...DEFAULT_PER_MODEL_CONFIG, ...config };
+    const tree = SharedRunConfigReview({
+      config,
+      draftConfig,
+      currentConfig: draftConfig,
+    });
+    assert.ok(text(tree).includes("No extra arguments"));
+  }
+  const adjusted = SharedRunConfigReview({
+    config: { llamaExtraArgs: args },
+    draftConfig: { ...DEFAULT_PER_MODEL_CONFIG, llamaExtraArgs: args },
+    currentConfig: { ...DEFAULT_PER_MODEL_CONFIG, llamaExtraArgs: [] },
+  });
+  assert.ok(text(adjusted).includes("No extra arguments"));
+  assert.ok(text(adjusted).includes("Requested: --rope-scaling yarn"));
 });
 
 test("GPU reconciliation keeps imported settings visible and explains removed or filtered GPU choices", () => {
@@ -265,7 +419,11 @@ test("GPU reconciliation keeps imported settings visible and explains removed or
       "../src/features/model-picker/sharing/config-review.tsx",
       import.meta.url,
     ),
-    { "react/jsx-runtime": stubJsxRuntime(), "./fields": fields },
+    {
+      "react/jsx-runtime": stubJsxRuntime(),
+      "./fields": fields,
+      "../model-config/llama-extra-args": extraArgs,
+    },
   );
   const imported = {
     selectedGpuIds: [0, 1],
@@ -371,7 +529,7 @@ test("settings-only chooser keeps the import while accepting recipient-local mod
   const render = () => {
     const pending = inbox.getSnapshot();
     assert.ok(pending);
-    return elements(SharedRunConfigLinkEditor({ pending }));
+    return elements(SharedRunConfigLinkEditor({ pending, chatSearch: null }));
   };
   for (const model of [
     "owner/model",
@@ -443,7 +601,7 @@ test("startup intake waits for mount effects and survives strict effect replay",
     origin: "http://localhost",
   });
   const { SharedRunConfigLinkHandler } = loadWithStubs<{
-    SharedRunConfigLinkHandler: () => unknown;
+    SharedRunConfigLinkHandler: typeof LinkHandler;
   }>(
     new URL(
       "../src/features/model-picker/sharing/link-handler.tsx",
@@ -478,7 +636,9 @@ test("startup intake waits for mount effects and survives strict effect replay",
       },
     },
   );
-  assert.equal(SharedRunConfigLinkHandler(), null);
+  const chatSearch = { new: "retained-draft" };
+  const render = () => SharedRunConfigLinkHandler({ chatSearch });
+  assert.equal(render(), null);
   const cancelled = effects[0]();
   assert.equal(received, 0);
   cancelled?.();
@@ -497,14 +657,13 @@ test("startup intake waits for mount effects and survives strict effect replay",
     assert.equal(received, 1);
   }
   inbox.submit({ id: "link", value: { config: { nParallel: 3 } } });
-  const shown = elements(SharedRunConfigLinkHandler()).find(
-    (element) => element.type === editor,
-  );
+  const shown = elements(render()).find((element) => element.type === editor);
   assert.equal(shown?.props.pending, inbox.getSnapshot());
+  assert.equal(shown?.props.chatSearch, chatSearch);
   authChanged?.();
   assert.equal(revisions, 1);
   inbox.clear("link");
-  assert.equal(SharedRunConfigLinkHandler(), null);
+  assert.equal(render(), null);
   cleanup?.();
   assert.equal(disposed, true);
 });

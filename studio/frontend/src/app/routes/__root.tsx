@@ -687,7 +687,9 @@ function RootLayout() {
   return (
     <AppProvider>
       <CredentialBootstrapGate active={!isAuthFlowRoute}>
-        <SharedRunConfigLinkHandler />
+        <SharedRunConfigLinkHandler
+          chatSearch={shouldMountChat ? chatSearch : null}
+        />
         {content}
       </CredentialBootstrapGate>
     </AppProvider>
