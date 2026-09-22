@@ -532,7 +532,7 @@ def test_transcode_to_file_writes_a_temp_file_the_caller_owns():
     assert gallery.transcode_to_file("does-not-exist", "webm") is None
 
 
-def test_transcode_to_file_leaves_no_temp_file_when_the_encode_fails(monkeypatch):
+def test_transcode_to_file_leaves_no_temp_file_when_the_encode_fails(monkeypatch, tmp_path):
     # A half-written export must not accumulate in the temp dir on a host with no VP9 encoder.
     import tempfile
 
@@ -540,15 +540,34 @@ def test_transcode_to_file_leaves_no_temp_file_when_the_encode_fails(monkeypatch
 
     record = gallery.save(_real_mp4_bytes(), _meta())
 
+    written: list[Path] = []
+
     def _boom(src, dest):
         dest.write_bytes(b"partial")
+        written.append(Path(dest))
         raise RuntimeError("WebM export failed (libvpx-vp9 unavailable?)")
 
     monkeypatch.setattr(vg, "_transcode_webm", _boom)
-    before = set(Path(tempfile.gettempdir()).glob("unsloth-export-*"))
+    # Export into a directory this test owns. Counting `unsloth-export-*` in the shared
+    # system temp dir reads state this test never pinned: a successful export running
+    # concurrently in another worker lands there too, and shows up here as a leak that
+    # nothing in this test produced. A failed export is always unlinked, so the stray
+    # file could only ever have come from somebody else.
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(exports))
+
     with pytest.raises(RuntimeError):
         vg.transcode_to_file(record["id"], "webm")
-    assert set(Path(tempfile.gettempdir()).glob("unsloth-export-*")) == before
+
+    # The temp file has to have existed before its absence means anything: an export
+    # that raised before `mkstemp` would satisfy an empty directory just as well, and
+    # would prove nothing about the cleanup this test is named for.
+    assert written, "the export never created its temp file, so the check below is vacuous"
+    assert not written[0].exists(), f"{written[0].name} survived the failed encode"
+    assert list(exports.iterdir()) == [], (
+        f"the failed export left {[p.name for p in exports.iterdir()]} behind"
+    )
 
 
 def test_gif_export_bounds_frames_and_edge(monkeypatch):
