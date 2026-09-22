@@ -22,6 +22,8 @@ on its version number: on a build that leaks they prove the fix removes the leak
 build that does not leak they prove the fix leaves it alone.
 """
 
+import sys
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -332,6 +334,39 @@ def test_a_non_composite_model_is_untouched():
 # --- installation ------------------------------------------------------------------
 
 
+@pytest.fixture
+def forced_install(monkeypatch):
+    """Open the gate so the tests of what installation DOES are never vacuous.
+
+    Outside the defect window the probe declines, which is the right answer and is what
+    `test_installation_is_gated_on_the_probe` measures. It also meant every test of the
+    installation itself either skipped or, worse, passed on a release where the code it
+    names never ran: the sweep tests below reported green on 5.17.0 without sweeping
+    anything. Forcing the gate open keeps the two questions apart -- whether to install,
+    and whether installing is done correctly -- and lets the second one be answered on any
+    release. Everything the installer rebinds is restored on the way out.
+    """
+    import unsloth.import_fixes as import_fixes
+
+    conversion_mapping = _conversion_mapping()
+    live = conversion_mapping.get_model_conversion_mapping
+    holders = [
+        (module, module.__dict__["get_model_conversion_mapping"])
+        for module in list(sys.modules.values())
+        if isinstance(getattr(module, "__dict__", None), dict)
+        and "get_model_conversion_mapping" in module.__dict__
+    ]
+    monkeypatch.setattr(
+        import_fixes, "_transformers_rescopes_submodule_prefix_renamings", lambda: False
+    )
+    try:
+        yield import_fixes
+    finally:
+        conversion_mapping.get_model_conversion_mapping = live
+        for module, binding in holders:
+            module.get_model_conversion_mapping = binding
+
+
 def test_installation_is_gated_on_the_probe():
     conversion_mapping = _conversion_mapping()
     fix_transformers_composite_prefix_renaming()
@@ -341,13 +376,11 @@ def test_installation_is_gated_on_the_probe():
     assert installed == (not _transformers_rescopes_submodule_prefix_renamings())
 
 
-def test_the_patch_is_idempotent_and_undoable():
+def test_the_patch_is_idempotent_and_undoable(forced_install):
     conversion_mapping = _conversion_mapping()
-    if _transformers_rescopes_submodule_prefix_renamings():
-        pytest.skip("this transformers already re-scopes, so nothing is installed to undo")
-    fix_transformers_composite_prefix_renaming()
+    forced_install.fix_transformers_composite_prefix_renaming()
     first = conversion_mapping.get_model_conversion_mapping
-    fix_transformers_composite_prefix_renaming()
+    forced_install.fix_transformers_composite_prefix_renaming()
     assert (
         conversion_mapping.get_model_conversion_mapping is first
     ), "a second call wrapped the wrapper"
@@ -360,27 +393,25 @@ def test_the_patch_is_idempotent_and_undoable():
         conversion_mapping.get_model_conversion_mapping = first
 
 
-def test_the_patch_rebinds_the_copies_other_modules_imported():
+def test_the_patch_rebinds_the_copies_other_modules_imported(forced_install):
     """`from .conversion_mapping import get_model_conversion_mapping` holds the object."""
     conversion_mapping = _conversion_mapping()
-    if _transformers_rescopes_submodule_prefix_renamings():
-        pytest.skip("this transformers already re-scopes, so nothing is installed")
     import transformers.modeling_utils as modeling_utils
 
-    if not hasattr(modeling_utils, "get_model_conversion_mapping"):
+    if "get_model_conversion_mapping" not in modeling_utils.__dict__:
         pytest.skip("this transformers' modeling_utils does not hold its own binding")
-    fix_transformers_composite_prefix_renaming()
+    forced_install.fix_transformers_composite_prefix_renaming()
     assert getattr(
         modeling_utils.get_model_conversion_mapping, _COMPOSITE_PREFIX_RENAMING_FLAG, False
     )
 
 
-def test_the_wrapper_returns_the_upstream_mapping_when_it_cannot_reason(composite_model):
+def test_the_wrapper_returns_the_upstream_mapping_when_it_cannot_reason(
+    composite_model, forced_install
+):
     """A model it cannot walk must cost the caller nothing but the upstream answer."""
     conversion_mapping = _conversion_mapping()
-    if _transformers_rescopes_submodule_prefix_renamings():
-        pytest.skip("this transformers already re-scopes, so nothing is installed")
-    fix_transformers_composite_prefix_renaming()
+    forced_install.fix_transformers_composite_prefix_renaming()
 
     class Unwalkable:
         """Walks for upstream, refuses to walk for us."""
@@ -399,14 +430,20 @@ def test_the_wrapper_returns_the_upstream_mapping_when_it_cannot_reason(composit
         def named_buffers(self, *args, **kwargs):
             raise RuntimeError("no")
 
+    # Upstream has to survive this object for the question to mean anything: from 5.6 on it
+    # walks `named_modules` itself to set `scope_prefix`, so it raises here too and there is
+    # no upstream answer to preserve. That is a fact about the release, not about the fix.
+    try:
+        upstream = _unpatched_mapping_fn()(Unwalkable())
+    except Exception as e:
+        pytest.skip(f"upstream cannot walk this object either on this release ({e!r})")
     through_patch = conversion_mapping.get_model_conversion_mapping(Unwalkable())
-    upstream = _unpatched_mapping_fn()(Unwalkable())
     assert [_renaming_signature(c) for c in through_patch] == [
         _renaming_signature(c) for c in upstream
     ]
 
 
-def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch):
+def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch, forced_install):
     """unsloth_zoo patches the same function first, WITHOUT `__wrapped__`.
 
     `temporary_patches/moe_utils_bnb4bit.py` sets only `_unsloth_moe_patched`, no
@@ -417,12 +454,11 @@ def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch):
     `PeftAdapterMixin.load_adapter()` renames Qwen3.5 and Gemma 3n adapter keys away from
     their real `model.language_model.*` modules.
     """
-    import sys
     import types
 
     from transformers import conversion_mapping
 
-    import unsloth.import_fixes as import_fixes
+    import_fixes = forced_install
 
     # Pin the starting state: importing unsloth may already have installed this patch.
     pristine = conversion_mapping.get_model_conversion_mapping
@@ -449,35 +485,46 @@ def test_a_module_holding_the_pre_zoo_function_is_still_rebound(monkeypatch):
     import_fixes.fix_transformers_composite_prefix_renaming()
 
     patched = conversion_mapping.get_model_conversion_mapping
-    if patched is zoo_wrapper:
-        pytest.skip("this transformers is outside the defect window, so the repair declines")
+    assert patched is not zoo_wrapper, "the repair declined even with the gate forced open"
     assert early.get_model_conversion_mapping is patched, (
         "a module holding the pre-zoo function was left bound to the unscoped mapping"
     )
 
 
-def test_an_unrelated_module_keeps_its_own_same_named_function(monkeypatch):
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "some_user_notebook_helper",
+        "transformers._unsloth_test_unrelated",
+        "peft._unsloth_test_unrelated",
+        "unsloth_zoo._unsloth_test_unrelated",
+        "unsloth._unsloth_test_unrelated",
+    ],
+)
+def test_an_unrelated_module_keeps_its_own_same_named_function(
+    monkeypatch, forced_install, module_name
+):
     """The sweep must not touch a helper somebody else happens to call the same thing.
 
     The binding test cannot be an identity test, because unsloth_zoo wraps without
-    `__wrapped__` and the pre-zoo upstream function matches neither object. Without a
-    module restriction that breadth would replace any callable named
-    `get_model_conversion_mapping`, including one a notebook or plugin defined for itself
-    before importing unsloth.
+    `__wrapped__` and the pre-zoo upstream function matches neither object. So the sweep
+    asks whether the binding IS an alias of the function it is replacing: `original`
+    itself, something whose `__module__` is transformers' own `conversion_mapping`, or a
+    wrapper carrying unsloth_zoo's marker. The package restriction alone is not enough --
+    these four packages are large, and something inside their namespace may legitimately
+    define its own helper under this name, which is why the cases below include modules
+    inside them as well as outside.
     """
-    import sys
     import types
-
-    import unsloth.import_fixes as import_fixes
 
     def mine(*args, **kwargs):
         return "mine"
 
-    outsider = types.ModuleType("some_user_notebook_helper")
+    outsider = types.ModuleType(module_name)
     outsider.get_model_conversion_mapping = mine
-    monkeypatch.setitem(sys.modules, outsider.__name__, outsider)
+    monkeypatch.setitem(sys.modules, module_name, outsider)
 
-    import_fixes.fix_transformers_composite_prefix_renaming()
+    forced_install.fix_transformers_composite_prefix_renaming()
 
     assert outsider.get_model_conversion_mapping is mine
     assert outsider.get_model_conversion_mapping() == "mine"

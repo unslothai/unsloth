@@ -1239,6 +1239,7 @@ def fix_transformers_composite_prefix_renaming():
         # `get_model_conversion_mapping`, including one a notebook or a plugin defined
         # for itself before importing unsloth.
         owning_packages = ("transformers", "peft", "unsloth_zoo", "unsloth")
+        upstream_module = getattr(conversion_mapping, "__name__", "transformers.conversion_mapping")
         for module_name, module in list(sys.modules.items()):
             if module is None or module is conversion_mapping:
                 continue
@@ -1255,21 +1256,36 @@ def fix_transformers_composite_prefix_renaming():
             # .models.vitmatte.image_processing_vitmatte" several hundred times. Only a
             # module that really did `from ... import get_model_conversion_mapping` has the
             # name in its own namespace, and those are the only ones that need rebinding.
-            # Any binding under this name that is not already ours, rather than an identity
-            # test against `original`. unsloth_zoo patches the same function without
-            # functools.wraps and without `__wrapped__` (temporary_patches/moe_utils_bnb4bit.py),
-            # so when zoo goes first `original` is zoo's wrapper and the unwrap above cannot
-            # see past it. A module that imported the name before zoo ran still holds the
-            # UNDERLYING upstream function, matches neither, and stays bound to the unscoped
-            # mapping. transformers.integrations.peft is exactly that module, imported during
-            # modeling_utils init, and PeftAdapterMixin.load_adapter() then renames Qwen3.5 and
-            # Gemma 3n adapter keys away from their real `model.language_model.*` modules.
+            # Three things get rebound, and nothing else: `original` (the object we wrapped),
+            # a function that IS upstream's -- it answers to `transformers.conversion_mapping`
+            # as its module -- and a wrapper that carries unsloth_zoo's own marker.
+            #
+            # Not a plain identity test against `original`, because unsloth_zoo patches the
+            # same function without functools.wraps and without `__wrapped__`
+            # (temporary_patches/moe_utils_bnb4bit.py), so when zoo goes first `original` is
+            # zoo's wrapper and the unwrap above cannot see past it. A module that imported
+            # the name before zoo ran still holds the UNDERLYING upstream function and would
+            # match neither object, leaving it bound to the unscoped mapping.
+            # transformers.integrations.peft is exactly that module, imported during
+            # modeling_utils init, and PeftAdapterMixin.load_adapter() then renames Qwen3.5
+            # and Gemma 3n adapter keys away from their real `model.language_model.*` modules.
+            #
+            # And not "any callable under this name" either: these packages are large enough
+            # that one of them, or a plugin living inside their namespace, may define its own
+            # helper with the same name, and replacing that would be a bug of our own making.
             #
             # Rebinding zoo's own wrapper to ours does not drop zoo's fix: ours wraps
             # `original`, which IS zoo's wrapper when zoo went first, so its work still runs.
             try:
                 bound = namespace.get("get_model_conversion_mapping", None)
-                if callable(bound) and bound is not get_model_conversion_mapping:
+                if not callable(bound) or bound is get_model_conversion_mapping:
+                    continue
+                is_alias = (
+                    bound is original
+                    or getattr(bound, "__module__", None) == upstream_module
+                    or getattr(bound, "_unsloth_moe_patched", False)
+                )
+                if is_alias:
                     module.get_model_conversion_mapping = get_model_conversion_mapping
             except Exception:
                 continue

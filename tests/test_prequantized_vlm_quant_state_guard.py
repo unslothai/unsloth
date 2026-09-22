@@ -367,8 +367,10 @@ def _uninstall_runtime_repair(import_fixes, monkeypatch):
 def test_warning_names_the_cause_and_the_remedy(import_fixes, monkeypatch, caplog):
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.5.4")
     monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
-    _build_broken(monkeypatch)
+    # Uninstall first: `_build_broken` swaps in a stand-in conversion_mapping module that
+    # has no `get_model_conversion_mapping` at all, and the uninstall reads that attribute.
     _uninstall_runtime_repair(import_fixes, monkeypatch)
+    _build_broken(monkeypatch)
     with caplog.at_level(logging.WARNING):
         import_fixes.check_transformers_prequantized_vlm_quant_state()
     text = caplog.text
