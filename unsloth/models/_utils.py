@@ -1110,9 +1110,17 @@ def _set_attn_impl(config, impl):
     return impl
 
 
-def _resolve_remote_model_class(auto_model, config):
+_REMOTE_CODE_HUB_KWARGS = ("revision", "code_revision", "token", "cache_dir", "local_files_only")
+
+
+def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
     """The class `auto_model.from_pretrained(..., trust_remote_code = True)` instantiates for a
     remote-code config, or None when the model is native.
+
+    `hub_kwargs` (revision, code_revision, token, cache_dir, local_files_only) are what the
+    load itself will pass, so a modeling module that still has to be fetched comes from the
+    same revision, with the same credentials, and never from the network under
+    `local_files_only = True`.
 
     transformers' auto mapping is keyed by config class name, so a remote config that reuses a
     native name (`NemotronHConfig` on the Nemotron-H hub checkpoints) resolves to the native
@@ -1129,31 +1137,36 @@ def _resolve_remote_model_class(auto_model, config):
     if not isinstance(class_ref, str) or "." not in class_ref:
         return None
     repo_id = getattr(config, "_name_or_path", None) or getattr(config, "name_or_path", None)
-    if "--" in class_ref:
+    cross_repo = "--" in class_ref
+    if cross_repo:
         repo_id, class_ref = class_ref.split("--", 1)
     module_name, class_name = class_ref.rsplit(".", 1)
-    # The config module is already materialised; its modeling sibling usually is too.
-    config_module = str(type(config).__module__)
-    try:
-        import importlib
-        sibling = importlib.import_module(f"{config_module.rsplit('.', 1)[0]}.{module_name}")
-        klass = getattr(sibling, class_name, None)
-        if isinstance(klass, type):
-            return klass
-    except Exception:
-        pass
+    if not cross_repo:
+        # The config module is already materialised; its modeling sibling usually is too. A
+        # `other/repo--module.Class` reference lives in another repository, so a same-named
+        # module next to the config is not the class transformers will build.
+        config_module = str(type(config).__module__)
+        try:
+            import importlib
+            sibling = importlib.import_module(f"{config_module.rsplit('.', 1)[0]}.{module_name}")
+            klass = getattr(sibling, class_name, None)
+            if isinstance(klass, type):
+                return klass
+        except Exception:
+            pass
     if not repo_id:
         return None
     try:
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
-        klass = get_class_from_dynamic_module(class_ref, repo_id)
+        passed = {k: v for k, v in hub_kwargs.items() if k in _REMOTE_CODE_HUB_KWARGS and v is not None}
+        klass = get_class_from_dynamic_module(class_ref, repo_id, **passed)
         return klass if isinstance(klass, type) else None
     except Exception:
         return None
 
 
-def resolve_model_class(auto_model, config):
-    remote_class = _resolve_remote_model_class(auto_model, config)
+def resolve_model_class(auto_model, config, **hub_kwargs):
+    remote_class = _resolve_remote_model_class(auto_model, config, **hub_kwargs)
     if remote_class is not None:
         return remote_class
     mapping = getattr(auto_model, "_model_mapping", {})

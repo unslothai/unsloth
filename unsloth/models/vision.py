@@ -1788,7 +1788,15 @@ class FastBaseModel:
                 local_files_only = local_files_only,
                 revision = _revision,
             )
-        model_class = resolve_model_class(auto_model, auto_config)
+        model_class = resolve_model_class(
+            auto_model,
+            auto_config,
+            revision = _revision,
+            code_revision = kwargs.get("code_revision"),
+            token = token,
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = local_files_only,
+        )
         # Forced float32 loads in bfloat16 then casts to float16. Resolved here, not at the load, because attention resolution and the device-map planner both size the same dtype.
         torch_dtype = dtype
         if do_forced_float32:

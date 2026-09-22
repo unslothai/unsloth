@@ -105,6 +105,60 @@ def test_remote_config_resolves_to_remote_model_class(monkeypatch):
     assert U.resolve_model_class(AutoModelForCausalLM, config) is remote_cls
 
 
+def test_fetch_of_a_missing_modeling_module_uses_the_load_options(monkeypatch):
+    """On a cold cache only the configuration module exists; the modeling module is fetched
+    with the same revision, credentials and offline flag the load will use."""
+    U = _utils()
+    from transformers import AutoModelForCausalLM
+    import transformers.dynamic_module_utils as dmu
+    config, _ = _install_fake_remote_modules(monkeypatch)
+    monkeypatch.delitem(sys.modules, "transformers_modules.fake_repo.abc123.modeling_llama")
+    seen = {}
+
+    class Fetched:
+        pass
+
+    def fake_get(class_ref, repo_id, **kw):
+        seen.update(class_ref = class_ref, repo_id = repo_id, **kw)
+        return Fetched
+
+    monkeypatch.setattr(dmu, "get_class_from_dynamic_module", fake_get)
+    got = U.resolve_model_class(
+        AutoModelForCausalLM, config,
+        revision = "deadbeef", code_revision = "cafe", token = "tok", cache_dir = "/c",
+        local_files_only = True,
+    )
+    assert got is Fetched
+    assert seen == dict(
+        class_ref = "modeling_llama.LlamaForCausalLM", repo_id = "fake/repo",
+        revision = "deadbeef", code_revision = "cafe", token = "tok", cache_dir = "/c",
+        local_files_only = True,
+    )
+
+
+def test_cross_repository_auto_map_skips_the_local_sibling(monkeypatch):
+    """`other/repo--module.Class` names a class in another repository: a same-named module
+    next to the config must not answer for it."""
+    U = _utils()
+    from transformers import AutoModelForCausalLM
+    import transformers.dynamic_module_utils as dmu
+    config, local_cls = _install_fake_remote_modules(monkeypatch)
+    config.auto_map["AutoModelForCausalLM"] = "other/repo--modeling_llama.LlamaForCausalLM"
+    seen = {}
+
+    class Remote:
+        pass
+
+    def fake_get(class_ref, repo_id, **kw):
+        seen.update(class_ref = class_ref, repo_id = repo_id)
+        return Remote
+
+    monkeypatch.setattr(dmu, "get_class_from_dynamic_module", fake_get)
+    got = U.resolve_model_class(AutoModelForCausalLM, config)
+    assert got is Remote and got is not local_cls
+    assert seen == dict(class_ref = "modeling_llama.LlamaForCausalLM", repo_id = "other/repo")
+
+
 def test_native_config_keeps_native_resolution():
     U = _utils()
     from transformers import AutoModelForCausalLM, LlamaConfig
