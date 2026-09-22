@@ -340,6 +340,29 @@ def test_check_and_disable_keeps_4bit_for_packed_int4():
     assert not hasattr(config, "quantization_config")
 
 
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
+@pytest.mark.parametrize("spelling", ["compressed_tensors", "sparseml"])
+def test_check_and_disable_accepts_the_method_aliases(spelling):
+    from transformers import LlamaConfig
+
+    config = LlamaConfig(
+        hidden_size = 8,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 8,
+        vocab_size = 16,
+    )
+    quantization_config = dict(_w4a16())
+    quantization_config["quant_method"] = spelling
+    config.quantization_config = quantization_config
+    load_in_4bit, load_in_8bit, method = check_and_disable_bitsandbytes_loading(
+        config, load_in_4bit = True, load_in_8bit = False, verbose = False
+    )
+    assert (load_in_4bit, load_in_8bit, method) == (True, False, None)
+
+
 def test_check_and_disable_still_disables_8bit_and_other_methods():
     for quant, flags in (
         (_w4a16(), dict(load_in_4bit = False, load_in_8bit = True)),
@@ -904,3 +927,33 @@ def test_both_loaders_gate_packed_requantization_on_the_callers_quantizer():
         for call in calls:
             flag = next(k.value for k in call.keywords if k.arg == "requantize_packed")
             assert "quantization_config_selects_bnb_4bit" in ast.unparse(flag), module.__name__
+
+
+def test_expert_scheme_is_resolved_per_layer():
+    # One converter serves every layer, so a checkpoint that quantizes layer 1's experts and
+    # layer 5's experts under different groups must get each layer's own scheme.
+    from types import SimpleNamespace
+    from unsloth.models.compressed_tensors_bnb import _layer_expert_scheme
+
+    early = SimpleNamespace(targets = [r"re:.*layers\.[0-3]\.mlp\.experts\..*"])
+    late = SimpleNamespace(targets = [r"re:.*layers\.([4-9]|\d\d+)\.mlp\.experts\..*"])
+    ct = SimpleNamespace(config_groups = {"group_0": early, "group_1": late})
+    key = "mlp.experts.*.gate_proj.weight_packed$"
+    assert (
+        _layer_expert_scheme(ct, "model.layers.1.mlp.experts.gate_up_proj", key, 4, None) is early
+    )
+    assert _layer_expert_scheme(ct, "model.layers.5.mlp.experts.gate_up_proj", key, 4, None) is late
+    assert (
+        _layer_expert_scheme(ct, "model.layers.12.mlp.experts.gate_up_proj", key, 4, None) is late
+    )
+
+    split = SimpleNamespace(targets = [r"re:.*experts\.[0-1]\..*"])
+    rest = SimpleNamespace(targets = [r"re:.*experts\.[2-9]\..*"])
+    mixed = SimpleNamespace(config_groups = {"a": split, "b": rest})
+    with pytest.raises(RuntimeError, match = "different config groups"):
+        _layer_expert_scheme(mixed, "model.layers.0.mlp.experts.gate_up_proj", key, 4, None)
+
+    single = SimpleNamespace(config_groups = {"only": early})
+    assert (
+        _layer_expert_scheme(single, "model.layers.9.mlp.experts.gate_up_proj", key, 4, "d") == "d"
+    )

@@ -1496,7 +1496,7 @@ def check_and_disable_bitsandbytes_loading(
         requantize_packed
         and load_in_4bit
         and not load_in_8bit
-        and quant_method == "compressed-tensors"
+        and str(quant_method).lower() in ("compressed-tensors", "compressed_tensors", "sparseml")
     ):
         from .compressed_tensors_bnb import arm_compressed_tensors_bnb_loading
         if arm_compressed_tensors_bnb_loading(model_config, verbose = verbose) is not None:
