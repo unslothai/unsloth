@@ -24,6 +24,9 @@ function loadPinned(): boolean {
 let pinnedValue = loadPinned();
 // Set once the user toggles, so a width change never overrides it.
 let chosen = false;
+// A tour override: shown, but never persisted or counted as a choice.
+let held = false;
+let beforeHold = pinnedValue;
 const listeners = new Set<() => void>();
 
 function subscribe(cb: () => void) {
@@ -40,7 +43,7 @@ function subscribe(cb: () => void) {
   // Re-derive the width default across lg unless the user has chosen.
   const wide = window.matchMedia(WIDE_QUERY);
   const onWidth = () => {
-    if (chosen) return;
+    if (chosen || held) return;
     pinnedValue = loadPinned();
     cb();
   };
@@ -55,10 +58,27 @@ function subscribe(cb: () => void) {
 
 function setPinnedGlobal(next: boolean) {
   chosen = true;
+  held = false;
   pinnedValue = next;
   try {
     window.localStorage.setItem(PINNED_KEY, String(next));
   } catch {}
+  listeners.forEach((cb) => cb());
+}
+
+/** Pin for a tour without touching the stored preference. */
+export function holdSidebarPinned() {
+  if (!held) beforeHold = pinnedValue;
+  held = true;
+  pinnedValue = true;
+  listeners.forEach((cb) => cb());
+}
+
+/** End the hold: the user's choice if any, else the default for the current width. */
+export function releaseSidebarPinned() {
+  if (!held) return;
+  held = false;
+  pinnedValue = chosen ? beforeHold : loadPinned();
   listeners.forEach((cb) => cb());
 }
 
