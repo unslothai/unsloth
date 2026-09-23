@@ -18,7 +18,11 @@ DECODE_ATTRS = ("vae", "audio_vae")
 
 
 @contextlib.contextmanager
-def decode_phase(pipe: Any, on_decode: Any, attrs: "tuple[str, ...]" = DECODE_ATTRS):
+def decode_phase(
+    pipe: Any,
+    on_decode: Any,
+    attrs: "tuple[str, ...]" = DECODE_ATTRS,
+):
     """Flip the reported phase to "decode" the instant the decoder is entered.
 
     HunyuanVideo-1.5, Wan and MiniMax-H3's modular workflow all run the decode INSIDE the pipeline
