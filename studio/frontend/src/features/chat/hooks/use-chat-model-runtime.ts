@@ -511,9 +511,9 @@ function publishLoadedModels(ids: string[]): void {
 }
 
 /** Unload a model kept alongside. The server refuses while its own chats generate, so ask then. */
-async function unloadKeptModel(modelId: string): Promise<boolean> {
+async function unloadKeptModel(keptId: string): Promise<boolean> {
   try {
-    await unloadModel({ model_path: modelId });
+    await unloadModel({ model_path: keptId });
     return true;
   } catch (error) {
     if (!(error instanceof ActiveGenerationsError)) throw error;
@@ -525,7 +525,7 @@ async function unloadKeptModel(modelId: string): Promise<boolean> {
         effect: "unload",
       });
     if (!confirmed) return false;
-    await unloadModel({ model_path: modelId, force_cancel_active: true });
+    await unloadModel({ model_path: keptId, force_cancel_active: true });
     return true;
   }
 }

@@ -1568,7 +1568,7 @@ def test_the_chat_status_does_not_hand_back_the_path_the_load_resolved(monkeypat
     from models.inference import InferenceStatusResponse
     from routes import inference as inference_routes
 
-    async def _payload(current_subject: str):
+    async def _payload(current_subject: str, model = None):
         return InferenceStatusResponse(
             active_model = REPO_DIR,
             model_identifier = REPO_DIR,

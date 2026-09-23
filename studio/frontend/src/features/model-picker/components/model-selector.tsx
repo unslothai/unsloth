@@ -248,7 +248,7 @@ function ModelSelectorTrigger({
           {(severalLoaded ? currentModel?.name : currentModel?.description) && (
             <span
               className={cn(
-                "min-w-0 shrink truncate text-xs leading-none text-muted-foreground",
+                "min-w-0 shrink truncate text-xs leading-tight text-muted-foreground",
                 showCloudIndicator ? "" : "ml-2",
               )}
             >

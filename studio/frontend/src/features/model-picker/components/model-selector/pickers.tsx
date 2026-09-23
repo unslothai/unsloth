@@ -5430,9 +5430,9 @@ export function HubModelPicker({
     );
 
 
-  // Takes the gear's slot on a loaded row: the gear configures a load, and this one is loaded.
+  // Beside the gear on a loaded row once several are loaded; with one, the footer ejects it.
   const renderEjectAction = (modelId: string) =>
-    onEject && isKeptLoaded(modelId) ? (
+    onEject && loadedModels.length > 1 && isKeptLoaded(modelId) ? (
       <Tooltip delayDuration={0}>
         <TooltipTrigger asChild={true}>
           <button
@@ -5878,7 +5878,7 @@ export function HubModelPicker({
         </div>
         <span className={ROW_ACTIONS_CLASS}>
           {renderEjectAction(c.repo_id)}
-          {onConfigure && !isKeptLoaded(c.repo_id) && (
+          {onConfigure && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${c.repo_id} ${variant.quant}`}
               onConfigure={() => onConfigure(c.repo_id, selectMeta)}
@@ -6115,7 +6115,7 @@ export function HubModelPicker({
           className={isPartial ? ROW_ACTIONS_PINNED_CLASS : ROW_ACTIONS_CLASS}
         >
           {renderEjectAction(c.repo_id)}
-          {onConfigure && !isKeptLoaded(c.repo_id) && (
+          {onConfigure && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${c.repo_id}`}
               onConfigure={() =>

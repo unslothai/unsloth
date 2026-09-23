@@ -147,7 +147,7 @@ def _resident_fast_path() -> str:
     """
     return slice_between(
         read(RUNTIME),
-        "          const confirmedStatus = await getInferenceStatus().catch(() => null);",
+        "          const confirmedStatus = await readPickStatus();",
         "      const lifecycleLease = useChatRuntimeStore",
     )
 
@@ -515,6 +515,7 @@ export async function adoptResidentModel(props: any): Promise<void> {
   const bailIfLoadInFlight = (): boolean => false;
   const restorePreviousConfig = (): void => {};
   const getInferenceStatus = async (): Promise<any> => props.residentStatus;
+  const readPickStatus = async (): Promise<any> => props.residentStatus;
   const reconcilePersistedGpuIds = (ids: any): any => ids;
   const sameGpuSelection = (a: any, b: any): boolean =>
     JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
