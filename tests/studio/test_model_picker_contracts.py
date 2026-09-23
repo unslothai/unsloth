@@ -1332,14 +1332,14 @@ def test_chat_load_prepares_hf_token_before_gguf_metadata_preflight():
     # adopted, or a cancelled load would be counted as a Hub failure and would send the token the
     # user just refused. Brace-matched, and anchored on the branch's own LAST statement, so an early
     # return buried in the nested reconciliation callback cannot stand in for the pick's return.
-    decline = _braced_block(runtime, 'if (!preparedToken.proceed) {')
+    decline = _braced_block(runtime, "if (!preparedToken.proceed) {")
     assert 'toast.error("Model load cancelled.");' in decline
     assert "throw" not in decline, "a declined pick is a cancellation, not a failed load"
     body = decline.rstrip()
     assert body.endswith("}"), decline[-80:]
-    assert body[:-1].rstrip().endswith("return;"), (
-        "the decline branch must end by returning, not by falling through to the load"
-    )
+    assert (
+        body[:-1].rstrip().endswith("return;")
+    ), "the decline branch must end by returning, not by falling through to the load"
     assert runtime.index("hfToken = preparedToken.token") > runtime.index(decline) + len(decline)
 
 
@@ -2433,7 +2433,7 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
         # a superseded load's field holds its own transient target config, and restoring that
         # on the resident model's slot control would pin another model's count. Falls back to
         # the live store when no replacement was inherited.
-        'const previousNParallel = rollbackConfig ? (rollbackConfig.nParallel ?? null) '
+        "const previousNParallel = rollbackConfig ? (rollbackConfig.nParallel ?? null) "
         ": useChatRuntimeStore.getState().nParallel;" in runtime
     )
     # Matched on the call prefix, not the whole call: the staged apply also
