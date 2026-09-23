@@ -339,8 +339,8 @@ export function orderRecommendedRows<
   keep: (row: T) => boolean;
   deviceFiltered: boolean;
   fits: (row: T) => boolean;
-  /** Catalog family of a repo id; when set, families follow the listing's sort. `results` must be
-   *  one sorted listing, since a family ranks by its index there. */
+  /** Catalog family of a repo id; when set, unsloth rows lead and families follow the listing's
+   *  sort. `results` must be one sorted listing, since a family ranks by its index there. */
   familyOf?: (id: string) => string | undefined;
 }): T[] {
   const { seeds, results, keep, deviceFiltered, fits, familyOf } = opts;
@@ -363,7 +363,8 @@ export function orderRecommendedRows<
   );
   const ordered = [...curated, ...rest];
   if (!familyOf) return ordered;
-  // A family ranks at its best listed artifact and keeps its rows together. Unlisted families go last.
+  // Unsloth rows lead. A family ranks at its best listed artifact and keeps its rows together;
+  // unlisted families go last.
   const keyOf = (r: T) => familyOf(r.id) ?? r.id.toLowerCase();
   const rank = new Map<string, number>();
   results.forEach((r, i) => {
@@ -377,7 +378,8 @@ export function orderRecommendedRows<
   });
   const sortKey = (r: T, i: number) => {
     const key = keyOf(r);
-    return [rank.get(key) ?? Infinity, firstSeen.get(key) ?? i, i];
+    const unsloth = r.id.toLowerCase().startsWith("unsloth/") ? 0 : 1;
+    return [unsloth, rank.get(key) ?? Infinity, firstSeen.get(key) ?? i, i];
   };
   return ordered
     .map((row, i) => ({ row, key: sortKey(row, i) }))

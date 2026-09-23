@@ -550,3 +550,26 @@ test("with familyOf, curated families follow the listing's sort, artifacts kept 
   );
   assert.deepEqual(unlisted, [KLEIN, kleinBf16.id, OTHER, LTX]);
 });
+
+test("with familyOf, unsloth rows lead even when a vendor family trends higher", () => {
+  const family = (id: string) => (id.toLowerCase().includes("hot") ? "hot" : "cold");
+  const vendorHot: Row = { id: "Vendor/Hot-Model", pipelineTag: "text-to-video" };
+  const seeds: Row[] = [vendorHot, { id: "unsloth/Hot-Model-GGUF", isGguf: true }];
+  const results: Row[] = [
+    { id: "unsloth/Hot-Model-GGUF", isGguf: true, pipelineTag: "text-to-video" },
+    { id: "unsloth/Cold-Model-GGUF", isGguf: true, pipelineTag: "text-to-video" },
+  ];
+  assert.deepEqual(
+    ids(
+      orderRecommendedRows({
+        seeds,
+        results,
+        keep: keepVideo,
+        deviceFiltered: false,
+        fits: () => true,
+        familyOf: family,
+      }),
+    ),
+    ["unsloth/Hot-Model-GGUF", "unsloth/Cold-Model-GGUF", "Vendor/Hot-Model"],
+  );
+});
