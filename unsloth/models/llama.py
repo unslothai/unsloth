@@ -3538,6 +3538,12 @@ class FastLlamaModel:
                 target_modules,
                 moe_module_targets = _moe_module_targets,
             )
+            from .remote_moe_shims import packed_expert_target_parameters
+            target_parameters = packed_expert_target_parameters(
+                model,
+                target_parameters,
+                target_modules if isinstance(target_modules, (list, tuple)) else None,
+            )
 
         if _moe_module_targets:
             _added = [t for t in _moe_module_targets if t not in final_modules]
