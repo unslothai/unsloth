@@ -329,6 +329,7 @@ def test_start_update_managed_source_refresh_falls_back_to_setup(monkeypatch, tm
     monkeypatch.setattr(upd, "_managed_source_git_behind", lambda *a, **k: None)
 
     calls: list[list] = []
+    setup_envs: list[dict] = []
 
     def _popen(cmd, **kwargs):
         cmd_list = list(cmd)
@@ -340,6 +341,7 @@ def test_start_update_managed_source_refresh_falls_back_to_setup(monkeypatch, tm
                 cmd_list, returncode = upd._EXIT_FALLBACK, lines = ["no prebuilt\n"]
             )
         # setup.sh / setup.ps1 owns the compile after EXIT_FALLBACK.
+        setup_envs.append(dict(kwargs.get("env") or {}))
         binary.write_text("rebuilt-from-source")
         return _FakeInstallerPopen(cmd_list, returncode = 0, lines = ["built ok\n"])
 
@@ -368,6 +370,10 @@ def test_start_update_managed_source_refresh_falls_back_to_setup(monkeypatch, tm
     assert (
         setup_name in setup_joined or "powershell" in setup_joined.lower() or "bash" in setup_joined
     )
+    assert setup_envs, "setup invoke must pass an env dict"
+    assert setup_envs[0].get("UNSLOTH_LLAMA_FORCE_COMPILE") == "1"
+    assert setup_envs[0].get("UNSLOTH_STUDIO_LLAMA_ONLY") == "1"
+    assert setup_envs[0].get("SKIP_STUDIO_FRONTEND") == "1"
     assert "Rebuilt llama.cpp from source" in (job.get("message") or "")
 
 

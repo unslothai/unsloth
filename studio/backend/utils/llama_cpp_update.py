@@ -148,9 +148,8 @@ def _run_setup_source_build(*, desired_ref: Optional[str], set_progress) -> None
     env["UNSLOTH_LLAMA_FORCE_COMPILE"] = "1"
     # Skip the desktop frontend rebuild; the in-app updater only needs llama.cpp.
     env["SKIP_STUDIO_FRONTEND"] = "1"
-    if os.name != "nt":
-        # setup.sh llama-only mode: skip base/venv reinstall (Windows has no twin yet).
-        env["UNSLOTH_STUDIO_LLAMA_ONLY"] = "1"
+    # setup.sh / setup.ps1 llama-only mode: skip base/venv reinstall under a live backend.
+    env["UNSLOTH_STUDIO_LLAMA_ONLY"] = "1"
     if desired_ref:
         env["UNSLOTH_LLAMA_FORCE_COMPILE_REF"] = str(desired_ref)
     cmd = _setup_source_build_cmd(script)
