@@ -1329,6 +1329,23 @@ def _unsloth_compressed_tensors_fp8_forward(self, input):
     return out
 
 
+@functools.lru_cache(maxsize = 1)
+def _zoo_peft_forward_keeps_fp8_inputs():
+    """Older unsloth_zoo compiled LoRA forwards cast `x` to the base weight dtype, which for an FP8 weight
+    turns the activations into FP8. Only route to the FP8 kernels when the installed zoo casts to float
+    dtypes alone; otherwise compressed-tensors keeps decompressing the model as before."""
+    try:
+        import inspect
+        from unsloth_zoo import compiler
+
+        source = inspect.getsource(compiler.patch_lora_forwards)
+    except Exception:
+        return False
+    return "x = x.to(self.base_layer.weight.dtype)" not in source or (
+        "self.base_layer.weight.dtype in (torch.float16, torch.bfloat16, torch.float32)" in source
+    )
+
+
 def _route_compressed_tensors_fp8_to_unsloth(model):
     """Run compressed-tensors FP8 Linears on Unsloth's FP8 kernels instead of decompressing them.
 
@@ -1342,6 +1359,8 @@ def _route_compressed_tensors_fp8_to_unsloth(model):
     if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "1") == "0":
         return 0
     if getattr(getattr(model, "config", None), "quantization_config", None) is None:
+        return 0
+    if not _zoo_peft_forward_keeps_fp8_inputs():
         return 0
     converted = 0
     for module in model.modules():

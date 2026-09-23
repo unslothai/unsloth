@@ -29,6 +29,14 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs C
 ct_quant = pytest.importorskip("compressed_tensors.quantization")
 
 
+@pytest.fixture(autouse = True)
+def _zoo_with_float_only_cast(monkeypatch):
+    # Routing waits for an unsloth_zoo whose compiled LoRA forward never casts inputs to FP8.
+    from unsloth.models import loader_utils
+
+    monkeypatch.setattr(loader_utils, "_zoo_peft_forward_keeps_fp8_inputs", lambda: True)
+
+
 def _quantize(W, strategy, block = None):
     o, i = W.shape
     if strategy == "tensor":
@@ -142,3 +150,28 @@ def test_decompress_hook_is_removed():
     # Left in place, the first forward would decompress every routed weight back to 16 bit.
     assert not hasattr(model, "ct_decompress_hook")
     assert len(model._forward_pre_hooks) == 0
+
+
+def test_older_zoo_keeps_the_compressed_tensors_path(monkeypatch):
+    from unsloth.models import loader_utils
+
+    monkeypatch.setattr(loader_utils, "_zoo_peft_forward_keeps_fp8_inputs", lambda: False)
+    model, _ = _ct_model(256, 256, "channel")
+    assert loader_utils._route_compressed_tensors_fp8_to_unsloth(model) == 0
+    assert not hasattr(model.lin, "_unsloth_compressed_tensors_fp8")
+
+
+@pytest.mark.parametrize("strategy, block", [("channel", None), ("block", (128, 128))])
+def test_single_token_fast_path_adds_the_bias_once(strategy, block):
+    from unsloth.kernels.utils import fast_linear_forward
+    from unsloth.models.loader_utils import _route_compressed_tensors_fp8_to_unsloth
+
+    model, ref = _ct_model(256, 256, strategy, bias = True, block = block)
+    assert _route_compressed_tensors_fp8_to_unsloth(model) == 1
+    lin = model.lin
+    with torch.no_grad():
+        lin.bias.fill_(1.0)
+        X = torch.randn(1, 1, 256, device = "cuda", dtype = torch.bfloat16)
+        y = fast_linear_forward(lin, X)
+        y_ref = X.float() @ ref.t() + 1.0
+    assert float((y.float() - y_ref).norm() / y_ref.norm()) < 0.05

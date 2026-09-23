@@ -1051,7 +1051,8 @@ def fast_linear_forward(
     if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
-        out = fp8_linear(X, W, W_quant, bias)
+        # The bias is added once below; the per-channel fp8_linear path would add it a second time.
+        out = fp8_linear(X, W, W_quant)
     elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
     else:
