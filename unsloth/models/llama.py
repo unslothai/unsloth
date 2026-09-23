@@ -35,7 +35,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
-    _route_compressed_tensors_fp8_to_unsloth,
+    _prepare_compressed_tensors_model,
     planner_class_mismatch_reason,
     planner_model_class,
     planner_config_overrides,
@@ -2775,7 +2775,7 @@ class FastLlamaModel:
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
                 )
-                _route_compressed_tensors_fp8_to_unsloth(model)
+                _prepare_compressed_tensors_model(model)
             elif not fast_inference:
                 if user_config is not None:
                     # Transformers 5.x @strict model init rejects extra kwargs next to config=, so set the override
@@ -2824,7 +2824,7 @@ class FastLlamaModel:
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
                 )
-                _route_compressed_tensors_fp8_to_unsloth(model)
+                _prepare_compressed_tensors_model(model)
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = None
             else:

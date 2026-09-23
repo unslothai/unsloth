@@ -1362,16 +1362,21 @@ def _route_compressed_tensors_fp8_to_unsloth(model):
         return 0
     if not _zoo_peft_forward_keeps_fp8_inputs():
         return 0
-    converted = 0
+    # All or nothing: compressed-tensors decompresses the whole model, so a model mixing routable and
+    # unroutable weight schemes stays entirely on that path rather than decompressing routed weights.
+    routable = []
     for module in model.modules():
         scheme = getattr(module, "quantization_scheme", None)
-        if scheme is None or not isinstance(module, torch.nn.Linear):
+        if scheme is None or getattr(scheme, "weights", None) is None:
             continue
-        if getattr(scheme, "output_activations", None) is not None:
-            continue
-        block = _compressed_tensors_fp8_block_size(module, getattr(scheme, "weights", None))
+        block = None
+        if isinstance(module, torch.nn.Linear) and getattr(scheme, "output_activations", None) is None:
+            block = _compressed_tensors_fp8_block_size(module, scheme.weights)
         if block is None:
-            continue
+            return 0
+        routable.append((module, block))
+    converted = 0
+    for module, block in routable:
         scale = module.weight_scale
         if scale.dim() == 1 and scale.numel() > 1:
             scale.data = scale.data.view(-1, 1)
@@ -1512,6 +1517,64 @@ def _restore_dropped_fp8_scales(
         return (restored, skipped)
     except Exception:
         return (0, 0)
+
+
+def _decompress_compressed_tensors_model(model):
+    """Decompress a compressed-tensors checkpoint right after load, so training starts from one state.
+    Left alone, compressed-tensors decompresses on the first forward through a pre-hook on the top module:
+    PEFT's direct `.forward` calls skip it, and when the first forward is a `generate` the weights come out
+    as inference tensors that a LoRA backward cannot save. Returns True when it decompressed."""
+    if getattr(model, "_unsloth_compressed_tensors_fp8", 0):
+        return False
+    quant_config = getattr(getattr(model, "config", None), "quantization_config", None)
+    if isinstance(quant_config, dict):
+        method = quant_config.get("quant_method", None)
+    else:
+        method = getattr(quant_config, "quant_method", None)
+    if getattr(method, "value", method) != "compressed-tensors":
+        return False
+    if not any(
+        str(getattr(getattr(module, "quantization_status", None), "value", "")) == "compressed"
+        for module in model.modules()
+    ):
+        return False
+    compressor = getattr(getattr(model, "hf_quantizer", None), "compressor", None)
+    if compressor is None or not hasattr(compressor, "decompress_model"):
+        return False
+
+    def _decompress(module, *args):
+        # A first forward inside `generate` runs under inference_mode, which would make every
+        # decompressed weight an inference tensor that a later LoRA backward cannot save.
+        with torch.inference_mode(False), torch.no_grad():
+            compressor.decompress_model(module)
+
+    # Swap the lazy hook first, so the fallback below is safe too; decompress_model removes it by name.
+    hook = getattr(model, "ct_decompress_hook", None)
+    if hook is not None:
+        hook.remove()
+        model.ct_decompress_hook = model.register_forward_pre_hook(_decompress)
+    try:
+        _decompress(model)
+    except Exception as e:
+        # Keep the lazy first-forward path, now outside inference mode.
+        print(f"Unsloth: could not decompress the compressed-tensors checkpoint after load: {e}")
+        return False
+    # Older compressed-tensors has no hook removal inside decompress_model.
+    hook = getattr(model, "ct_decompress_hook", None)
+    if hook is not None:
+        hook.remove()
+        try:
+            delattr(model, "ct_decompress_hook")
+        except AttributeError:
+            pass
+    return True
+
+
+def _prepare_compressed_tensors_model(model):
+    """FP8 compressed-tensors weights run on Unsloth's FP8 kernels when every quantized layer can; any
+    other compressed-tensors checkpoint is decompressed once, here, instead of on its first forward."""
+    if not _route_compressed_tensors_fp8_to_unsloth(model):
+        _decompress_compressed_tensors_model(model)
 
 
 def check_and_disable_bitsandbytes_loading(

@@ -175,3 +175,15 @@ def test_single_token_fast_path_adds_the_bias_once(strategy, block):
         y = fast_linear_forward(lin, X)
         y_ref = X.float() @ ref.t() + 1.0
     assert float((y.float() - y_ref).norm() / y_ref.norm()) < 0.05
+
+
+def test_a_model_mixing_fp8_and_other_schemes_is_not_partly_routed():
+    from unsloth.models.loader_utils import _route_compressed_tensors_fp8_to_unsloth
+
+    model, _ = _ct_model(256, 256, "channel")
+    other, _ = _ct_model(256, 256, "channel", weight_type = "int")
+    model.other = other.lin
+    # Routing half the model would leave the rest to a whole-model decompression that also rewrites the
+    # routed FP8 weights, so nothing is routed.
+    assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
+    assert not hasattr(model.lin, "_unsloth_compressed_tensors_fp8")
