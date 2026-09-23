@@ -250,6 +250,7 @@ class StaticStepSkip:
         self.context: Any = None
         self._warned_container = False
         self.stats = {"calls": 0, "computed": 0, "skipped": 0}
+        self.last_stats = dict(self.stats)
         self.reset(None)
 
     def reset(self, steps: Optional[int], *, step_signal: bool = False) -> "StaticStepSkip":
@@ -267,6 +268,9 @@ class StaticStepSkip:
         self.ordinal = 0
         self.counters: dict = {}
         self.history: dict = {}
+        if self.stats["calls"]:
+            # The generation that just ended, kept for the status route once the per-call reset clears it.
+            self.last_stats = dict(self.stats)
         self.stats = {"calls": 0, "computed": 0, "skipped": 0}
         return self
 
@@ -283,7 +287,7 @@ class StaticStepSkip:
             "every": self.every,
             "armed": bool(self.armed),
             "planned_skips": sum(1 for c in self.plan if not c),
-            "stats": dict(self.stats),
+            "stats": dict(self.stats if self.stats["calls"] else self.last_stats),
         }
 
     def _forward(self, args: tuple, kwargs: dict) -> Any:

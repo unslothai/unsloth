@@ -723,3 +723,12 @@ def test_image_load_request_accepts_static_and_video_does_not():
     assert DiffusionLoadRequest(model_path = "org/model", transformer_cache = "static").transformer_cache == "static"
     with pytest.raises(ValidationError):
         VideoLoadRequest(model_path = "org/model", transformer_cache = "static")
+
+
+def test_stats_of_the_last_generation_survive_the_post_render_reset():
+    pipe = _installed()
+    _run(pipe, 25)
+    live = ss.static_skip_stats(pipe)["stats"]
+    assert live["calls"] == 25 and live["skipped"] > 0
+    ss.reset_static_step_skip(pipe, None)
+    assert ss.static_skip_stats(pipe)["stats"] == live
