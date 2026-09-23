@@ -16410,6 +16410,11 @@ def _check_signal_escape_patterns(code: str):
                     ("create_connection", 1),
                 )
             },
+            # Recognised so the routing keywords set on it are checked where they are set.
+            **{
+                f"{module}.SSHClientConnectionOptions": (None, (), "host")
+                for module in ("asyncssh", "asyncssh.connection")
+            },
         }
     )
     _NETWORK_FQ_PREFIXES = _NETWORK_FQ_PREFIXES + tuple(
@@ -18535,7 +18540,20 @@ def _check_signal_escape_patterns(code: str):
                             if owners & _DESTINATION_ATTRS[attr]
                         )
                 for proxy in proxies:
-                    if isinstance(proxy, ast.Dict):
+                    if isinstance(proxy, ast.Name) and proxy.id in self.dict_literals:
+                        # `proxies = {...}; get(url, proxies=proxies)`, as it stands after any
+                        # stores into it; a mutation this screen cannot read fails closed.
+                        if proxy.id in self.dict_mutated:
+                            unreadable = True
+                        entries = [
+                            (k, v)
+                            for literal in self.dict_literals[proxy.id]
+                            for k, v in zip(literal.keys, literal.values)
+                        ] + list(self.dict_entries.get(proxy.id, ()))
+                        if any(k is None for k, _v in entries):
+                            unreadable = True
+                        values = [v for k, v in entries if k is not None and not _is_no_proxy(k)]
+                    elif isinstance(proxy, ast.Dict):
                         if None in proxy.keys:
                             unreadable = True  # `{**other}` merges a mapping not here to read
                         values = [

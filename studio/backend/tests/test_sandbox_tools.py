@@ -1106,6 +1106,11 @@ class TestNetworkTargetResolution:
                 f"import paramiko\nparamiko.Transport(sock=('{_H}', 22))",
                 id = "transport_sock_keyword",
             ),
+            pytest.param(
+                f"import requests\nproxies = {{'https': 'http://{_H}'}}\n"
+                "requests.get('https://pypi.org', proxies=proxies)",
+                id = "named_proxy_mapping",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1251,6 +1256,9 @@ class TestNetworkTargetResolution:
             "httpx.get('https://pypi.org/', trust_env=False)",
             "class API:\n    @property\n    def data(self):\n        return {}\nAPI().data.get('http://203.0.113.5/')",
             "import paramiko\nparamiko.Transport(sock=('pypi.org', 22))",
+            "import requests\nproxies = {'https': 'https://pypi.org'}\nrequests.get('https://pypi.org', proxies=proxies)",
+            "import asyncssh\nopts = asyncssh.SSHClientConnectionOptions(known_hosts=None)\n"
+            "asyncssh.connect('pypi.org', options=opts)",
         ],
     )
     def test_known_trusted_host_runs(self, code):
@@ -1332,6 +1340,8 @@ class TestNetworkTargetResolution:
             "import asyncssh\nasyncssh.connect('pypi.org', proxy_command='nc 203.0.113.5 22')",
             "import paramiko\nparamiko.SSHClient().connect('pypi.org', sock=paramiko.ProxyCommand('nc 203.0.113.5 22'))",
             "from fabric import Connection\nConnection('pypi.org', gateway='ssh -W %h:%p 203.0.113.5').run('id')",
+            "import asyncssh\nopts = asyncssh.SSHClientConnectionOptions(proxy_command='nc 203.0.113.5 22')\n"
+            "asyncssh.connect('pypi.org', options=opts)",
         ],
     )
     def test_unreadable_destination_refused(self, code):
