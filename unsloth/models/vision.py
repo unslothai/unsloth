@@ -2419,8 +2419,11 @@ class FastBaseModel:
                 moe_module_targets = _moe_module_targets,
             )
             from .remote_moe_shims import packed_expert_target_parameters
+            # The scoped selection: a family scoped out keeps its packed experts untargeted too.
             target_parameters = packed_expert_target_parameters(
-                model, target_parameters, _moe_detect_target
+                model,
+                target_parameters,
+                _moe_module_detect if isinstance(_moe_module_detect, (list, tuple)) else None,
             )
 
         if _moe_module_targets:

@@ -797,3 +797,46 @@ def test_a_kept_packed_load_registers_no_decompress_op():
     assert kept.count("StackPackedExperts") == 4 and "DecompressPackedWeights" not in kept
     quantizer._unsloth_keep_packed, quantizer._unsloth_packed_experts = False, []
     assert "DecompressPackedWeights" in ops(quantizer.update_weight_conversions([]))
+
+
+def _peft_target_parameters(model, monkeypatch, **kwargs):
+    """The `target_parameters` FastBaseModel.get_peft_model hands PEFT, captured at LoraConfig."""
+    import functools
+    import unsloth.models.vision as vision
+
+    class _Captured(Exception):
+        pass
+
+    real = vision.LoraConfig
+
+    @functools.wraps(real)
+    def capture(**config):
+        raise _Captured(config.get("target_parameters"))
+
+    monkeypatch.setattr(vision, "LoraConfig", capture)
+    with pytest.raises(_Captured) as captured:
+        vision.FastBaseModel.get_peft_model(model, r = 4, **kwargs)
+    return captured.value.args[0]
+
+
+@pytest.mark.parametrize(
+    "flags, experts",
+    [
+        ({}, True),
+        ({"finetune_mlp_modules": False}, False),
+        ({"finetune_language_layers": False}, False),
+    ],
+)
+def test_packed_expert_targets_follow_the_finetune_family_flags(flags, experts, monkeypatch):
+    mod, _ = _tiny_model("transformers_modules.k3s_scope.modeling_tinymoe")
+    model = mod.TinyMoeForCausalLM(mod.TinyMoeConfig(num_hidden_layers = 1)).to(torch.bfloat16)
+    swap_in_packed_mxfp4_experts(model, _keys(layers = 1), torch.bfloat16)
+    _materialize_packed(model)
+    model.max_seq_length = 64
+    # Something left to train when a family is scoped out.
+    model.vision_tower = nn.Module()
+    model.vision_tower.attn = nn.Module()
+    model.vision_tower.attn.q_proj = nn.Linear(H, H, bias = False)
+    got = _peft_target_parameters(model, monkeypatch, target_modules = ["q_proj", "w1", "w2"], **flags)
+    want = ["experts.gate_up_proj", "experts.down_proj"] if experts else []
+    assert sorted(got or []) == sorted(want)
