@@ -582,6 +582,7 @@ test("a vendor id resolves to the unsloth mirror that replaced it", () => {
     ["Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512"],
     ["black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"],
     ["Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo"],
+    ["Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1"],
   ]) {
     const hit = artifactForRepoId(vendor, IMAGE_CATALOG);
     assert.equal(hit?.artifact.repoId, mirror, vendor);
@@ -613,4 +614,42 @@ test("with familyOf, an unslothai family the unsloth listing cannot rank keeps i
   assert.deepEqual(order([]), [ASR, TURBO, TINY]);
   // The listing ranks the unsloth rows, and the unslothai row stays above them.
   assert.deepEqual(order([{ id: TINY }, { id: TURBO }]), [ASR, TINY, TURBO]);
+});
+
+test("a pinToTop family leads Recommended whatever the listing sort, both artifacts kept together", () => {
+  const family = (id: string) => groupForRepoId(id, IMAGE_CATALOG)?.canonicalId.toLowerCase();
+  const pinnedFamilies = IMAGE_CATALOG.filter((g) => g.pinToTop).map((g) =>
+    g.canonicalId.toLowerCase(),
+  );
+  assert.deepEqual(pinnedFamilies, ["unsloth/qwen-image-2.1"]);
+  const qwen21 = "unsloth/Qwen-Image-2.1";
+  const qwen21Gguf = "unsloth/Qwen-Image-2.1-GGUF";
+  const zImageTurbo = "unsloth/Z-Image-Turbo-GGUF";
+  const qwen2512 = "unsloth/Qwen-Image-2512-GGUF";
+  const seeds: Row[] = [
+    { id: zImageTurbo, isGguf: true },
+    { id: qwen21 },
+    { id: qwen21Gguf, isGguf: true },
+    { id: qwen2512, isGguf: true },
+  ];
+  // Qwen-Image 2.1 trends last, so only the pin lifts it.
+  const results: Row[] = [
+    { id: qwen2512, isGguf: true },
+    { id: zImageTurbo, isGguf: true },
+    { id: qwen21Gguf, isGguf: true },
+  ];
+  const order = (pinned?: readonly string[]) =>
+    ids(
+      orderRecommendedRows({
+        seeds,
+        results,
+        keep: () => true,
+        deviceFiltered: false,
+        fits: () => true,
+        familyOf: family,
+        pinnedFamilies: pinned,
+      }),
+    );
+  assert.deepEqual(order(), [qwen2512, zImageTurbo, qwen21, qwen21Gguf]);
+  assert.deepEqual(order(pinnedFamilies), [qwen21, qwen21Gguf, qwen2512, zImageTurbo]);
 });
