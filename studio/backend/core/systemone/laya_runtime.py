@@ -410,8 +410,7 @@ def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
 def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], bool]:
     # laya's Agent.predict with the state tokenized once instead of once per question.
     import numpy as np
-    import torch
-    from laya.common import QTYPES, collate_items, confidence_from_probs, temp_bucket
+    from laya.common import QTYPES, confidence_from_probs
 
     max_len = int(agent.cfg.get("max_len", 512))
     head_max_len = int(agent.cfg.get("head_max_len", 192))
@@ -437,27 +436,11 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
                 "qtype": QTYPES[internal["t"]],
             }
         )
-    batch = collate_items([items], agent.tok.pad_token_id)
-    device = agent.device
-    with torch.inference_mode(), torch.autocast(
-        device_type = device.type, dtype = agent.dtype, enabled = device.type == "cuda"
-    ):
-        logits, _ = agent.model(
-            batch["input_ids"].to(device),
-            batch["attention_mask"].to(device),
-            batch["marker_pos"].to(device),
-            batch["marker_mask"].to(device),
-            batch["qtype"].to(device),
-        )
-    logits = logits.float().cpu().numpy()
+    logits, usage = _forward(agent, items)
     answers = {}
     for row, (name, (_, markers, internal)) in enumerate(zip(names, heads)):
         k = len(markers)
-        qtype = QTYPES[internal["t"]]
-        scale = agent.temperature_by_options.get(temp_bucket(qtype, k), agent.temperature[qtype])
-        z = logits[row, :k] / scale
-        p = np.exp(z - z.max())
-        p = p / p.sum()
+        p = _probabilities(agent, logits[row], k, QTYPES[internal["t"]])
         confidence = round(confidence_from_probs(p, k), 4)
         if internal["t"] == "choice":
             keys = list(internal["crit"])
@@ -481,8 +464,90 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
                 "noul": round(float(p[1]), 4),
                 "confidence": round(max(float(p[1]), 1.0 - float(p[1])), 4),
             }
-    usage = {"input_tokens": int(batch["attention_mask"].sum()), "output_tokens": 0}
-    return {"answers": answers, "usage": usage}, truncated
+    return {"answers": answers, "usage": {"input_tokens": usage, "output_tokens": 0}}, truncated
+
+
+def _forward(agent, items: list[dict[str, Any]]):
+    import torch
+    from laya.common import collate_items
+
+    batch = collate_items([items], agent.tok.pad_token_id)
+    device = agent.device
+    with torch.inference_mode(), torch.autocast(
+        device_type = device.type, dtype = agent.dtype, enabled = device.type == "cuda"
+    ):
+        logits, _ = agent.model(
+            batch["input_ids"].to(device),
+            batch["attention_mask"].to(device),
+            batch["marker_pos"].to(device),
+            batch["marker_mask"].to(device),
+            batch["qtype"].to(device),
+        )
+    return logits.float().cpu().numpy(), int(batch["attention_mask"].sum())
+
+
+def _probabilities(agent, row, k: int, qtype: int):
+    import numpy as np
+    from laya.common import temp_bucket
+
+    scale = agent.temperature_by_options.get(temp_bucket(qtype, k), agent.temperature[qtype])
+    z = row[:k] / scale
+    p = np.exp(z - z.max())
+    return p / p.sum()
+
+
+def _warm(checkpoint: Checkpoint) -> None:
+    # Never downloads or installs: that stays with the owner's switch and the Decision API itself.
+    if not package_available() or not is_cached(checkpoint):
+        return
+    try:
+        _ensure_loading(checkpoint)
+    except Unavailable:
+        pass
+
+
+def score_noul(question: dict[str, Any], states: list[str], batch_size: int = 8) -> list[float] | None:
+    from . import catalog
+
+    checkpoint = catalog.default_checkpoint()
+    with _state_lock:
+        agent = _agent if _loaded == checkpoint else None
+        idle = _agent is None
+    if agent is None:
+        # Never evicts a checkpoint a Decision API client asked for by name.
+        if idle:
+            _warm(checkpoint)
+        return None
+    # A search never queues behind Decision API traffic; it keeps its retrieval order instead.
+    if not _run_lock.acquire(blocking = False):
+        return None
+    try:
+        if _agent is not agent:
+            return None
+        from laya.common import QTYPES
+
+        max_len = int(agent.cfg.get("max_len", 512))
+        ids, markers, internal = _head(
+            agent, question, max_len, int(agent.cfg.get("head_max_len", 192))
+        )
+        room = max(0, max_len - len(ids))
+        items = []
+        for state in states:
+            state_ids, cut = _state_ids(agent.tok, state, room)
+            if cut:
+                raise ValueError("state exceeds the Laya context window")
+            items.append(
+                {"ids": ids[:-1] + state_ids + ids[-1:], "markers": markers, "qtype": QTYPES["noul"]}
+            )
+        scores = []
+        for start in range(0, len(items), batch_size):
+            logits, _ = _forward(agent, items[start : start + batch_size])
+            scores.extend(
+                float(_probabilities(agent, row, len(markers), QTYPES["noul"])[1]) for row in logits
+            )
+        return scores
+    finally:
+        _run_lock.release()
 
 
 def _wire_answer(answer: dict[str, Any]) -> dict[str, Any]:

@@ -2005,6 +2005,8 @@ export const it = {
         deviceDescription: "La GPU risponde più velocemente, ma tiene la memoria riservata finché Studio non si riavvia.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
+        ragRerank: "Riordina la ricerca nei documenti",
+        ragRerankDescription: "Riordina i passaggi dei tuoi documenti con questo modello prima che arrivino alla chat. Aggiunge alcuni secondi per ricerca su CPU.",
         checking: "Verifica in corso…",
         notDownloaded: "Non scaricato · {size}",
         downloading: "Download in corso…",

@@ -2040,6 +2040,8 @@ export const fr = {
         deviceDescription: "Le GPU répond plus vite, mais garde sa mémoire réservée jusqu'au redémarrage de Studio.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
+        ragRerank: "Reclasser la recherche dans les documents",
+        ragRerankDescription: "Reclasse les passages de vos documents avec ce modèle avant qu'ils n'arrivent dans le chat. Ajoute quelques secondes par recherche sur CPU.",
         checking: "Vérification…",
         notDownloaded: "Non téléchargé · {size}",
         downloading: "Téléchargement…",

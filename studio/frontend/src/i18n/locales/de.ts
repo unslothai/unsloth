@@ -2039,6 +2039,8 @@ export const de = {
         deviceDescription: "Die GPU antwortet schneller, hält ihren Speicher aber reserviert, bis Studio neu startet.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
+        ragRerank: "Dokumentsuche neu ordnen",
+        ragRerankDescription: "Ordnet Passagen aus deinen Dokumenten mit diesem Modell neu, bevor der Chat sie sieht. Kostet auf der CPU einige Sekunden pro Suche.",
         checking: "Wird geprüft…",
         notDownloaded: "Nicht heruntergeladen · {size}",
         downloading: "Wird heruntergeladen…",

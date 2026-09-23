@@ -954,13 +954,14 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
                 )
             scope = scopes[0] if len(scopes) == 1 else scopes
 
-        if payload.mode == "lexical":
-            hits = retrieval.retrieve_lexical(conn, scope, payload.query, payload.top_k)
-        elif payload.mode == "dense":
-            hits = retrieval.retrieve_dense(conn, scope, payload.query, payload.top_k)
-        else:
-            hits = retrieval.retrieve_hybrid(conn, scope, payload.query, k = payload.top_k)
-        hits = retrieval.filter_min_score(hits, payload.min_score)
+        hits = retrieval.retrieve_ranked(
+            conn,
+            scope,
+            payload.query,
+            k = payload.top_k,
+            mode = payload.mode,
+            min_score = payload.min_score,
+        )
         rows = store.chunks_by_id(conn, [h.chunk_id for h in hits])
         results = []
         for h in hits:
@@ -974,6 +975,7 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
                     "filename": r["filename"],
                     "page": r["page_number"],
                     "score": h.score,
+                    **({"rerankScore": h.rerank_score} if h.rerank_score is not None else {}),
                     "text": r["text"],
                 }
             )

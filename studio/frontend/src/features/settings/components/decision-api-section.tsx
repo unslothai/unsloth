@@ -150,7 +150,7 @@ export function DecisionApiSection(): ReactElement | null {
   };
 
   const apply = async (
-    patch: { enabled?: boolean; model?: string; device?: SystemOneDevice },
+    patch: Parameters<typeof updateSystemOneSettings>[0],
     downloadAfter: boolean,
   ) => {
     setBusy(true);
@@ -423,6 +423,19 @@ export function DecisionApiSection(): ReactElement | null {
               </SelectItem>
             </SelectContent>
           </Select>
+        </SettingsRow>
+
+        <SettingsRow
+          label={t("settings.apiKeys.decisionApi.ragRerank")}
+          description={t("settings.apiKeys.decisionApi.ragRerankDescription")}
+          alignTop={true}
+        >
+          <Switch
+            checked={settings.ragRerank}
+            disabled={busy || !enabled}
+            onCheckedChange={(on) => void apply({ rag_rerank: on }, false)}
+            aria-label={t("settings.apiKeys.decisionApi.ragRerank")}
+          />
         </SettingsRow>
       </div>
     </section>

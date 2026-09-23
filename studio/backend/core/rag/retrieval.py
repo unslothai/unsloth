@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from . import config, embeddings, store
+from . import config, embeddings, reranking, store
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,7 @@ class Hit:
     score: float
     lexical_score: float | None = None
     dense_score: float | None = None
+    rerank_score: float | None = None
 
 
 def retrieve_lexical(
@@ -151,3 +152,49 @@ def filter_min_score(hits: list[Hit], min_score: float) -> list[Hit]:
     if min_score <= 0:
         return hits
     return [h for h in hits if h.dense_score is None or h.dense_score >= min_score]
+
+
+def retrieve_ranked(
+    conn: sqlite3.Connection,
+    scope: str | list[str],
+    query: str,
+    *,
+    k: int | None = None,
+    min_score: float = 0.0,
+    model_name: str | None = None,
+    mode: str = "hybrid",
+    rerank: bool = True,
+    dense_floor: float | None = None,
+) -> list[Hit]:
+    k = int(k if k is not None else config.TOP_K_HYBRID)
+    if k <= 0:
+        return []
+    candidates = min(50, max(1, config.RERANK_CANDIDATES))
+    should_rerank = rerank and reranking.enabled() and k <= candidates
+    hits = retrieve_hybrid(
+        conn,
+        scope,
+        query,
+        k = candidates if should_rerank else k,
+        model_name = model_name,
+        mode = mode,
+    )
+    fallback = filter_min_score(hits[:k], min_score)
+    if not should_rerank:
+        return fallback
+    hits = filter_min_score(hits, min_score)
+    if dense_floor is not None:
+        hits = [h for h in hits if h.dense_score is not None and h.dense_score >= dense_floor]
+        # Rerank only when the unreranked top k already clears the floor, so eligibility is unchanged.
+        if not any(h in hits for h in fallback):
+            return fallback
+    if len(hits) < 2:
+        return fallback
+    rows = store.chunks_by_id(conn, [h.chunk_id for h in hits])
+    if any(h.chunk_id not in rows for h in hits):
+        return fallback
+    scores = reranking.score(query, [rows[h.chunk_id]["text"] for h in hits])
+    if scores is None:
+        return fallback
+    ranked = [replace(hit, rerank_score = score) for hit, score in zip(hits, scores)]
+    return sorted(ranked, key = lambda hit: hit.rerank_score, reverse = True)[:k]

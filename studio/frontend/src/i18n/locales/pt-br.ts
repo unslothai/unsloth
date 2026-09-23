@@ -2011,6 +2011,8 @@ export const ptBR = {
         deviceDescription: "A GPU responde mais rápido, mas mantém a memória reservada até o Studio reiniciar.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
+        ragRerank: "Reordenar a busca em documentos",
+        ragRerankDescription: "Reordena os trechos dos seus documentos com este modelo antes que cheguem ao chat. Adiciona alguns segundos por busca na CPU.",
         checking: "Verificando…",
         notDownloaded: "Não baixado · {size}",
         downloading: "Baixando…",

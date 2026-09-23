@@ -99,6 +99,7 @@ def _format(rows, hits) -> tuple[str, list[dict]]:
                 "page": page,
                 "text": text,
                 "score": round(float(h.score), 4) if h.score is not None else None,
+                **({"rerankScore": h.rerank_score} if h.rerank_score is not None else {}),
             }
         )
     return "\n\n".join(blocks), sources
@@ -238,15 +239,16 @@ def search_knowledge_base_with_sources(
 
     conn = rag_db.get_connection()
     try:
-        hits = retrieval.retrieve_hybrid(
+        hits = retrieval.retrieve_ranked(
             conn,
             scope,
             query,
             k = top_k or config.TOP_K_HYBRID,
             model_name = model_name,
             mode = mode,
+            min_score = min_score,
+            rerank = scope_conversation_id is None,
         )
-        hits = retrieval.filter_min_score(hits, min_score)
         rows = store_rows(conn, hits)
     finally:
         conn.close()
@@ -284,13 +286,14 @@ def search_for_autoinject(
     k = top_k or config.TOP_K_HYBRID
     conn = rag_db.get_connection()
     try:
-        hits = retrieval.retrieve_hybrid(
+        hits = retrieval.retrieve_ranked(
             conn,
             scope,
             query,
             k = k,
             model_name = model_name,
             mode = mode,
+            dense_floor = min_dense_score if mode != "lexical" else None,
         )
         strong = (
             hits[:k]

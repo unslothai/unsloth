@@ -115,3 +115,12 @@ test("a failed first load still renders the section with its error", () => {
     /translate\("settings.apiKeys.decisionApi.loadError"\)/,
   );
 });
+
+test("document reranking is a switch that never downloads and needs the API on", () => {
+  assert.match(SECTION, /apply\(\{ rag_rerank: on \}, false\)/);
+  assert.match(SECTION, /checked=\{settings\.ragRerank\}/);
+  assert.match(SECTION, /disabled=\{busy \|\| !enabled\}/);
+  assert.match(API, /ragRerank: settings\.rag_rerank,/);
+  assert.ok(en.settings.apiKeys.decisionApi.ragRerank);
+  assert.ok(en.settings.apiKeys.decisionApi.ragRerankDescription);
+});

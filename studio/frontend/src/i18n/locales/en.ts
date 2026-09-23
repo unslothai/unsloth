@@ -1986,6 +1986,8 @@ export const en = {
         deviceDescription: "GPU answers faster, but keeps its memory reserved until Studio restarts.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
+        ragRerank: "Rerank document search",
+        ragRerankDescription: "Reorders passages from your documents with this model before chat sees them. Adds a few seconds per search on CPU.",
         checking: "Checking…",
         notDownloaded: "Not downloaded · {size}",
         downloading: "Downloading…",

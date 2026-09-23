@@ -2008,6 +2008,8 @@ export const ru = {
         deviceDescription: "GPU отвечает быстрее, но держит память зарезервированной до перезапуска Studio.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
+        ragRerank: "Переранжировать поиск по документам",
+        ragRerankDescription: "Переупорядочивает фрагменты ваших документов этой моделью, прежде чем они попадут в чат. На CPU добавляет несколько секунд к каждому поиску.",
         checking: "Проверка…",
         notDownloaded: "Не скачана · {size}",
         downloading: "Скачивание…",
