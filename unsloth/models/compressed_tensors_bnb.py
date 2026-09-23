@@ -201,12 +201,17 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
             )
         return None
     if not install_compressed_tensors_bnb_quantizer():
-        # A foreign quantizer class owns the bitsandbytes slot: it would load the packed
-        # tensors without the converters, so leave the checkpoint's own config in place.
+        # No quantizer conversion hook (transformers before 5.8), or a foreign quantizer class
+        # owns the bitsandbytes slot: either way the packed tensors would load without the
+        # converters, so leave the checkpoint's own config in place.
         if verbose:
+            if not _transformers_supports_weight_converters():
+                reason = "this transformers has no quantizer weight-conversion hook (5.8 or later has it)"
+            else:
+                reason = "another library owns the bitsandbytes quantizer"
             print(
-                "Unsloth: This checkpoint is compressed-tensors packed INT4/INT8 but another library owns "
-                "the bitsandbytes quantizer; loading it as published."
+                "Unsloth: This checkpoint is compressed-tensors packed INT4/INT8 but "
+                f"{reason}; loading it as published."
             )
         return None
     # Composite configs (Kimi-K2.7: KimiK25Config over a DeepseekV3Config text config) copy the
