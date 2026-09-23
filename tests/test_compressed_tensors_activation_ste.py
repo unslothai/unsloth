@@ -51,24 +51,31 @@ _RUNNER = textwrap.dedent(
     )
     torch.manual_seed(0)
     model = torch.nn.Sequential(torch.nn.Linear(64, 32, bias = False))
-    scheme = QuantizationScheme(
-        targets = ["Linear"],
-        input_activations = QuantizationArgs(
+    static = len(sys.argv) > 3 and sys.argv[3] == "static"
+    if static:  # INT8 W8A8 with a calibrated per-tensor input scale that saturates
+        activations = QuantizationArgs(
+            num_bits = 8, type = "int", strategy = "tensor", dynamic = False, symmetric = True,
+        )
+    else:
+        activations = QuantizationArgs(
             num_bits = 8, type = "float", strategy = "token", dynamic = True, symmetric = True,
-        ),
-    )
+        )
+    scheme = QuantizationScheme(targets = ["Linear"], input_activations = activations)
     apply_quantization_config(model, QuantizationConfig(config_groups = {"group_0": scheme}, quantization_status = "frozen"))
     lin = model[0]
     lin.weight.requires_grad_(False)          # the frozen base layer under a LoRA adapter
-    x = torch.randn(4, 64, requires_grad = True)
+    if static:
+        model.to(torch.bfloat16)
+        lin.input_scale.data.fill_(0.01)      # clips at 1.27, so most of randn * 4 saturates
+    x = (torch.randn(4, 64) * (4 if static else 1)).to(lin.weight.dtype).requires_grad_(True)
     y = lin(x)
     with torch.no_grad():
         y_nograd = lin(x)
     out = {"has_grad_fn": y.grad_fn is not None, "same_forward": bool(torch.equal(y.detach(), y_nograd))}
     if y.grad_fn is not None:
         (gx,) = torch.autograd.grad(y.sum(), x)
-        ref = torch.ones(4, 32) @ lin.weight
-        out["grad_err"] = float((gx - ref).abs().max())
+        ref = torch.ones(4, 32, dtype = lin.weight.dtype) @ lin.weight
+        out["grad_err"] = float((gx - ref).abs().max().float())
     import compressed_tensors.quantization.lifecycle.forward as f
     out["patched"] = bool(getattr(f.forward_quantize, "_unsloth_activation_ste", False))
     print(json.dumps(out))
@@ -76,9 +83,16 @@ _RUNNER = textwrap.dedent(
 )
 
 
-def _run(mode):
+def _run(mode, scheme = "dynamic"):
     proc = subprocess.run(
-        [sys.executable, "-c", _RUNNER, mode, os.path.join(_ROOT, "unsloth", "import_fixes.py")],
+        [
+            sys.executable,
+            "-c",
+            _RUNNER,
+            mode,
+            os.path.join(_ROOT, "unsloth", "import_fixes.py"),
+            scheme,
+        ],
         capture_output = True,
         text = True,
         timeout = 600,
@@ -103,3 +117,11 @@ def test_activation_quantization_passes_the_gradient_straight_through(mode):
     assert out["has_grad_fn"]
     assert out["same_forward"]  # the quantized forward is untouched
     assert out["grad_err"] < 1e-5  # dX = dY @ W, as if the activation were not quantized
+
+
+def test_a_saturating_static_scale_keeps_the_forward_bit_identical():
+    """`x + (q - x).detach()` rounds wherever a static scale clips; the forward must stay `q` exactly."""
+    out = _run("eager", "static")
+    assert out["patched"]
+    assert out["has_grad_fn"]
+    assert out["same_forward"]
