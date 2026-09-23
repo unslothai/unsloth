@@ -278,95 +278,31 @@ class TestMemoization:
         cannot be added without either invalidating or failing this.
 
         The two that exist route through _build_pip_cmd / _build_uv_cmd, which is what
-        makes a function an installer rather than a probe. A function whose every such
-        command targets a directory it just made with `tempfile.mkdtemp` writes there and
-        not into the environment, so it cannot change which torch is installed: #11635's
-        _prefetch_diffusers_main builds into one only to warm uv's cache.
+        makes a function an installer rather than a probe. The one exemption builds into a
+        scratch --target and installs nothing; `TestScratchPrefetch` runs it to prove that,
+        rather than trusting how its source reads.
         """
         tree = ast.parse(Path(stack_mod.__file__).read_text(encoding = "utf-8"))
         installers = {}
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef):
                 continue
-            builds = [
-                sub
+            called = {
+                sub.func.id
                 for sub in ast.walk(node)
-                if isinstance(sub, ast.Call)
-                and isinstance(sub.func, ast.Name)
-                and sub.func.id in {"_build_pip_cmd", "_build_uv_cmd"}
-            ]
-            if builds and not all(_writes_only_a_target(node, call) for call in builds):
-                installers[node.name] = {
-                    sub.func.id
-                    for sub in ast.walk(node)
-                    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
-                }
-        assert set(installers) == {"pip_install", "pip_install_try"}, (
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+            }
+            if called & {"_build_pip_cmd", "_build_uv_cmd"}:
+                installers[node.name] = called
+        assert SCRATCH_PREFETCHERS <= set(installers), "an exempted prefetcher no longer builds"
+        assert set(installers) - SCRATCH_PREFETCHERS == {"pip_install", "pip_install_try"}, (
             f"a new installer entry point appeared: {sorted(installers)}. It has to drop "
             "the torch classification too, or it will answer for the build it replaced"
         )
-        for name, called in installers.items():
-            assert "_invalidate_torch_runtime_probe" in called, (
+        for name in set(installers) - SCRATCH_PREFETCHERS:
+            assert "_invalidate_torch_runtime_probe" in installers[name], (
                 f"{name}() installs packages without dropping the memoized torch " "classification"
             )
-
-    @pytest.mark.parametrize(
-        "source, scratch",
-        [
-            (
-                'def f():\n    s = Path(tempfile.mkdtemp())\n    args = ("--no-deps", "--target", str(s))\n'
-                "    _build_uv_cmd(args)",
-                True,
-            ),
-            (
-                'def f():\n    s = tempfile.mkdtemp()\n    args = ("--target", s)\n    _build_uv_cmd((*args, "x"))',
-                True,
-            ),
-            (
-                'def f():\n    s = tempfile.mkdtemp()\n    _build_pip_cmd(("--target", s, "x"))',
-                True,
-            ),
-            # --target into a directory this function did not just make is an install like any other.
-            ('def f(d):\n    args = ("--target", d)\n    _build_uv_cmd(args)', False),
-            (
-                'def f():\n    _build_uv_cmd(("--target", str(site.getsitepackages()[0]), "x"))',
-                False,
-            ),
-            ('def f():\n    args = ("--no-deps",)\n    _build_uv_cmd(args)', False),
-            (
-                'def f():\n    s = tempfile.mkdtemp()\n    args = ("--target", s)\n    _build_uv_cmd(args)\n'
-                '    _build_uv_cmd(("x",))',
-                False,
-            ),
-            ("def f(args):\n    _build_uv_cmd(args)", False),
-            # Rebound after mkdtemp: the call sees the second value.
-            (
-                "def f():\n    s = tempfile.mkdtemp()\n    s = site.getsitepackages()[0]\n"
-                '    _build_uv_cmd(("--target", s))',
-                False,
-            ),
-            (
-                'def f():\n    s = tempfile.mkdtemp()\n    args = ("--target", s)\n    args = ("--no-deps",)\n'
-                "    _build_uv_cmd(args)",
-                False,
-            ),
-            (
-                "def f():\n    s = tempfile.mkdtemp()\n    for s in site.getsitepackages():\n"
-                '        _build_uv_cmd(("--target", s))',
-                False,
-            ),
-        ],
-    )
-    def test_only_a_command_built_into_a_fresh_temp_dir_counts_as_scratch(self, source, scratch):
-        func = ast.parse(source).body[0]
-        calls = [
-            sub
-            for sub in ast.walk(func)
-            if isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Name)
-            and sub.func.id.startswith("_build_")
-        ]
-        assert all(_writes_only_a_target(func, call) for call in calls) is scratch
 
     def test_explicit_invalidation_forces_a_reprobe(self):
         with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()) as mock_run:
@@ -376,62 +312,54 @@ class TestMemoization:
         assert mock_run.call_count == 2
 
 
-def _writes_only_a_target(func: ast.FunctionDef, call: ast.Call) -> bool:
-    """Whether this `_build_*_cmd(args)` call installs into a scratch directory: its arguments,
-    read from the tuple passed in or a tuple the function assigned to the name passed in, carry
-    `--target` followed by a directory this function made with `tempfile.mkdtemp`. `--target`
-    alone proves nothing, since it can name site-packages as easily as a scratch directory."""
-    # A name bound more than once can hold anything at the call, so only a single binding counts.
-    bindings: dict[str, int] = {}
-    for node in ast.walk(func):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            bindings[node.id] = bindings.get(node.id, 0) + 1
-    for arg in (*func.args.posonlyargs, *func.args.args, *func.args.kwonlyargs):
-        bindings[arg.arg] = bindings.get(arg.arg, 0) + 1
-    tuples = {}
-    scratch = set()
-    for node in ast.walk(func):
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if not isinstance(target, ast.Name) or bindings.get(target.id) != 1:
-                continue
-            if isinstance(node.value, ast.Tuple):
-                tuples[target.id] = node.value
-            if any(
-                isinstance(sub, ast.Call)
-                and isinstance(sub.func, ast.Attribute)
-                and sub.func.attr == "mkdtemp"
-                for sub in ast.walk(node.value)
-            ):
-                scratch.add(target.id)
+# Builds a command without dropping the torch classification, which is only safe because it
+# installs nothing into the environment. TestScratchPrefetch runs each one to hold it to that.
+SCRATCH_PREFETCHERS = {"_prefetch_diffusers_main"}
 
-    def is_scratch(node) -> bool:
-        # `s` or `str(s)`, where `s` came from mkdtemp.
-        if isinstance(node, ast.Call) and len(node.args) == 1 and not node.keywords:
-            node = node.args[0]
-        return isinstance(node, ast.Name) and node.id in scratch
 
-    def carries(node) -> bool:
-        if isinstance(node, ast.Name) and node.id in tuples:
-            return carries(tuples[node.id])
-        if isinstance(node, ast.Starred):
-            return carries(node.value)
-        if isinstance(node, ast.Tuple):
-            items = node.elts
-            return any(
-                (
-                    isinstance(item, ast.Constant)
-                    and item.value == "--target"
-                    and index + 1 < len(items)
-                    and is_scratch(items[index + 1])
-                )
-                or carries(item)
-                for index, item in enumerate(items)
-            )
-        return False
+class TestScratchPrefetch:
+    """#11635's prefetch warms uv's cache by building into a throwaway --target. Run it with the
+    subprocess stubbed and read the command it actually issues: exactly one --target, naming a
+    directory it made under the temp root, and removed afterwards."""
 
-    return bool(call.args) and carries(call.args[0])
+    @pytest.mark.parametrize("git", [True, False], ids = ["from-git", "from-archive"])
+    def test_the_prefetch_builds_only_into_a_scratch_target(self, git, tmp_path):
+        req_root = tmp_path / "requirements"
+        req_root.mkdir()
+        (req_root / "diffusers-main.txt").write_text(
+            "diffusers @ git+https://github.com/huggingface/diffusers@abc\n", encoding = "utf-8"
+        )
+        commands = []
+
+        def run(cmd, **kwargs):
+            commands.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout = "")
+
+        with (
+            patch.object(stack_mod, "REQ_ROOT", req_root),
+            patch.object(stack_mod, "_diffusers_main_requested", return_value = True),
+            patch.object(stack_mod, "_diffusers_main_needs_dependency_pass", return_value = True),
+            patch.object(stack_mod, "_startup_repair_failed", return_value = False),
+            patch.object(stack_mod, "_bootstrap_uv", return_value = True),
+            patch.object(stack_mod, "_has_working_git", return_value = git),
+            patch.object(
+                stack_mod, "_diffusers_main_archive", return_value = "https://example/d.tar.gz"
+            ),
+            patch.object(stack_mod, "_pinned_cmd_and_env", side_effect = lambda cmd: (cmd, None)),
+            patch.object(stack_mod.subprocess, "run", side_effect = run),
+        ):
+            assert stack_mod._prefetch_diffusers_main() == 0
+
+        assert len(commands) == 1, commands
+        cmd = commands[0]
+        targets = [
+            i for i, arg in enumerate(cmd) if arg == "--target" or arg.startswith("--target=")
+        ]
+        assert len(targets) == 1 and cmd[targets[0]] == "--target", cmd
+        target = Path(cmd[targets[0] + 1])
+        assert target.parent == Path(stack_mod.tempfile.gettempdir()), target
+        assert target.name.startswith(stack_mod._PREFETCH_SCRATCH_PREFIX), target
+        assert not target.exists(), "the scratch target was left behind"
 
 
 class TestConsumersShareTheProbe:
