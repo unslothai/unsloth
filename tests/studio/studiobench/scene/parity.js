@@ -64,7 +64,7 @@
       .replace(/\b[a-z]+:\/\/[^/\s]+/gi, "")
       .replace(ID_RE, "#ID");
 
-  const normText = (s) =>
+  const normSubs = (s) =>
     (s || "")
       // `295ms`, `1.2 s`, `3 min` -> a placeholder. Wall clock, not content.
       .replace(/\b\d+(\.\d+)?\s?(ms|s|sec|secs|second|seconds|min|mins|minute|minutes|hour|hours|day|days)\b/gi, "#T")
@@ -73,9 +73,8 @@
       // Absolute timestamps.
       .replace(/\b\d{1,2}:\d{2}(:\d{2})?\s?(am|pm)?\b/gi, "#T")
       // Backend-minted ids that reach the DOM as TEXT rather than as an attribute.
-      .replace(ID_RE, "#ID")
-      .replace(/\s+/g, " ")
-      .trim();
+      .replace(ID_RE, "#ID");
+  const normText = (s) => normSubs(s).replace(/\s+/g, " ").trim();
 
   // FNV-1a, 32 bit, unsigned hex. Not cryptographic: a change detector over two runs of one page.
   const hash = (str) => {
@@ -105,17 +104,19 @@
   // cell carries that until `thread_reopen` remounts the thread. A null control whose cells all
   // happened to stay low then calls those actions stable, and a backend-only pull request fails.
   // So each message also carries its fences, read in the SAME walk: whether each was latched, its
-  // full digest, and a digest of its TEXT alone (every whitespace dropped: streamdown emits one span
-  // per line with no newline between them, the shell one text node with them), plus a digest of the
-  // message with every fence replaced by a marker. `analysis/parity.fence_latch_residue` compares a
-  // fence latched on both arms, or on neither, in full, and one latched on ONE arm on its text.
+  // full digest, its language, and a digest of its TEXT alone, plus a digest of the message with
+  // every fence replaced by a marker. The text drops LINE BREAKS only: streamdown emits one span per
+  // line with no newline between them, the shell one text node with them. Every other space is
+  // kept, so `x = 1` against `x=1`, an indentation change and a space inside a string all still
+  // differ. `analysis/parity.fence_latch_residue` compares a fence latched on both arms, or on
+  // neither, in full, and one latched on ONE arm on its language and text.
   const FENCE_ATTR = "data-streamdown";
   const FENCE_ROOT = "code-block";
   const FENCE_BODY = "code-block-body";
   const FENCE_DEFERRED_ATTR = "data-unsloth-fence-deferred";
   const FENCE_MARKER = "<!fence>";
 
-  const fenceText = (raw) => normText(raw).replace(/\s+/g, "");
+  const fenceText = (raw) => normSubs((raw || "").replace(/\r?\n/g, ""));
 
   // `dropAttrs` is a Set of attributes this digest does not compare AT ALL, unlike VOLATILE_ATTRS
   // which keeps the presence. `elide` is a Set of ELEMENTS whose subtree is not serialised: a marker
@@ -151,6 +152,8 @@
           fence = {
             start: parts.length,
             latched: el.getAttribute(FENCE_DEFERRED_ATTR) !== "true",
+            // On the fence root in both forms, so a language change is seen without the markup.
+            lang: el.getAttribute("data-language"),
             all: "",
             body: null,
           };
@@ -212,6 +215,7 @@
           start: fence.start,
           end: parts.length,
           latched: fence.latched,
+          lang: fence.lang,
           text: fenceText(fence.body === null ? fence.all : fence.body),
         });
         fence = null;
@@ -243,6 +247,7 @@
         at = m.end;
         fences.push({
           latched: m.latched,
+          lang: m.lang,
           digest: hash(parts.slice(m.start, m.end).join("")),
           text: hash(m.text),
         });

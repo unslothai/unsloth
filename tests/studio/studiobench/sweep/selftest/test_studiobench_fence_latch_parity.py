@@ -306,8 +306,14 @@ def _f(
     latched: bool,
     text: str = "t",
     digest: str | None = None,
+    lang: str = "python",
 ) -> dict:
-    return {"latched": latched, "text": text, "digest": digest or ("hl" if latched else "sh")}
+    return {
+        "latched": latched,
+        "lang": lang,
+        "text": text,
+        "digest": digest or ("hl" if latched else "sh"),
+    }
 
 
 def test_a_latch_only_difference_is_a_match_not_a_refusal():
@@ -326,6 +332,11 @@ def test_a_latch_only_difference_is_a_match_not_a_refusal():
         ([_f(True)], "u", "a fence vanished"),
         ([_f(True), _f(True)], "u2", "something outside the fences changed"),
         ([_f(True), _f(False, digest = "sh2")], "u", "no fence changed latch; the shell did"),
+        (
+            [_f(True), _f(True, lang = "javascript")],
+            "u",
+            "the one-sided fence's language changed",
+        ),
     ],
 )
 def test_anything_but_the_latch_still_differs(treat_fences, unfenced, why):
@@ -418,7 +429,7 @@ def _shell(code: str) -> dict:
     }
 
 
-def _highlighted(code: str) -> dict:
+def _highlighted(code: str, lang: str = "python") -> dict:
     """streamdown's highlighted fence: one span per line, NO newline between lines, a span per token."""
     lines = []
     for line in code.split("\n"):
@@ -436,21 +447,21 @@ def _highlighted(code: str) -> dict:
     return {
         "attrs": {
             "data-streamdown": "code-block",
-            "data-language": "python",
+            "data-language": lang,
             "class": "my-4 flex",
             "style": "content-visibility:auto",
         },
         "children": [
             {
-                "attrs": {"data-streamdown": "code-block-header", "data-language": "python"},
-                "children": [{"tag": "span", "children": ["python"]}],
+                "attrs": {"data-streamdown": "code-block-header", "data-language": lang},
+                "children": [{"tag": "span", "children": [lang]}],
             },
             {
                 "attrs": {"data-streamdown": "code-block-actions"},
                 "children": [{"tag": "button", "attrs": {"title": "Copy Code"}}],
             },
             {
-                "attrs": {"data-streamdown": "code-block-body", "data-language": "python"},
+                "attrs": {"data-streamdown": "code-block-body", "data-language": lang},
                 "children": [{"tag": "pre", "children": [{"tag": "code", "children": lines}]}],
             },
         ],
@@ -509,3 +520,26 @@ def test_the_capture_reads_a_shell_and_its_highlighted_fence_as_one_text(tmp_pat
     # new fields at all.
     assert all(r["same_as_signature"] for r in (shell, lit, edited, reworded, bare))
     assert bare["fences"] is None and bare["digest_unfenced"] is None
+
+
+def test_the_capture_keeps_spacing_indentation_and_language_in_a_fence(tmp_path):
+    """Only line breaks separate the two forms, so only line breaks are dropped from the text."""
+    lit, spaced, dedented, quoted, other_lang = _node_readings(
+        tmp_path,
+        [
+            _message(_highlighted(CODE)),
+            _message(_shell(CODE.replace("x + 1", "x+1"))),
+            _message(_shell(CODE.replace("    return", "  return"))),
+            _message(_shell(CODE.replace("f(2)", "f( 2)"))),
+            _message(_highlighted(CODE, lang = "javascript")),
+        ],
+    )
+    for got, why in (
+        (spaced, "spaces around an operator"),
+        (dedented, "an indentation change"),
+        (quoted, "a space inside the call"),
+    ):
+        assert got["fences"][0]["latched"] is False and lit["fences"][0]["latched"] is True
+        assert got["fences"][0]["text"] != lit["fences"][0]["text"], why
+    assert other_lang["fences"][0]["text"] == lit["fences"][0]["text"]
+    assert other_lang["fences"][0]["lang"] == "javascript" and lit["fences"][0]["lang"] == "python"

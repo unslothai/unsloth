@@ -188,8 +188,9 @@ def fence_latch_residue(
     the message with every fence replaced by a marker (`digest_unfenced`) identical, so anything
     OUTSIDE a fence is still compared exactly; a fence latched on both arms, or on neither, identical
     in full, so a highlighting or shell regression on a fence both arms reached is still a
-    difference; and a fence latched on ONE arm only identical in its TEXT. At least one fence must be
-    in that last case, or the difference is not a latch.
+    difference; and a fence latched on ONE arm only identical in its language and its TEXT, which
+    drops line breaks only, so spacing, indentation and string contents still count. At least one
+    fence must be in that last case, or the difference is not a latch.
 
     WHAT THIS GIVES UP, said plainly: the token markup of a fence that only ONE arm had latched is not
     compared, because it has no counterpart on the other arm to compare with. The same fence
@@ -224,7 +225,7 @@ def fence_latch_residue(
         one_arm = False
         explained = True
         for x, y in zip(bf, tf):
-            if not isinstance(x, dict) or not isinstance(y, dict):
+            if not isinstance(x, dict) or not isinstance(y, dict) or x.get("lang") != y.get("lang"):
                 explained = False
                 break
             if bool(x.get("latched")) == bool(y.get("latched")):
