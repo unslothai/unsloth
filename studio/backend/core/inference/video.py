@@ -104,6 +104,7 @@ from .diffusion_auto_policy import (
     precision_fallback_allowed,
     precision_refusal_message,
 )
+from .diffusion_nvfp4_install import nvfp4_backend_fields as _nvfp4_backend_fields
 from .diffusion_transformer_quant import (
     TQ_AUTO,
     dense_transformer_supported,
@@ -4406,6 +4407,14 @@ class VideoBackend:
 
         target = self._device_target(gpu_ordinal)
         device = target.device
+        # An NVFP4 load wants FlashInfer, else its backend falls back to torchao. Outside every lock, like the
+        # diffusion loader's pre-install hop; never raises, and select_nvfp4_backend still decides.
+        if "nvfp4" in (
+            normalize_transformer_quant(transformer_quant),
+            _video_auto_denoiser_planned,
+        ):
+            from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
+            ensure_flashinfer_for_nvfp4(device, logger = logger)
         # Video DiTs are bf16-native; fp16 overflows, so a resolved fp16 promotes to float32.
         dtype = target.dtype
         if fam.fp16_incompatible and dtype is torch.float16:
@@ -7464,6 +7473,7 @@ class VideoBackend:
                 "transformer_cache": None,
                 "transformer_quant": None,
                 "transformer_quant_backend": None,
+                "transformer_quant_backend_reason": None,
                 "text_encoder_quant": None,
                 "has_audio": False,
                 "supports_cfg": True,
@@ -7505,7 +7515,7 @@ class VideoBackend:
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_quant": state.transformer_quant,
-            "transformer_quant_backend": _video_transformer_quant_backend(state),
+            **_nvfp4_backend_fields(_video_transformer_quant_backend(state)),
             "text_encoder_quant": state.text_encoder_quant,
             "has_audio": fam.has_audio,
             "supports_cfg": fam.supports_cfg,

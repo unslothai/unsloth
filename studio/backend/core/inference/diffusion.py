@@ -198,6 +198,7 @@ from .diffusion_auto_policy import (
     resident_bytes_from_declared,
     resolve_dense_quant_candidate,
 )
+from .diffusion_nvfp4_install import nvfp4_backend_fields as _nvfp4_backend_fields
 from .diffusion_transformer_quant import (
     TQ_AUTO,
     TQ_NVFP4,
@@ -4317,6 +4318,11 @@ class DiffusionBackend:
                 _ensure_attention_backend_installed(preinstall_backend, logger)
         except Exception:  # noqa: BLE001 - the locked path re-resolves and validates
             pass
+        # Same hop for FlashInfer when this load asked for NVFP4: without it the flashinfer backend falls back to
+        # torchao. Never raises; the backend is still chosen by select_nvfp4_backend under the locks.
+        if TQ_NVFP4 in (normalize_transformer_quant(transformer_quant), _pipeline_prequant_planned):
+            from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
+            ensure_flashinfer_for_nvfp4(device, logger = logger)
 
         with self._lock:
             self._raise_if_load_cancelled(_load_token)
@@ -7826,6 +7832,7 @@ class DiffusionBackend:
                 "text_encoder_quant": None,
                 "transformer_quant": None,
                 "transformer_quant_backend": None,
+                "transformer_quant_backend_reason": None,
                 "attention_backend": None,
                 "transformer_cache": None,
                 "workflows": [],
@@ -7859,7 +7866,7 @@ class DiffusionBackend:
             "speed_optims": list(state.speed_optims),
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": state.transformer_quant,
-            "transformer_quant_backend": _transformer_quant_backend(state),
+            **_nvfp4_backend_fields(_transformer_quant_backend(state)),
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "resolved": state.resolved,

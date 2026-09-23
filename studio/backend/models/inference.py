@@ -4470,6 +4470,12 @@ class DiffusionStatusResponse(BaseModel):
         "flashinfer is selected per device and falls back to torchao on a preflight failure, so "
         "this is the only place a render's speed can be attributed to the backend that served it.",
     )
+    transformer_quant_backend_reason: Optional[str] = Field(
+        None,
+        description = "Why flashinfer is not serving an NVFP4 load that runs torchao: the on-demand "
+        "install was refused (offline, opt-out, ineligible host) or failed and was rolled back. "
+        "null when the backend is flashinfer, the scheme is not nvfp4, or no reason was recorded.",
+    )
     attention_backend: Optional[str] = Field(
         None,
         description = "Attention backend engaged via the diffusers dispatcher (e.g. "
@@ -5279,6 +5285,12 @@ class VideoStatusResponse(BaseModel):
         None,
         description = "Which NVFP4 kernel path the loaded DiT(s) run: flashinfer | torchao | null "
         "(null for every scheme but nvfp4).",
+    )
+    transformer_quant_backend_reason: Optional[str] = Field(
+        None,
+        description = "Why flashinfer is not serving an NVFP4 load that runs torchao: the on-demand "
+        "install was refused (offline, opt-out, ineligible host) or failed and was rolled back. "
+        "null when the backend is flashinfer, the scheme is not nvfp4, or no reason was recorded.",
     )
     text_encoder_quant: Optional[str] = Field(
         None,
