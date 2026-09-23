@@ -345,7 +345,7 @@ function DimensionSelect({
         >
           <ChevronDown className="size-4" />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto">
+        <DropdownMenuContent align="end" className="max-h-[min(--spacing(72),var(--radix-dropdown-menu-content-available-height))] overflow-y-auto">
           {dimOptions(limits).map((n) => (
             <DropdownMenuItem key={n} onSelect={() => pick(n)}>
               <span className="tabular-nums">{n}</span>
@@ -738,7 +738,7 @@ function AdvancedSelect({
           {badge}
         </span>
         <Select value={value} onValueChange={onValueChange}>
-          <SelectTrigger aria-label={label} className="h-8 w-[160px] text-xs">
+          <SelectTrigger aria-label={label} className="h-8 w-[calc(160px*var(--ui-space-scale,1))] text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -4160,11 +4160,10 @@ export function ImagesPage({
       {active && <GuidedTour {...tour.tourProps} />}
       {/* Keep the tabs centered over the preview at every width: the model rail holds at 408px when
           space permits and shrinks only to preserve the controls. */}
-      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,calc(408px*var(--ui-space-scale,1)))_minmax(13rem,1fr)]">
         <div
           className={cn(
-            // Centered over the settings column. A left obstruction keeps its inset on that side only.
-            "pointer-events-none flex h-full min-w-0 items-start justify-center overflow-hidden pr-[var(--studio-media-header-left-inset,1.5rem)] @[50rem]:border-r @[50rem]:border-border/60",
+            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
             isMobile
               ? "pl-12"
               : !pinned && isTauri
@@ -4273,7 +4272,7 @@ export function ImagesPage({
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="images-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(calc(408px*var(--ui-space-scale,1)),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
         >
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
@@ -4292,7 +4291,7 @@ export function ImagesPage({
                   {/* Same icon the sidebar submenu uses for this workflow. */}
                   <HugeiconsIcon
                     icon={activeWorkflowTab.icon}
-                    className="size-[18px] shrink-0"
+                    className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
                   />
                   {activeWorkflowTab.heading ?? activeWorkflowTab.label}
                 </h2>
@@ -4667,7 +4666,7 @@ export function ImagesPage({
                         value={String(matchResolution)}
                         onValueChange={(v) => setMatchResolution(Number(v))}
                       >
-                        <SelectTrigger aria-label="Match size" className="w-[120px]">
+                        <SelectTrigger aria-label="Match size" className="w-[calc(120px*var(--ui-space-scale,1))]">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>

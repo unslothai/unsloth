@@ -7662,6 +7662,16 @@ def _public_model_identifier(requested: str, resolved: str) -> str:
     return requested if is_ollama_manifest_ref(requested) else resolved
 
 
+def _canonical_model_identity(model_id: Optional[str]) -> str:
+    """Case-folded *model_id*, reading an HF cache snapshot path as its ``org/name`` repo id.
+    Other local paths stay distinct: two files sharing a stem are two models."""
+    from core.inference.model_ids import hf_cache_repo_id
+
+    if not model_id:
+        return ""
+    return (hf_cache_repo_id(model_id) or str(model_id)).lower()
+
+
 def _as_ollama_manifest_request(request):
     """*request* with a materialized Ollama ``.gguf`` link rewritten to the tag that produced it."""
     from hub.services.models.ollama import ollama_manifest_ref_for_path, ollama_model_ref_files
@@ -14786,7 +14796,11 @@ def _resolve_inherited_extra_args(
     resolved_variant = (config.gguf_variant or "").lower()
     request_variant = (request.gguf_variant or "").lower()
     stored_variant = (source[1] or "").lower() if source else ""
-    same_model = bool(source and source[0] and source[0].lower() == model_identifier.lower())
+    # A picker load records the snapshot path, an API auto-switch loads the repo id.
+    stored_identity = _canonical_model_identity(source[0]) if source else ""
+    same_model = bool(
+        stored_identity and stored_identity == _canonical_model_identity(model_identifier)
+    )
     if request.gguf_variant:
         variant_mismatch = request_variant != stored_variant
     else:

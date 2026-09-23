@@ -948,7 +948,7 @@ export function ApiMonitorPage(): ReactElement {
           >
             <SelectTrigger
               aria-label="Filter by status"
-              className="h-9 w-[150px] rounded-full border-none bg-muted shadow-none dark:bg-background"
+              className="h-9 w-[calc(150px*var(--ui-space-scale,1))] rounded-full border-none bg-muted shadow-none dark:bg-background"
             >
               <SelectValue />
             </SelectTrigger>
@@ -969,7 +969,7 @@ export function ApiMonitorPage(): ReactElement {
           data-tour="api-log"
           className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]"
         >
-          <div className="max-h-[560px] min-h-[220px] overflow-y-auto border-b border-border/60 lg:border-b-0 lg:border-r">
+          <div className="max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(220px*var(--ui-space-scale,1))] overflow-y-auto border-b border-border/60 lg:border-b-0 lg:border-r">
             {loading ? (
               <div className="flex flex-col gap-3 p-4">
                 {[0, 1, 2].map((i) => (
@@ -996,7 +996,7 @@ export function ApiMonitorPage(): ReactElement {
             )}
           </div>
 
-          <div className="max-h-[560px] min-h-[220px] overflow-y-auto">
+          <div className="max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(220px*var(--ui-space-scale,1))] overflow-y-auto">
             {selected ? (
               <RequestDetail
                 entry={selected}
