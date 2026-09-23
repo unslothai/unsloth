@@ -281,6 +281,7 @@ def _static_matrix_values(job: dict, field: str):
     return values
 
 
+_WHOLE_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
 _WITHHELD_ON_PULL_REQUESTS = "github.event_name != 'pull_request' && {} || ''"
 
 
@@ -307,13 +308,17 @@ def _check_mapping(key, value, job, name, wrong):
     before = len(wrong)
     _check_source(key, value, job, name, wrong)
     known = key in _SECRET_FOR or key in _INDEXED_FOR
-    if len(wrong) == before and known and isinstance(value, str):
-        for expression in _EXPRESSION.findall(value):
-            shape = " ".join(expression.split())
-            if shape not in _allowed_shapes(key):
-                wrong.append(
-                    f"{name}: {key} is given `${{{{ {shape} }}}}`, not a shape this guard reads"
-                )
+    if len(wrong) == before and known and isinstance(value, str) and _EXPRESSION.search(value):
+        # The whole value, not an expression found inside it: `junk-${{ secrets.X }}` or a block
+        # scalar's trailing newline exports an altered credential.
+        whole = _WHOLE_EXPRESSION.fullmatch(value)
+        shape = " ".join(whole.group(1).split()) if whole else None
+        if shape is None:
+            wrong.append(f"{name}: {key} is {value!r}, which is not a single ${{{{ }}}} expression")
+        elif shape not in _allowed_shapes(key):
+            wrong.append(
+                f"{name}: {key} is given `${{{{ {shape} }}}}`, not a shape this guard reads"
+            )
 
 
 def _check_source(key, value, job, name, wrong):
@@ -474,3 +479,14 @@ def test_a_condition_that_withholds_the_secret_from_the_privileged_run_is_caught
         "w: DOCKER_API_KEY is given `${{ github.event_name == 'pull_request' "
         "&& secrets.DOCKER_API_KEY || '' }}`, not a shape this guard reads"
     ]
+
+
+def test_the_whole_value_must_be_the_expression():
+    def doc(value):
+        return {"jobs": {"j": {"steps": [{"env": {"DOCKER_API_KEY": value}, "run": "true"}]}}}
+
+    assert _misdrawn(doc("${{ secrets.DOCKER_API_KEY }}"), "w") == []
+    for altered in ("junk-${{ secrets.DOCKER_API_KEY }}", "${{ secrets.DOCKER_API_KEY }}\n"):
+        assert _misdrawn(doc(altered), "w") == [
+            f"w: DOCKER_API_KEY is {altered!r}, which is not a single ${{{{ }}}} expression"
+        ]
