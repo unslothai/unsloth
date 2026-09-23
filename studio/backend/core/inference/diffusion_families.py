@@ -1072,27 +1072,6 @@ def _is_local_path(base: str) -> bool:
         return False
 
 
-def _mirror_pipeline_cached(repo_id: str, files: Optional[Sequence[str]]) -> bool:
-    """Whether a mirror is on disk in full, so keeping it under the opt-out fetches nothing.
-
-    A file list with weights answers that. Without one (a failed size estimate, or the
-    ``model_index.json`` metadata probe) nothing proves the pipeline is there, so the cached
-    pipeline index must find every component it names on disk.
-    """
-    if files and any(PurePosixPath(f).suffix.lower() in _WEIGHT_SUFFIXES for f in files):
-        return _upstream_is_cached(repo_id, files)
-    try:
-        from core.inference.media_locality import _pipeline_components_present
-        from utils.hf_cache_settings import active_hf_hub_cache
-        return any(
-            any((rev / n).is_file() for n in ("model_index.json", "modular_model_index.json"))
-            and _pipeline_components_present(rev)
-            for rev in _cached_revisions(Path(active_hf_hub_cache()), repo_id)
-        )
-    except Exception:  # noqa: BLE001 -- an unreadable cache is not proof of a complete one
-        return False
-
-
 def prefer_ungated_mirror(
     base: str,
     hf_token: Optional[str] = None,
@@ -1109,7 +1088,8 @@ def prefer_ungated_mirror(
 
     Declines to today's behaviour under ``UNSLOTH_DIFFUSION_NO_MIRROR``, for a local path, or when
     the upstream already satisfies the load from cache and switching would re-pull tens of GiB.
-    Under that opt-out a mirror id picked directly maps back to its upstream, unless it is cached.
+    Under that opt-out a mirror id picked directly maps back to its upstream, cached or not: even
+    a cached mirror is listed on the Hub before it loads.
     ``files`` sharpens that last test to the names about to be fetched; without it any weight
     counts.
 
@@ -1120,14 +1100,7 @@ def prefer_ungated_mirror(
     """
     del hf_token  # noqa: F841 -- signature stability only
     if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
-        upstream = canonical_base(base)
-        if (
-            upstream != base.strip()
-            and not _is_local_path(base)
-            and not _mirror_pipeline_cached(base, files)
-        ):
-            return upstream
-        return base
+        return base if _is_local_path(base) else canonical_base(base)
     mirror = mirror_repo(base)
     if not mirror:
         return base
