@@ -382,13 +382,15 @@ def _denoiser_unet(pipe: Any) -> Any:
 def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
     """Whether this load's compiled artifacts are per-(width, height, batch).
 
-    ``max`` compiles regional blocks with automatic dynamic (static until a dimension changes) and
-    U-Net whole-module is always static;
+    ``max`` compiles regional DiT blocks with automatic dynamic (static until a dimension changes, then one
+    generalised graph; tracked by graph count, not shape) and U-Net whole-module is always static;
     ``default`` DiT compiles dynamic=True (one artifact across shapes). The compile-cache layer
     keys on this to re-save its bundle when a session hits an uncovered shape."""
     mode = normalize_speed_mode(speed_mode)
     if mode == SPEED_MAX:
-        return True
+        # An auto-dynamic DiT generalises a dimension once and then reuses that graph for unseen values, so a new
+        # (width, height, batch) is not a new artifact; the Dynamo graph-count delta marks the renders that compiled.
+        return _denoiser_unet(pipe) is not None or not auto_dynamic_active(pipe)
     return mode == SPEED_DEFAULT and _denoiser_unet(pipe) is not None
 
 

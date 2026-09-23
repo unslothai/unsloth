@@ -381,6 +381,19 @@ def test_default_tier_does_not_mark_automatic_dynamic(monkeypatch):
     assert isinstance(ds_mod.dynamo_graph_count(), int)
 
 
+
+def test_max_tier_auto_dynamic_dit_shapes_are_not_tracked_as_static(monkeypatch):
+    # A generalised DiT reuses one graph for unseen shapes; only the graph-count delta dirties its bundle.
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
+    assert ds_mod.auto_dynamic_active(pipe) is True
+    assert ds_mod.compiled_shapes_are_static(pipe, SPEED_MAX) is False
+    # A max-tier pipe whose DiT did not compile auto-dynamic keeps per-shape tracking.
+    plain = _Pipe(with_compile = True)
+    assert ds_mod.compiled_shapes_are_static(plain, SPEED_MAX) is True
+    assert ds_mod.compiled_shapes_are_static(plain, SPEED_DEFAULT) is False
+
 # ── U-Net whole-module compile fallback (SDXL) ─────────────────────────────────
 
 
