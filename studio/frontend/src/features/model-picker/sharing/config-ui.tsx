@@ -33,7 +33,11 @@ export function SharedRunConfigActions({
   canImport: boolean;
   disabled: boolean;
   className: string;
-  onImport: (changes: Partial<PerModelConfig>, model?: string) => void;
+  onImport: (
+    changes: Partial<PerModelConfig>,
+    model?: string,
+    ggufVariant?: string,
+  ) => void;
 }) {
   const [sharing, setSharing] = useState(false);
   const pending = useSyncExternalStore(
@@ -83,11 +87,13 @@ export function SharedRunConfigActions({
 export function SharedRunConfigReview({
   config,
   model,
+  ggufVariant,
   draftConfig,
   currentConfig,
 }: {
   config: Partial<PerModelConfig> | null;
   model?: string;
+  ggufVariant?: string;
   draftConfig: PerModelConfig;
   currentConfig: PerModelConfig;
 }) {
@@ -109,12 +115,15 @@ export function SharedRunConfigReview({
           ? `Settings changed by link (${keys.length})`
           : model
             ? "Model selected by link"
-            : "Link settings already match this editor"}
+            : ggufVariant
+              ? "GGUF variant selected by link"
+              : "Link settings already match this editor"}
       </summary>
-      {model && (
+      {(model || ggufVariant) && (
         <p className="my-2 break-words text-xs text-muted-foreground">
-          This link selected {model} from Hugging Face. Loading downloads any
-          model files that are not already cached.
+          {model && <>This link selected {model} from Hugging Face. </>}
+          {ggufVariant && <>This link selected GGUF variant {ggufVariant}. </>}
+          Loading downloads any model files that are not already cached.
         </p>
       )}
       <p className="my-2 text-xs text-muted-foreground">

@@ -2082,10 +2082,15 @@ export function ModelConfigPage({
   const [importedConfig, setImportedConfig] = useState<{
     changes: Partial<PerModelConfig>;
     model?: string;
+    ggufVariant?: string;
   } | null>(null);
   const handleSharedConfigImport = useCallback(
-    (changes: Partial<PerModelConfig>, model?: string) => {
-      setImportedConfig({ changes, model });
+    (
+      changes: Partial<PerModelConfig>,
+      model?: string,
+      ggufVariant?: string,
+    ) => {
+      setImportedConfig({ changes, model, ggufVariant });
       if (Object.keys(changes).length > 0) {
         setAutoOpenAdvanced(true);
       }
@@ -3168,6 +3173,7 @@ export function ModelConfigPage({
         target={target}
         config={importedConfig?.changes ?? null}
         model={importedConfig?.model}
+        ggufVariant={importedConfig?.ggufVariant}
         draftConfig={configState}
         currentConfig={config}
       />
@@ -3348,7 +3354,6 @@ export function ModelConfigPage({
             id={rememberId}
             checked={remember}
             onCheckedChange={(checked) => {
-              handleSharedConfigEdit();
               // Not in setRemember, which the save path calls again to settle the box. An
               // unticked Remember is a pending Forget the next read would otherwise re-tick.
               markModelConfigDraftEdited(draftKey);

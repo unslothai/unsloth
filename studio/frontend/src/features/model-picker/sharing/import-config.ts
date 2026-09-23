@@ -27,7 +27,11 @@ export function scheduleRunConfigImport({
   key: string;
   hydrated: boolean;
   isGguf: boolean;
-  onImport: (changes: Partial<PerModelConfig>, model?: string) => void;
+  onImport: (
+    changes: Partial<PerModelConfig>,
+    model?: string,
+    ggufVariant?: string,
+  ) => void;
 }): (() => void) | undefined {
   if (
     !(canImport && ready && pending) ||
@@ -42,10 +46,13 @@ export function scheduleRunConfigImport({
     if (cancelled || !draft || runConfigInbox.getSnapshot() !== pending) {
       return;
     }
+    const ggufVariant = pending.value.ggufVariant
+      ? pending.target?.meta.ggufVariant
+      : undefined;
     if (Object.keys(pending.value.config).length === 0) {
       runConfigInbox.take(pending.id, key);
-      if (pending.value.model) {
-        onImport({}, pending.value.model);
+      if (pending.value.model || ggufVariant) {
+        onImport({}, pending.value.model, ggufVariant);
       }
       return;
     }
@@ -76,7 +83,7 @@ export function scheduleRunConfigImport({
     patchModelConfigDraft(key, (current) =>
       mergeSharedRunConfig(current, patch, isGguf),
     );
-    onImport(changes, pending.value.model);
+    onImport(changes, pending.value.model, ggufVariant);
     toast.success("Settings imported from link", {
       id: pending.id,
       description: "Review before loading.",

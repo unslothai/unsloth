@@ -577,6 +577,9 @@ test("sharing diagnostics identify the offending option without exposing its val
     }
   }
   for (const token of [
+    " --threads",
+    "--threads\n",
+    "\t--no_context_shift",
     "--metrics\u202e",
     '<img src="/attack">',
     `--${"x".repeat(1000)}`,
@@ -589,11 +592,8 @@ test("sharing diagnostics identify the offending option without exposing its val
   }
 });
 
-test("shared arguments use upstream syntax and integer diagnostics offline", () => {
+test("shared arguments use upstream integer diagnostics offline", () => {
   for (const args of [
-    ["--threads=4"],
-    [" --threads", "4"],
-    ["--threads\n", "4"],
     ["--batch-size", "1"],
     ["-b", "1"],
     ["--batch_size", "1"],

@@ -127,23 +127,23 @@ function sharedValueError(
   token: string,
   tokens: Iterator<string, undefined>,
 ): string | null {
-  const equals = token.indexOf("=");
-  if (permits === null) {
-    return equals === -1
-      ? flagName.test(token)
-        ? null
-        : upstreamError([token])
-      : `${flag} does not take a value.`;
+  if (token.includes("=")) {
+    return permits === null
+      ? `${flag} does not take a value.`
+      : `Write ${flag} and its value as two arguments.`;
   }
-  const argument =
-    equals === -1 ? tokens.next().value : token.slice(equals + 1);
+  if (!flagName.test(token)) {
+    return "Extra arguments contain an unexpected token.";
+  }
+  if (permits === null) {
+    return null;
+  }
+  const argument = tokens.next().value;
   if (argument === undefined) {
     return `${flag} requires a value.`;
   }
   return permits(argument)
-    ? flagName.test(token)
-      ? null
-      : upstreamError(equals === -1 ? [token, argument] : [token])
+    ? null
     : `${flag} has an invalid or unsupported value.`;
 }
 

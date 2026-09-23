@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { ModelPickTarget } from "../src/features/model-picker/components/model-selector/types.ts";
 import type { PerModelConfig } from "../src/features/model-picker/model-config/per-model-config.ts";
 import type { SharedRunConfigControls as Controls } from "../src/features/model-picker/sharing/config-controls.tsx";
 import type { SharedRunConfigReview as Review } from "../src/features/model-picker/sharing/config-ui.tsx";
@@ -76,7 +77,18 @@ function text(node: unknown): string {
     : "";
 }
 
-function shareDialogHarness(config: PerModelConfig, desktop = true) {
+function shareDialogHarness(
+  config: PerModelConfig,
+  desktop = true,
+  target: ModelPickTarget = {
+    id: "owner/Model-GGUF",
+    displayName: "Model",
+    ggufVariant: "Q4_K_M",
+    isGguf: true,
+    apiLoadable: true,
+    meta: { source: "hub", isLora: false },
+  },
+) {
   const checkbox = Symbol("checkbox");
   const textarea = Symbol("textarea");
   const states: unknown[] = [];
@@ -141,14 +153,7 @@ function shareDialogHarness(config: PerModelConfig, desktop = true) {
     cursor = 0;
     const tree = elements(
       ShareRunConfigDialog({
-        target: {
-          id: "owner/Model-GGUF",
-          displayName: "Model",
-          ggufVariant: "Q4_K_M",
-          isGguf: true,
-          apiLoadable: true,
-          meta: { source: "hub", isLora: false },
-        },
+        target,
         config,
         onClose: () => undefined,
       }),
@@ -160,6 +165,7 @@ function shareDialogHarness(config: PerModelConfig, desktop = true) {
     return {
       tree,
       link: link as string,
+      value: parsed.value,
       config: parsed.value.config,
       choice: (key: string) =>
         tree.find(
@@ -169,6 +175,58 @@ function shareDialogHarness(config: PerModelConfig, desktop = true) {
     };
   };
 }
+
+test("local sharing preserves the recipient's quant unless the sender explicitly includes it", () => {
+  const selection = {
+    params: { checkpoint: "unsloth/Qwen3-8B-GGUF" },
+    activeGgufVariant: "Q4_K_M",
+    loadedIsGguf: true,
+    activeNativePathToken: null,
+    activeLoadId: null,
+    models: [],
+    loras: [],
+  };
+  for (const id of [
+    "/models/Qwen3-8B",
+    "/Users/test/Models/Qwen3-8B",
+    "C:\\Models\\Qwen3-8B",
+    "/mnt/c/Models/Qwen3-8B",
+  ]) {
+    const render = shareDialogHarness(DEFAULT_PER_MODEL_CONFIG, true, {
+      id,
+      displayName: "Qwen3-8B",
+      ggufVariant: "Q8_0",
+      isGguf: true,
+      apiLoadable: true,
+      meta: { source: "local", isLora: false },
+    });
+    const initial = render();
+    const variant = initial.choice("variant");
+    assert.ok(variant);
+    assert.equal(variant.props.checked, false);
+    assert.equal(initial.value.model, undefined);
+    assert.equal(initial.value.ggufVariant, undefined);
+    assert.equal(initial.value.isGguf, undefined);
+    const unchanged = targetModule.resolveRunConfigTarget(
+      initial.value,
+      selection,
+    );
+    assert.equal(unchanged?.meta.ggufVariant, "Q4_K_M");
+    assert.equal(unchanged?.meta.isDownloaded, true);
+    (variant.props.onCheckedChange as (checked: boolean) => void)(true);
+    const explicit = render();
+    assert.equal(explicit.value.ggufVariant, "Q8_0");
+    const changed = targetModule.resolveRunConfigTarget(
+      explicit.value,
+      selection,
+    );
+    assert.equal(changed?.meta.ggufVariant, "Q8_0");
+    assert.notEqual(changed?.meta.isDownloaded, true);
+  }
+  const shareable = shareDialogHarness(DEFAULT_PER_MODEL_CONFIG)();
+  assert.equal(shareable.choice("variant")?.props.checked, true);
+  assert.equal(shareable.value.ggufVariant, "Q4_K_M");
+});
 
 for (const [address, destination] of [
   ["http://localhost:8888", "browser"],
@@ -679,6 +737,31 @@ test("review identifies a linked repository and explains uncached downloads, inc
       text(SharedRunConfigReview(props)),
       /This link selected/,
     );
+  }
+});
+
+test("review identifies an explicit quant selection and possible download without a linked model or changed settings", () => {
+  for (const model of [undefined, "owner/Model-GGUF"]) {
+    for (const config of [{}, { nParallel: 3 }]) {
+      const draftConfig = { ...DEFAULT_PER_MODEL_CONFIG, ...config };
+      const tree = SharedRunConfigReview({
+        config,
+        model,
+        ggufVariant: "Q8_0",
+        draftConfig,
+        currentConfig: draftConfig,
+      });
+      assert.match(text(tree), /This link selected GGUF variant Q8_0/);
+      assert.match(
+        text(tree),
+        /Loading downloads any model files that are not already cached/,
+      );
+      assert.doesNotMatch(text(tree), /Link settings already match/);
+      if (!model) assert.doesNotMatch(text(tree), /from Hugging Face/);
+      if (!model && Object.keys(config).length === 0) {
+        assert.match(text(tree), /GGUF variant selected by link/);
+      }
+    }
   }
 });
 

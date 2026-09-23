@@ -117,7 +117,7 @@ export function ShareRunConfigDialog({
   );
   const [includeModel, setIncludeModel] = useState(shareableModel);
   const [includeVariant, setIncludeVariant] = useState(
-    Boolean(target.ggufVariant),
+    shareableModel && Boolean(target.ggufVariant),
   );
   const [includeFormat, setIncludeFormat] = useState(shareableModel);
   const [destination, setDestination] = useState(() =>

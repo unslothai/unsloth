@@ -29,11 +29,17 @@ const { resolveLoadMaxSeqLength } = await import(
 type Config = typeof DEFAULT_PER_MODEL_CONFIG;
 let sequence = 0;
 
-function harness(t: TestContext, patch: Partial<Config> = { nParallel: 3 }) {
-  const key = drafts.modelConfigDraftKey(`owner/model-${++sequence}`, "Q4_K_M");
+function harness(
+  t: TestContext,
+  patch: Partial<Config> = { nParallel: 3 },
+  ggufVariant: string | null = "Q4_K_M",
+) {
+  const id = `owner/model-${++sequence}`;
+  const key = drafts.modelConfigDraftKey(id, ggufVariant);
   const inbox = inboxModule.createRunConfigInbox();
   const changes: Partial<Config>[] = [];
   const models: (string | undefined)[] = [];
+  const variants: (string | undefined)[] = [];
   const errors: string[] = [];
   const successes: string[] = [];
   const releaseDraft = drafts.retainModelConfigDraft(key);
@@ -49,7 +55,20 @@ function harness(t: TestContext, patch: Partial<Config> = { nParallel: 3 }) {
     },
     "none",
   );
-  inbox.submit({ id: "import", draftKey: key, value: { config: patch } });
+  inbox.submit({
+    id: "import",
+    draftKey: key,
+    value: { config: patch },
+    target: {
+      id,
+      meta: {
+        source: "hub",
+        isLora: false,
+        isGguf: ggufVariant !== null,
+        ggufVariant: ggufVariant ?? undefined,
+      },
+    },
+  });
   const { scheduleRunConfigImport } = loadWithStubs<typeof ImportConfig>(
     new URL(
       "../src/features/model-picker/sharing/import-config.ts",
@@ -72,11 +91,16 @@ function harness(t: TestContext, patch: Partial<Config> = { nParallel: 3 }) {
     canImport: true,
     ready: true,
     hydrated: true,
-    isGguf: true,
+    isGguf: ggufVariant !== null,
     pending: inbox.getSnapshot(),
-    onImport: (value: Partial<Config>, model?: string) => {
+    onImport: (
+      value: Partial<Config>,
+      model?: string,
+      ggufVariant?: string,
+    ) => {
       changes.push(value);
       models.push(model);
+      variants.push(ggufVariant);
     },
   };
   t.after(releaseDraft);
@@ -87,11 +111,46 @@ function harness(t: TestContext, patch: Partial<Config> = { nParallel: 3 }) {
     successes,
     changes,
     models,
+    variants,
     options,
     schedule: scheduleRunConfigImport,
     releaseDraft,
   };
 }
+
+test("variant-only imports reach the review using the resolved quant without changing saved settings", async (t) => {
+  for (const ggufVariant of ["Q8_0", "model-Q8_0.gguf"]) {
+    const app = harness(t, {}, "Q8_0");
+    assert.ok(app.options.pending);
+    app.options.pending.value.ggufVariant = ggufVariant;
+    const before = drafts.readModelConfigDraft(app.key);
+    app.schedule(app.options);
+    await Promise.resolve();
+    assert.equal(app.inbox.getSnapshot(), null);
+    assert.equal(drafts.readModelConfigDraft(app.key), before);
+    assert.equal(drafts.isModelConfigDraftEdited(app.key), false);
+    assert.deepEqual(app.changes, [{}]);
+    assert.deepEqual(app.models, [undefined]);
+    assert.deepEqual(app.variants, ["Q8_0"]);
+    assert.deepEqual(app.successes, []);
+  }
+});
+
+test("settings imports report only explicit variants retained by target resolution", async (t) => {
+  for (const requested of [undefined, "Q8_0"]) {
+    for (const resolved of [null, "Q8_0"]) {
+      const app = harness(t, { nParallel: 3 }, resolved);
+      assert.ok(app.options.pending);
+      app.options.pending.value.ggufVariant = requested;
+      app.schedule(app.options);
+      await Promise.resolve();
+      assert.deepEqual(app.changes, [{ nParallel: 3 }]);
+      assert.deepEqual(app.variants, [
+        requested ? (resolved ?? undefined) : undefined,
+      ]);
+    }
+  }
+});
 
 for (const isGguf of [true, false]) {
   for (const context of ["8192", "null"]) {
