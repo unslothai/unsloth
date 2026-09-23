@@ -462,7 +462,9 @@ def test_hub_adapter_keys_are_read_from_the_saved_file(monkeypatch, tmp_path, sa
         return str(path)
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
-    assert _adapter_weight_keys("someone/omni-adapter", revision = "r", local_files_only = True) == [key]
+    assert _adapter_weight_keys("someone/omni-adapter", revision = "r", local_files_only = True) == [
+        key
+    ]
     assert asked[0] == ("someone/omni-adapter", "adapter_model.safetensors", True, "r")
     assert asked[-1][1] == saved_as
 

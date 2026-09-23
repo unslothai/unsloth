@@ -270,14 +270,17 @@ _OMNI_AUTO_CLASS_NAMES = (
 def _adapter_file_keys(path):
     if path.endswith(".safetensors"):
         from safetensors import safe_open
-
         with safe_open(path, framework = "pt") as handle:
             return list(handle.keys())
     return list(torch.load(path, map_location = "meta", weights_only = True).keys())
 
 
 def _adapter_weight_keys(
-    adapter_name, token = None, revision = None, local_files_only = False, cache_dir = None
+    adapter_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    cache_dir = None,
 ):
     """Tensor names of a saved adapter without materialising its weights, or None.
 
