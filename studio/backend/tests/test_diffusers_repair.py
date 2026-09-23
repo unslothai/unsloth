@@ -145,11 +145,14 @@ def _slow_installer(
     monkeypatch.setattr(pl, "terminate_pid", terminate_after_spawn)
     started = []
     real_popen = dr.subprocess.Popen
-    monkeypatch.setattr(
-        dr.subprocess,
-        "Popen",
-        lambda argv, **kw: started.append(argv[-1]) or real_popen(argv, **kw),
-    )
+
+    def popen(argv, *args, **kwargs):
+        # Global: on macOS the tree kill runs `ps` through it too.
+        if str(installer) in argv:
+            started.append(argv[-1])
+        return real_popen(argv, *args, **kwargs)
+
+    monkeypatch.setattr(dr.subprocess, "Popen", popen)
     return pid_file, started
 
 
