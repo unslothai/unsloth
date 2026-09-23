@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { MAX_RUN_CONFIG_URL_LENGTH } from "../src/features/model-picker/sharing/link-address.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -11,8 +12,9 @@ import {
 registerBundlerResolver();
 installLocalStorageFake();
 
-const { createRunConfigLink, parseRunConfigLink, MAX_RUN_CONFIG_URL_LENGTH } =
-  await import("./helpers/sharing-links.ts");
+const { createRunConfigLink, parseRunConfigLink } = await import(
+  "./helpers/sharing-links.ts"
+);
 const { SHARED_CONFIG_KEYS, mergeSharedRunConfig } = await import(
   "../src/features/model-picker/sharing/fields.ts"
 );

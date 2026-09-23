@@ -38,7 +38,7 @@ export function SharedRunConfigLinkHandler({
     let active = true;
     queueMicrotask(() => {
       if (active) {
-        receiveStartupRunConfigUrl();
+        void receiveStartupRunConfigUrl();
       }
     });
     const onAuth = () => setAuthRevision((revision) => revision + 1);

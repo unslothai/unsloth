@@ -8,17 +8,16 @@ import type * as Links from "../../src/features/model-picker/sharing/links.ts";
 import * as validators from "../../src/features/model-picker/sharing/validators.ts";
 import { loadWithStubs } from "./module-stubs.ts";
 
-export const {
-  createRunConfigLink,
-  parseRunConfigLink,
-  isShareableModelId,
-  MAX_RUN_CONFIG_URL_LENGTH,
-} = loadWithStubs<typeof Links>(
-  new URL("../../src/features/model-picker/sharing/links.ts", import.meta.url),
-  {
-    "@/features/deep-links": { isValidRepoId },
-    "./fields": fields,
-    "./validators": validators,
-    "./link-address": linkAddress,
-  },
-);
+export const { createRunConfigLink, parseRunConfigLink, isShareableModelId } =
+  loadWithStubs<typeof Links>(
+    new URL(
+      "../../src/features/model-picker/sharing/links.ts",
+      import.meta.url,
+    ),
+    {
+      "@/features/deep-links": { isValidRepoId },
+      "./fields": fields,
+      "./validators": validators,
+      "./link-address": linkAddress,
+    },
+  );

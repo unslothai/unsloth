@@ -275,7 +275,7 @@ export function ShareRunConfigDialog({
           </Select>
           <p className="text-xs text-muted-foreground">
             {destination === "browser"
-              ? "The recipient needs access to this Studio address. A localhost address opens Studio on their own computer."
+              ? "This link contains your Studio web address. Recipients need access to that address. A localhost address opens Studio on their own computer."
               : "The recipient needs the Unsloth desktop app installed."}
           </p>
           <label htmlFor={`${id}-link`} className="block text-sm font-medium">

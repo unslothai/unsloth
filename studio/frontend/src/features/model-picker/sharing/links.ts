@@ -16,7 +16,6 @@ import {
 } from "./link-address";
 import { SHARED_CONFIG_VALIDATORS } from "./validators";
 
-export { MAX_RUN_CONFIG_URL_LENGTH } from "./link-address";
 export const DESKTOP_RUN_CONFIG_URL_WARNING_LENGTH = 2_083;
 export type SharedRunConfig = {
   model?: string;
