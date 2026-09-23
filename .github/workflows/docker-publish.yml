@@ -712,6 +712,7 @@ jobs:
       - name: Remove this run's handle tags, prune old nightly pins
         env:
           NIGHTLY_KEEP_DAYS: "60"
+          DOCKER_API_KEY: ${{ secrets.DOCKER_API_KEY }}
         run: |
           HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
           # Body built from the environment and handed to curl on stdin, so the key is
