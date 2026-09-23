@@ -39,6 +39,7 @@ __all__ = [
     "MODELOPT_FP8_KEY_MAPPING",
     "UNSLOTH_MODELOPT_KEY_MAPPING_ATTR",
     "pop_modelopt_key_mapping",
+    "keep_task_heads_unquantized",
 ]
 
 # Private attribute the key mapping is parked on until the loader hands it to from_pretrained.
@@ -196,3 +197,33 @@ def pop_modelopt_key_mapping(config, kwargs: dict) -> None:
         # A user rule for the same pattern wins.
         merged.setdefault(pattern, target)
     kwargs["key_mapping"] = merged
+
+
+# Heads a task class adds on top of the checkpoint (GenericForSequenceClassification and
+# GenericForTokenClassification name theirs `score`; older task classes use `classifier`,
+# question answering `qa_outputs`). They have no fp8 weight or scales on disk.
+_TASK_HEAD_MODULES = ("score", "classifier", "qa_outputs")
+_TASK_CLASS_SUFFIXES = (
+    "ForSequenceClassification",
+    "ForTokenClassification",
+    "ForQuestionAnswering",
+)
+
+
+def keep_task_heads_unquantized(config, *model_classes) -> bool:
+    """Keep the new task head of a classification load out of the rewritten fp8 plan.
+
+    The ModelOpt ignore list only names checkpoint modules, so a fresh `score` would be
+    converted to FP8Linear and its random init fails on an fp8 weight. Applied only when
+    one of ``model_classes`` (the auto or resolved class the load builds) is a task class,
+    so a causal LM keeps its plan unchanged. Returns True when the plan was extended."""
+    names = [getattr(cls, "__name__", "") for cls in model_classes if cls is not None]
+    if not any(name.endswith(_TASK_CLASS_SUFFIXES) for name in names):
+        return False
+    quant = getattr(config, "quantization_config", None)
+    if not isinstance(quant, dict) or quant.get("quant_method") != "fp8":
+        return False
+    skip = list(quant.get("modules_to_not_convert") or [])
+    skip.extend(name for name in _TASK_HEAD_MODULES if name not in skip)
+    quant["modules_to_not_convert"] = skip
+    return True

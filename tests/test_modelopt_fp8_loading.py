@@ -423,3 +423,79 @@ def test_rewrite_follows_who_loads_the_weights():
     # The un-rewritten ModelOpt config must not be looked up in transformers' quantizer map.
     assert "AUTO_QUANTIZATION_CONFIG_MAPPING.get(quant_method)" in vision_source
     assert "AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]" not in vision_source
+
+
+def test_task_heads_stay_out_of_the_rewritten_plan_only_for_task_loads():
+    from transformers import (
+        AutoModelForCausalLM,
+        AutoModelForSequenceClassification,
+        LlamaForCausalLM,
+        LlamaForSequenceClassification,
+    )
+    from unsloth.models.modelopt_fp8 import keep_task_heads_unquantized
+
+    def rewritten():
+        return SimpleNamespace(
+            quantization_config = {"quant_method": "fp8", "modules_to_not_convert": ["lm_head"]}
+        )
+
+    config = rewritten()
+    assert keep_task_heads_unquantized(config, AutoModelForSequenceClassification)
+    assert config.quantization_config["modules_to_not_convert"] == [
+        "lm_head",
+        "score",
+        "classifier",
+        "qa_outputs",
+    ]
+    # Idempotent, and the resolved concrete class counts too.
+    assert keep_task_heads_unquantized(config, None, LlamaForSequenceClassification)
+    assert len(config.quantization_config["modules_to_not_convert"]) == 4
+
+    for causal in (AutoModelForCausalLM, LlamaForCausalLM):
+        config = rewritten()
+        assert not keep_task_heads_unquantized(config, causal)
+        assert config.quantization_config["modules_to_not_convert"] == ["lm_head"]
+    # Only the rewritten fp8 plan is touched.
+    other = SimpleNamespace(quantization_config = {"quant_method": "gptq"})
+    assert not keep_task_heads_unquantized(other, AutoModelForSequenceClassification)
+    assert "modules_to_not_convert" not in other.quantization_config
+
+
+def test_both_loaders_keep_task_heads_out_of_the_rewrite():
+    import inspect
+    from unsloth.models import llama, vision
+
+    llama_source = inspect.getsource(llama.FastLlamaModel.from_pretrained)
+    assert (
+        "keep_task_heads_unquantized(model_config, AutoModelForSequenceClassification)"
+        in llama_source
+    )
+    vision_source = inspect.getsource(vision.FastBaseModel.from_pretrained)
+    assert "keep_task_heads_unquantized(auto_config, auto_model, model_class)" in vision_source
+
+
+@needs_per_tensor_fp8
+@pytest.mark.skipif(not has_real_cuda(), reason = "fp8 kernels need CUDA")
+def test_tiny_modelopt_llama_loads_a_classification_head(tmp_path):
+    from transformers import AutoConfig, AutoModelForSequenceClassification
+    from unsloth.models.modelopt_fp8 import keep_task_heads_unquantized
+
+    if torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("fp8 matmul needs sm_89+")
+    _write_tiny_modelopt_llama(str(tmp_path))
+    config = AutoConfig.from_pretrained(str(tmp_path), num_labels = 2, pad_token_id = 0)
+    arm_modelopt_fp8_loading(config, verbose = False)
+    assert keep_task_heads_unquantized(config, AutoModelForSequenceClassification)
+    kwargs = {}
+    pop_modelopt_key_mapping(config, kwargs)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        str(tmp_path), config = config, dtype = torch.bfloat16, device_map = "cuda", **kwargs
+    )
+    assert type(model.score) is nn.Linear
+    assert model.score.weight.dtype == torch.bfloat16
+    assert model.model.layers[0].self_attn.q_proj.weight.dtype == torch.float8_e4m3fn
+    x = torch.randint(1, 512, (2, 16), device = "cuda")
+    out = model(x, labels = torch.tensor([0, 1], device = "cuda"))
+    out.loss.backward()
+    assert torch.isfinite(out.loss)
+    assert model.score.weight.grad is not None and model.score.weight.grad.abs().sum() > 0

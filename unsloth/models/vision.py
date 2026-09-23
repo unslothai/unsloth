@@ -1492,8 +1492,16 @@ class FastBaseModel:
         )
         # A ModelOpt FP8 checkpoint was rewritten to the transformers fp8 form above; its two
         # scale tensors are renamed on the way in.
-        from .modelopt_fp8 import pop_modelopt_key_mapping
+        from .modelopt_fp8 import (
+            UNSLOTH_MODELOPT_KEY_MAPPING_ATTR,
+            keep_task_heads_unquantized,
+            pop_modelopt_key_mapping,
+        )
 
+        _modelopt_rewritten = hasattr(auto_config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
+        if _modelopt_rewritten:
+            # A task auto_model builds a head (`score`) with no fp8 weight on disk.
+            keep_task_heads_unquantized(auto_config, auto_model, model_class)
         pop_modelopt_key_mapping(auto_config, kwargs)
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env was built before remap/disable). gpt-oss only.
         sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)

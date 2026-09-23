@@ -2607,9 +2607,17 @@ class FastLlamaModel:
         )
         # A ModelOpt FP8 checkpoint was rewritten to the transformers fp8 form above. The rewrite
         # lives on model_config, so it has to be the config the weights load against.
-        from .modelopt_fp8 import UNSLOTH_MODELOPT_KEY_MAPPING_ATTR, pop_modelopt_key_mapping
+        from .modelopt_fp8 import (
+            UNSLOTH_MODELOPT_KEY_MAPPING_ATTR,
+            keep_task_heads_unquantized,
+            pop_modelopt_key_mapping,
+        )
 
         _modelopt_rewritten = hasattr(model_config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
+        if _modelopt_rewritten and num_labels is not None:
+            # num_labels builds AutoModelForSequenceClassification; its new `score` has no fp8
+            # weight on disk.
+            keep_task_heads_unquantized(model_config, AutoModelForSequenceClassification)
         pop_modelopt_key_mapping(model_config, kwargs)
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env
         # was built before remap/disable). gpt-oss only.
