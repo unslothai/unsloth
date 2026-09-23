@@ -49,6 +49,19 @@ def test_the_sources_list_names_the_running_session(client):
     assert body["log_root"] == str(path.resolve().parent.parent)
 
 
+def test_sources_open_existing_home_when_file_logging_is_disabled(client, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_NO_FILE_LOG", "1")
+    home = Path(os.environ["UNSLOTH_STUDIO_HOME"]).resolve()
+    assert home.is_dir()
+    assert not (home / "logs").exists()
+
+    response = client.get("/api/settings/debug/logs/sources")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["file_logging_disabled"] is True
+    assert body["log_root"] == str(home)
+
+
 def test_the_first_read_returns_the_tail_and_a_cursor(client):
     _seed_server_log("".join(f"line{i}\n" for i in range(20)))
     body = client.get("/api/settings/debug/logs").json()

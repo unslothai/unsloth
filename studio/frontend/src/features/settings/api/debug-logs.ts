@@ -254,7 +254,8 @@ export async function exportAllLogs(): Promise<string | null> {
 }
 
 /**
- * Reveal the logs directory itself. On an older backend without `log_root`,
+ * Reveal the logs directory, or the Studio home before logs exist.
+ * On an older backend without `log_root`,
  * fall back to the selected log's directory. Desktop only: in a browser the
  * folder is on the server, not the user's machine, and the button is not rendered.
  *
