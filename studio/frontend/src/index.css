@@ -2596,7 +2596,9 @@ html[data-chat-font] .aui-root {
 	/* Compact items; also applied to portaled sub-content. */
 	.unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
-			[data-slot="dropdown-menu-sub-trigger"]
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
 		) {
 		@apply gap-3 pl-3 pr-3 py-2 text-ui-14;
 		cursor: pointer;
@@ -2605,20 +2607,55 @@ html[data-chat-font] .aui-root {
 		border-radius: 12px;
 	}
 
-	.unsloth-plus-menu [data-slot="dropdown-menu-label"] {
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-label"],
+			[data-slot="context-menu-label"]
+		) {
 		@apply pl-3 pr-3 py-1.5 text-ui-12;
 	}
 
+	/* A sidebar row's menu, one step down from the composer menus this shares a look with.
+	   It carries the most rows of any menu in the app and was running tall. */
+	.unsloth-plus-menu.sidebar-row-menu[data-slot] {
+		/* Concentric as above: item radius (10px) + side gutter (8px). */
+		border-radius: 18px !important;
+		padding-top: calc(0.375rem * var(--ui-space-scale, 1));
+		padding-bottom: calc(0.375rem * var(--ui-space-scale, 1));
+		padding-left: calc(8px * var(--ui-space-scale, 1));
+		padding-right: calc(8px * var(--ui-space-scale, 1));
+		/* Retunes every .size-icon inside, sub-menus included. */
+		--icon-size: var(--ui-icon-size-sm);
+	}
+
+	.unsloth-plus-menu.sidebar-row-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
+		) {
+		@apply gap-2.5 pl-2.5 pr-2.5 py-1.5 text-ui-13;
+		border-radius: 10px;
+	}
+
+	.unsloth-plus-menu.sidebar-row-menu :is(
+			[data-slot="dropdown-menu-label"],
+			[data-slot="context-menu-label"]
+		) {
+		@apply pl-2.5 pr-2.5 py-1 text-ui-11;
+	}
+
 	/* Active (green) items keep their primary text and icon color on hover. */
-	.unsloth-plus-menu [data-slot="dropdown-menu-item"].text-primary:is(:hover, :focus, :focus-visible, [data-highlighted]),
-	.unsloth-plus-menu [data-slot="dropdown-menu-item"].text-primary:is(:hover, :focus, :focus-visible, [data-highlighted]) svg {
+	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"]).text-primary:is(:hover, :focus, :focus-visible, [data-highlighted]),
+	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"]).text-primary:is(:hover, :focus, :focus-visible, [data-highlighted]) svg {
 		color: var(--primary) !important;
 	}
 
 	/* Light hover: neutral grey, not the green accent. */
 	.unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
-			[data-slot="dropdown-menu-sub-trigger"]
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
 		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
 		background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1))) !important;
 	}
@@ -2626,7 +2663,9 @@ html[data-chat-font] .aui-root {
 	/* Dark hover: the accent nearly matches the surface, so use a clear overlay. */
 	.dark .unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
-			[data-slot="dropdown-menu-sub-trigger"]
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
 		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1))) !important;
 	}
@@ -2636,30 +2675,49 @@ html[data-chat-font] .aui-root {
 	   foreground. The active green rule above still wins via higher specificity. */
 	.unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
-			[data-slot="dropdown-menu-sub-trigger"]
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
 		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]),
 	.unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
-			[data-slot="dropdown-menu-sub-trigger"]
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
 		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) * {
 		color: inherit !important;
 	}
 
 	.unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
-			[data-slot="dropdown-menu-sub-trigger"]
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
 		)
 		svg:not(.unsloth-tick) {
 		width: var(--ui-icon-size) !important;
 		height: var(--ui-icon-size) !important;
 	}
 
+	/* The rule above pins svg size with !important, straight off --ui-icon-size, so a glyph
+	   never sees the --icon-size the row menu retunes. Same rule, one class deeper. */
+	.unsloth-plus-menu.sidebar-row-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
+		)
+		svg:not(.unsloth-tick) {
+		width: var(--icon-size) !important;
+		height: var(--icon-size) !important;
+	}
+
 	/* Destructive items keep red text and a red-tinted hover, not the grey one. */
-	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"],
-	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"] * {
+	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"])[data-variant="destructive"],
+	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"])[data-variant="destructive"] * {
 		color: var(--destructive) !important;
 	}
-	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"]:is(:hover, :focus, :focus-visible, [data-highlighted]) {
+	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"])[data-variant="destructive"]:is(:hover, :focus, :focus-visible, [data-highlighted]) {
 		background-color: color-mix(in oklab, var(--destructive) 10%, transparent) !important;
 	}
 
@@ -3339,6 +3397,15 @@ html[data-chat-font] .aui-root {
 	-webkit-user-select: none;
 	user-select: none;
 	cursor: pointer;
+}
+
+/* A sidebar row is being carried. The gesture is a pointer drag, not a native one, so the
+   selection it would otherwise sweep up and the cursor off the row are ours to hold. */
+body.sidebar-row-dragging,
+body.sidebar-row-dragging * {
+	-webkit-user-select: none;
+	user-select: none;
+	cursor: grabbing !important;
 }
 
 /* Flat scrollbar chrome */

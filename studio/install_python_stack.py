@@ -10396,6 +10396,61 @@ def _direct_reference_in_requirements(req: Path) -> "tuple[str, str, str] | None
 
 _COMMIT_REVISION_RE = re.compile(r"[0-9a-fA-F]{7,40}")
 
+# The hosts whose /archive/<commit>.zip is the same tree git would have cloned.
+_GITHUB_ARCHIVE_HOSTS = ("github.com", "www.github.com")
+
+
+def _github_archive_url(
+    url: str,
+    revision: str,
+    subdirectory: str = "",
+) -> "str | None":
+    """The zip GitHub serves for *revision* of *url*, or None when there is no such URL.
+
+    This is the route a host with no working git takes. pip fetches a zip over plain https and
+    needs no git binary anywhere, which is the entire point: git is absent from the desktop bundle,
+    and on macOS `git` is frequently a bare xcrun shim that exits non-zero, so the git requirement
+    is skipped on hosts whose owners have no idea they are missing anything.
+
+    Deliberately narrow, because an archive is weaker evidence than a clone:
+
+    * a FULL 40-character commit only. An archive carries no history and records no ref, so a
+      branch or tag would become "whatever that name pointed at when it was fetched" with nothing
+      left on disk to tell two fetches apart. A commit has no such ambiguity, and the SHA is in the
+      URL, so the recorded url IS the provenance.
+    * github.com over http(s) only. Every other forge spells its archive differently, and guessing
+      wrong installs nothing rather than something wrong, but there is no reason to guess.
+    * no subdirectory. ``#subdirectory=`` is part of the package identity and this URL cannot
+      carry it, so a requirement that uses one keeps the git route and skips as before.
+    """
+    if subdirectory:
+        return None
+    if len(revision) != 40 or not _COMMIT_REVISION_RE.fullmatch(revision):
+        return None
+    scheme, separator, remainder = url.partition("://")
+    if not separator or scheme.lower() not in ("http", "https"):
+        return None
+    netloc, _, path = remainder.partition("/")
+    if netloc.lower() not in _GITHUB_ARCHIVE_HOSTS:
+        return None
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    owner, slash, repo = path.partition("/")
+    if not (owner and slash and repo) or "/" in repo:
+        return None
+    return f"https://github.com/{owner}/{repo}/archive/{revision.lower()}.zip"
+
+
+def _vcs_url_key(url: str) -> str:
+    """A git URL without the trailing slash or ``.git``, which uv drops from direct_url.json.
+
+    The requirements files name ``https://github.com/<org>/<repo>.git`` and uv records the URL
+    without the suffix, so an exact compare never matched and every pass rebuilt the checkout.
+    """
+    url = url.rstrip("/")
+    return url[: -len(".git")] if url.endswith(".git") else url
+
 
 def _direct_reference_is_installed(req: Path, dist_name: str) -> bool:
     """Whether the resident *dist_name* came from the ref *req* names.
@@ -10413,9 +10468,21 @@ def _direct_reference_is_installed(req: Path, dist_name: str) -> bool:
         return False
     vcs = payload.get("vcs_info")
     if not isinstance(vcs, dict):
-        return False
+        # The no-git route installed the same commit from a zip, which pip records as archive_info
+        # with no ref at all, so the URL is the only evidence there is. For a full commit that is
+        # exactly as strong as the vcs record, because the SHA is IN the URL. Reading it matters as
+        # much as writing it: without this the archive build is never recognised as resident, so
+        # _diffusers_main_supersedes_release reads the main build as absent, the RELEASE pin
+        # reinstalls over it on the very next pass, and a git-less host silently loses the build it
+        # was just given. Measured, not theorised: the zip went in, the next update put 0.40.0 back.
+        archive = _github_archive_url(url, revision, subdirectory)
+        return (
+            archive is not None
+            and isinstance(payload.get("archive_info"), dict)
+            and str(payload.get("url") or "") == archive
+        )
     if not (
-        str(payload.get("url") or "").rstrip("/") == url.rstrip("/")
+        _vcs_url_key(str(payload.get("url") or "")) == _vcs_url_key(url)
         and str(vcs.get("requested_revision") or "") == revision
         and str(payload.get("subdirectory") or "") == subdirectory
     ):
@@ -10540,6 +10607,90 @@ def _diffusers_main_supersedes_release() -> bool:
     return _diffusers_main_requested() and _diffusers_main_resident()
 
 
+def _diffusers_main_archive(req: Path) -> "str | None":
+    """The zip route 11c takes on a host with no working git, or None when it has none."""
+    wanted = _direct_reference_in_requirements(req)
+    return _github_archive_url(*wanted) if wanted is not None else None
+
+
+def _diffusers_main_needs_dependency_pass() -> bool:
+    """For the setup fast path: is the resident Diffusers the wrong one for the requested mode?
+
+    The fast path skips this script whenever the core package is current, so without this an
+    install that never ran 11c (updated by an installer that predates it, or opted back in) stays
+    on the release until the next version bump. The same gates as 11c decide whether the pass
+    could install the build at all, so a host with neither git nor the zip route keeps its fast
+    path. A pass that tried
+    and failed records "failed" and also keeps it: without that, a host that cannot reach
+    github.com would repeat the whole dependency pass on every update.
+    """
+    req = REQ_ROOT / "diffusers-main.txt"
+    if not req.is_file():
+        return False
+    if not _diffusers_main_requested():
+        # Opted out while the build is still resident: 11b puts the release back.
+        return _diffusers_main_resident(req)
+    if sys.version_info < DIFFUSERS_MAIN_MIN_PYTHON:
+        return False
+    if not _has_working_git() and _diffusers_main_archive(req) is None:
+        return False
+    if _diffusers_main_resident(req):
+        return False
+    try:
+        manifest = install_manifest.read_manifest() or {}
+        last = (manifest.get("step_results") or {}).get("diffusers-main.txt")
+    except Exception:  # noqa: BLE001 - an unreadable manifest is no record of a failed try
+        last = None
+    return last != "failed"
+
+
+# The backend's startup repair records its failure here, read by the repair alone so an explicit
+# update still retries; that pass rewrites the manifest without it.
+_DIFFUSERS_MAIN_REPAIR_KEY = "diffusers_main_repair"
+
+
+def _startup_repair_failed() -> bool:
+    try:
+        return (install_manifest.read_manifest() or {}).get(_DIFFUSERS_MAIN_REPAIR_KEY) == "failed"
+    except Exception:  # noqa: BLE001 - an unreadable manifest is no record of a failed try
+        return False
+
+
+_REPAIR_LOCK_POLL_S = 5
+
+
+def _repair_diffusers_main() -> int:
+    """11c on its own, for the backend's startup self-heal: 0 installed, 1 nothing to do, 2 failed.
+
+    An update from a release that predates 11c runs that release's installer, which never installs
+    the build; the backend that starts afterwards is the first new code such a host runs.
+    """
+    import time
+
+    global USE_UV, _STEP, _TOTAL
+    while True:
+        with install_manifest.pass_lock() as uncontended:
+            # Every "nothing to do" answer waits for the lock too: until a sibling backend's repair or an
+            # update leaves the pass it may be rewriting diffusers, and returning would let the backend
+            # that started this import it.
+            if uncontended:
+                if (
+                    not _diffusers_main_requested()
+                    or not _diffusers_main_needs_dependency_pass()
+                    or _startup_repair_failed()
+                ):
+                    return 1
+                USE_UV = _bootstrap_uv()
+                _STEP, _TOTAL = 0, 1
+                _diffusers_main_step()
+                if _diffusers_main_resident():
+                    return 0
+                # Or every start retries a fetch this host cannot make, refusing diffusion loads meanwhile.
+                install_manifest.update_manifest(**{_DIFFUSERS_MAIN_REPAIR_KEY: "failed"})
+                return 2
+        time.sleep(_REPAIR_LOCK_POLL_S)
+
+
 def _diffusers_main_step() -> None:
     """Install the pinned Diffusers commit, or leave the release pin alone.
 
@@ -10577,14 +10728,23 @@ def _diffusers_main_step() -> None:
     if not req.is_file():
         _progress("diffusers main (skipped, no pin file)")
         return
+    # The zip route, taken ONLY when git cannot do the job. Not the default: a clone records the
+    # ref in direct_url.json and an archive records only a URL, and the git URL is what the pin
+    # file is written in. But "no git" is the common case, not the exotic one (the desktop bundle
+    # ships no git, and a macOS `git` that is an unconfigured xcrun shim exits non-zero), and
+    # skipping there costs the newest model family on a host that could have fetched the same tree
+    # over plain https. None when the pin is not a full GitHub commit, which keeps the old skip.
+    archive = None
     if not _has_working_git():
-        _progress("diffusers main (skipped, no git)")
-        _note(
-            "No working git, so this install keeps the pinned Diffusers release instead of the "
-            "pinned main build. Everything else works; models that need an unreleased Diffusers "
-            "will refuse with a message naming the version they want.",
-        )
-        return
+        archive = _diffusers_main_archive(req)
+        if archive is None:
+            _progress("diffusers main (skipped, no git)")
+            _note(
+                "No working git, so this install keeps the pinned Diffusers release instead of "
+                "the pinned main build. Everything else works; models that need an unreleased "
+                "Diffusers will refuse with a message naming the version they want.",
+            )
+            return
     # The escape hatch reaches this skip too. UNSLOTH_STUDIO_FULL_DEPS is the documented way to
     # repair an install whose evidence looks fine and whose payload is not, and _diffusers_main_resident
     # is exactly such evidence: _payload_recorded_intact compares recorded sizes, so a same-size
@@ -10593,7 +10753,7 @@ def _diffusers_main_step() -> None:
         _progress("diffusers main (satisfied, skipped)")
         _record_step("diffusers-main.txt", "skipped")
         return
-    _progress("diffusers main")
+    _progress("diffusers main (no git, from archive)" if archive else "diffusers main")
     _record_step("diffusers-main.txt", "ran")
     # pip_install_try, NOT pip_install, and this is the whole reason the step is safe to run by
     # default. pip_install exits the installer on failure, which would make a reachable github.com
@@ -10601,13 +10761,23 @@ def _diffusers_main_step() -> None:
     # over https, a transient upstream outage would each turn a working install into no install at
     # all. Diffusers is mandatory, so the failure has to be survivable, and it is exactly survivable
     # because the release pin ran first and is still resident. Degrading costs one model.
-    if not pip_install_try(
-        "Installing the pinned Diffusers main build",
-        "--no-cache-dir",
-        req = req,
-        constrain = False,
-    ):
-        _record_step("diffusers-main.txt", "skipped")
+    if archive is not None:
+        installed = pip_install_try(
+            "Installing the pinned Diffusers main build (zip archive, no git)",
+            "--no-cache-dir",
+            f"diffusers @ {archive}",
+            constrain = False,
+        )
+    else:
+        installed = pip_install_try(
+            "Installing the pinned Diffusers main build",
+            "--no-cache-dir",
+            req = req,
+            constrain = False,
+        )
+    if not installed:
+        # "failed", not "skipped": the fast path reads it to stop forcing a pass that cannot succeed.
+        _record_step("diffusers-main.txt", "failed")
         _note(
             "Could not install the pinned Diffusers main build, so this install keeps the pinned "
             "Diffusers release. Everything else works; models that need an unreleased Diffusers "
@@ -10817,6 +10987,55 @@ def _local_plugin_digest(plugin_dir: Path) -> "str | None":
     except OSError:
         return None
     return digest.hexdigest()
+
+
+def _read_own_source() -> "bytes | None":
+    try:
+        return Path(__file__).read_bytes()
+    except OSError:
+        return None
+
+
+# This file as it was when the process started. The core-packages step upgrades the package
+# that ships it, and the process keeps running the old code while the new copy sits on disk.
+_INSTALLER_SOURCE_AT_START = _read_own_source()
+# Set on the rerun, so a second replacement cannot loop.
+_INSTALLER_RERUN_ENV = "UNSLOTH_INSTALLER_RERUN"
+
+
+class _InstallerReplaced(Exception):
+    """Raised once the core-packages step has replaced this file with another release's copy."""
+
+
+def _installer_replaced() -> bool:
+    if os.environ.get(_INSTALLER_RERUN_ENV) == "1" or _INSTALLER_SOURCE_AT_START is None:
+        return False
+    current = _read_own_source()
+    return current is not None and current != _INSTALLER_SOURCE_AT_START
+
+
+def _rerun_replaced_installer() -> int:
+    """Finish the pass with the installer the update just installed.
+
+    Without this every step a release adds is skipped by the update that installs it: the old
+    process upgrades the package in step 3 and completes its own step list. A subprocess rather
+    than an exec, because on Windows os.exec* returns to the caller while the child runs. It starts
+    after the pass lock is released, so the rerun does not read its parent as a contending peer.
+    """
+    _note("the update replaced this installer; finishing with the new version")
+    try:
+        # The child writes to the same descriptors, so anything still buffered here would land
+        # after its output.
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+    env = dict(os.environ)
+    env[_INSTALLER_RERUN_ENV] = "1"
+    return subprocess.run(
+        [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
+        env = env,
+    ).returncode
 
 
 def _under_pass_lock(func):
@@ -11129,6 +11348,11 @@ def install_python_stack() -> int:
             unsloth_spec,
             "unsloth-zoo",
         )
+
+    # The package just installed may ship a newer copy of this file. Raised rather than rerun
+    # here, so the pass lock is released first; the rerun repeats the cheap steps above.
+    if _installer_replaced():
+        raise _InstallerReplaced
 
     # The MLX step ran BEFORE the core phase, so it honoured the mlx-vlm range the OLD
     # unsloth-zoo declared. A normal update then upgrades the zoo, and without this the machine
@@ -11761,8 +11985,16 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--missing-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _missing_torch_needs_dependency_pass() else 1)
+    if sys.argv[1:] == ["--repair-diffusers-main"]:
+        sys.exit(_repair_diffusers_main())
+    if sys.argv[1:] == ["--diffusers-main-needs-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _diffusers_main_needs_dependency_pass() else 1)
     if any(_arg.startswith("-") for _arg in sys.argv[1:]):
         # Never let a malformed probe call fall through into a multi-gigabyte install.
         _safe_print(f"Unknown argument: {' '.join(sys.argv[1:])}")
         sys.exit(2)
-    sys.exit(install_python_stack())
+    try:
+        sys.exit(install_python_stack())
+    except _InstallerReplaced:
+        sys.exit(_rerun_replaced_installer())

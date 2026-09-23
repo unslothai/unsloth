@@ -23,6 +23,7 @@ from ._utils import (
     resolve_model_class,
     resolve_encoder_attention_implementation,
     maybe_prefetch_hf_snapshot,
+    _mark_full_finetuning,
 )
 import inspect
 import json
@@ -1622,6 +1623,7 @@ class FastSentenceTransformer(FastModel):
             )
 
             st_model._unsloth_fast_encoder = True
+            _mark_full_finetuning(st_model[0].auto_model, full_finetuning)
             st_model._compile_mode = compile_mode
             st_model._dtype = dtype
             st_model._load_in_4bit = load_in_4bit

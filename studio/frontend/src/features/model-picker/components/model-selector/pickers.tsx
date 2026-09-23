@@ -52,7 +52,6 @@ import {
 } from "@/features/hub";
 import {
   type HfModelResult,
-  type HfSortKey,
   useHubModelSearch,
 } from "@/features/hub";
 import {
@@ -166,7 +165,7 @@ import {
   artifactForRepoId,
   classifyGgufFit,
   classifyMediaGgufFit,
-  curatedArtifactFitsDevice,
+  curatedArtifactFit,
   curatedCapabilitiesFor,
   curatedRowLabelFor,
   curatedSizeBytesFor,
@@ -204,6 +203,9 @@ import {
   paramsFromId,
   searchRowFitsDevice,
   searchableRecommendedIds,
+  type CuratedBudget,
+  curatedBudget,
+  curatedBudgetText,
 } from "./recommended-fit";
 import {
   ggufVariantsMatchForPicker,
@@ -1047,6 +1049,7 @@ function ModelRow({
   onClick,
   vramStatus,
   vramEst,
+  vramBudget,
   gpuGb,
   tooltipText,
   hubUrl,
@@ -1073,6 +1076,8 @@ function ModelRow({
   onClick: () => void;
   vramStatus?: GgufFitClass | VramFitStatus | null;
   vramEst?: number;
+  /** Memory allowance used to judge this curated row's fit. */
+  vramBudget?: CuratedBudget;
   gpuGb?: number;
   tooltipText?: ReactNode;
   /** Hugging Face address for online/Hub rows, surfaced on hover the way local rows show an
@@ -1116,8 +1121,9 @@ function ModelRow({
       ? exceeds
         // "memory", not "VRAM": a GGUF at `partial` splits across VRAM and RAM and the figure
         // is weights plus activations plus KV, so "Needs ~47GB VRAM" contradicted the verdict.
-        ?
-          `Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`
+        ? vramBudget
+          ? curatedBudgetText(vramEst, gpuGb, vramBudget)
+          : `Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`
         : vramStatus === "tight" || vramStatus === "marginal"
           ? `~${vramEst}GB VRAM (tight fit on ${gpuGb}GB)`
           : `~${vramEst}GB VRAM`
@@ -1854,9 +1860,8 @@ function GgufVariantExpander({
     [variantGroups, defaultVariant],
   );
 
-  // Each workflow gets its own recommendation: the largest quant the device runs with room to
-  // spare, else the largest that runs at all, else the smallest. The repo default only decides it
-  // when nothing has been measured, so a big machine is not held at the default's size.
+  // Each workflow gets its own recommendation: the repo default (UD-Q4_K_XL, else Q4_K_M, else
+  // Q4_K_S) wherever the device loads it, else the largest smaller quant that loads.
   const effectiveRecommendedByGroup = useMemo(() => {
     const recommended = new Map<string, string>();
     for (const group of variantGroups) {
@@ -1866,7 +1871,9 @@ function GgufVariantExpander({
         continue;
       }
       // Null when the group carries no sizes at all, so there is nothing to measure.
-      const pick = recommendedQuantForDevice(group.variants, getGgufFit) ?? preferred;
+      const pick =
+        recommendedQuantForDevice(group.variants, getGgufFit, preferred) ??
+        preferred;
       if (pick) recommended.set(group.key, pick.quant);
     }
     return recommended;
@@ -2506,12 +2513,10 @@ function canDeleteLoraModel(model: LoraModelOption): boolean {
 }
 
 
-// Recommended section sort: "recommended" = newly created unsloth GGUF/MLX that fit the
-// device; the rest are plain HF sort keys.
-type RecommendedSortKey = "recommended" | "trendingScore" | "lastModified";
+// Recommended section sort: plain HF sort keys.
+type RecommendedSortKey = "trendingScore" | "lastModified";
 
 const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
-  { value: "recommended", label: "Recommended" },
   { value: "trendingScore", label: "Trending" },
   { value: "lastModified", label: "Recent" },
 ];
@@ -2795,9 +2800,6 @@ export function HubModelPicker({
   // Recommended section: a live unsloth listing sorted by the dropdown, the same sort that drives search results.
   const [recommendedSort, setRecommendedSort] =
     useState<RecommendedSortKey>("trendingScore");
-  // "recommended" surfaces the most recently created Unsloth repos.
-  const recommendedSortBy: HfSortKey =
-    recommendedSort === "recommended" ? "createdAt" : recommendedSort;
   const {
     results,
     isLoading,
@@ -2807,7 +2809,7 @@ export function HubModelPicker({
     hasMore,
   } = useHubModelSearch(debouncedQuery, {
     ownerScope: "unsloth",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
@@ -2818,7 +2820,7 @@ export function HubModelPicker({
   });
   const recommendedSearch = useHubModelSearch("", {
     ownerScope: "unsloth",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
@@ -2840,7 +2842,7 @@ export function HubModelPicker({
   const communityQuerySearch = useHubModelSearch(debouncedQuery, {
     task,
     ownerScope: "all",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: false,
     accessToken,
@@ -2849,7 +2851,7 @@ export function HubModelPicker({
   const communityBrowse = useHubModelSearch("", {
     task,
     ownerScope: "all",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: false,
     accessToken,
@@ -3453,7 +3455,7 @@ export function HubModelPicker({
    *  cannot disagree. */
   const catalogFit = useCallback(
     (id: string, budget: DeviceBudget) =>
-      catalog ? curatedArtifactFitsDevice(id, catalog, budget) : undefined,
+      catalog ? curatedArtifactFit(id, catalog, budget) : undefined,
     [catalog],
   );
 
@@ -3475,8 +3477,8 @@ export function HubModelPicker({
     [catalogSeedRows],
   );
 
-  // Recommended suggests GGUF anywhere, plus MLX and safetensors on Mac; the "recommended" sort
-  // also drops models too big for the device. Downloaded models stay visible.
+  // Recommended suggests GGUF anywhere, plus MLX and safetensors on Mac; the "Fits on device"
+  // tick also drops models too big for the device. Downloaded models stay visible.
   const recommendedRows = useMemo(() => {
     const catalogSeedIds = new Set(
       catalogSeedRows.map((row) => row.id.toLowerCase()),
@@ -3507,8 +3509,7 @@ export function HubModelPicker({
     const keepCommunity = (r: HfModelResult) =>
       keepCommon(r) && isTaskRuntimeSupported(r);
     // Members are not filtered here (see recommendedIds): that dropped them from Hub search too.
-    // "recommended" always device-filters; the "Fits on device" tick extends it to other sorts.
-    const deviceFiltered = recommendedSort === "recommended" || fitOnDeviceOnly;
+    const deviceFiltered = fitOnDeviceOnly;
     const taskScoped = Boolean(task);
     const rowGpu = loadScopedGpu(gpu, taskScoped);
     const rowInferenceGpu = loadScopedGpu(inferenceGpu, taskScoped);
@@ -3518,7 +3519,7 @@ export function HubModelPicker({
       downloadedSet.has(r.id.toLowerCase()) ||
       // The catalog's own verdict where it has one, so this list and the OOM badge cannot disagree:
       // hfModelFitsDevice counts RAM toward a load that never leaves the card.
-      (catalogFit(r.id, pipelineBudget) ??
+      (catalogFit(r.id, pipelineBudget)?.fits ??
         hfModelFitsDevice(r, diffusionLoad || !r.isGguf ? rowGpu : rowInferenceGpu, {
           budgetFraction,
           // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and this
@@ -3534,6 +3535,10 @@ export function HubModelPicker({
       keep,
       deviceFiltered,
       fits,
+      // Curated families follow the dropdown's sort, not catalog order.
+      familyOf: catalog
+        ? (id) => groupForRepoId(id, catalog)?.canonicalId.toLowerCase()
+        : undefined,
     });
     if (!communityRecommendedEnabled) return unslothRows;
     // Appended below everything unsloth publishes, so scrolling past the unsloth uploads continues
@@ -3552,7 +3557,6 @@ export function HubModelPicker({
     recommendedSearch.results,
     catalogSeedRows,
     downloadedSet,
-    recommendedSort,
     fitOnDeviceOnly,
     formatFilter,
     isMac,
@@ -3579,6 +3583,7 @@ export function HubModelPicker({
         /** GGUF rows carry the classifier's own verdict; curated torch rows carry "exceeds". */
         status: GgufFitClass | VramFitStatus | null;
         est: number;
+        budget?: CuratedBudget;
       }
     >();
     /** Size-based verdict for a row whose real footprint we know, against the budget that row
@@ -3681,18 +3686,14 @@ export function HubModelPicker({
         });
         continue;
       }
-      // A curated pipeline is judged by the catalog, which knows its resident size; the QLoRA
-      // estimator reads a diffusion pipeline as a language model it can 4-bit quantize (Wan 2.2
-      // TI2V is 30 GB, where 5B params says 5.9).
-      const curatedFits = catalogFit(r.id, pipelineBudget);
-      if (curatedFits !== undefined) {
-        const curatedBytes = catalog
-          ? (r.curatedSizeBytes ?? curatedSizeBytesFor(r.id, catalog))
-          : undefined;
+      // Use the catalog's fit estimate for both the verdict and badge, not the LLM estimator.
+      const curatedFit = catalogFit(r.id, pipelineBudget);
+      if (curatedFit !== undefined) {
         map.set(r.id, {
           meta,
-          status: curatedFits ? null : "exceeds",
-          est: curatedBytes ? Math.round(curatedBytes / 1024 ** 3) : 0,
+          status: curatedFit.fits ? null : "exceeds",
+          est: curatedFit.sizeGb ? Math.round(curatedFit.sizeGb) : 0,
+          budget: curatedBudget(curatedFit),
         });
         continue;
       }
@@ -4614,7 +4615,7 @@ export function HubModelPicker({
       estimatedSizeBytes?: number;
       curatedSizeBytes?: number;
     }) =>
-      catalogFit(row.id, artifactBudget(loadScopedGpu(gpu, Boolean(task)))) ??
+      catalogFit(row.id, artifactBudget(loadScopedGpu(gpu, Boolean(task))))?.fits ??
       searchRowFitsDevice(
         {
           ...row,
@@ -5084,7 +5085,12 @@ export function HubModelPicker({
   const recommendedVramMap = useMemo(() => {
     const map = new Map<
       string,
-      { est: number; status: VramFitStatus | null; detail: string | null }
+      {
+        est: number;
+        status: VramFitStatus | null;
+        detail: string | null;
+        budget?: CuratedBudget;
+      }
     >();
     const pipelineBudget = artifactBudget(loadScopedGpu(gpu, Boolean(task)));
     for (const id of filteredRecommendedIds) {
@@ -5093,16 +5099,16 @@ export function HubModelPicker({
       const totalParams = recommendedParamCountById.get(id) ?? paramsFromId(id);
       // Same verdict the unfiltered list gives this row: searching for a model must not change what
       // it says about the device.
-      const curatedFits = catalogFit(id, pipelineBudget);
-      if (catalog && curatedFits !== undefined) {
-        const curatedBytes = curatedSizeBytesFor(id, catalog);
+      const curatedFit = catalogFit(id, pipelineBudget);
+      if (catalog && curatedFit !== undefined) {
         // The catalog is the only source of a count for a curated repo the listing never returns and
         // whose id spells no "<n>B".
         const params = totalParams ?? curatedTotalParamsFor(id, catalog);
         map.set(id, {
-          est: curatedBytes ? Math.round(curatedBytes / 1024 ** 3) : 0,
-          status: curatedFits ? null : "exceeds",
+          est: curatedFit.sizeGb ? Math.round(curatedFit.sizeGb) : 0,
+          status: curatedFit.fits ? null : "exceeds",
           detail: params ? formatCompact(params) : null,
+          budget: curatedBudget(curatedFit),
         });
         continue;
       }
@@ -7195,6 +7201,7 @@ export function HubModelPicker({
                               }}
                               vramStatus={info?.status ?? null}
                               vramEst={info?.est}
+                              vramBudget={info?.budget}
                               gpuGb={isG ? expanderGpuGb : expanderSystemGpuGb}
                               onArrowDownIntoChildren={
                                 expandedGguf === id
@@ -7312,6 +7319,9 @@ export function HubModelPicker({
                             }
                             vramEst={
                               isKnownGgufRepo(id) ? undefined : vram?.est
+                            }
+                            vramBudget={
+                              isKnownGgufRepo(id) ? undefined : vram?.budget
                             }
                             gpuGb={
                               isKnownGgufRepo(id)

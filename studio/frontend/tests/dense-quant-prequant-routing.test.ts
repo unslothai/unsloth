@@ -14,16 +14,22 @@ import {
   VIDEO_CATALOG,
   artifactForRepoId,
   catalogToModelOptions,
+  curatedArtifactFit,
   curatedArtifactFitsDevice,
   curatedDisplayNameFor,
   curatedRowLabelFor,
   groupForRepoId,
   pickDefaultArtifact,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
+import {
+  curatedBudget,
+  curatedBudgetText,
+} from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 
 const Z_TURBO = "Tongyi-MAI/Z-Image-Turbo";
 const QWEN_IMAGE = "Qwen/Qwen-Image";
 const QWEN_2512 = "Qwen/Qwen-Image-2512";
+const QWEN_21 = "Qwen/Qwen-Image-2.1";
 const H3 = "MiniMaxAI/MiniMax-H3";
 const notDownloaded = () => false;
 
@@ -272,4 +278,75 @@ test("the scheme reaches the name and never the chip", () => {
       }
     }
   }
+});
+
+// Show the verdict's estimate, not the dense catalog size.
+test("Qwen-Image-2.1 is badged with the size its verdict used", () => {
+  const card = onCard(22.49, ["int8", "fp8"]);
+  const fit = curatedArtifactFit(QWEN_21, IMAGE_CATALOG, card);
+  assert.ok(fit?.sizeGb !== undefined);
+  assert.ok(Math.abs(fit.sizeGb - 27.01) < 0.01, String(fit.sizeGb));
+  assert.equal(fit.allowanceGb, 22.49 * 0.7);
+  assert.equal(fit.fits, false);
+  assert.equal(curatedArtifactFitsDevice(QWEN_21, IMAGE_CATALOG, card), fit.fits);
+  // No dense-quant scheme reported: the dense figure.
+  assert.equal(curatedArtifactFit(QWEN_21, IMAGE_CATALOG, onCard(22.49, []))?.sizeGb, 33);
+});
+
+test("a transcription row judged on RAM names RAM as the budget's device", () => {
+  const WHISPER = "unsloth/whisper-large-v3";
+  const onRam = curatedArtifactFit(WHISPER, AUDIO_CATALOG, { gpuGb: 1, systemRamGb: 5 });
+  assert.equal(onRam?.fits, false);
+  assert.equal(onRam?.device, "RAM");
+  assert.equal(onRam?.deviceGb, 5);
+  assert.equal(onRam?.allowanceGb, 5 * 0.7);
+  const onGpu = curatedArtifactFit(WHISPER, AUDIO_CATALOG, { gpuGb: 5, systemRamGb: 1 });
+  assert.equal(onGpu?.device, "GPU");
+  assert.equal(onGpu?.deviceGb, 5);
+});
+
+test("the over-budget text never shows the size below the budget it exceeds", () => {
+  const text = (id: string, gpuGb: number) => {
+    const fit = curatedArtifactFit(id, IMAGE_CATALOG, onCard(gpuGb, ["int8", "fp8"]));
+    assert.ok(fit?.sizeGb !== undefined && fit.fits === false);
+    const budget = curatedBudget(fit);
+    assert.ok(budget);
+    return curatedBudgetText(Math.round(fit.sizeGb), gpuGb, budget);
+  };
+  // 24.40 GB rounds to 24, under the 24.1 budget, so it is shown rounded up.
+  assert.equal(
+    text(Z_TURBO, 34.5),
+    "Needs ~24.4GB for weights (budget: ~24.1GB, 70% of a 34.5GB GPU)",
+  );
+  // A whole 4 GB against a 3.99 allowance: the budget is rounded down so 4.0 still reads as over.
+  const whisper = curatedArtifactFit("unsloth/whisper-large-v3", AUDIO_CATALOG, {
+    gpuGb: 1,
+    systemRamGb: 5.7,
+  });
+  assert.ok(whisper?.sizeGb !== undefined && whisper.fits === false);
+  const whisperBudget = curatedBudget(whisper);
+  assert.ok(whisperBudget);
+  assert.equal(
+    curatedBudgetText(4, 1, whisperBudget),
+    "Needs ~4.0GB for weights (budget: ~3.9GB, 70% of 5.7GB available RAM)",
+  );
+  assert.equal(
+    text(QWEN_21, 22.49),
+    "Needs ~27GB for weights (budget: ~15.7GB, 70% of a 22.49GB GPU)",
+  );
+});
+
+test("Qwen-Image-2.1 routes every card as on main", () => {
+  const group = groupForRepoId(QWEN_21, IMAGE_CATALOG);
+  assert.ok(group);
+  const pick = (gpuGb: number) =>
+    pickDefaultArtifact(group, {
+      ...onCard(gpuGb, ["int8"]),
+      isDownloaded: notDownloaded,
+    }).repoId;
+  // Include 36 GiB to catch changes just below the existing routing threshold.
+  assert.equal(pick(24), "unsloth/Qwen-Image-2.1-GGUF");
+  assert.equal(pick(31.84), "unsloth/Qwen-Image-2.1-GGUF");
+  assert.equal(pick(36), "unsloth/Qwen-Image-2.1-GGUF");
+  assert.equal(pick(39.5), QWEN_21);
 });
