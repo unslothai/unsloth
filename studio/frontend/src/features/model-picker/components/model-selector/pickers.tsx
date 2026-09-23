@@ -895,11 +895,11 @@ function isRuntimeLoadedModel(
   activeGgufVariant: string | null | undefined,
   modelId: string,
   variantPolicy: "none" | "required" | "ignore",
-  upstreamId?: string,
+  aliasIds: readonly string[] = [],
 ): boolean {
   if (
     !modelIdsMatchForPicker(loadedModelId, modelId) &&
-    !modelIdsMatchForPicker(loadedModelId, upstreamId)
+    !aliasIds.some((id) => modelIdsMatchForPicker(loadedModelId, id))
   )
     return false;
   if (variantPolicy === "ignore") return true;
@@ -3248,30 +3248,29 @@ export function HubModelPicker({
       ),
     [cachedGguf, cachedModels],
   );
-  // The vendor repo an unsloth mirror row copies. A cached vendor copy loads in its place, so
-  // the row also matches it as downloaded, selected and loaded.
-  const upstreamOf = useCallback(
-    (id: string) =>
-      catalog
-        ? artifactForRepoId(id, catalog)?.artifact.upstreamRepoId
-        : undefined,
+  // Ids for the same files: the row, its unsloth mirror and the vendor repo the mirror copies.
+  // A copy cached under one loads for the others, so rows match all of them.
+  const aliasesOf = useCallback(
+    (id: string): string[] => {
+      const artifact = catalog && artifactForRepoId(id, catalog)?.artifact;
+      return artifact?.upstreamRepoId
+        ? [id, artifact.repoId, artifact.upstreamRepoId]
+        : [id];
+    },
     [catalog],
   );
   const isValueRow = useCallback(
     (id: string) =>
-      value === id || modelIdsMatchForPicker(value, upstreamOf(id)),
-    [value, upstreamOf],
+      value === id ||
+      aliasesOf(id).some((alias) => modelIdsMatchForPicker(value, alias)),
+    [value, aliasesOf],
   );
-  // The id on disk for a row: itself, or its mirror's vendor repo.
+  // The id on disk for a row: itself, else a cached alias.
   const cachedIdFor = useCallback(
-    (id: string): string | null => {
-      if (downloadedSet.has(id.toLowerCase())) return id;
-      const upstream = upstreamOf(id);
-      return upstream && downloadedSet.has(upstream.toLowerCase())
-        ? upstream
-        : null;
-    },
-    [upstreamOf, downloadedSet],
+    (id: string): string | null =>
+      aliasesOf(id).find((alias) => downloadedSet.has(alias.toLowerCase())) ??
+      null,
+    [aliasesOf, downloadedSet],
   );
 
   // The torn ones, kept apart so a Hub row can mark a partial rather than show it as complete
@@ -4697,7 +4696,10 @@ export function HubModelPicker({
       // Seeds included: recommendedIds hides downloaded models, which the unfiltered Recommended
       // list still paints, so without them a curated pick vanishes from search once on disk.
       searchableRecommendedIds(catalogSeedIds, recommendedIds)
-        .filter((id) => normalizeForSearch(id).includes(q))
+        // A mirror row also answers to its vendor id.
+        .filter((id) =>
+          aliasesOf(id).some((alias) => normalizeForSearch(alias).includes(q)),
+        )
         .filter((id) =>
           matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
         )
@@ -4715,6 +4717,7 @@ export function HubModelPicker({
     debouncedQuery,
     catalogSeedIds,
     recommendedIds,
+    aliasesOf,
     formatFilter,
     isKnownGgufRepo,
     fitOnDeviceOnly,
@@ -7222,7 +7225,7 @@ export function HubModelPicker({
                                 activeGgufVariant,
                                 id,
                                 isG ? "required" : "none",
-                                upstreamOf(id),
+                                aliasesOf(id),
                               )}
                               optionProps={hubModelList.getOptionProps(
                                 optionKey,
@@ -7336,7 +7339,7 @@ export function HubModelPicker({
                               activeGgufVariant,
                               id,
                               isKnownGgufRepo(id) ? "required" : "none",
-                              upstreamOf(id),
+                              aliasesOf(id),
                             )}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
@@ -7465,7 +7468,7 @@ export function HubModelPicker({
                                 activeGgufVariant,
                                 id,
                                 isSearchGguf ? "required" : "none",
-                                upstreamOf(id),
+                                aliasesOf(id),
                               )}
                               optionProps={hubModelList.getOptionProps(
                                 optionKey,

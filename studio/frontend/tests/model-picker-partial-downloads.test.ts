@@ -522,9 +522,15 @@ test("a partial never reaches the complete-download lookup", () => {
   assert.ok(PICKERS.includes("isDownloaded: cached !== null,"));
   const lookup = PICKERS.slice(PICKERS.indexOf("const cachedIdFor = useCallback("));
   assert.match(
-    lookup.slice(0, lookup.indexOf("[catalog, downloadedSet]")),
-    /downloadedSet\.has\(id\.toLowerCase\(\)\)[\s\S]*downloadedSet\.has\(upstream\.toLowerCase\(\)\)/,
-    "both ids are checked against the complete-download set",
+    lookup.slice(0, lookup.indexOf("[aliasesOf, downloadedSet]")),
+    /aliasesOf\(id\)\.find\(\(alias\) => downloadedSet\.has\(alias\.toLowerCase\(\)\)\)/,
+    "every alias is checked against the complete-download set",
+  );
+  const aliases = PICKERS.slice(PICKERS.indexOf("const aliasesOf = useCallback("));
+  assert.match(
+    aliases.slice(0, aliases.indexOf("[catalog]")),
+    /\[id, artifact\.repoId, artifact\.upstreamRepoId\]/,
+    "a row, its mirror and the vendor repo are all aliases",
   );
 });
 
