@@ -514,12 +514,15 @@ def is_compile_failure(exc: BaseException) -> bool:
         import torch
     except Exception:  # noqa: BLE001 - no torch, nothing compiled
         return False
-    oom = getattr(torch, "OutOfMemoryError", None)
+    from .diffusion_batched import is_oom_error
+
     seen = set()
     cur: Optional[BaseException] = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
-        if oom is not None and isinstance(cur, oom):
+        # The batch backoff's own classifier (class name or "out of memory" message), plus backend-specific
+        # subclasses such as OutOfMemoryError_: anywhere in the chain means the OOM path must see it.
+        if is_oom_error(cur) or any(k.__name__.startswith("OutOfMemory") for k in type(cur).__mro__):
             return False
         cur = cur.__cause__ or cur.__context__
     kinds: list = []

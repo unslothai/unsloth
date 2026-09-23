@@ -1254,6 +1254,36 @@ def test_settle_fallback_is_a_noop_without_a_failure(monkeypatch):
     assert state.speed_optims == ("compiled",)
 
 
+class _BackendOutOfMemory(RuntimeError):
+    pass
+
+
+_BackendOutOfMemory.__name__ = "OutOfMemoryError_"
+
+
+@pytest.mark.parametrize("inner", ["message", "backend_class"])
+def test_noncanonical_oom_under_a_compile_error_is_not_swallowed(monkeypatch, inner):
+    # A compile-time allocation failure can surface as a plain RuntimeError("... out of memory ...") or a
+    # backend-specific OutOfMemoryError_ under BackendCompilerFailed; the batch backoff must still see it.
+    _stub_torch_compile_errors(monkeypatch)
+
+    def fails(x):
+        cause = RuntimeError("HIP out of memory. Tried to allocate 2.00 GiB") if inner == "message" else (
+            _BackendOutOfMemory("allocation failed"))
+        try:
+            raise cause
+        except RuntimeError as err:
+            raise _BackendCompilerFailed("autotune failed") from err
+
+    block = _Block(fails)
+    dit = _Dit([block])
+    ds_mod.guard_compiled_blocks(dit)
+    with pytest.raises(_BackendCompilerFailed):
+        block(1)
+    assert block.eager_calls == 0
+    assert ds_mod.compile_fallback_error(types.SimpleNamespace(transformer = dit)) is None
+
+
 @pytest.mark.parametrize("kind", ["runtime", "oom"])
 def test_non_compile_errors_are_not_swallowed(monkeypatch, kind):
     # Only a failure while BUILDING the graph is safe to retry eagerly. A kernel error, and an OOM even when inductor
