@@ -409,8 +409,11 @@ export function useRagDocuments(
     }
     return () => {
       // Preserve in-flight tracking when cleanup is the materialization flip,
-      // not a real switch/unmount.
-      if (uploadInFlightRef.current) return;
+      // not a real switch/unmount. Leaving no scope is that flip even once the
+      // upload has finished: React can commit the new id after the POST returned,
+      // and the only jobs tracked then are ones that upload started for it. A
+      // real switch aborts in the setup above, an unmount in the unmount effect.
+      if (uploadInFlightRef.current || scopeKey === null) return;
       for (const controller of jobs.values()) controller.abort();
       jobs.clear();
     };

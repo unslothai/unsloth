@@ -36,8 +36,9 @@ const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 function harness(
   options: {
     filename?: string;
-    events?: () => AsyncGenerator<JobEvent>;
+    events?: (jobId: string, signal?: AbortSignal) => AsyncGenerator<JobEvent>;
     getJob?: () => Promise<IndexJob>;
+    list?: () => Promise<RagDocument[]>;
   } = {},
 ) {
   const slots: unknown[] = [];
@@ -51,7 +52,7 @@ function harness(
     jobId: "job",
     filename: options.filename ?? "report.pdf",
   };
-  const lister = async () => [];
+  const lister = options.list ?? (async () => []);
   let scope: RagDocumentScope | null = { type: "thread", threadId: "thread" };
   const react = {
     useRef(value: unknown) {
@@ -298,6 +299,67 @@ test("an upload begun without a scope stops at the chat the user left", async ()
     await flush();
     assert.deepEqual(app.uploads, [], "posted into a chat the user had left");
     assert.deepEqual(app.render().documents, []);
+  } finally {
+    app.dispose();
+  }
+});
+
+test("a new chat's id committed after its upload finished keeps tracking the job", async () => {
+  const indexed = deferred<void>();
+  let done = false;
+  let signal: AbortSignal | undefined;
+  const app = harness({
+    list: async () => [
+      {
+        id: "doc",
+        threadId: "thread",
+        filename: "report.pdf",
+        status: done ? "completed" : "running",
+        managed: false,
+        numChunks: done ? 10 : 0,
+      },
+    ],
+    events: async function* (_jobId, streamSignal) {
+      signal = streamSignal;
+      yield { type: "progress", progress: 0.4, stage: "captioning" };
+      await new Promise<void>((resolve, reject) => {
+        indexed.promise.then(resolve);
+        streamSignal?.addEventListener("abort", () =>
+          reject(new DOMException("Fetch is aborted", "AbortError")),
+        );
+      });
+      done = true;
+      yield { type: "complete", num_chunks: 10 };
+    },
+  });
+  try {
+    app.setScope(null);
+    let hook = app.render();
+    await flush();
+    // The chat materializes, and React is late to commit its id: the POST has
+    // returned and tracking started before the scope change reaches the hook.
+    await hook.upload([report()], async () => ({
+      type: "thread",
+      threadId: "thread",
+    }));
+    await flush();
+    assert.equal(app.render().uploading, false);
+    assert.equal(signal?.aborted, false, "the job was never tracked");
+    app.setScope({ type: "thread", threadId: "thread" });
+    hook = app.render();
+    await flush();
+    assert.equal(
+      signal?.aborted,
+      false,
+      "the scope arriving for the new chat aborted its own upload's job",
+    );
+    indexed.resolve();
+    await flush();
+    await flush();
+    hook = app.render();
+    assert.equal(hook.documents[0]?.status, "completed");
+    assert.equal(hook.hasIndexing, false);
+    assert.deepEqual(app.errors, []);
   } finally {
     app.dispose();
   }
