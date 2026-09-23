@@ -2716,11 +2716,7 @@ def _repair_orphan_tool_results(messages: list) -> list:
 
     for message in messages:
         if isinstance(message, dict) and message.get("role") == "tool":
-            previous_role = (
-                out[-1].get("role")
-                if out and isinstance(out[-1], dict)
-                else None
-            )
+            previous_role = out[-1].get("role") if out and isinstance(out[-1], dict) else None
             if previous_role not in ("assistant", "tool"):
                 call_id = message.get("tool_call_id") or f"replayed_tool_{len(out)}"
                 tool_name = message.get("name") or "tool"
