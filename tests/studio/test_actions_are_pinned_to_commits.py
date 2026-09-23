@@ -291,11 +291,7 @@ def test_an_action_is_pinned_to_one_sha_everywhere_it_is_used(repo):
     Not a security property on its own, but it is how a half-finished upgrade shows up,
     and a stale copy is the one that keeps an already-fixed bug alive.
     """
-    revs = {
-        rev
-        for _, _, _, r, rev in _references()
-        if _owner_repo(r) == repo and _SHA.match(rev)
-    }
+    revs = {rev for _, _, _, r, rev in _references() if _owner_repo(r) == repo and _SHA.match(rev)}
     if len(revs) <= 1:
         return
     if repo in DELIBERATELY_SPLIT:

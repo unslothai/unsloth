@@ -422,9 +422,9 @@ class TestBuildShRocm:
         # and would have forced the next person to either unpin the action or weaken the
         # check. Comments and the `runs-on` image name are dropped first; everything the
         # workflow actually executes still has to be free of it.
-        meaningful = "\n".join(
-            line.split("#", 1)[0] for line in body.splitlines()
-        ).replace("ubuntu-22.04", "")
+        meaningful = "\n".join(line.split("#", 1)[0] for line in body.splitlines()).replace(
+            "ubuntu-22.04", ""
+        )
         assert "6.2" not in meaningful
         # per RUN on main: a sha would still pair a scheduled run with a dispatch on
         # an unchanged main, and the group keeps only one pending run

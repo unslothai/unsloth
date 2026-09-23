@@ -152,56 +152,53 @@ def _call_sites(path: Path, target: str) -> list[dict]:
     sites: list = []
     jobs = doc.get("jobs") if isinstance(doc, dict) else None
     scoped = (
-        [(str(jid), job) for jid, job in jobs.items()]
-        if isinstance(jobs, dict)
-        else [("", doc)]
+        [(str(jid), job) for jid, job in jobs.items()] if isinstance(jobs, dict) else [("", doc)]
     )
     for job_id, container in scoped:
-      for mapping in _mappings(container):
-        value = mapping.get("uses")
-        if not isinstance(value, str):
-            continue
-        ref = value.strip()
-        if not ref.startswith("./"):
-            continue
-        # Compared as the FULL local reference when one is given, because two actions
-        # may share a directory name: `./.github/actions/a/cache` and
-        # `./.github/actions/b/cache` both end in `cache`, so matching on the last
-        # component pooled their call sites and invented one action's value for the
-        # other. A bare name is still accepted, which is what the predicate self-tests
-        # and the shell-head narrowing pass.
-        full = ref[2:].rstrip("/") if ref.startswith("./") else ref.rstrip("/")
-        # `./repo/.github/actions/cache` names the same action as
-        # `./.github/actions/cache`; reachability already strips that runtime prefix and
-        # this comparison did not, so literal inputs passed through the prefixed form
-        # were never recovered and the key stayed undecidable.
-        segments = full.split("/")
-        if ".github" in segments[1:]:
-            full = "/".join(segments[segments.index(".github"):])
-        if "/" in target:
-            if full != target and PurePosixPath(full).parent.as_posix() != target:
+        for mapping in _mappings(container):
+            value = mapping.get("uses")
+            if not isinstance(value, str):
                 continue
-        else:
-            stem = full.split("/")[-1]
-            if stem != target and PurePosixPath(stem).stem != PurePosixPath(target).stem:
+            ref = value.strip()
+            if not ref.startswith("./"):
                 continue
-        with_ = mapping.get("with")
-        # The CALLER's scope travels with the call site, because a value it delegates
-        # names a step of the caller's job, not of the target. Resolving
-        # `${{ steps.pip-cache.outputs.key }}` in the target's scope looked for a step
-        # the target does not have, so this repository's own pip-cache-save read as
-        # unresolvable and failed the live tree.
-        sites.append((
-            with_ if isinstance(with_, dict) else {},
-            (path.as_posix(), job_id),
-        ))
+            # Compared as the FULL local reference when one is given, because two actions
+            # may share a directory name: `./.github/actions/a/cache` and
+            # `./.github/actions/b/cache` both end in `cache`, so matching on the last
+            # component pooled their call sites and invented one action's value for the
+            # other. A bare name is still accepted, which is what the predicate self-tests
+            # and the shell-head narrowing pass.
+            full = ref[2:].rstrip("/") if ref.startswith("./") else ref.rstrip("/")
+            # `./repo/.github/actions/cache` names the same action as
+            # `./.github/actions/cache`; reachability already strips that runtime prefix and
+            # this comparison did not, so literal inputs passed through the prefixed form
+            # were never recovered and the key stayed undecidable.
+            segments = full.split("/")
+            if ".github" in segments[1:]:
+                full = "/".join(segments[segments.index(".github") :])
+            if "/" in target:
+                if full != target and PurePosixPath(full).parent.as_posix() != target:
+                    continue
+            else:
+                stem = full.split("/")[-1]
+                if stem != target and PurePosixPath(stem).stem != PurePosixPath(target).stem:
+                    continue
+            with_ = mapping.get("with")
+            # The CALLER's scope travels with the call site, because a value it delegates
+            # names a step of the caller's job, not of the target. Resolving
+            # `${{ steps.pip-cache.outputs.key }}` in the target's scope looked for a step
+            # the target does not have, so this repository's own pip-cache-save read as
+            # unresolvable and failed the live tree.
+            sites.append(
+                (
+                    with_ if isinstance(with_, dict) else {},
+                    (path.as_posix(), job_id),
+                )
+            )
     return sites
 
 
-
-_STEP_OUTPUT = re.compile(
-    r"\$\{\{\s*steps\.([A-Za-z_][\w-]*)\.outputs\.([A-Za-z_][\w-]*)\s*\}\}"
-)
+_STEP_OUTPUT = re.compile(r"\$\{\{\s*steps\.([A-Za-z_][\w-]*)\.outputs\.([A-Za-z_][\w-]*)\s*\}\}")
 
 # Which outputs an `actions/cache` step publishes from the `key:` it was given.
 _CACHE_STEP_OUTPUTS = frozenset({"cache-primary-key", "cache-matched-key", "key"})
@@ -227,9 +224,7 @@ def _recovered_outputs(text: str) -> set:
     assigned: dict = {}
     for line in text.splitlines():
         stripped = line.split("#", 1)[0].strip()
-        for name, value in re.findall(
-            r"^([A-Za-z_]\w*)=[\"']?([^\"'\n]*)", stripped
-        ):
+        for name, value in re.findall(r"^([A-Za-z_]\w*)=[\"']?([^\"'\n]*)", stripped):
             head = value.split("$", 1)[0]
             if head and "%" not in head:
                 assigned[name] = head
@@ -248,9 +243,7 @@ def _recovered_outputs(text: str) -> set:
         stripped = line.split("#", 1)[0]
         if "GITHUB_OUTPUT" not in stripped:
             continue
-        for name, value in re.findall(
-            r"\b([A-Za-z_][\w-]*)=([^\s'\"]*)", stripped
-        ):
+        for name, value in re.findall(r"\b([A-Za-z_][\w-]*)=([^\s'\"]*)", stripped):
             if not value or "%" in value:
                 continue
             # Literal, or beginning with a literal head once known shell variables are
@@ -260,11 +253,7 @@ def _recovered_outputs(text: str) -> set:
     return found
 
 
-
-
 _CACHE_KEY_OUTPUTS = ("cache-primary-key", "cache-matched-key", "key")
-
-
 
 
 def _cache_withs(node):
@@ -346,65 +335,64 @@ def _producer_steps(path: Path) -> dict:
         # An action definition has no jobs; its steps share one scope.
         scopes = [("", doc)]
     for job_id, scope in scopes:
-      for mapping in _mappings(scope):
-        step_id = mapping.get("id")
-        if not isinstance(step_id, str):
-            continue
-        ident = (path.as_posix(), job_id, step_id)
-        # A step that declares its own `key:` publishes it as an output
-        # (`cache-primary-key`), so the namespace is right there in the YAML. This is
-        # how `actions/cache/restore` steps hand a key onward, and reading only `run:`
-        # bodies and local composites declared them unreadable.
-        with_ = mapping.get("with")
-        uses_value = str(mapping.get("uses") or "")
-        if (
-            isinstance(with_, dict)
-            and with_.get("key") is not None
-            and uses_value.strip().split("@")[0].casefold().startswith("actions/cache")
-        ):
-            # Only for an action whose published key output IS this input. Marking every
-            # id-bearing step with a `with.key` readable was too generous: a local action
-            # may take an unrelated `key` input while emitting its own `outputs.key` from
-            # a command this check cannot read, and the delegated key was then dismissed
-            # with nothing recovered.
-            out[ident] = set(_CACHE_STEP_OUTPUTS)
-            continue
-        body = mapping.get("run")
-        if isinstance(body, str):
-            out[ident] = _recovered_outputs(body)
-            continue
-        # A step may produce its output by CALLING a local action rather than by running
-        # a shell body -- which is how this repository's own pip-cache-restore works, and
-        # reading `run:` steps alone declared that producer unreadable and failed the
-        # live tree. The action's own shell is what has to be readable.
-        uses = mapping.get("uses")
-        if not isinstance(uses, str) or not uses.strip().startswith("./"):
-            continue
-        # The repository root, found by walking up to `.github` rather than counting
-        # levels. A workflow sits at `.github/workflows/x.yml` and an action at
-        # `.github/actions/<name>/action.yml`, one level deeper, so a fixed three-up
-        # landed inside `.github` for every action.
-        root = path.parent
-        for parent in path.parents:
-            if parent.name == ".github":
-                root = parent.parent
-                break
-        candidates = []
-        for target in _local_ref_candidates(uses, root):
-            candidates += [target / "action.yml", target / "action.yaml", target]
-        for candidate in candidates:
-            if not candidate.is_file():
+        for mapping in _mappings(scope):
+            step_id = mapping.get("id")
+            if not isinstance(step_id, str):
                 continue
-            text = candidate.read_text(ENC)
-            # YAML-declared keys count as recovered too, and are in fact the usual case:
-            # this repository's frontend-dist-restore hands out
-            # `steps.restore.outputs.cache-primary-key`, whose value is the `key:` the
-            # action declares. Requiring a SHELL-built key declared that producer
-            # unreadable and failed the live tree on a correct configuration.
-            out[ident] = _local_action_outputs(candidate, text)
-            break
+            ident = (path.as_posix(), job_id, step_id)
+            # A step that declares its own `key:` publishes it as an output
+            # (`cache-primary-key`), so the namespace is right there in the YAML. This is
+            # how `actions/cache/restore` steps hand a key onward, and reading only `run:`
+            # bodies and local composites declared them unreadable.
+            with_ = mapping.get("with")
+            uses_value = str(mapping.get("uses") or "")
+            if (
+                isinstance(with_, dict)
+                and with_.get("key") is not None
+                and uses_value.strip().split("@")[0].casefold().startswith("actions/cache")
+            ):
+                # Only for an action whose published key output IS this input. Marking every
+                # id-bearing step with a `with.key` readable was too generous: a local action
+                # may take an unrelated `key` input while emitting its own `outputs.key` from
+                # a command this check cannot read, and the delegated key was then dismissed
+                # with nothing recovered.
+                out[ident] = set(_CACHE_STEP_OUTPUTS)
+                continue
+            body = mapping.get("run")
+            if isinstance(body, str):
+                out[ident] = _recovered_outputs(body)
+                continue
+            # A step may produce its output by CALLING a local action rather than by running
+            # a shell body -- which is how this repository's own pip-cache-restore works, and
+            # reading `run:` steps alone declared that producer unreadable and failed the
+            # live tree. The action's own shell is what has to be readable.
+            uses = mapping.get("uses")
+            if not isinstance(uses, str) or not uses.strip().startswith("./"):
+                continue
+            # The repository root, found by walking up to `.github` rather than counting
+            # levels. A workflow sits at `.github/workflows/x.yml` and an action at
+            # `.github/actions/<name>/action.yml`, one level deeper, so a fixed three-up
+            # landed inside `.github` for every action.
+            root = path.parent
+            for parent in path.parents:
+                if parent.name == ".github":
+                    root = parent.parent
+                    break
+            candidates = []
+            for target in _local_ref_candidates(uses, root):
+                candidates += [target / "action.yml", target / "action.yaml", target]
+            for candidate in candidates:
+                if not candidate.is_file():
+                    continue
+                text = candidate.read_text(ENC)
+                # YAML-declared keys count as recovered too, and are in fact the usual case:
+                # this repository's frontend-dist-restore hands out
+                # `steps.restore.outputs.cache-primary-key`, whose value is the `key:` the
+                # action declares. Requiring a SHELL-built key declared that producer
+                # unreadable and failed the live tree on a correct configuration.
+                out[ident] = _local_action_outputs(candidate, text)
+                break
     return out
-
 
 
 def _local_action_outputs(action: Path, text: str) -> set:
@@ -435,12 +423,18 @@ def _local_action_outputs(action: Path, text: str) -> set:
             if match.group(2) in inner_by_id.get(match.group(1), set()):
                 recovered.add(str(name))
         return recovered
-    return set(_CACHE_STEP_OUTPUTS) if (
-        _extract_cache_keys(action) or _recovered_outputs(text)
-    ) else set()
+    return (
+        set(_CACHE_STEP_OUTPUTS)
+        if (_extract_cache_keys(action) or _recovered_outputs(text))
+        else set()
+    )
 
 
-def _delegation_is_read(expression: str, producers: dict, scope = None) -> bool:
+def _delegation_is_read(
+    expression: str,
+    producers: dict,
+    scope = None,
+) -> bool:
     """Was the step this expression names one whose key output we could read?
 
     An expression naming no step at all -- `${{ needs.build.outputs.key }}` -- is not
@@ -459,7 +453,11 @@ def _delegation_is_read(expression: str, producers: dict, scope = None) -> bool:
     return bool(seen) and all(output in names for names in seen)
 
 
-def _resolved_inputs(caller_paths: list, target: str, _depth: int = 0) -> dict:
+def _resolved_inputs(
+    caller_paths: list,
+    target: str,
+    _depth: int = 0,
+) -> dict:
     """{input: (literal values, every call site resolved)} over all callers of `target`.
 
     Callers are read from every PR-reachable document, workflows AND composites, not
@@ -529,9 +527,7 @@ def _resolved_inputs(caller_paths: list, target: str, _depth: int = 0) -> dict:
                     #
                     # Recorded for the caller to resolve rather than followed here, which
                     # would mean recursing while already inside the resolution it needs.
-                    forwarded_inputs.setdefault(name, set()).add(
-                        (forwarded.group(1), site_scope)
-                    )
+                    forwarded_inputs.setdefault(name, set()).add((forwarded.group(1), site_scope))
                     continue
                 # An explicit value this check cannot expand, such as
                 # `${{ matrix.cache_key }}`. No default can settle it, because the caller
@@ -557,7 +553,11 @@ def _resolved_inputs(caller_paths: list, target: str, _depth: int = 0) -> dict:
             else:
                 dynamic += 1
         values[name] = (
-            literals, dynamic == 0 and omitted == 0, omitted, dynamic, delegated,
+            literals,
+            dynamic == 0 and omitted == 0,
+            omitted,
+            dynamic,
+            delegated,
         )
     return values
 
@@ -597,7 +597,11 @@ def _prefix_candidates(key: str) -> list[str]:
     which is comparable. Anything still expression-led afterwards is genuinely
     undecidable and is reported rather than dropped.
     """
-    keys = [_RUNNER_OS_EXPR.sub(v, key) for v in _RUNNER_OS_VALUES] if _RUNNER_OS_EXPR.search(key) else [key]
+    keys = (
+        [_RUNNER_OS_EXPR.sub(v, key) for v in _RUNNER_OS_VALUES]
+        if _RUNNER_OS_EXPR.search(key)
+        else [key]
+    )
     return [h for h in (_literal_prefix(k) for k in keys) if h]
 
 
@@ -606,10 +610,19 @@ def _is_truncated(key: str) -> bool:
 
     Only then can a publish prefix LONGER than the head still reach the runtime key.
     """
-    keys = [_RUNNER_OS_EXPR.sub(v, key) for v in _RUNNER_OS_VALUES] if _RUNNER_OS_EXPR.search(key) else [key]
+    keys = (
+        [_RUNNER_OS_EXPR.sub(v, key) for v in _RUNNER_OS_VALUES]
+        if _RUNNER_OS_EXPR.search(key)
+        else [key]
+    )
     return any("${{" in k for k in keys)
 
-def _prefix_compatible(pr_head: str, publish_prefix: str, truncated: bool = True) -> bool:
+
+def _prefix_compatible(
+    pr_head: str,
+    publish_prefix: str,
+    truncated: bool = True,
+) -> bool:
     """Can a key with this literal head be restored by this prefix?
 
     `restore-keys` matching is left-anchored and exact, with no globbing, so a publish
@@ -659,7 +672,9 @@ def _shell_output_keys(text: str) -> list:
 
 
 def _shell_built_key_prefixes(
-    text: str, inputs: set | None = None, all_literal: bool = True,
+    text: str,
+    inputs: set | None = None,
+    all_literal: bool = True,
 ) -> list[str]:
     """Literal key heads assembled in a composite action's shell, not in its YAML.
 
@@ -714,9 +729,7 @@ def _shell_built_key_prefixes(
     # dismissed as delegation, so a publish `restore-keys: shared-pip-` had nothing to be
     # compared against.
     for value in sorted(inputs or ()):
-        substituted = re.sub(
-            r"\$\{\s*[\w-]+\s*\}|\$\{\{\s*inputs\.[\w-]+\s*\}\}", value, text
-        )
+        substituted = re.sub(r"\$\{\s*[\w-]+\s*\}|\$\{\{\s*inputs\.[\w-]+\s*\}\}", value, text)
         for found in pattern.findall(substituted) + re.findall(
             r"""echo\s+["']?(?:key|prefix)=([A-Za-z0-9][A-Za-z0-9._-]*?-)(?=\$|\{)""",
             substituted,
@@ -732,10 +745,6 @@ def _shell_built_key_prefixes(
     # An unresolved call site means the broad head still has to be carried, or narrowing
     # would silently drop the namespace that caller writes.
     return heads + [f"{h}{v}-" for h in heads for v in sorted(inputs or ())]
-
-
-
-
 
 
 def _target_name(path: Path) -> str:
@@ -783,7 +792,10 @@ def _namespaces_by_target(callers: list, targets: list) -> dict:
 
 
 def _expand_key(
-    key: str, namespaces: dict, producers: dict | None = None, scope = None,
+    key: str,
+    namespaces: dict,
+    producers: dict | None = None,
+    scope = None,
 ) -> tuple:
     """(every literal key this can take, whether that list is complete).
 
@@ -857,9 +869,7 @@ def _expand_key(
     for k in expanded:
         residue = k
         for name in delegated_inputs:
-            residue = re.sub(
-                r"\$\{\{\s*inputs\." + re.escape(name) + r"\s*\}\}", "", residue
-            )
+            residue = re.sub(r"\$\{\{\s*inputs\." + re.escape(name) + r"\s*\}\}", "", residue)
         if "${{" in residue:
             complete = False
             break
@@ -964,7 +974,7 @@ def _local_ref_candidates(ref: str, root: Path) -> list:
     out = [root / ref]
     parts = ref.split("/")
     if ".github" in parts[1:]:
-        out.append(root / "/".join(parts[parts.index(".github"):]))
+        out.append(root / "/".join(parts[parts.index(".github") :]))
     return out
 
 
@@ -1391,9 +1401,7 @@ def main() -> int:
         _pr_reachable_action_dirs(workflows_dir, [pth for pth, _ in publish_triggered])
     ):
         publish_triggered.append((action_path, _extract_cache_keys(action_path)))
-        publish_restore_prefixes.append(
-            (action_path, _extract_restore_key_prefixes(action_path))
-        )
+        publish_restore_prefixes.append((action_path, _extract_restore_key_prefixes(action_path)))
 
     # Composite keys belong in the exact comparison as well, not only the prefix one. A
     # PR-reachable action declaring `key: shared-key`, against a publish workflow using
@@ -1403,9 +1411,7 @@ def main() -> int:
     # namespace its callers actually produce before either comparison runs.
     input_namespaces = _input_namespaces(pr_callers, pr_reachable)
     publish_callers = [pth for pth, _ in publish_triggered]
-    publish_reachable = sorted(
-        _pr_reachable_action_dirs(workflows_dir, publish_callers)
-    )
+    publish_reachable = sorted(_pr_reachable_action_dirs(workflows_dir, publish_callers))
     publish_namespaces = _input_namespaces(publish_callers, publish_reachable)
     # The publish side builds keys in shell too, and its heads were never collected:
     # `_shell_built_key_prefixes` ran over PR-reachable documents only. A publish
@@ -1419,9 +1425,7 @@ def main() -> int:
     pub_scope_list: dict = {}
     for pth in publish_callers + publish_reachable:
         for jid, key in _scoped_cache_keys(pth):
-            pub_scope_list.setdefault((pth.as_posix(), key), []).append(
-                (pth.as_posix(), jid)
-            )
+            pub_scope_list.setdefault((pth.as_posix(), key), []).append((pth.as_posix(), jid))
         text = pth.read_text(ENC)
         publish_shell.update(_shell_built_key_prefixes(text))
         publish_shell.update(_shell_output_keys(text))
@@ -1449,8 +1453,7 @@ def main() -> int:
     pr_sites += [({}, k, None) for k in sorted(shell_built | shell_literals)]
     for target, namespace in pr_by_target.items():
         pr_sites += [
-            (namespace, k, (target.as_posix(), jid))
-            for jid, k in _scoped_cache_keys(target)
+            (namespace, k, (target.as_posix(), jid)) for jid, k in _scoped_cache_keys(target)
         ]
 
     pr_keys: set = set()
@@ -1505,14 +1508,10 @@ def main() -> int:
                 ),
                 scopes[0],
             )
-            literals, complete = _expand_key(
-                raw, pub_ns, publish_producers, pub_scope
-            )
+            literals, complete = _expand_key(raw, pub_ns, publish_producers, pub_scope)
             if _DELEGATED_KEY.fullmatch(raw.strip()):
                 # Compared as the heads its own shell produced, rather than skipped.
-                read = _delegation_is_read(
-                    raw.strip(), publish_producers, pub_scope
-                )
+                read = _delegation_is_read(raw.strip(), publish_producers, pub_scope)
                 literals = sorted(publish_shell) if read else [raw.strip()]
                 complete = read
             # Identical spellings first. Two keys written the same way around an
@@ -1582,11 +1581,7 @@ def main() -> int:
                         if (
                             not heads
                             or not fixed
-                            or any(
-                                h.startswith(f) or f.startswith(h)
-                                for h in heads
-                                for f in fixed
-                            )
+                            or any(h.startswith(f) or f.startswith(h) for h in heads for f in fixed)
                         ):
                             findings.append(
                                 f"{pub_path.name}: cache key {k!r} and the PR-reachable "
@@ -1641,8 +1636,9 @@ def main() -> int:
             vals, resolved = input_namespaces.get(field, (set(), False))
             heads = [h for v in sorted(vals) for h in _prefix_candidates(v)]
             pr_heads.update(heads)
-            truncated_heads.update(h for v in sorted(vals) if _is_truncated(v)
-                                   for h in _prefix_candidates(v))
+            truncated_heads.update(
+                h for v in sorted(vals) if _is_truncated(v) for h in _prefix_candidates(v)
+            )
             if not resolved:
                 # Some call site passes a value this check cannot expand, such as
                 # `${{ matrix.cache_name }}`, or omits the input so the action default
@@ -1670,9 +1666,7 @@ def main() -> int:
             prefix_ns = publish_by_target.get(pub_path, {})
             expanded_prefixes, _ok = _expand_key(prefix, prefix_ns)
             pub_heads = [
-                head
-                for candidate in expanded_prefixes
-                for head in _prefix_candidates(candidate)
+                head for candidate in expanded_prefixes for head in _prefix_candidates(candidate)
             ]
             if not pub_heads:
                 findings.append(

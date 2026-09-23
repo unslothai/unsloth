@@ -1923,9 +1923,9 @@ def test_an_omission_before_the_first_literal_is_counted(tmp_path):
         "    - id: probe\n"
         "      shell: bash\n"
         "      run: |\n"
-        "        name=\"${{ inputs.name }}\"\n"
-        "        prefix=\"pipx-${name}-\"\n"
-        "        echo \"key=${prefix}abc\" >> \"$GITHUB_OUTPUT\"\n"
+        '        name="${{ inputs.name }}"\n'
+        '        prefix="pipx-${name}-"\n'
+        '        echo "key=${prefix}abc" >> "$GITHUB_OUTPUT"\n'
     )
     # The omitting call site comes FIRST, which is the ordering that used to be lost.
     (wf / "pr-build.yml").write_text(
@@ -1982,9 +1982,9 @@ def test_a_prefix_that_opens_with_a_variable_is_recovered(tmp_path):
         "    - id: probe\n"
         "      shell: bash\n"
         "      run: |\n"
-        "        name=\"${{ inputs.name }}\"\n"
-        "        prefix=\"${name}-pip-${{ runner.os }}-\"\n"
-        "        echo \"key=${prefix}abc\" >> \"$GITHUB_OUTPUT\"\n"
+        '        name="${{ inputs.name }}"\n'
+        '        prefix="${name}-pip-${{ runner.os }}-"\n'
+        '        echo "key=${prefix}abc" >> "$GITHUB_OUTPUT"\n'
     )
     (wf / "pr-build.yml").write_text(
         "name: pr-build\n"
@@ -2381,8 +2381,7 @@ def test_runner_os_is_expanded_before_the_exact_comparison(tmp_path):
     )
     proc = _run(wf)
     assert proc.returncode == 1, (
-        f"both jobs write `shared-Linux` on a Linux runner:\n{proc.stdout}\n"
-        f"{proc.stderr}"
+        f"both jobs write `shared-Linux` on a Linux runner:\n{proc.stdout}\n" f"{proc.stderr}"
     )
 
 
@@ -2520,10 +2519,7 @@ def test_a_reusable_workflow_is_named_by_its_file_not_its_directory():
     # apart: `.github/actions/a/cache` and `.github/actions/b/cache` both end in
     # `cache`, so their call sites pooled and one action's value was invented for the
     # other.
-    assert (
-        lint._target_name(Path(".github/workflows/reuse.yml"))
-        == ".github/workflows/reuse.yml"
-    )
+    assert lint._target_name(Path(".github/workflows/reuse.yml")) == ".github/workflows/reuse.yml"
     assert (
         lint._target_name(Path(".github/actions/pip-cache/action.yml"))
         == ".github/actions/pip-cache"
@@ -2610,9 +2606,9 @@ def test_two_identically_spelled_unresolved_keys_collide(tmp_path):
         "jobs:\n  publish:\n    runs-on: ubuntu-latest\n" + body
     )
     proc = _run(wf)
-    assert proc.returncode == 1, (
-        f"identical keys resolve identically:\n{proc.stdout}\n{proc.stderr}"
-    )
+    assert (
+        proc.returncode == 1
+    ), f"identical keys resolve identically:\n{proc.stdout}\n{proc.stderr}"
     assert "identically" in proc.stderr
 
 
@@ -2764,8 +2760,7 @@ def test_two_differently_spelled_unresolved_keys_are_paired(tmp_path):
     )
     proc = _run(wf)
     assert proc.returncode == 0, (
-        f"`shared-` and `wheels-only-` cannot become each other:\n{proc.stdout}\n"
-        f"{proc.stderr}"
+        f"`shared-` and `wheels-only-` cannot become each other:\n{proc.stdout}\n" f"{proc.stderr}"
     )
 
 
@@ -2785,7 +2780,7 @@ def test_a_delegated_key_whose_producer_was_not_read_stays_undecided(tmp_path):
         "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
         "    steps:\n"
         "      - id: make\n"
-        "        run: printf 'key=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        '        run: printf \'key=%s\\n\' "shared-$GITHUB_SHA" >> "$GITHUB_OUTPUT"\n'
         "      - uses: actions/cache@v4\n"
         "        with:\n          path: wheels\n"
         "          key: ${{ steps.make.outputs.key }}\n"
@@ -2959,7 +2954,7 @@ def test_one_readable_producer_does_not_vouch_for_an_unreadable_one(tmp_path):
         "        run: echo 'key=safe-key' >> \"$GITHUB_OUTPUT\"\n"
         # unreadable spelling, and this is the one whose value reaches the cache
         "      - id: make\n"
-        "        run: printf 'key=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        '        run: printf \'key=%s\\n\' "shared-$GITHUB_SHA" >> "$GITHUB_OUTPUT"\n'
         "      - uses: actions/cache/save@v4\n"
         "        with:\n          path: wheels\n"
         "          key: ${{ steps.make.outputs.key }}\n"
@@ -2989,32 +2984,33 @@ def test_a_producer_that_declares_its_key_inline_is_readable():
     # answer for an unreadable one.
     here = ("wf.yml", "build")
     producers = {("wf.yml", "build", "probe"): {"key"}}
-    assert lint._delegation_is_read(
-        "${{ steps.probe.outputs.key }}", producers, here
-    ) is True
-    assert lint._delegation_is_read(
-        "${{ steps.probe.outputs.key }}", {("wf.yml", "build", "probe"): set()}, here
-    ) is False
+    assert lint._delegation_is_read("${{ steps.probe.outputs.key }}", producers, here) is True
+    assert (
+        lint._delegation_is_read(
+            "${{ steps.probe.outputs.key }}", {("wf.yml", "build", "probe"): set()}, here
+        )
+        is False
+    )
     # Per OUTPUT, not per step: a step may write several, and recovering one says
     # nothing about the others.
-    assert lint._delegation_is_read(
-        "${{ steps.probe.outputs.danger }}", producers, here
-    ) is False
+    assert lint._delegation_is_read("${{ steps.probe.outputs.danger }}", producers, here) is False
     # The SAME id in a different job is a different step and vouches for nothing.
-    assert lint._delegation_is_read(
-        "${{ steps.probe.outputs.key }}", {("wf.yml", "other", "probe"): {"key"}}, here
-    ) is False
-    assert lint._delegation_is_read(
-        "${{ steps.probe.outputs.key }}", {("z.yml", "build", "probe"): {"key"}}, here
-    ) is False
+    assert (
+        lint._delegation_is_read(
+            "${{ steps.probe.outputs.key }}", {("wf.yml", "other", "probe"): {"key"}}, here
+        )
+        is False
+    )
+    assert (
+        lint._delegation_is_read(
+            "${{ steps.probe.outputs.key }}", {("z.yml", "build", "probe"): {"key"}}, here
+        )
+        is False
+    )
     # A step this check never saw is not evidence of anything.
-    assert lint._delegation_is_read(
-        "${{ steps.other.outputs.key }}", producers, here
-    ) is False
+    assert lint._delegation_is_read("${{ steps.other.outputs.key }}", producers, here) is False
     # Nor is a form that names no step at all.
-    assert lint._delegation_is_read(
-        "${{ needs.build.outputs.key }}", producers, here
-    ) is False
+    assert lint._delegation_is_read("${{ needs.build.outputs.key }}", producers, here) is False
 
 
 def test_a_readable_namesake_in_another_job_vouches_for_nothing(tmp_path):
@@ -3034,7 +3030,7 @@ def test_a_readable_namesake_in_another_job_vouches_for_nothing(tmp_path):
         "  first:\n    runs-on: ubuntu-latest\n"
         "    steps:\n"
         "      - id: probe\n"
-        "        run: printf 'key=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        '        run: printf \'key=%s\\n\' "shared-$GITHUB_SHA" >> "$GITHUB_OUTPUT"\n'
         "      - uses: actions/cache/save@v4\n"
         "        with:\n          path: wheels\n"
         "          key: ${{ steps.probe.outputs.key }}\n"
@@ -3077,7 +3073,7 @@ def test_an_inline_key_input_does_not_certify_an_unrelated_output(tmp_path):
         "runs:\n  using: composite\n  steps:\n"
         "    - id: inner\n"
         "      shell: bash\n"
-        "      run: printf 'key=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        '      run: printf \'key=%s\\n\' "shared-$GITHUB_SHA" >> "$GITHUB_OUTPUT"\n'
     )
     (wf / "pr-build.yml").write_text(
         "name: pr-build\n"
@@ -3211,7 +3207,7 @@ def test_a_commented_out_output_does_not_certify_a_producer(tmp_path):
         "      - id: make\n"
         "        run: |\n"
         "          # echo 'key=safe-key' >> \"$GITHUB_OUTPUT\"\n"
-        "          printf 'key=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        '          printf \'key=%s\\n\' "shared-$GITHUB_SHA" >> "$GITHUB_OUTPUT"\n'
         "      - uses: actions/cache/save@v4\n"
         "        with:\n          path: wheels\n"
         "          key: ${{ steps.make.outputs.key }}\n"
@@ -3251,9 +3247,7 @@ def test_an_unquoted_scalar_key_is_compared(tmp_path):
         "        with:\n          path: wheels\n          key: 123\n"
     )
     proc = _run(wf)
-    assert proc.returncode == 1, (
-        f"both workflows use the same key:\n{proc.stdout}\n{proc.stderr}"
-    )
+    assert proc.returncode == 1, f"both workflows use the same key:\n{proc.stdout}\n{proc.stderr}"
 
 
 def test_a_wrapper_forwarding_its_own_input_is_resolved(tmp_path):
@@ -3317,8 +3311,7 @@ def test_a_wrapper_forwarding_its_own_input_is_resolved(tmp_path):
     )
     proc = _run(wf)
     assert proc.returncode == 1, (
-        f"`prefix-safe` is exactly what the wrapper produces:\n{proc.stdout}\n"
-        f"{proc.stderr}"
+        f"`prefix-safe` is exactly what the wrapper produces:\n{proc.stdout}\n" f"{proc.stderr}"
     )
 
 
@@ -3340,7 +3333,7 @@ def test_one_readable_output_does_not_certify_another_from_the_same_step(tmp_pat
         "      - id: make\n"
         "        run: |\n"
         "          echo 'key=safe-key' >> \"$GITHUB_OUTPUT\"\n"
-        "          printf 'danger=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        '          printf \'danger=%s\\n\' "shared-$GITHUB_SHA" >> "$GITHUB_OUTPUT"\n'
         "      - uses: actions/cache/save@v4\n"
         "        with:\n          path: wheels\n"
         "          key: ${{ steps.make.outputs.danger }}\n"
@@ -3372,7 +3365,7 @@ def test_an_unrelated_assignment_does_not_certify_the_output(tmp_path):
         "      - id: make\n"
         "        run: |\n"
         '          safe_key="safe-${RANDOM}"\n'
-        "          printf 'key=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        '          printf \'key=%s\\n\' "shared-$GITHUB_SHA" >> "$GITHUB_OUTPUT"\n'
         "      - uses: actions/cache/save@v4\n"
         "        with:\n          path: wheels\n"
         "          key: ${{ steps.make.outputs.key }}\n"
@@ -3381,9 +3374,9 @@ def test_an_unrelated_assignment_does_not_certify_the_output(tmp_path):
         _publish_with_restore_keys("shared-pub", "            shared-\n")
     )
     proc = _run(wf)
-    assert proc.returncode == 1, (
-        f"the only line writing an output is the printf:\n{proc.stdout}\n{proc.stderr}"
-    )
+    assert (
+        proc.returncode == 1
+    ), f"the only line writing an output is the printf:\n{proc.stdout}\n{proc.stderr}"
 
 
 def test_two_publish_jobs_sharing_a_raw_key_keep_their_own_scopes(tmp_path):
@@ -3416,7 +3409,7 @@ def test_two_publish_jobs_sharing_a_raw_key_keep_their_own_scopes(tmp_path):
         "  second:\n    runs-on: ubuntu-latest\n"
         "    steps:\n"
         "      - id: make\n"
-        "        run: printf 'key=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        '        run: printf \'key=%s\\n\' "shared-$GITHUB_SHA" >> "$GITHUB_OUTPUT"\n'
         "      - uses: actions/cache/restore@v4\n"
         "        with:\n          path: wheels\n"
         "          key: ${{ steps.make.outputs.key }}\n"

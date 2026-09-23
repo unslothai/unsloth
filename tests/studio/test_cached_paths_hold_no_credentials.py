@@ -200,9 +200,7 @@ LOGIN_PATTERN_HOMES = {
     r"\bnpm\s+login\b": ("NPM_CONFIG_USERCONFIG",),
     r"\bcargo\s+login\b": ("CARGO_HOME",),
     r"\bdocker\s+login\b": ("DOCKER_CONFIG",),
-    r"\bgcloud\s+auth\s+(?:application-default\s+)?login\b": (
-        "GOOGLE_APPLICATION_CREDENTIALS",
-    ),
+    r"\bgcloud\s+auth\s+(?:application-default\s+)?login\b": ("GOOGLE_APPLICATION_CREDENTIALS",),
     r"\baws\s+configure\b": ("AWS_SHARED_CREDENTIALS_FILE",),
 }
 
@@ -324,7 +322,11 @@ def _step_envs(job):
     return out
 
 
-def _expand(value: str, env: dict, inputs: dict | None = None) -> str:
+def _expand(
+    value: str,
+    env: dict,
+    inputs: dict | None = None,
+) -> str:
     """Substitute `${{ env.X }}`, and `${{ inputs.X }}`, before comparing paths.
 
     `_normalise` deletes expressions wholesale, so `path: ${{ env.HF_HOME }}` reduced to
@@ -364,6 +366,7 @@ def _expand(value: str, env: dict, inputs: dict | None = None) -> str:
             break
     return value
 
+
 def _persisted_paths(job):
     """Every path this job writes to a cache or an artifact."""
     out = []
@@ -384,9 +387,11 @@ def _persisted_paths(job):
     return out
 
 
-
-
-def _reusable_jobs(job, env = None, inputs = None):
+def _reusable_jobs(
+    job,
+    env = None,
+    inputs = None,
+):
     """(steps, env, inputs) for a job that delegates to a local reusable workflow.
 
     `jobs.<id>.uses: ./.github/workflows/x.yml` has no `steps:` of its own, so the caller
@@ -423,16 +428,20 @@ def _reusable_jobs(job, env = None, inputs = None):
         # `path: ${{ inputs.path }}` to B gave B a self-referential value: the path and
         # the credential home both normalised away and the login plus cache was accepted
         # even though the outer caller supplied a concrete directory.
-        passed.update({
-            str(k): _expand(str(v), env or {}, inputs or {}) for k, v in with_.items()
-        })
+        passed.update({str(k): _expand(str(v), env or {}, inputs or {}) for k, v in with_.items()})
     out = []
     for _jid, inner in _jobs(doc):
         out.append((inner, _env_of(inner, doc), passed))
     return out
 
 
-def _units(job, doc, env = None, inputs = None, depth = 0):
+def _units(
+    job,
+    doc,
+    env = None,
+    inputs = None,
+    depth = 0,
+):
     """The independent runners this job's work lands on, as (job, env, inputs).
 
     A job is one runner, so a login in it and a cache save in it share a filesystem and
@@ -468,7 +477,6 @@ def _units(job, doc, env = None, inputs = None, depth = 0):
     return out
 
 
-
 def _ref_candidates(uses: str):
     """Every source-tree path a `./...` action reference could name.
 
@@ -486,13 +494,18 @@ def _ref_candidates(uses: str):
     bases = [REPO / ref]
     parts = ref.split("/")
     if ".github" in parts[1:]:
-        bases.append(REPO / "/".join(parts[parts.index(".github"):]))
+        bases.append(REPO / "/".join(parts[parts.index(".github") :]))
     for base in bases:
         for cand in (base, base / "action.yml", base / "action.yaml"):
             yield cand
 
 
-def _flat_steps(job, inherited = None, inputs = None, stack = None):
+def _flat_steps(
+    job,
+    inherited = None,
+    inputs = None,
+    stack = None,
+):
     """(step, inherited env, caller inputs) for this job and every local composite it uses.
 
     A composite's steps execute INSIDE the calling job, and the invoking step's `env:`
@@ -520,8 +533,10 @@ def _flat_steps(job, inherited = None, inputs = None, stack = None):
 
     for step in _steps(job):
         own = step.get("env")
-        env = {**inherited, **({str(k): str(v) for k, v in own.items()}
-                               if isinstance(own, dict) else {})}
+        env = {
+            **inherited,
+            **({str(k): str(v) for k, v in own.items()} if isinstance(own, dict) else {}),
+        }
         out.append((step, inherited, inputs))
         uses = str(step.get("uses") or "").strip().strip("'\"")
         if not uses.startswith("./"):
@@ -530,7 +545,7 @@ def _flat_steps(job, inherited = None, inputs = None, stack = None):
             if not cand.is_file():
                 continue
             if cand in stack:
-                break                      # a cycle, not a sibling invocation
+                break  # a cycle, not a sibling invocation
             try:
                 doc = yaml.safe_load(cand.read_text(encoding = "utf-8"))
             except yaml.YAMLError:
@@ -554,9 +569,14 @@ def _flat_steps(job, inherited = None, inputs = None, stack = None):
                         # `${{ inputs.path }}` arrives as the value it stands for rather
                         # than as the same expression one level down.
                         passed[str(field)] = _expand(str(value), env, inputs)
-                out.extend(_flat_steps(
-                    {"steps": runs["steps"]}, env, passed, stack + (cand,),
-                ))
+                out.extend(
+                    _flat_steps(
+                        {"steps": runs["steps"]},
+                        env,
+                        passed,
+                        stack + (cand,),
+                    )
+                )
             break
     return out
 
@@ -597,8 +617,11 @@ def _persisted_in_unit(job, job_env, unit_inputs):
         if not isinstance(with_, dict) or with_.get("path") is None:
             continue
         own = step.get("env")
-        env = {**job_env, **inherited, **({str(k): str(v) for k, v in own.items()}
-                                         if isinstance(own, dict) else {})}
+        env = {
+            **job_env,
+            **inherited,
+            **({str(k): str(v) for k, v in own.items()} if isinstance(own, dict) else {}),
+        }
         for line in str(with_["path"]).splitlines():
             line = line.strip()
             if line and not line.startswith("!"):
@@ -649,8 +672,11 @@ def _login_offenders_in_unit(job, job_env, unit_inputs):
         if not body and spec is None:
             continue
         own = step.get("env")
-        env = {**job_env, **inherited, **({str(k): str(v) for k, v in own.items()}
-                                         if isinstance(own, dict) else {})}
+        env = {
+            **job_env,
+            **inherited,
+            **({str(k): str(v) for k, v in own.items()} if isinstance(own, dict) else {}),
+        }
         homes = {v: _expand(str(env[v]), env, inputs) for v in CREDENTIAL_HOMES if v in env}
         # The two Hugging Face variables are alternatives with a precedence, not two
         # places a login writes. `huggingface_hub` takes HF_TOKEN_PATH when it is set and
@@ -693,9 +719,11 @@ def _login_offenders_in_unit(job, job_env, unit_inputs):
                 break
     return offenders
 
+
 def _raw_persisted(job, doc = None):
     """Expanded persisted paths, including those declared inside local composites."""
     return [path for path, _step in _persisted_with_env(job, doc or {})]
+
 
 def _normalise(path: str) -> str:
     """Strip expressions and separators so a path and an env value can be compared."""
@@ -705,8 +733,6 @@ def _normalise(path: str) -> str:
     while path.startswith("./"):
         path = path[2:]
     return path.strip("/")
-
-
 
 
 def _glob_regex(pattern: str):
@@ -756,7 +782,11 @@ def _glob_regex(pattern: str):
     return re.compile("^" + "".join(out) + "$")
 
 
-def _glob_captures(pattern: str, home: str, files = None) -> bool:
+def _glob_captures(
+    pattern: str,
+    home: str,
+    files = None,
+) -> bool:
     """Could this persistence pattern include the credential this home holds?
 
     Asked of the REAL path, not of a list of likely filenames. `path: hf-cache/**` takes
@@ -798,7 +828,12 @@ def _deglob(path: str) -> str:
         parts.append(segment)
     return "/".join(parts) if parts else path
 
-def _inside(inner: str, outer: str, files = None) -> bool:
+
+def _inside(
+    inner: str,
+    outer: str,
+    files = None,
+) -> bool:
     """Is `inner` the same directory as `outer`, or below it?
 
     A glob suffix is trimmed off `outer` first. `path: hf-cache/**` uploads everything
@@ -828,7 +863,6 @@ def _inside(inner: str, outer: str, files = None) -> bool:
     # containment test answered no while the upload carried the token itself. The
     # filenames are the same ones a glob is tested against.
     return any(outer == inner.rstrip("/") + "/" + f for f in (files or ()))
-
 
 
 def _default_home_hits(persisted: str, overridden: set) -> list:
@@ -875,11 +909,16 @@ def _offending_jobs():
                 scopes = [unit_env]
                 for step, inherited, _si in _flat_steps(unit, unit_env, unit_inputs):
                     own = step.get("env")
-                    scopes.append({
-                        **inherited,
-                        **({str(k): str(v) for k, v in own.items()}
-                           if isinstance(own, dict) else {}),
-                    })
+                    scopes.append(
+                        {
+                            **inherited,
+                            **(
+                                {str(k): str(v) for k, v in own.items()}
+                                if isinstance(own, dict)
+                                else {}
+                            ),
+                        }
+                    )
                 for scope in scopes:
                     env = {**unit_env, **scope}
                     homes = {v: env[v] for v in CREDENTIAL_HOMES if v in env}
@@ -889,8 +928,11 @@ def _offending_jobs():
                         continue
                     for persisted, _s in _persisted_in_unit(unit, unit_env, unit_inputs):
                         for var, home in homes.items():
-                            if _inside(_expand(home, env, unit_inputs), persisted,
-                                       CREDENTIAL_FILES.get(var, ())):
+                            if _inside(
+                                _expand(home, env, unit_inputs),
+                                persisted,
+                                CREDENTIAL_FILES.get(var, ()),
+                            ):
                                 yield f"{path.name}:{jid}", var, persisted, home
 
 
@@ -1003,16 +1045,19 @@ def test_a_credential_home_set_on_a_step_is_seen():
     Reading only workflow- and job-level `env:` missed it, so a job whose cached
     directory was named by the very step writing into it passed this guard.
     """
-    job = {"steps": [
-        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
-        {"run": "python probe.py", "env": {"HF_HOME": "hf-cache"}},
-    ]}
+    job = {
+        "steps": [
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+            {"run": "python probe.py", "env": {"HF_HOME": "hf-cache"}},
+        ]
+    }
     scopes = _step_envs(job)
     assert {"HF_HOME": "hf-cache"} in scopes, f"step env not collected: {scopes}"
     assert _env_of(job, {}) == {}, "the job itself sets nothing, which is the point"
     assert any(
         _inside(scope["HF_HOME"], persisted)
-        for scope in scopes if "HF_HOME" in scope
+        for scope in scopes
+        if "HF_HOME" in scope
         for persisted, _step in _persisted_paths(job)
     ), "the step-scoped credential home is inside the cached path and must be a finding"
 
@@ -1038,21 +1083,21 @@ def test_no_job_persists_a_default_credential_home():
     offenders = []
     for path, doc in _docs():
         for jid, job in _jobs(doc):
-          # Per resolved unit, because the override and the persistence must come from
-          # the SAME runner. `_persisted_with_env` traverses into a called reusable
-          # workflow while `overridden` was read from the caller, and caller env does
-          # not cross that boundary -- so a caller-level `CARGO_HOME=/tmp/cargo`
-          # exempted a callee that caches the real `~/.cargo`, which the caller's
-          # variable does nothing to move.
-          for unit, unit_env, unit_inputs in _units(job, doc):
-            env = unit_env
-            overridden = {v for v in CREDENTIAL_HOMES if v in env}
-            for persisted, _step in _persisted_in_unit(unit, unit_env, unit_inputs):
-                for _default, creds in _default_home_hits(persisted, overridden):
-                    offenders.append(
-                        f"{path.name}:{jid}: caches {persisted!r}, a default "
-                        f"credential home ({creds})"
-                    )
+            # Per resolved unit, because the override and the persistence must come from
+            # the SAME runner. `_persisted_with_env` traverses into a called reusable
+            # workflow while `overridden` was read from the caller, and caller env does
+            # not cross that boundary -- so a caller-level `CARGO_HOME=/tmp/cargo`
+            # exempted a callee that caches the real `~/.cargo`, which the caller's
+            # variable does nothing to move.
+            for unit, unit_env, unit_inputs in _units(job, doc):
+                env = unit_env
+                overridden = {v for v in CREDENTIAL_HOMES if v in env}
+                for persisted, _step in _persisted_in_unit(unit, unit_env, unit_inputs):
+                    for _default, creds in _default_home_hits(persisted, overridden):
+                        offenders.append(
+                            f"{path.name}:{jid}: caches {persisted!r}, a default "
+                            f"credential home ({creds})"
+                        )
     assert not offenders, (
         "these jobs cache or upload a tool's default credential home:\n  "
         + "\n  ".join(sorted(set(offenders)))
@@ -1087,9 +1132,9 @@ def test_model_cache_variables_are_not_treated_as_credential_homes():
     home = str(getattr(hub, "HF_HOME", ""))
     token = str(getattr(hub, "HF_TOKEN_PATH", ""))
     cache = str(getattr(hub, "HUGGINGFACE_HUB_CACHE", ""))
-    assert token.startswith(home) and token.endswith("token"), (
-        f"expected the token under HF_HOME; got HF_HOME={home!r} HF_TOKEN_PATH={token!r}"
-    )
+    assert token.startswith(home) and token.endswith(
+        "token"
+    ), f"expected the token under HF_HOME; got HF_HOME={home!r} HF_TOKEN_PATH={token!r}"
     assert not _inside(token, cache), (
         f"the token is supposed to sit OUTSIDE the hub cache, which is the reason "
         f"HUGGINGFACE_HUB_CACHE is not a credential home; got {token!r} inside {cache!r}"
@@ -1104,22 +1149,29 @@ def test_a_login_is_judged_against_that_step_s_own_environment():
     cannot reach the cache. The effective environment of the step running the login is
     what decides, which is also all the runtime cares about.
     """
-    safe = {"steps": [
-        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
-        {"name": "warm the cache", "run": "python download.py", "env": {"HF_HOME": "hf-cache"}},
-        {"name": "log in elsewhere", "run": "hf auth login --token x",
-         "env": {"HF_HOME": "/tmp/scratch-home"}},
-    ]}
+    safe = {
+        "steps": [
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+            {"name": "warm the cache", "run": "python download.py", "env": {"HF_HOME": "hf-cache"}},
+            {
+                "name": "log in elsewhere",
+                "run": "hf auth login --token x",
+                "env": {"HF_HOME": "/tmp/scratch-home"},
+            },
+        ]
+    }
     assert _login_offenders({}, safe) == [], (
         "the login step points HF_HOME at an uncached directory, so its token cannot "
         "enter the cache and it must not be a finding"
     )
 
     # And the same shape with the login step's own home inside the cache must fire.
-    unsafe = {"steps": [
-        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
-        {"name": "log in", "run": "hf auth login --token x", "env": {"HF_HOME": "hf-cache"}},
-    ]}
+    unsafe = {
+        "steps": [
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+            {"name": "log in", "run": "hf auth login --token x", "env": {"HF_HOME": "hf-cache"}},
+        ]
+    }
     offenders = _login_offenders({}, unsafe)
     assert offenders, "a login whose own HF_HOME is inside the cached path must be a finding"
     assert "hf-cache" in offenders[0] and "log in" in offenders[0], offenders
@@ -1158,7 +1210,7 @@ def test_a_login_inside_a_local_composite_action_is_seen(tmp_path, monkeypatch):
         "  using: composite\n"
         "  steps:\n"
         "    - shell: bash\n"
-        "      run: hf auth login --token \"$HF_TOKEN\"\n"
+        '      run: hf auth login --token "$HF_TOKEN"\n'
     )
     monkeypatch.setattr(module, "REPO", tmp_path)
 
@@ -1197,14 +1249,16 @@ def test_a_composite_invoked_with_a_credential_home_carries_that_env(tmp_path, m
         "  using: composite\n"
         "  steps:\n"
         "    - shell: bash\n"
-        "      run: hf auth login --token \"$HF_TOKEN\"\n"
+        '      run: hf auth login --token "$HF_TOKEN"\n'
     )
     monkeypatch.setattr(module, "REPO", tmp_path)
 
-    job = {"steps": [
-        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
-        {"uses": "./.github/actions/hf-login", "env": {"HF_HOME": "hf-cache"}},
-    ]}
+    job = {
+        "steps": [
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+            {"uses": "./.github/actions/hf-login", "env": {"HF_HOME": "hf-cache"}},
+        ]
+    }
     offenders = _login_offenders({}, job)
     assert offenders, (
         "the credential home is set on the step that invokes the composite, and the "
@@ -1260,19 +1314,24 @@ def test_a_cached_path_is_expanded_with_its_own_step_s_environment():
     home under `creds`, the path resolved to empty against the login step's environment
     and the combination was missed.
     """
-    job = {"steps": [
-        {"name": "save", "uses": "actions/cache/save@v4",
-         "with": {"path": "${{ env.CACHE_DIR }}", "key": "k"},
-         "env": {"CACHE_DIR": "creds"}},
-        {"name": "log in", "run": "hf auth login --token x", "env": {"HF_HOME": "creds/hf"}},
-    ]}
+    job = {
+        "steps": [
+            {
+                "name": "save",
+                "uses": "actions/cache/save@v4",
+                "with": {"path": "${{ env.CACHE_DIR }}", "key": "k"},
+                "env": {"CACHE_DIR": "creds"},
+            },
+            {"name": "log in", "run": "hf auth login --token x", "env": {"HF_HOME": "creds/hf"}},
+        ]
+    }
     paths = [p for p, _s in _persisted_with_env(job, {})]
-    assert paths == ["creds"], (
-        f"the path had to resolve against the saving step's own CACHE_DIR; got {paths}"
-    )
-    assert _login_offenders({}, job), (
-        "HF_HOME is creds/hf, inside the cached creds, and that step logs in"
-    )
+    assert paths == [
+        "creds"
+    ], f"the path had to resolve against the saving step's own CACHE_DIR; got {paths}"
+    assert _login_offenders(
+        {}, job
+    ), "HF_HOME is creds/hf, inside the cached creds, and that step logs in"
 
 
 def test_every_invocation_of_a_composite_is_flattened(tmp_path, monkeypatch):
@@ -1298,11 +1357,13 @@ def test_every_invocation_of_a_composite_is_flattened(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(module, "REPO", tmp_path)
 
-    job = {"steps": [
-        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
-        {"uses": "./.github/actions/hf-login", "env": {"HF_HOME": "/tmp/outside"}},
-        {"uses": "./.github/actions/hf-login", "env": {"HF_HOME": "hf-cache"}},
-    ]}
+    job = {
+        "steps": [
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+            {"uses": "./.github/actions/hf-login", "env": {"HF_HOME": "/tmp/outside"}},
+            {"uses": "./.github/actions/hf-login", "env": {"HF_HOME": "hf-cache"}},
+        ]
+    }
     offenders = _login_offenders({}, job)
     assert offenders, (
         "the SECOND invocation points HF_HOME inside the cached path, and suppressing it "
@@ -1348,9 +1409,9 @@ def test_a_composite_cached_path_given_by_input_is_resolved(tmp_path, monkeypatc
     }
     paths = [p for p, _s in _persisted_with_env(job, {})]
     assert paths == ["hf-cache"], f"the input-backed path did not resolve; got {paths}"
-    assert _login_offenders({}, job), (
-        "the composite persists the job's credential home and the workflow logs in"
-    )
+    assert _login_offenders(
+        {}, job
+    ), "the composite persists the job's credential home and the workflow logs in"
 
 
 def test_no_job_that_persists_anything_performs_a_login():
@@ -1439,21 +1500,23 @@ def test_a_login_action_only_counts_against_what_it_writes():
             {"uses": "actions/cache/save@v4", "with": {"path": "npm-cache", "key": "k"}},
         ],
     }
-    assert _login_offenders({}, no_registry) == [], (
-        "without `registry-url` setup-node writes no token"
-    )
+    assert (
+        _login_offenders({}, no_registry) == []
+    ), "without `registry-url` setup-node writes no token"
 
     with_registry = {
         "env": {"NPM_CONFIG_USERCONFIG": "npm-cache/.npmrc"},
         "steps": [
-            {"uses": "actions/setup-node@v4",
-             "with": {"registry-url": "https://registry.npmjs.org"}},
+            {
+                "uses": "actions/setup-node@v4",
+                "with": {"registry-url": "https://registry.npmjs.org"},
+            },
             {"uses": "actions/cache/save@v4", "with": {"path": "npm-cache", "key": "k"}},
         ],
     }
-    assert _login_offenders({}, with_registry), (
-        "with `registry-url` it writes an .npmrc token into the cached config path"
-    )
+    assert _login_offenders(
+        {}, with_registry
+    ), "with `registry-url` it writes an .npmrc token into the cached config path"
 
 
 def test_an_input_forwarded_between_composites_is_resolved(tmp_path, monkeypatch):
@@ -1523,9 +1586,9 @@ def test_a_composite_input_default_is_applied(tmp_path, monkeypatch):
     }
     paths = [p for p, _s in _persisted_with_env(job, {})]
     assert paths == ["hf-cache"], f"the declared default was not applied; got {paths}"
-    assert _login_offenders({}, job), (
-        "the composite persists the credential home via its default, and the job logs in"
-    )
+    assert _login_offenders(
+        {}, job
+    ), "the composite persists the credential home via its default, and the job logs in"
 
 
 def test_a_glob_path_still_contains_its_directory():
@@ -1548,10 +1611,8 @@ def test_a_glob_path_still_contains_its_directory():
     assert _inside("hf-cache", "hf-cache/*", hf) is True
     # And a narrow pattern that matches the file THAT home really holds counts too:
     # docker writes `config.json`, cargo writes `credentials.toml`.
-    assert _inside("docker-cache", "docker-cache/*.json",
-                   CREDENTIAL_FILES["DOCKER_CONFIG"]) is True
-    assert _inside("cargo-home", "cargo-home/*.toml",
-                   CREDENTIAL_FILES["CARGO_HOME"]) is True
+    assert _inside("docker-cache", "docker-cache/*.json", CREDENTIAL_FILES["DOCKER_CONFIG"]) is True
+    assert _inside("cargo-home", "cargo-home/*.toml", CREDENTIAL_FILES["CARGO_HOME"]) is True
     # A caller that does not say which variable it means gets the conservative answer,
     # because an unknown filename could be anything.
     assert _inside("hf-cache", "hf-cache/*.bin") is True
@@ -1559,10 +1620,13 @@ def test_a_glob_path_still_contains_its_directory():
 
 def test_a_login_action_is_matched_case_insensitively():
     """GitHub treats owner/repo case-insensitively; a capital letter is not an escape."""
-    job = {"env": {"DOCKER_CONFIG": "docker-cache"}, "steps": [
-        {"uses": "Docker/Login-Action@v3"},
-        {"uses": "actions/cache/save@v4", "with": {"path": "docker-cache", "key": "k"}},
-    ]}
+    job = {
+        "env": {"DOCKER_CONFIG": "docker-cache"},
+        "steps": [
+            {"uses": "Docker/Login-Action@v3"},
+            {"uses": "actions/cache/save@v4", "with": {"path": "docker-cache", "key": "k"}},
+        ],
+    }
     assert _login_offenders({}, job), (
         "`Docker/Login-Action` runs the same credential-writing action, and the step has "
         "no `run:` body, so a case-sensitive lookup skipped it entirely"
@@ -1571,11 +1635,13 @@ def test_a_login_action_is_matched_case_insensitively():
 
 def test_a_cached_path_resolves_against_job_level_env():
     """The job's own env has to seed the walk, or a root-level call resolves to nothing."""
-    job = {"env": {"CACHE_DIR": "hf-cache", "HF_HOME": "hf-cache"}, "steps": [
-        {"name": "log in", "run": "hf auth login --token x"},
-        {"uses": "actions/cache/save@v4",
-         "with": {"path": "${{ env.CACHE_DIR }}", "key": "k"}},
-    ]}
+    job = {
+        "env": {"CACHE_DIR": "hf-cache", "HF_HOME": "hf-cache"},
+        "steps": [
+            {"name": "log in", "run": "hf auth login --token x"},
+            {"uses": "actions/cache/save@v4", "with": {"path": "${{ env.CACHE_DIR }}", "key": "k"}},
+        ],
+    }
     assert [p for p, _s in _persisted_with_env(job, {})] == ["hf-cache"]
     assert _login_offenders({}, job)
 
@@ -1589,9 +1655,9 @@ def test_an_overridden_default_home_is_not_a_finding():
     """
     for default, owners in DEFAULT_OWNERS.items():
         for owner in owners:
-            assert owner in CREDENTIAL_HOMES, (
-                f"{owner} overrides {default} but is not tracked as a credential home"
-                )
+            assert (
+                owner in CREDENTIAL_HOMES
+            ), f"{owner} overrides {default} but is not tracked as a credential home"
     assert DEFAULT_OWNERS["~/.cargo"] == ("CARGO_HOME",)
     # Two variables reach the Hugging Face default. HF_TOKEN_PATH moves the token and
     # `stored_tokens` on its own, so a job setting only that one leaves nothing of
@@ -1625,9 +1691,9 @@ def test_a_reusable_workflow_job_is_flattened(tmp_path, monkeypatch):
 
     caller = {"uses": "./.github/workflows/shared.yml", "with": {"path": "hf-cache"}}
     assert [p for p, _s in _persisted_with_env(caller, {})] == ["hf-cache"]
-    assert _login_offenders({}, caller), (
-        "the reusable job logs in and caches the same input-named directory"
-    )
+    assert _login_offenders(
+        {}, caller
+    ), "the reusable job logs in and caches the same input-named directory"
 
 
 def test_a_reusable_workflow_resolves_the_inputs_it_was_handed(tmp_path, monkeypatch):
@@ -1665,12 +1731,12 @@ def test_a_reusable_workflow_resolves_the_inputs_it_was_handed(tmp_path, monkeyp
     monkeypatch.setattr(module, "REPO", tmp_path)
 
     caller = {"uses": "./.github/workflows/outer.yml", "with": {"path": "hf-cache"}}
-    assert [p for p, _s in _persisted_with_env(caller, {})] == ["hf-cache"], (
-        "the outer caller's concrete directory has to survive two hops of forwarding"
-    )
-    assert _login_offenders({}, caller), (
-        "the innermost job logs in and caches the directory the outermost caller named"
-    )
+    assert [p for p, _s in _persisted_with_env(caller, {})] == [
+        "hf-cache"
+    ], "the outer caller's concrete directory has to survive two hops of forwarding"
+    assert _login_offenders(
+        {}, caller
+    ), "the innermost job logs in and caches the directory the outermost caller named"
 
 
 def test_a_shell_login_only_counts_against_what_that_command_writes():
@@ -1695,13 +1761,16 @@ def test_a_shell_login_only_counts_against_what_that_command_writes():
         f"directory: {_login_offenders({}, safe)}"
     )
 
-    unsafe = dict(safe, steps = [
-        {"run": "hf auth login --token x"},
-        {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
-    ])
-    assert _login_offenders({}, unsafe), (
-        "the Hugging Face login does write the cached HF_HOME, and still has to be caught"
+    unsafe = dict(
+        safe,
+        steps = [
+            {"run": "hf auth login --token x"},
+            {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
+        ],
     )
+    assert _login_offenders(
+        {}, unsafe
+    ), "the Hugging Face login does write the cached HF_HOME, and still has to be caught"
 
     docker_cached = {
         "env": {"DOCKER_CONFIG": "docker-cache"},
@@ -1713,9 +1782,9 @@ def test_a_shell_login_only_counts_against_what_that_command_writes():
             },
         ],
     }
-    assert _login_offenders({}, docker_cached), (
-        "narrowing the pairing must not stop docker being caught against its own home"
-    )
+    assert _login_offenders(
+        {}, docker_cached
+    ), "narrowing the pairing must not stop docker being caught against its own home"
 
 
 def test_a_hugging_face_login_is_not_judged_against_an_unrelated_home():
@@ -1752,9 +1821,9 @@ def test_a_hugging_face_login_is_not_judged_against_an_unrelated_home():
             },
         ],
     }
-    assert _login_offenders({}, unsafe), (
-        "with HF_HOME actually inside the cached path this is still a finding"
-    )
+    assert _login_offenders(
+        {}, unsafe
+    ), "with HF_HOME actually inside the cached path this is still a finding"
 
 
 def test_two_jobs_of_a_reusable_workflow_are_not_one_runner(tmp_path, monkeypatch):
@@ -1789,8 +1858,7 @@ def test_two_jobs_of_a_reusable_workflow_are_not_one_runner(tmp_path, monkeypatc
 
     caller = {"uses": "./.github/workflows/split.yml"}
     assert _login_offenders({}, caller) == [], (
-        f"the login and the save are on different runners: "
-        f"{_login_offenders({}, caller)}"
+        f"the login and the save are on different runners: " f"{_login_offenders({}, caller)}"
     )
 
     # Both in ONE job is a real finding, so the split did not cost the check its teeth.
@@ -1804,9 +1872,9 @@ def test_two_jobs_of_a_reusable_workflow_are_not_one_runner(tmp_path, monkeypatc
         "      - uses: actions/cache/save@v4\n"
         "        with:\n          path: hf-cache\n          key: k\n"
     )
-    assert _login_offenders({}, caller), (
-        "one job logging in and caching its own credential home is still caught"
-    )
+    assert _login_offenders(
+        {}, caller
+    ), "one job logging in and caching its own credential home is still caught"
 
 
 def test_a_chain_of_environment_references_is_resolved():
@@ -1860,13 +1928,12 @@ def test_a_restrictive_glob_does_not_capture_a_token():
     assert _glob_captures("hf-cache/*", "hf-cache", hf) is True
     assert _glob_captures("hf-cache/*.bin", "hf-cache", hf) is False
     # docker writes config.json, so a `*.json` pattern does capture a credential.
-    assert _glob_captures(
-        "docker-cache/*.json", "docker-cache", CREDENTIAL_FILES["DOCKER_CONFIG"]
-    ) is True
+    assert (
+        _glob_captures("docker-cache/*.json", "docker-cache", CREDENTIAL_FILES["DOCKER_CONFIG"])
+        is True
+    )
     # cargo writes credentials.toml, which a canned filename list had omitted.
-    assert _glob_captures(
-        "cargo-home/*.toml", "cargo-home", CREDENTIAL_FILES["CARGO_HOME"]
-    ) is True
+    assert _glob_captures("cargo-home/*.toml", "cargo-home", CREDENTIAL_FILES["CARGO_HOME"]) is True
     # A file-valued home is matched as the path it names, whatever the basename. No
     # list of likely filenames can cover these, which is why the real value is tested.
     assert _glob_captures("creds/*.ini", "creds/my-profile.ini", ()) is True
@@ -1884,9 +1951,9 @@ def test_a_restrictive_glob_does_not_capture_a_token():
             },
         ],
     }
-    assert _login_offenders({}, safe) == [], (
-        f"the upload cannot contain the token: {_login_offenders({}, safe)}"
-    )
+    assert (
+        _login_offenders({}, safe) == []
+    ), f"the upload cannot contain the token: {_login_offenders({}, safe)}"
 
 
 def test_hf_token_path_overrides_the_home_when_both_are_set():
@@ -1904,9 +1971,9 @@ def test_hf_token_path_overrides_the_home_when_both_are_set():
             {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
         ],
     }
-    assert _login_offenders({}, safe) == [], (
-        f"the token is written to /tmp/token: {_login_offenders({}, safe)}"
-    )
+    assert (
+        _login_offenders({}, safe) == []
+    ), f"the token is written to /tmp/token: {_login_offenders({}, safe)}"
 
     unsafe = {
         "env": {"HF_HOME": "/tmp/hf", "HF_TOKEN_PATH": "hf-cache/token"},
@@ -1916,8 +1983,7 @@ def test_hf_token_path_overrides_the_home_when_both_are_set():
         ],
     }
     assert _login_offenders({}, unsafe), (
-        "HF_TOKEN_PATH inside the cache is the finding, and it is the variable that "
-        "decides"
+        "HF_TOKEN_PATH inside the cache is the finding, and it is the variable that decides"
     )
 
 
@@ -2029,9 +2095,9 @@ def test_a_restrictive_glob_is_matched_against_the_real_credential_path():
             },
         ],
     }
-    assert _login_offenders({}, leaking), (
-        "cargo writes cargo-home/credentials.toml, which this pattern persists"
-    )
+    assert _login_offenders(
+        {}, leaking
+    ), "cargo writes cargo-home/credentials.toml, which this pattern persists"
 
     named = {
         "env": {"AWS_SHARED_CREDENTIALS_FILE": "creds/my-profile.ini"},
@@ -2043,9 +2109,9 @@ def test_a_restrictive_glob_is_matched_against_the_real_credential_path():
             },
         ],
     }
-    assert _login_offenders({}, named), (
-        "the configured path matches the pattern, whatever its basename"
-    )
+    assert _login_offenders(
+        {}, named
+    ), "the configured path matches the pattern, whatever its basename"
 
 
 def test_hf_token_path_alone_moves_the_token_out_of_the_default_home():
@@ -2091,9 +2157,9 @@ def test_a_globstar_matches_zero_directories():
         ],
     }
     assert _inside("cargo-home", "cargo-home/**/credentials.toml", cargo) is True
-    assert _login_offenders({}, leaking), (
-        "the upload includes cargo-home/credentials.toml at depth zero"
-    )
+    assert _login_offenders(
+        {}, leaking
+    ), "the upload includes cargo-home/credentials.toml at depth zero"
 
 
 def test_the_discovery_scan_sees_an_env_declared_inside_a_composite(tmp_path, monkeypatch):
@@ -2222,8 +2288,14 @@ def test_a_default_home_override_must_come_from_the_same_runner(tmp_path, monkey
     monkeypatch.setattr(module, "WORKFLOWS", wf)
     monkeypatch.setattr(module, "ACTIONS", tmp_path / ".github" / "actions")
 
-    units = _units({"uses": "./.github/workflows/inner.yml", "with": {"path": "~/.cargo"},
-                    "env": {"CARGO_HOME": "/tmp/cargo"}}, {})
+    units = _units(
+        {
+            "uses": "./.github/workflows/inner.yml",
+            "with": {"path": "~/.cargo"},
+            "env": {"CARGO_HOME": "/tmp/cargo"},
+        },
+        {},
+    )
     assert units, "the delegation resolves to at least one unit"
     for _unit, unit_env, _inputs in units:
         assert "CARGO_HOME" not in unit_env, (
@@ -2260,9 +2332,9 @@ def test_a_composite_used_from_a_checkout_subdirectory_is_flattened(tmp_path, mo
             {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
         ],
     }
-    assert _login_offenders({}, job), (
-        "the prefixed reference names the same composite, which logs in"
-    )
+    assert _login_offenders(
+        {}, job
+    ), "the prefixed reference names the same composite, which logs in"
 
 
 def test_a_default_credential_file_persisted_exactly_is_caught():
@@ -2273,21 +2345,18 @@ def test_a_default_credential_file_persisted_exactly_is_caught():
     whether the default DIRECTORY was inside the persisted FILE, which is never true.
     """
     assert DEFAULT_HOME_FILES["~/.cargo"] == ("credentials", "credentials.toml")
-    assert _inside(
-        "~/.cargo", "~/.cargo/credentials.toml", DEFAULT_HOME_FILES["~/.cargo"]
-    ) is True
-    assert _inside(
-        "~/.docker", "~/.docker/config.json", DEFAULT_HOME_FILES["~/.docker"]
-    ) is True
-    assert _inside(
-        "~/.cache/huggingface",
-        "~/.cache/huggingface/token",
-        DEFAULT_HOME_FILES["~/.cache/huggingface"],
-    ) is True
+    assert _inside("~/.cargo", "~/.cargo/credentials.toml", DEFAULT_HOME_FILES["~/.cargo"]) is True
+    assert _inside("~/.docker", "~/.docker/config.json", DEFAULT_HOME_FILES["~/.docker"]) is True
+    assert (
+        _inside(
+            "~/.cache/huggingface",
+            "~/.cache/huggingface/token",
+            DEFAULT_HOME_FILES["~/.cache/huggingface"],
+        )
+        is True
+    )
     # Something else under the same home is still not a credential.
-    assert _inside(
-        "~/.cargo", "~/.cargo/registry", DEFAULT_HOME_FILES["~/.cargo"]
-    ) is False
+    assert _inside("~/.cargo", "~/.cargo/registry", DEFAULT_HOME_FILES["~/.cargo"]) is False
     # The filenames are load-bearing: without them the same question answers no, which
     # is exactly what the default-home rule was asking before they were supplied.
     assert _inside("~/.cargo", "~/.cargo/credentials.toml") is False
@@ -2297,9 +2366,9 @@ def test_a_default_credential_file_persisted_exactly_is_caught():
     # And the rule really consults them. Asserted by calling it, not by reading this
     # file's own source -- the previous version counted its own assertion text and
     # passed however the rule behaved.
-    assert _default_home_hits("~/.cargo/credentials.toml", set()), (
-        "persisting the exact default credential file has to be a finding"
-    )
+    assert _default_home_hits(
+        "~/.cargo/credentials.toml", set()
+    ), "persisting the exact default credential file has to be a finding"
     assert _default_home_hits("~/.docker/config.json", set())
     assert not _default_home_hits("~/.cargo/registry", set())
     # An override still exempts it, so the narrowing from earlier rounds is intact.
@@ -2328,6 +2397,4 @@ def test_two_identical_unresolved_expressions_are_the_same_directory():
             },
         ],
     }
-    assert _login_offenders({}, job), (
-        "the cached path is the credential home, by construction"
-    )
+    assert _login_offenders({}, job), "the cached path is the credential home, by construction"
