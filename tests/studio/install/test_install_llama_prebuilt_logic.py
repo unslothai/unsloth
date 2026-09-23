@@ -4069,6 +4069,7 @@ def _run_validate_prebuilt_choice(
     expected_sha256,
     probe = None,
     validation_action = "run",
+    unmanifested_digest = False,
 ):
     """Run validate_prebuilt_choice with heavy steps stubbed; return launch metadata."""
     calls = {"quantize": 0, "server": 0}
@@ -4171,6 +4172,7 @@ def _run_validate_prebuilt_choice(
         bundle_profile = "cuda13-newer",
         runtime_line = "cuda13",
         expected_sha256 = expected_sha256,
+        unmanifested_digest = unmanifested_digest,
     )
     src.validate_prebuilt_choice(
         choice,
@@ -9206,6 +9208,21 @@ def test_validate_prebuilt_choice_hashless_build_falls_back_when_validation_laun
             monkeypatch,
             tmp_path,
             expected_sha256 = None,
+            validation_action = "skip",
+        )
+
+
+def test_validate_prebuilt_choice_unmanifested_digest_falls_back_when_validation_launch_skips(
+    tmp_path, monkeypatch
+):
+    # A release digest proves the bytes, not that they load, so its smoke test is a
+    # gate like a hashless bundle's: a launch the policy cannot make is a fallback.
+    with pytest.raises(PrebuiltFallback, match = "llama-quantize validation unavailable"):
+        _run_validate_prebuilt_choice(
+            monkeypatch,
+            tmp_path,
+            expected_sha256 = "cd" * 32,
+            unmanifested_digest = True,
             validation_action = "skip",
         )
 

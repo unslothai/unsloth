@@ -10895,9 +10895,10 @@ def validate_prebuilt_choice(
         walk_back = walk_back,
         macos_load_probe_passed = macos_load_probe_passed,
     )
-    # Hashless external prebuilts rely on the functional smoke test as their only
-    # integrity gate, so a sandbox that cannot launch it must fall back to source.
-    smoke_validation_required = choice.expected_sha256 is None
+    # Bundles that validate without the opt-in (hashless, or a digest that proves the
+    # bytes but not that they load) rely on the smoke test as their gate, so a launch
+    # the sandbox policy cannot make must fall back to source rather than pass.
+    smoke_validation_required = not choice.expected_sha256 or choice.unmanifested_digest
     if prebuilt_needs_functional_validation(choice):
         # Only branch that reads the probe, so this is where a lazy one is fetched.
         probe_path = resolve_validation_model(probe)
