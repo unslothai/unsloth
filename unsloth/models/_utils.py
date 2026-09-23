@@ -1201,6 +1201,35 @@ def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
     kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
 
 
+def _cast_text_only_prequantized_params(model, dtype):
+    # transformers >= 5 keeps the CHECKPOINT dtype for every key a key_mapping renamed on a pre-quantized load, so the text-only remap leaves a float16 bnb repo's embeddings and skipped linears in float16 under dtype=bfloat16 while the unrenamed lm_head follows dtype (mat1/mat2 mismatch outside autocast). Cast those 16-bit leftovers to what an unrenamed load gives; quantized storage and float32 are never touched.
+    if dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        return 0
+    quantizer = getattr(model, "hf_quantizer", None)
+    if quantizer is None or not getattr(quantizer, "pre_quantized", False):
+        return 0
+    keep_fp32 = []
+    get_dtype_plan = getattr(model, "_get_dtype_plan", None)
+    if callable(get_dtype_plan):
+        try:
+            keep_fp32 = [k for k, v in get_dtype_plan(dtype).items() if v == torch.float32]
+        except Exception:
+            keep_fp32 = []
+    n_cast = 0
+    for name, param in model.named_parameters():
+        # Params4bit / Int8Params and tensor subclasses (torchao, fp8) hold quantized storage.
+        if type(param) is not torch.nn.Parameter or type(param.data) is not torch.Tensor:
+            continue
+        if param.dtype not in (torch.float16, torch.bfloat16) or param.device.type == "meta":
+            continue
+        target = torch.float32 if any(re.search(k, name) for k in keep_fp32) else dtype
+        if param.dtype == target:
+            continue
+        param.data = param.data.to(target)
+        n_cast += 1
+    return n_cast
+
+
 def resolve_attention_implementation(
     model_class,
     config,
