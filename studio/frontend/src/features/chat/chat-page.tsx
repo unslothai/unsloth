@@ -2379,6 +2379,8 @@ export function ChatPage({
     cancelLoadingForReplacement,
     invalidatePendingModelSelection,
     discardExternalReplacement,
+    restoreConfigForExternalReplacement,
+
     isModelSelectionIntentCurrent,
     selectModel,
     ejectModel,
@@ -3210,7 +3212,7 @@ export function ChatPage({
               discardExternalReplacement(externalIntentId);
               return;
             }
-            discardExternalReplacement(externalIntentId);
+            restoreConfigForExternalReplacement(externalIntentId);
             // The cancelled run's own reconciliation clears the store checkpoint when it had
             // already unloaded the resident. The external pick is still the user's choice, so
             // put it back rather than leaving the bar naming a model that is gone.
@@ -3428,6 +3430,8 @@ export function ChatPage({
       cancelLoadingForReplacement,
       invalidatePendingModelSelection,
       discardExternalReplacement,
+      restoreConfigForExternalReplacement,
+
       isModelSelectionIntentCurrent,
     ],
   );

@@ -617,7 +617,10 @@ test("an external pick cancels the local load it replaces", () => {
   // and the stale-intent guard keeps a superseded pick from writing to the store.
   assert.match(external, /if \(!isModelSelectionIntentCurrent\(externalIntentId\)\) return;/);
   assert.match(external, /live\.setCheckpoint\(value, null\);/);
-  assert.doesNotMatch(external, /restoreConfigForExternalReplacement\(externalIntentId\);/);
+  assert.match(
+    external,
+    /if \(!stopped\) \{[\s\S]*?discardExternalReplacement\(externalIntentId\);[\s\S]*?return;[\s\S]*?\}\s*restoreConfigForExternalReplacement\(externalIntentId\);/,
+  );
   assert.match(external, /discardExternalReplacement\(externalIntentId\);/);
   assert.match(page, /isModelSelectionIntentCurrent,/);
 });
