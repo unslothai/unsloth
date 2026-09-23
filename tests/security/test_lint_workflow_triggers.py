@@ -2984,13 +2984,164 @@ def test_a_producer_that_declares_its_key_inline_is_readable():
     beside it. Both failed the live tree before being recognised.
     """
     lint = _lint_module()
+    # Identities are (document, job, step id), because a step id is unique only within
+    # its job. A bare id let a readable namesake in another job -- or another file --
+    # answer for an unreadable one.
+    here = ("wf.yml", "build")
+    producers = {("wf.yml", "build", "probe"): True}
     assert lint._delegation_is_read(
-        "${{ steps.probe.outputs.key }}", {"probe": True}
+        "${{ steps.probe.outputs.key }}", producers, here
     ) is True
     assert lint._delegation_is_read(
-        "${{ steps.probe.outputs.key }}", {"probe": False}
+        "${{ steps.probe.outputs.key }}", {("wf.yml", "build", "probe"): False}, here
+    ) is False
+    # The SAME id in a different job is a different step and vouches for nothing.
+    assert lint._delegation_is_read(
+        "${{ steps.probe.outputs.key }}", {("wf.yml", "other", "probe"): True}, here
+    ) is False
+    assert lint._delegation_is_read(
+        "${{ steps.probe.outputs.key }}", {("z.yml", "build", "probe"): True}, here
     ) is False
     # A step this check never saw is not evidence of anything.
-    assert lint._delegation_is_read("${{ steps.other.outputs.key }}", {"probe": True}) is False
+    assert lint._delegation_is_read(
+        "${{ steps.other.outputs.key }}", producers, here
+    ) is False
     # Nor is a form that names no step at all.
-    assert lint._delegation_is_read("${{ needs.build.outputs.key }}", {"probe": True}) is False
+    assert lint._delegation_is_read(
+        "${{ needs.build.outputs.key }}", producers, here
+    ) is False
+
+
+def test_a_readable_namesake_in_another_job_vouches_for_nothing(tmp_path):
+    """Step ids are unique within a job, so a bare id is the wrong identity.
+
+    Merging producers by bare id let a readable `id: probe` in a later job -- or a
+    later-sorted file -- overwrite an unreadable `id: probe` elsewhere, and the unread
+    key was then dismissed on the strength of a step that has nothing to do with it.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n"
+        # unreadable producer, and the job that actually caches
+        "  first:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - id: probe\n"
+        "        run: printf 'key=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: ${{ steps.probe.outputs.key }}\n"
+        # readable namesake in a different job, caching nothing of interest
+        "  second:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - id: probe\n"
+        "        run: echo 'key=safe-key' >> \"$GITHUB_OUTPUT\"\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("shared-pub", "            shared-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the caching job's own `probe` could not be read, whatever the other job's "
+        f"step of the same name spells:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_an_inline_key_input_does_not_certify_an_unrelated_output(tmp_path):
+    """`with: {key: ...}` is evidence only for an action that publishes THAT key.
+
+    Marking every id-bearing step with a `with.key` readable was too generous: a local
+    action may accept an unrelated `key` input while emitting its own `outputs.key`
+    from a command this check cannot read, and the delegated key was then dismissed
+    with no namespace recovered at all.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "sneaky"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: sneaky\n"
+        "inputs:\n  key:\n    description: unrelated\n"
+        "outputs:\n"
+        "  key:\n"
+        "    description: the real cache key\n"
+        "    value: ${{ steps.inner.outputs.key }}\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - id: inner\n"
+        "      shell: bash\n"
+        "      run: printf 'key=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - id: maker\n"
+        "        uses: ./.github/actions/sneaky\n"
+        "        with:\n          key: safe-key\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: ${{ steps.maker.outputs.key }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("shared-pub", "            shared-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the action's published key comes from a command that could not be read; the "
+        f"`key` input it happens to accept says nothing about it:\n{proc.stdout}\n"
+        f"{proc.stderr}"
+    )
+
+
+def test_a_top_level_publish_input_is_not_resolved_by_a_child_targets_value(tmp_path):
+    """A dispatch workflow's own `${{ inputs.X }}` is chosen by whoever dispatches it.
+
+    Top-level workflow paths are not targets, so the publish side fell back to the
+    merged child namespace and expanded a user-controlled workflow input using an
+    unrelated action's literal -- then marked it complete. Dispatching with
+    `cache_key=shared-key` restores exactly the cache a pull request wrote.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "unrelated"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: unrelated\n"
+        "inputs:\n  cache_key:\n    description: k\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - run: echo ${{ inputs.cache_key }}\n      shell: bash\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n          path: wheels\n          key: shared-key\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "    inputs:\n"
+        "      cache_key:\n"
+        "        description: chosen by whoever dispatches\n"
+        "        type: string\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/unrelated\n"
+        "        with:\n          cache_key: safe-key\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: ${{ inputs.cache_key }}\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the dispatch input can be given `shared-key`, and the unrelated action's "
+        f"`safe-key` says nothing about it:\n{proc.stdout}\n{proc.stderr}"
+    )

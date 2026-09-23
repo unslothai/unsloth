@@ -149,8 +149,15 @@ def _call_sites(path: Path, target: str) -> list[dict]:
     action's directory or the reusable workflow's filename.
     """
     doc = _parse(path)
-    sites: list[dict] = []
-    for mapping in _mappings(doc):
+    sites: list = []
+    jobs = doc.get("jobs") if isinstance(doc, dict) else None
+    scoped = (
+        [(str(jid), job) for jid, job in jobs.items()]
+        if isinstance(jobs, dict)
+        else [("", doc)]
+    )
+    for job_id, container in scoped:
+      for mapping in _mappings(container):
         value = mapping.get("uses")
         if not isinstance(value, str):
             continue
@@ -172,7 +179,15 @@ def _call_sites(path: Path, target: str) -> list[dict]:
             if stem != target and PurePosixPath(stem).stem != PurePosixPath(target).stem:
                 continue
         with_ = mapping.get("with")
-        sites.append(with_ if isinstance(with_, dict) else {})
+        # The CALLER's scope travels with the call site, because a value it delegates
+        # names a step of the caller's job, not of the target. Resolving
+        # `${{ steps.pip-cache.outputs.key }}` in the target's scope looked for a step
+        # the target does not have, so this repository's own pip-cache-save read as
+        # unresolvable and failed the live tree.
+        sites.append((
+            with_ if isinstance(with_, dict) else {},
+            (path.as_posix(), job_id),
+        ))
     return sites
 
 
@@ -182,8 +197,45 @@ _STEP_OUTPUT = re.compile(
 )
 
 
+_CACHE_KEY_OUTPUTS = ("cache-primary-key", "cache-matched-key", "key")
+
+
+
+def _scoped_cache_keys(path: Path) -> list:
+    """[(job id, key)] so a key carries the scope its step ids are resolved in.
+
+    Step ids are unique only within a job, so a key referring to
+    `${{ steps.probe.outputs.key }}` means THIS job's `probe`. Without the scope the
+    only safe reading was "every step of that id, anywhere, must be readable", and this
+    repository has three unrelated `id: probe` steps -- two of which emit no cache key
+    at all -- so the safe reading failed a correct tree. The scope makes the question
+    answerable instead of merely conservative.
+    """
+    doc = _parse(path)
+    out = []
+    jobs = doc.get("jobs") if isinstance(doc, dict) else None
+    if isinstance(jobs, dict):
+        for job_id, job in jobs.items():
+            for mapping in _mappings(job):
+                key = mapping.get("key")
+                if isinstance(key, str):
+                    out.append((str(job_id), key))
+        return out
+    for mapping in _mappings(doc):
+        key = mapping.get("key")
+        if isinstance(key, str):
+            out.append(("", key))
+    return out
+
+
 def _producer_steps(path: Path) -> dict:
-    """{step id: was its key output actually recovered} for one document.
+    """{(document, job, step id): was its key output actually recovered}.
+
+    Keyed by the whole scope, because a step id is unique only within its job. Merging
+    bare ids let a readable `id: probe` in one job -- or in a later-sorted file -- stand
+    in for an unreadable `id: probe` in another, and the unread key was then dismissed
+    on the strength of a step that has nothing to do with it. The dictionary is built
+    globally, so a bare id was exactly the wrong identity.
 
     Per producer, because "some producer somewhere was readable" is not evidence about
     THIS one. A side-wide flag let a workflow with one ordinary
@@ -194,21 +246,40 @@ def _producer_steps(path: Path) -> dict:
     """
     out: dict = {}
     doc = _parse(path)
-    for mapping in _mappings(doc):
+    jobs = doc.get("jobs") if isinstance(doc, dict) else None
+    scopes = []
+    if isinstance(jobs, dict):
+        scopes = [(str(jid), job) for jid, job in jobs.items()]
+    else:
+        # An action definition has no jobs; its steps share one scope.
+        scopes = [("", doc)]
+    for job_id, scope in scopes:
+      for mapping in _mappings(scope):
         step_id = mapping.get("id")
         if not isinstance(step_id, str):
             continue
+        ident = (path.as_posix(), job_id, step_id)
         # A step that declares its own `key:` publishes it as an output
         # (`cache-primary-key`), so the namespace is right there in the YAML. This is
         # how `actions/cache/restore` steps hand a key onward, and reading only `run:`
         # bodies and local composites declared them unreadable.
         with_ = mapping.get("with")
-        if isinstance(with_, dict) and with_.get("key") is not None:
-            out[step_id] = True
+        uses_value = str(mapping.get("uses") or "")
+        if (
+            isinstance(with_, dict)
+            and with_.get("key") is not None
+            and uses_value.strip().split("@")[0].casefold().startswith("actions/cache")
+        ):
+            # Only for an action whose published key output IS this input. Marking every
+            # id-bearing step with a `with.key` readable was too generous: a local action
+            # may take an unrelated `key` input while emitting its own `outputs.key` from
+            # a command this check cannot read, and the delegated key was then dismissed
+            # with nothing recovered.
+            out[ident] = True
             continue
         body = mapping.get("run")
         if isinstance(body, str):
-            out[step_id] = bool(
+            out[ident] = bool(
                 _shell_built_key_prefixes(body) or _shell_output_keys(body)
             )
             continue
@@ -219,12 +290,34 @@ def _producer_steps(path: Path) -> dict:
         uses = mapping.get("uses")
         if not isinstance(uses, str) or not uses.strip().startswith("./"):
             continue
-        target = Path(uses.strip()[2:])
-        for candidate in (
-            path.parent.parent.parent / target / "action.yml",
-            path.parent.parent.parent / target / "action.yaml",
-            path.parent.parent.parent / target,
-        ):
+        ref = uses.strip()[2:]
+        # A job that checks this repository out into a subdirectory writes
+        # `./unsloth/.github/actions/x`, which names the same action through a layout
+        # that only exists at run time. Trying the reference as written and then from
+        # the first `.github` component finds it either way; without the second form
+        # those jobs' producers read as unresolvable and failed the live tree.
+        targets = [Path(ref)]
+        parts = ref.split("/")
+        if ".github" in parts[1:]:
+            targets.append(Path("/".join(parts[parts.index(".github"):])))
+        # The repository root, found by walking up to `.github` rather than counting
+        # levels. A workflow sits at `.github/workflows/x.yml` and an action at
+        # `.github/actions/<name>/action.yml`, one level deeper, so a fixed three-up
+        # landed inside `.github` for every action -- no candidate resolved, and every
+        # producer declared by a composite read as unresolvable.
+        root = path.parent
+        for parent in path.parents:
+            if parent.name == ".github":
+                root = parent.parent
+                break
+        candidates = []
+        for target in targets:
+            candidates += [
+                root / target / "action.yml",
+                root / target / "action.yaml",
+                root / target,
+            ]
+        for candidate in candidates:
             if not candidate.is_file():
                 continue
             text = candidate.read_text(ENC)
@@ -233,16 +326,46 @@ def _producer_steps(path: Path) -> dict:
             # `steps.restore.outputs.cache-primary-key`, whose value is the `key:` the
             # action declares. Requiring a SHELL-built key declared that producer
             # unreadable and failed the live tree on a correct configuration.
-            out[step_id] = bool(
-                _extract_cache_keys(candidate)
-                or _shell_built_key_prefixes(text)
-                or _shell_output_keys(text)
-            )
+            out[ident] = _local_action_publishes_a_key(candidate, text)
             break
     return out
 
 
-def _delegation_is_read(expression: str, producers: dict) -> bool:
+
+def _local_action_publishes_a_key(action: Path, text: str) -> bool:
+    """Does this local action hand out a key whose value this check can see?
+
+    Its declared `outputs.<name>.value` is what a caller receives. When that value is a
+    step output, the step behind it has to be readable; when the action has no declared
+    outputs at all, the question does not arise and the shell is the only evidence.
+    Accepting any action that merely mentions a cache key let one emitting its
+    `outputs.key` through an unreadable command vouch for itself.
+    """
+    doc = _parse(action)
+    outputs = doc.get("outputs") if isinstance(doc, dict) else None
+    inner = _producer_steps(action)
+    inner_by_id = {ident[2]: ok for ident, ok in inner.items()}
+    if isinstance(outputs, dict):
+        for name, spec in outputs.items():
+            if str(name) not in _CACHE_KEY_OUTPUTS:
+                continue
+            value = spec.get("value") if isinstance(spec, dict) else None
+            match = _STEP_OUTPUT.search(str(value or ""))
+            if match is None:
+                # Not delegated to a step: the value is literal or an expression this
+                # check reads no further into, so the shell is the evidence.
+                return bool(
+                    _shell_built_key_prefixes(text) or _shell_output_keys(text)
+                )
+            return bool(inner_by_id.get(match.group(1)))
+    return bool(
+        _extract_cache_keys(action)
+        or _shell_built_key_prefixes(text)
+        or _shell_output_keys(text)
+    )
+
+
+def _delegation_is_read(expression: str, producers: dict, scope = None) -> bool:
     """Was the step this expression names one whose key output we could read?
 
     An expression naming no step at all -- `${{ needs.build.outputs.key }}` -- is not
@@ -251,7 +374,14 @@ def _delegation_is_read(expression: str, producers: dict) -> bool:
     match = _STEP_OUTPUT.search(expression or "")
     if match is None:
         return False
-    return bool(producers.get(match.group(1)))
+    step_id = match.group(1)
+    if scope is not None:
+        return bool(producers.get((scope[0], scope[1], step_id)))
+    # Without a scope, EVERY step of that id has to be readable. A single unreadable
+    # namesake anywhere is enough to make the answer no, which is the conservative
+    # reading and the one that stops a readable namesake vouching for it.
+    seen = [ok for ident, ok in producers.items() if ident[2] == step_id]
+    return bool(seen) and all(seen)
 
 
 def _resolved_inputs(caller_paths: list, target: str) -> dict:
@@ -289,13 +419,13 @@ def _resolved_inputs(caller_paths: list, target: str) -> dict:
     # made the input look fully resolved. Verified before fixing -- a composite called
     # first with no `name` and then with `name: safe` reported ({'safe'}, True), so the
     # namespace narrowed to `safe` and the real default namespace was left undefended.
-    names = {str(name) for site in sites for name in site}
+    names = {str(name) for site, _scope in sites for name in site}
     for name in names:
         literals: set = set()
         delegated: set = set()
         omitted = 0
         dynamic = 0
-        for site in sites:
+        for site, site_scope in sites:
             if name not in site:
                 # Omitted, so the action's default applies. A declared default settles
                 # THIS, and only this.
@@ -308,7 +438,7 @@ def _resolved_inputs(caller_paths: list, target: str) -> dict:
                 # Kept, not discarded. Which producer supplies the value decides
                 # whether the delegation settles anything, and that is only knowable
                 # from the expression the call site wrote.
-                delegated.add(literal)
+                delegated.add((literal, site_scope))
             else:
                 # An explicit value this check cannot expand, such as
                 # `${{ matrix.cache_key }}`. No default can settle it, because the caller
@@ -535,7 +665,9 @@ def _namespaces_by_target(callers: list, targets: list) -> dict:
     return out
 
 
-def _expand_key(key: str, namespaces: dict, producers: dict | None = None) -> tuple:
+def _expand_key(
+    key: str, namespaces: dict, producers: dict | None = None, scope = None,
+) -> tuple:
     """(every literal key this can take, whether that list is complete).
 
     Substitutes each `${{ inputs.X }}` OCCURRENCE, rather than only a key that is
@@ -572,7 +704,8 @@ def _expand_key(key: str, namespaces: dict, producers: dict | None = None) -> tu
                 # `${{ steps.pip-cache.outputs.key }}`, against every publish key in the
                 # tree -- a false failure on a correct configuration.
                 readable = bool(delegated) and all(
-                    _delegation_is_read(expr, producers or {}) for expr in delegated
+                    _delegation_is_read(expr, producers or {}, expr_scope)
+                    for expr, expr_scope in delegated
                 )
                 if resolved and readable:
                     delegated_inputs.add(match.group(1))
@@ -1134,7 +1267,10 @@ def main() -> int:
     # therefore had that key dismissed as delegated with nothing recovered to compare,
     # while a pull request writing the literal `shared-key` passed.
     publish_shell: set = set()
+    pub_scopes: dict = {}
     for pth in publish_callers + publish_reachable:
+        for jid, key in _scoped_cache_keys(pth):
+            pub_scopes.setdefault((pth.as_posix(), key), (pth.as_posix(), jid))
         text = pth.read_text(ENC)
         publish_shell.update(_shell_built_key_prefixes(text))
         publish_shell.update(_shell_output_keys(text))
@@ -1147,15 +1283,24 @@ def main() -> int:
 
     # (namespace, key) rather than a bare key, so every key is expanded against the
     # inputs of the definition that declares it and no other.
-    pr_sites = [({}, k) for _, keys in pr_triggered for k in keys]
+    # (namespace, key, scope) -- the scope is the document and job whose step ids a
+    # delegated key refers to.
+    pr_sites = [
+        ({}, k, (pth.as_posix(), jid))
+        for pth, _keys in pr_triggered
+        for jid, k in _scoped_cache_keys(pth)
+    ]
     # Shell-built heads only. Re-adding every composite's YAML keys here gave each one a
     # SECOND entry carrying an empty namespace: it expanded to nothing, counted as
     # unresolved, and a composite whose callers all pass literals then rejected an
     # unrelated publish key on the strength of its own duplicate. The target loop below
     # is where those keys belong, with the inputs that decide them.
-    pr_sites += [({}, k) for k in sorted(shell_built | shell_literals)]
+    pr_sites += [({}, k, None) for k in sorted(shell_built | shell_literals)]
     for target, namespace in pr_by_target.items():
-        pr_sites += [(namespace, k) for k in _extract_cache_keys(target)]
+        pr_sites += [
+            (namespace, k, (target.as_posix(), jid))
+            for jid, k in _scoped_cache_keys(target)
+        ]
 
     pr_keys: set = set()
     # PR keys whose value this check could not settle, with the literal head they are
@@ -1167,8 +1312,8 @@ def main() -> int:
     pr_producers: dict = {}
     for pth in pr_workflow_paths + list(pr_reachable):
         pr_producers.update(_producer_steps(pth))
-    for namespace, key in pr_sites:
-        literals, complete = _expand_key(key, namespace, pr_producers)
+    for namespace, key, scope in pr_sites:
+        literals, complete = _expand_key(key, namespace, pr_producers, scope)
         pr_keys.update(k for k in literals if "${{" not in k)
         # Delegation is not indecision. A key that is nothing but
         # `${{ steps.probe.outputs.key }}` names a value assembled in a shell step, and
@@ -1177,7 +1322,7 @@ def main() -> int:
         # against it, which failed the live tree on a correct configuration.
         if not complete and not (
             _DELEGATED_KEY.fullmatch(key.strip())
-            and _delegation_is_read(key.strip(), pr_producers)
+            and _delegation_is_read(key.strip(), pr_producers, scope)
         ):
             pr_undecided.append((key, _prefix_candidates(key)))
     pr_raw_unresolved = {raw.strip() for raw, _heads in pr_undecided}
@@ -1187,12 +1332,23 @@ def main() -> int:
         # sharing an input name had every key expanded with both their values, so a cache
         # composite given `publish-key` was also expanded to an unrelated action's
         # `safe-key` and reported as colliding with a PR cache of that name.
-        pub_ns = publish_by_target.get(pub_path, publish_namespaces)
+        # A top-level workflow is not a target, and its `${{ inputs.X }}` is a
+        # workflow_dispatch input chosen by whoever dispatches it. Falling back to the
+        # merged CHILD namespace expanded that user-controlled value using an unrelated
+        # action's literal and then called it settled, so dispatching with
+        # `cache_key=shared-key` restored a pull request's cache with the lint green.
+        # An empty namespace leaves it undecidable, which is what it is.
+        pub_ns = publish_by_target.get(pub_path, {})
         for raw in pub_keys:
-            literals, complete = _expand_key(raw, pub_ns, publish_producers)
+            pub_scope = pub_scopes.get((pub_path.as_posix(), raw))
+            literals, complete = _expand_key(
+                raw, pub_ns, publish_producers, pub_scope
+            )
             if _DELEGATED_KEY.fullmatch(raw.strip()):
                 # Compared as the heads its own shell produced, rather than skipped.
-                read = _delegation_is_read(raw.strip(), publish_producers)
+                read = _delegation_is_read(
+                    raw.strip(), publish_producers, pub_scope
+                )
                 literals = sorted(publish_shell) if read else [raw.strip()]
                 complete = read
             # Identical spellings first. Two keys written the same way around an
@@ -1222,7 +1378,7 @@ def main() -> int:
                     continue
                 if "${{" in k:
                     if _DELEGATED_KEY.fullmatch(k.strip()) and _delegation_is_read(
-                        k.strip(), publish_producers
+                        k.strip(), publish_producers, pub_scope
                     ):
                         # Delegated AND read. See the PR side above.
                         continue

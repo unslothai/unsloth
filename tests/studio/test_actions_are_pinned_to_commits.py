@@ -97,7 +97,30 @@ def _sources():
 # no match and was omitted from every pinning check while still being a mutable tag. A
 # guard that silently skips what it cannot parse is worse than one that over-collects,
 # because the `_SHA` test below decides the verdict anyway.
-_REF = re.compile(r"""^(?P<repo>[A-Za-z0-9][\w.-]*/[\w.-]+(?:/[\w.\-/]+)?)@(?P<rev>[^@\s]+)$""")
+_REPO_PART = re.compile(r"""^[A-Za-z0-9][\w.-]*/[\w.-]+(?:/[\w.\-/]+)?$""")
+
+
+def _split_ref(value: str):
+    """(repo, rev) for a `uses:` value, split at the FIRST `@`.
+
+    The first, not the last. A repository name cannot contain `@`, so the first one is
+    always the delimiter, and everything after it is the revision however many more it
+    holds. The previous version said "last delimiter" in its comment and then spelled
+    `[^@\s]+` for the revision, which forbids the very character it claimed to split on;
+    `git check-ref-format refs/tags/v@1` succeeds, so `owner/action@v@1` is a valid
+    mutable tag that produced no match at all and was dropped from every pinning check.
+    Splitting last would not have fixed it either, since that reads the repository as
+    `owner/action@v`. The failure mode is the one the comment was written about: a guard
+    that silently skips what it cannot parse.
+    """
+    if "@" not in value:
+        return None
+    repo, _, rev = value.partition("@")
+    if not rev or not rev.strip() or any(c.isspace() for c in rev):
+        return None
+    if not _REPO_PART.match(repo):
+        return None
+    return repo, rev
 
 
 def _uses_values(node):
@@ -134,15 +157,15 @@ def _references():
             # third-party pointer.
             if ref.startswith(".") or ref.startswith("docker://"):
                 continue
-            match = _REF.match(ref)
-            if match is None:
+            parts = _split_ref(ref)
+            if parts is None:
                 continue
             # The parser discards positions, so recover the line from the source for the
             # failure message. Only ever cosmetic: a reference that cannot be located is
             # still reported, at line 0.
             index = text.find(ref)
             lineno = text.count("\n", 0, index) + 1 if index >= 0 else 0
-            yield path, lineno, ref, match.group("repo"), match.group("rev")
+            yield path, lineno, ref, parts[0], parts[1]
 
 
 def test_the_scan_finds_the_references_it_claims_to():
@@ -209,7 +232,7 @@ def test_the_scan_reads_every_spelling_of_a_step_mapping():
 
 
 def test_the_reference_predicate_reads_owner_repo_at_ref():
-    """`_REF` decides what counts as a third-party reference at all."""
+    """`_split_ref` decides what counts as a third-party reference at all."""
     cases = [
         ("actions/checkout@v4", True),
         ("actions/cache/restore@v4", True),
@@ -221,7 +244,7 @@ def test_the_reference_predicate_reads_owner_repo_at_ref():
         ("", False),
     ]
     for ref, expected in cases:
-        assert bool(_REF.match(ref)) is expected, f"_REF.match({ref!r})"
+        assert bool(_split_ref(ref)) is expected, f"_split_ref({ref!r})"
 
 
 def test_every_third_party_action_is_pinned_to_a_commit_sha():
@@ -315,15 +338,23 @@ def test_the_reference_predicate_accepts_valid_git_ref_punctuation():
     produced no match and was omitted from every pinning check while still being a
     mutable tag.
     """
-    for ref in ("owner/action@v1+build", "owner/action@release~1", "owner/action@v1.2.3"):
-        match = _REF.match(ref)
-        assert match is not None, f"{ref} is a valid mutable reference and must be seen"
-        assert match.group("repo") == "owner/action", ref
-        assert not _SHA.match(match.group("rev")), f"{ref} is not a pin"
+    # `v@1` included: `git check-ref-format refs/tags/v@1` succeeds, so it is a valid
+    # mutable tag, and a revision pattern spelled `[^@\s]+` forbade the very character
+    # the split is named for -- dropping it from every pinning check.
+    for ref in (
+        "owner/action@v1+build",
+        "owner/action@release~1",
+        "owner/action@v1.2.3",
+        "owner/action@v@1",
+    ):
+        parts = _split_ref(ref)
+        assert parts is not None, f"{ref} is a valid mutable reference and must be seen"
+        assert parts[0] == "owner/action", ref
+        assert not _SHA.match(parts[1]), f"{ref} is not a pin"
 
     # Still not references, so over-collecting does not turn into over-reporting.
     for ref in ("./.github/actions/x", "docker://alpine:3", "actions/checkout", ""):
-        assert _REF.match(ref) is None, ref
+        assert _split_ref(ref) is None, ref
 
 
 def test_a_sub_action_is_pinned_with_its_repository():

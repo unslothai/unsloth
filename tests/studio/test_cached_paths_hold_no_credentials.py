@@ -690,6 +690,24 @@ def _glob_regex(pattern: str):
             out.append(".*")
             i += 2
             continue
+        if ch == "[":
+            # A bracket expression, compiled rather than escaped. `_inside` already
+            # counted `[` as making the path a glob, so escaping it here meant
+            # `hf-cache/[t]oken` was treated as a glob that matches the literal text
+            # `[t]oken` -- it matched nothing, and an upload that does include the token
+            # was permitted.
+            close = pattern.find("]", i + 1)
+            if close == -1:
+                out.append(re.escape(ch))
+                i += 1
+                continue
+            body = pattern[i + 1 : close]
+            negate = body.startswith("!") or body.startswith("^")
+            if negate:
+                body = body[1:]
+            out.append("[" + ("^" if negate else "") + body.replace("\\", "\\\\") + "]")
+            i = close + 1
+            continue
         if ch == "*":
             out.append("[^/]*")
         elif ch == "?":
@@ -758,7 +776,13 @@ def _inside(inner: str, outer: str, files = None) -> bool:
     inner, outer = inner.strip("/"), outer.strip("/")
     if not inner or not outer:
         return False
-    return inner == outer or inner.startswith(outer + "/")
+    if inner == outer or inner.startswith(outer + "/"):
+        return True
+    # The persisted path may name the credential FILE outright rather than a directory
+    # holding it. `path: hf-cache/token` is not the home and does not contain it, so a
+    # containment test answered no while the upload carried the token itself. The
+    # filenames are the same ones a glob is tested against.
+    return any(outer == inner.rstrip("/") + "/" + f for f in (files or ()))
 
 
 def _offending_jobs():
@@ -947,9 +971,16 @@ def test_no_job_persists_a_default_credential_home():
     offenders = []
     for path, doc in _docs():
         for jid, job in _jobs(doc):
-            env = _env_of(job, doc)
+          # Per resolved unit, because the override and the persistence must come from
+          # the SAME runner. `_persisted_with_env` traverses into a called reusable
+          # workflow while `overridden` was read from the caller, and caller env does
+          # not cross that boundary -- so a caller-level `CARGO_HOME=/tmp/cargo`
+          # exempted a callee that caches the real `~/.cargo`, which the caller's
+          # variable does nothing to move.
+          for unit, unit_env, unit_inputs in _units(job, doc):
+            env = unit_env
             overridden = {v for v in CREDENTIAL_HOMES if v in env}
-            for persisted, _step in _persisted_with_env(job, doc):
+            for persisted, _step in _persisted_in_unit(unit, unit_env, unit_inputs):
                 for default, creds in DEFAULT_CREDENTIAL_HOMES.items():
                     # A default is only where the tool looks when nothing overrides it.
                     # A job setting `CARGO_HOME: /tmp/cargo` writes credentials there, so
@@ -2045,3 +2076,97 @@ def test_the_discovery_scan_sees_an_env_declared_inside_a_composite(tmp_path, mo
         "the env is declared inside the composite, and the scan has to reach it or the "
         "guard is never instantiated for this job"
     )
+
+
+def test_a_character_class_is_compiled_not_escaped():
+    """`hf-cache/[t]oken` includes `hf-cache/token`.
+
+    `_inside` already counted `[` as making the path a glob, and the compiler then
+    escaped it as a literal bracket, so the pattern matched nothing at all and an upload
+    that does carry the token was permitted.
+    """
+    hf = CREDENTIAL_FILES["HF_HOME"]
+    assert _inside("hf-cache", "hf-cache/[t]oken", hf) is True
+    assert _inside("hf-cache", "hf-cache/[a-z]oken", hf) is True
+    # A negated class that excludes the token really does exclude it.
+    assert _inside("hf-cache", "hf-cache/[!t]oken", hf) is False
+
+    leaking = {
+        "env": {"HF_HOME": "hf-cache"},
+        "steps": [
+            {"run": "hf auth login --token x"},
+            {
+                "uses": "actions/upload-artifact@v4",
+                "with": {"path": "hf-cache/[t]oken", "name": "a"},
+            },
+        ],
+    }
+    assert _login_offenders({}, leaking), "the upload pattern includes the token"
+
+
+def test_a_persisted_path_that_names_the_credential_file_is_caught():
+    """A job may persist the credential itself rather than the directory holding it.
+
+    `path: hf-cache/token` is not the home and does not contain it, so a containment
+    test answered no while the upload carried the token outright. The filenames tested
+    are the ones a glob is already checked against.
+    """
+    hf = CREDENTIAL_FILES["HF_HOME"]
+    assert _inside("hf-cache", "hf-cache/token", hf) is True
+    assert _inside("hf-cache", "hf-cache/stored_tokens", hf) is True
+    assert _inside("hf-cache", "hf-cache/weights.bin", hf) is False
+
+    leaking = {
+        "env": {"HF_HOME": "hf-cache"},
+        "steps": [
+            {"run": "hf auth login --token x"},
+            {
+                "uses": "actions/upload-artifact@v4",
+                "with": {"path": "hf-cache/token", "name": "a"},
+            },
+        ],
+    }
+    assert _login_offenders({}, leaking), "the token itself is the uploaded path"
+
+
+def test_a_default_home_override_must_come_from_the_same_runner(tmp_path, monkeypatch):
+    """Caller `env:` does not reach a called workflow, so it overrides nothing there.
+
+    A caller-level `CARGO_HOME=/tmp/cargo` was read as exempting a called job that
+    caches the real `~/.cargo`, because the persistence traversal crossed the boundary
+    while the override was still read from the caller. The variable moves nothing in the
+    callee.
+    """
+    import sys
+
+    module = sys.modules[__name__]
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "inner.yml").write_text(
+        "name: inner\n"
+        "on:\n  workflow_call:\n    inputs:\n      path:\n        type: string\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: ${{ inputs.path }}\n          key: k\n"
+    )
+    (wf / "caller.yml").write_text(
+        "name: caller\n"
+        "on:\n  push:\n"
+        "jobs:\n  go:\n"
+        "    env:\n      CARGO_HOME: /tmp/cargo\n"
+        "    uses: ./.github/workflows/inner.yml\n"
+        "    with:\n      path: ~/.cargo\n"
+    )
+    monkeypatch.setattr(module, "REPO", tmp_path)
+    monkeypatch.setattr(module, "WORKFLOWS", wf)
+    monkeypatch.setattr(module, "ACTIONS", tmp_path / ".github" / "actions")
+
+    units = _units({"uses": "./.github/workflows/inner.yml", "with": {"path": "~/.cargo"},
+                    "env": {"CARGO_HOME": "/tmp/cargo"}}, {})
+    assert units, "the delegation resolves to at least one unit"
+    for _unit, unit_env, _inputs in units:
+        assert "CARGO_HOME" not in unit_env, (
+            "the caller's variable must not appear in the called job's environment, or "
+            "it will be read as overriding a default it cannot move"
+        )
