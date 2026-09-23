@@ -2017,6 +2017,7 @@ export const de = {
       expires: "Läuft {value} ab",
       actionsFor: "Aktionen für {name}",
       copyPrefix: "Präfix kopieren",
+      copyFailed: "Kopieren fehlgeschlagen",
       revokeToken: "Token widerrufen",
       revokeTitle: "Zugriffstoken „{name}“ widerrufen?",
       revokeDescription:
