@@ -267,6 +267,17 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
+def _adapter_targets_text_core(peft_config):
+    """True when an adapter was trained on an extracted thinker (`text_only = True`).
+
+    Unsloth saves target_modules as one regex. A kept Qwen3-Omni wrapper adds its
+    `thinker.model` decoder to it; a thinker trained alone never names `thinker`, and its
+    weights are keyed `model.layers...`, so it only reloads onto the thinker.
+    """
+    targets = getattr(peft_config, "target_modules", None)
+    return isinstance(targets, str) and "thinker" not in targets
+
+
 def _resolve_omni_auto_model(model_config):
     """A multimodal auto class that really maps this config, or None.
 
@@ -1897,6 +1908,18 @@ class FastModel(FastBaseModel):
             architectures = []
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
+        if (
+            is_peft
+            and not text_only
+            and auto_model is None
+            and _resolve_omni_auto_model(model_config) is not None
+            and _adapter_targets_text_core(peft_config)
+        ):
+            print(
+                "Unsloth: this adapter was trained on the thinker alone (`text_only = True`), "
+                "so its base is loaded the same way."
+            )
+            text_only = True
         load_text_only = text_only and auto_model is None
         text_only_decoder = False
         if load_text_only:

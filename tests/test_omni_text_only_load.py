@@ -331,3 +331,74 @@ def test_a_kept_wrapper_with_an_accelerate_hook_forwards_through_the_hook(monkey
         out = model(input_ids = ids, labels = ids)
     assert torch.isfinite(out.loss)
     assert calls == ["Qwen3OmniMoeForConditionalGeneration"]
+
+
+def _capture_adapter_reload(monkeypatch, tmp_path, target_modules):
+    peft = pytest.importorskip("peft")
+    from unsloth import FastModel
+    from unsloth.models.vision import FastBaseModel
+
+    base = tmp_path / "base"
+    adapter = tmp_path / "adapter"
+    _tiny_config().save_pretrained(base)
+    peft.LoraConfig(r = 2, lora_alpha = 2, target_modules = target_modules, base_model_name_or_path = str(base)).save_pretrained(adapter)
+    seen = {}
+
+    def capture(*args, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("captured")
+
+    monkeypatch.setattr(FastBaseModel, "from_pretrained", staticmethod(capture))
+    try:
+        FastModel.from_pretrained(str(adapter), load_in_4bit = False)
+    except RuntimeError as error:
+        if str(error) != "captured":
+            if not torch.cuda.is_available():
+                pytest.skip(f"FastModel.from_pretrained needs a GPU here: {error}")
+            raise
+    return seen
+
+
+def test_an_adapter_trained_on_the_thinker_reloads_onto_the_thinker(monkeypatch, tmp_path):
+    # A text_only adapter's regex is rooted at model.layers; the composition names them
+    # thinker.model.layers, so a default reload could not find its targets.
+    seen = _capture_adapter_reload(monkeypatch, tmp_path, r"(?:\bmodel\.layers\.[\d]{1,}\.(?:self_attn)\.(?:q_proj))")
+    assert seen["text_intent"] is True
+
+
+def test_an_adapter_trained_on_the_kept_wrapper_keeps_the_wrapper(monkeypatch, tmp_path):
+    seen = _capture_adapter_reload(monkeypatch, tmp_path, r"(?:.*?(?:thinker\.model).*?(?:self_attn).*?(?:q_proj))")
+    assert seen["text_intent"] is False
+
+
+def test_a_text_only_adapter_round_trips_through_save_and_reload(tmp_path):
+    if not torch.cuda.is_available():
+        pytest.skip("FastModel needs a GPU")
+    from unsloth import FastModel
+
+    tokenizers = pytest.importorskip("tokenizers")
+    base = tmp_path / "base"
+    _tiny_omni().save_pretrained(base)
+    vocab = {f"w{i}": i for i in range(48)}
+    vocab.update({"<unk>": 48, "<pad>": 49, "<eos>": 50})
+    backend = tokenizers.Tokenizer(tokenizers.models.WordLevel(vocab, unk_token = "<unk>"))
+    backend.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
+    transformers.PreTrainedTokenizerFast(
+        tokenizer_object = backend, unk_token = "<unk>", pad_token = "<pad>", eos_token = "<eos>"
+    ).save_pretrained(base)
+    model, _ = FastModel.from_pretrained(str(base), text_only = True, load_in_4bit = False)
+    model = FastModel.get_peft_model(model, r = 2, lora_alpha = 2, random_state = 0)
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if "lora_B" in name:
+                param.normal_(0, 0.1)
+    saved = {n: p.detach().float().cpu().clone() for n, p in model.named_parameters() if "lora_" in n}
+    assert saved
+    model.save_pretrained(tmp_path / "adapter")
+    del model
+    reloaded, _ = FastModel.from_pretrained(str(tmp_path / "adapter"), load_in_4bit = False)
+    assert "Thinker" in type(reloaded.get_base_model()).__name__
+    loaded = {n: p.detach().float().cpu() for n, p in reloaded.named_parameters() if "lora_" in n}
+    assert loaded.keys() == saved.keys()
+    for name, value in saved.items():
+        assert torch.equal(loaded[name], value), name
