@@ -16299,7 +16299,11 @@ def _check_signal_escape_patterns(code: str):
         "urllib3.poolmanager.ProxyManager",
     )
     _SOCKET_CLIENTS = ("socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient")
-    _CLIENT_CLASSES = frozenset((*_VERB_CLIENTS, *_POOL_CLIENTS, *_SOCKET_CLIENTS))
+    # `build_opener()` returns an `OpenerDirector`, whose `open(fullurl)` sends.
+    _OPENER_CLIENTS = ("urllib.request.build_opener", "urllib.request.OpenerDirector")
+    _CLIENT_CLASSES = frozenset(
+        (*_VERB_CLIENTS, *_POOL_CLIENTS, *_SOCKET_CLIENTS, *_OPENER_CLIENTS)
+    )
     # Each entry below comes from the library's own signature: `Client.stream(method, url)` is not
     # `Client.get(url)`, pools have no verbs, and paramiko names its host `hostname`.
     _NETWORK_DESTINATION_ARG.update(
@@ -16378,6 +16382,9 @@ def _check_signal_escape_patterns(code: str):
             },
             "urllib3.util.connection.create_connection": (0, ("address",), "host"),
             **{f"socket.socket.{m}": (0, ("address",), "host") for m in ("connect", "connect_ex")},
+            **{f"{opener}.open": (0, ("fullurl",), "url") for opener in _OPENER_CLIENTS},
+            # Recognised so its mapping is read as proxies; see the proxy scan.
+            "urllib.request.ProxyHandler": (None, (), "proxy"),
             # A datagram names its address per send. `sendto(data, flags, address)` puts the int
             # flags at index 1, which reads as unreadable and fails closed.
             "socket.socket.sendto": (1, (), "host"),
@@ -18289,6 +18296,8 @@ def _check_signal_escape_patterns(code: str):
                 # configured on its client.
                 proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
                 proxies += self.env_proxies
+                if "urllib.request.ProxyHandler" in recognised and node.args:
+                    proxies.append(node.args[0])  # `ProxyHandler({"https": ...})`
                 if isinstance(node.func, ast.Attribute):
                     receiver = self._receiver_path(node.func.value)
                     owners = {c.rpartition(".")[0] for c in recognised}
