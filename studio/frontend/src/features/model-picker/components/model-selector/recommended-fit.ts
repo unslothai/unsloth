@@ -339,8 +339,9 @@ export function orderRecommendedRows<
   keep: (row: T) => boolean;
   deviceFiltered: boolean;
   fits: (row: T) => boolean;
-  /** Catalog family of a repo id; when set, unsloth rows lead and families follow the listing's
-   *  sort. `results` must be one sorted listing, since a family ranks by its index there. */
+  /** Catalog family of a repo id; when set, first-party rows lead and families follow the
+   *  listing's sort. `results` must be one sorted listing of unsloth/* repos, since a family ranks
+   *  by its index there. */
   familyOf?: (id: string) => string | undefined;
 }): T[] {
   const { seeds, results, keep, deviceFiltered, fits, familyOf } = opts;
@@ -363,9 +364,14 @@ export function orderRecommendedRows<
   );
   const ordered = [...curated, ...rest];
   if (!familyOf) return ordered;
-  // Unsloth rows lead. A family ranks at its best listed artifact and keeps its rows together;
-  // unlisted families go last.
+  // First-party rows lead. A family ranks at its best listed artifact and keeps its rows together;
+  // unlisted families go last, except first-party ones the unsloth listing can never return
+  // (unslothai/*), which keep their curated place on top.
   const keyOf = (r: T) => familyOf(r.id) ?? r.id.toLowerCase();
+  const firstParty = (id: string) => /^unsloth(ai)?\//i.test(id);
+  const listable = new Set(
+    ordered.filter((r) => /^unsloth\//i.test(r.id)).map(keyOf),
+  );
   const rank = new Map<string, number>();
   results.forEach((r, i) => {
     const key = keyOf(r);
@@ -378,8 +384,9 @@ export function orderRecommendedRows<
   });
   const sortKey = (r: T, i: number) => {
     const key = keyOf(r);
-    const unsloth = r.id.toLowerCase().startsWith("unsloth/") ? 0 : 1;
-    return [unsloth, rank.get(key) ?? Infinity, firstSeen.get(key) ?? i, i];
+    const ours = firstParty(r.id);
+    const unranked = ours && !listable.has(key) ? -1 : Infinity;
+    return [ours ? 0 : 1, rank.get(key) ?? unranked, firstSeen.get(key) ?? i, i];
   };
   return ordered
     .map((row, i) => ({ row, key: sortKey(row, i) }))

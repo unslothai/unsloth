@@ -590,4 +590,26 @@ test("a vendor id resolves to the unsloth mirror that replaced it", () => {
     assert.equal(loadSpecFor(vendor, IMAGE_CATALOG)?.kind, "pipeline", vendor);
     assert.equal(groupForRepoId(vendor, IMAGE_CATALOG), groupForRepoId(mirror, IMAGE_CATALOG));
   }
+
+test("with familyOf, an unslothai family the unsloth listing cannot rank keeps its curated slot", () => {
+  const family = (id: string) => id.toLowerCase().replace(/-gguf$/, "");
+  const ASR = "unslothai/Qwen3-ASR-0.6B-GGUF";
+  const TURBO = "unsloth/whisper-large-v3-turbo";
+  const TINY = "unsloth/whisper-tiny";
+  const seeds: Row[] = [{ id: ASR, isGguf: true }, { id: TURBO }, { id: TINY }];
+  const order = (results: Row[]) =>
+    ids(
+      orderRecommendedRows({
+        seeds,
+        results,
+        keep: () => true,
+        deviceFiltered: false,
+        fits: () => true,
+        familyOf: family,
+      }),
+    );
+  // Offline or still loading: catalog order.
+  assert.deepEqual(order([]), [ASR, TURBO, TINY]);
+  // The listing ranks the unsloth rows, and the unslothai row stays above them.
+  assert.deepEqual(order([{ id: TINY }, { id: TURBO }]), [ASR, TINY, TURBO]);
 });
