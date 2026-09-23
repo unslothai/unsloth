@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Two regressions found by simulating #11526, each with the arm that fails without the fix."""
+"""Unquantized casts inside the tolerated load, and padding-free on compiled models."""
 
 import torch
 import torch.nn as nn
@@ -32,7 +32,7 @@ def _tiny():
     ],
 )
 def test_an_unquantized_cast_inside_the_tolerated_load_is_not_dropped(call):
-    """The context must not swallow a keyword `dtype` cast on a non-quantized model."""
+    """The context must not swallow a cast on an unquantized model."""
     model = _tiny()
     with _tolerate_dtype_cast_on_quantized_model(True):
         call(model)
@@ -40,7 +40,7 @@ def test_an_unquantized_cast_inside_the_tolerated_load_is_not_dropped(call):
 
 
 def test_a_compiled_model_keeps_padding_free():
-    """torch.compile sets `forward` on the instance; the class forward must not be read."""
+    """OptimizedModule sets `forward` on the instance, not the class."""
 
     class Kwargs(nn.Module):
         def forward(

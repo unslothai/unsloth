@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""A remote-code from_pretrained ending with model.to(dtype) must not break a 4-bit load.
-Small PreTrainedModel with a fake packed weight, no downloads."""
+"""A remote-code from_pretrained ending in model.to(dtype) must not break a 4-bit load.
+
+Small PreTrainedModel with a fake packed weight, no downloads.
+"""
 
 import pytest
 import torch

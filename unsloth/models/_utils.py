@@ -5040,6 +5040,7 @@ def get_moe_target_modules(model, target_modules = None) -> List[str]:
 
 
 _EXPERT_SUBMODULE_PATTERN = re.compile(r"(?:^|\.)(?:experts\.\d+|shared_experts?)\.([A-Za-z_]\w*)$")
+_EXPERT_BLOCK_PATTERN = re.compile(r"(?:^|\.)(?:experts\.\d+|shared_experts?)$")
 
 
 def get_moe_expert_submodule_leaves(model, target_modules = None) -> List[str]:
@@ -5112,6 +5113,15 @@ def widen_target_regex_to_expert_submodules(
     ``experts.<i>.<leaf>`` submodules. A user-written regex is never widened. Returns
     ``(target_modules, detect_targets, leaves)``; ``leaves`` is empty when nothing changed."""
     if not auto_regex or not isinstance(target_modules, str):
+        return target_modules, detect_targets, []
+    # Remote code only (Nemotron-Labs-Teacher). Native per-expert layouts (Qwen3-MoE and
+    # friends on transformers 4.x) keep their targets: widening them would add LoRA to every
+    # routed expert, hundreds of millions of parameters nobody asked for.
+    if not any(
+        _EXPERT_BLOCK_PATTERN.search(name)
+        and "transformers_modules" in (getattr(type(module), "__module__", "") or "")
+        for name, module in model.named_modules()
+    ):
         return target_modules, detect_targets, []
     leaves = get_moe_expert_submodule_leaves(model, detect_targets)
     if not leaves:

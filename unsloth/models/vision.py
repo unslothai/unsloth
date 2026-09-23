@@ -1245,7 +1245,7 @@ def _cast_unquantized_floats(model, dtype):
     for tensor in list(model.parameters()) + list(model.buffers()):
         if not tensor.is_floating_point() or tensor.dtype == dtype:
             continue
-        # Skip bitsandbytes packed weights.
+        # bitsandbytes packed weights (Params4bit / Int8Params) must not move.
         if (
             hasattr(tensor, "quant_state")
             or hasattr(tensor, "SCB")
@@ -1257,8 +1257,11 @@ def _cast_unquantized_floats(model, dtype):
 
 
 def _inherit_gradient_checkpointing_support(model):
-    """Set `supports_gradient_checkpointing` on a wrapper whose nested model or layers support
-    it (remote multimodal wrappers leave the default False). Returns True when set."""
+    """Let a wrapper advertise the gradient checkpointing its submodels support.
+
+    Remote-code wrappers (Nemotron-3-Nano-Omni) keep transformers' default False,
+    so Trainer refused to enable it. Returns True when the flag was set.
+    """
     if getattr(model, "supports_gradient_checkpointing", False):
         return False
     if not hasattr(model, "gradient_checkpointing_enable"):
@@ -1270,6 +1273,7 @@ def _inherit_gradient_checkpointing_support(model):
     for name, module in model.named_modules():
         if module is model or not name:
             continue
+        # A nested model that says yes, or a transformers checkpointing layer.
         if (
             getattr(module, "supports_gradient_checkpointing", False)
             and hasattr(module, "gradient_checkpointing_enable")
@@ -1302,14 +1306,14 @@ _TEXT_BATCH_KEYS = frozenset(
 )
 
 
-# What a text collator really puts in a batch.
+# What a text collator puts in a batch; required control arguments (cache_position, ...) are not.
 _COLLATOR_SUPPLIED_KEYS = frozenset(
     ("input_ids", "attention_mask", "labels", "token_type_ids", "position_ids")
 )
 
 
 def _required_non_text_inputs(forward):
-    """Required forward parameters a text batch cannot supply."""
+    """Required parameters that a text collator does not supply."""
     try:
         parameters = inspect.signature(forward).parameters
     except (TypeError, ValueError):
@@ -1325,12 +1329,13 @@ def _required_non_text_inputs(forward):
 
 
 def _text_trainable_core(model, text_intent = True):
-    """The module a text batch can train when the loaded wrapper's forward cannot take one.
+    """The child a text batch can train when the wrapper's forward cannot take one.
 
-    If the wrapper's forward requires a non-text input (e.g. `pixel_values`) and exactly one
-    child PreTrainedModel can take a text batch (`language_model` / `thinker` preferred), that
-    child is returned and its siblings are dropped. Only with `text_intent` (the caller's
-    `text_only = True`); otherwise the wrapper is kept with a hint.
+    Nemotron-3-Nano-Omni's forward requires `pixel_values`, so text SFT failed on
+    the first step. If exactly one direct PreTrainedModel child (preferring
+    `language_model` / `thinker`) takes a text batch and has both embeddings, it is
+    returned and its siblings are dropped. Only when `text_intent` (the caller
+    passed `text_only = True`); otherwise the wrapper is kept and a hint printed.
     `UNSLOTH_KEEP_COMPOSED_WRAPPER=1` turns this off.
     """
     if os.environ.get("UNSLOTH_KEEP_COMPOSED_WRAPPER", "0") == "1":
@@ -1380,8 +1385,7 @@ def _text_trainable_core(model, text_intent = True):
     for child_name in dropped:
         delattr(model, child_name)
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    clean_gpu_cache()
     print(
         f"Unsloth: `{type(model).__name__}.forward` requires {', '.join(required)}, which a text "
         f"batch does not carry, so training uses its `{name}` (`{type(core).__name__}`)."
@@ -1406,9 +1410,10 @@ _LOADER_STATE_ATTRIBUTES = (
 
 
 def _carry_loader_state_to_core(model, core, name):
-    """Copy the quantization flags, re-keyed `hf_device_map` and quantization_config that
-    from_pretrained set on the wrapper onto the child replacing it (PEFT reads
-    `is_loaded_in_4bit` to pick the bnb LoRA layer).
+    """Move what from_pretrained recorded on the wrapper onto the child that replaces it.
+
+    PEFT reads `is_loaded_in_4bit` to choose `lora.bnb.Linear4bit` over `lora.Linear`.
+    The device map is re-keyed from the wrapper's names to the core's.
     """
     for attribute in _LOADER_STATE_ATTRIBUTES:
         if attribute in vars(core):
@@ -1445,8 +1450,11 @@ def _carry_loader_state_to_core(model, core, name):
 
 @contextlib.contextmanager
 def _tolerate_dtype_cast_on_quantized_model(enabled):
-    """Within the load, let a remote-code `model.to(dtype)` on a bitsandbytes model cast only
-    the unquantized floats instead of raising; device moves pass through.
+    """Let a remote-code from_pretrained call model.to(dtype) on a bitsandbytes model.
+
+    Phi-4-reasoning-vision ends from_pretrained with `model.to(dtype)`, which
+    transformers refuses on any bitsandbytes model. Inside this context only the
+    unquantized floats are cast; device moves pass through.
     """
     if not enabled:
         yield
@@ -1467,7 +1475,7 @@ def _tolerate_dtype_cast_on_quantized_model(enabled):
             else:
                 rest.append(arg)
         if not quantized or dtype is None:
-            # Pass through unchanged (dtype was read with .get, not popped).
+            # Pass through unchanged; `dtype` is read with .get, not popped, so the cast is kept.
             return original_to(self, *args, **kwargs)
         kwargs.pop("dtype", None)
         _cast_unquantized_floats(self, dtype)
@@ -1519,7 +1527,7 @@ class FastBaseModel:
         text_only = False,
         # True when the caller already swapped a multimodal config for its text sub-config, so auto_config no longer describes the repo. Set by loader.py and by the block below.
         text_only_decoder = False,
-        # The caller's own text_only request, which loader.py may turn off; None means text_only.
+        # The caller's text_only before loader.py normalised it; None means same as text_only.
         text_intent = None,
         # True when auto_config came from the caller. It cannot be inferred here: FastModel pops config out of kwargs before this sees them, so it looks exactly like one we resolved ourselves.
         auto_config_from_caller = False,
@@ -2044,7 +2052,7 @@ class FastBaseModel:
                 _cfg_val = kwargs.pop("max_position_embeddings", None)
                 if _cfg_val is not None:
                     setattr(model_config, "max_position_embeddings", _cfg_val)
-                # Remote-code from_pretrained may call model.to(dtype) on a bnb model.
+                # A remote-code from_pretrained may call model.to(dtype); bitsandbytes refuses it.
                 with _tolerate_dtype_cast_on_quantized_model(
                     bool(trust_remote_code) and (load_in_4bit or load_in_8bit)
                 ):
@@ -2056,6 +2064,7 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         **kwargs,
                     )
+                # Only the caller knows: a wrapper with an audio-only config has no vision_config either.
                 model = _text_trainable_core(
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )

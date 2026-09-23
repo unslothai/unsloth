@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Gates that let a remote-code multimodal model reach its first training step: padding-free
-stays off for a forward that cannot take `packed_seq_lengths`, a wrapper inherits gradient
-checkpointing support, and a text batch trains the wrapped language model. No downloads."""
+"""Gates that let a remote-code multimodal model reach its first training step:
+padding-free off for a fixed-signature forward, gradient checkpointing inherited by
+a wrapper, and text training through the wrapped language model. No downloads.
+"""
 
 import pytest
 import torch
@@ -58,7 +59,7 @@ class _PeftLike(nn.Module):
 
 
 def test_fixed_signature_cannot_take_packed_seq_lengths():
-    """The arm that fails on a tree without the gate: this model was padded-free."""
+    """Without the gate this model was made padding-free."""
     assert _forward_accepts_packed_seq_lengths(_Fixed()) is False
 
 
@@ -220,7 +221,7 @@ def test_required_non_text_inputs_are_listed():
 
 
 def test_omni_wrapper_trains_its_language_model():
-    """The arm that fails on a tree without the unwrap: the wrapper was trained as is."""
+    """Without the unwrap the wrapper was trained as is."""
     model = _OmniWrapper(_Cfg())
     core = _text_trainable_core(model)
     assert isinstance(core, _CausalLM)
@@ -251,7 +252,7 @@ def test_ambiguous_wrapper_is_left_alone():
 
 
 def test_multimodal_intent_keeps_the_wrapper(capsys):
-    """Without text_only the multimodal wrapper is kept, with a hint naming text_only = True."""
+    """Without text_only the wrapper is kept and the hint names text_only = True."""
     model = _OmniWrapper(_Cfg())
     assert _text_trainable_core(model, text_intent = False) is model
     assert hasattr(model, "vision_model")
@@ -271,7 +272,7 @@ def test_opt_out_env_keeps_the_wrapper(monkeypatch):
 
 
 def test_core_carries_the_wrapper_loader_state():
-    """The core that replaces the wrapper carries the bitsandbytes flags and device map."""
+    """The core must carry the wrapper's bitsandbytes flags and device map."""
     model = _OmniWrapper(_Cfg())
     model.is_loaded_in_4bit = True
     model.is_quantized = True
@@ -325,7 +326,7 @@ def test_peft_dispatches_the_4bit_lora_layer_on_the_core():
             self.vision_model = nn.Linear(4, 4)
 
     wrapper = _Composed(_Cfg())
-    # transformers sets these on the object from_pretrained returns, here the wrapper.
+    # A composed remote-code checkpoint has these on the wrapper.
     for attribute in ("is_loaded_in_4bit", "is_quantized", "quantization_method", "hf_quantizer"):
         setattr(wrapper, attribute, vars(inner).pop(attribute))
     core = _text_trainable_core(wrapper)
@@ -368,7 +369,7 @@ def test_model_built_on_gradient_checkpointing_layer_is_recognised():
 
 
 def test_the_loader_carries_the_callers_text_intent_past_its_own_normalisation():
-    """The caller's own text_only request reaches the loader even when loader.py turns it off."""
+    """loader.py passes the caller's own text_only as text_intent, not its normalised value."""
     import inspect
     from unsloth.models import loader, vision
 
@@ -385,7 +386,7 @@ def test_standard_tokenizer_fields_count_as_text_inputs():
 
 
 def test_a_required_cache_control_is_a_missing_text_input():
-    """A required cache_position cannot come from a text batch; input_ids and attention_mask can."""
+    """A required cache_position is not supplied by the collator; input_ids is."""
     from unsloth.models.vision import _required_non_text_inputs
 
     def needs_cache(

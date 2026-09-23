@@ -44,8 +44,10 @@ def test_old_flag_alone_is_not_flash_support_on_new_transformers():
     assert U._model_class_supports_flash_attention(None) is False
 
 
-def test_resolver_does_not_request_flash_for_old_flag_remote_class():
+def test_resolver_does_not_request_flash_for_old_flag_remote_class(monkeypatch):
     U = _utils()
+    # Without flash-attn installed the ladder never reaches flash, and this would pass either way.
+    monkeypatch.setattr(U, "HAS_FLASH_ATTENTION", True)
     from transformers.modeling_utils import PreTrainedModel
 
     if not hasattr(PreTrainedModel, "_supports_flash_attn") or (
@@ -57,9 +59,17 @@ def test_resolver_does_not_request_flash_for_old_flag_remote_class():
         _supports_flash_attn_2 = True
         _supports_sdpa = True
 
+    class NewRemote:
+        _supports_flash_attn = True
+        _supports_sdpa = True
+
     config = SimpleNamespace(model_type = "nemotron_h", _attn_implementation = None)
     impl = U.resolve_attention_implementation(OldRemote, config, dtype = torch.bfloat16)
     assert "flash" not in str(impl)
+    # Control: the same config does reach flash for a class carrying the dispatched flag.
+    config = SimpleNamespace(model_type = "nemotron_h", _attn_implementation = None)
+    impl = U.resolve_attention_implementation(NewRemote, config, dtype = torch.bfloat16)
+    assert impl == "flash_attention_2"
 
 
 # --------------------------------------------------------------------------------------
@@ -211,6 +221,11 @@ class _MoE(torch.nn.Module):
         self.shared_experts = _Expert()
         self.fc1_latent_proj = torch.nn.Identity()
         self.gate = _Router(n)
+
+
+# Nemotron-Labs-Teacher's expert classes come from the checkpoint's own modeling file.
+_Expert.__module__ = "transformers_modules.fake_teacher.modeling_nemotron_h"
+sys.modules.setdefault(_Expert.__module__, sys.modules[__name__])
 
 
 class _Router(torch.nn.Module):  # a Parameter-backed router, as in Nemotron-H
@@ -462,3 +477,25 @@ def test_a_code_revision_skips_the_materialised_sibling(monkeypatch):
     assert (
         _utils._resolve_remote_model_class(auto, config, code_revision = "abc123") is FromCodeRevision
     )
+
+
+def test_native_per_expert_layouts_are_not_widened():
+    """Qwen3-MoE on transformers 4.x nests native per-expert Linears the same way; those
+    keep main's targets instead of gaining LoRA on every routed expert."""
+    U = _utils()
+
+    class _NativeExpert(_Expert):
+        pass
+
+    _NativeExpert.__module__ = "transformers.models.qwen3_moe.modeling_qwen3_moe"
+    model = _Model()
+    for layer in model.model.layers:
+        mixer = layer.mixer
+        if isinstance(mixer, _MoE):
+            mixer.experts = torch.nn.ModuleList([_NativeExpert() for _ in mixer.experts])
+            mixer.shared_experts = _NativeExpert()
+    generated = _text_only_regex()
+    kept, detect, leaves = U.widen_target_regex_to_expert_submodules(
+        model, generated, generated, auto_regex = True
+    )
+    assert kept == generated and detect == generated and leaves == []
