@@ -297,13 +297,13 @@ test("raising lifts palette fills away from their surfaces under any foreground"
   );
 });
 
-test("lines head away from whatever they are drawn on", () => {
+test("text and lines head away from whatever they are drawn on", () => {
   // Lines sit on the page as well as on cards. Sent to the panel pole
   // everywhere, a dark border on a light custom page in dark mode fell from
   // 10:1 at 50 to 2.9:1 at 100; sent to the page target everywhere, borders
   // on cards fell to 1.1:1. Every surface scope carries its own lines.
   const scopes = CSS.slice(
-    CSS.indexOf("/* Muted text and lines on palette surfaces"),
+    CSS.indexOf("/* Body text, muted text and lines on palette surfaces"),
     CSS.indexOf("/* Code font size"),
   );
   const rules = [...scopes.matchAll(/\{([^}]*)\}/g)].map((m) => m[1] ?? "");
@@ -313,6 +313,16 @@ test("lines head away from whatever they are drawn on", () => {
     assert.ok(target, "scope without muted text");
     assert.ok(rule.includes(`--border: color-mix(in oklab, var(--border-base), ${target} var(--contrast-line-mix));`));
     assert.ok(rule.includes(`--input: color-mix(in oklab, var(--input-base), ${target} var(--contrast-control-mix));`));
+    // Body text too: text-foreground on a card is card text. A mid grey custom
+    // foreground on a dark page went from 4.5:1 to 1.3:1 on white cards.
+    const ink =
+      target === PANEL_TARGET
+        ? "var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent))"
+        : "var(--contrast-ink-target, transparent)";
+    assert.ok(
+      rule.includes(`--foreground: color-mix(in oklab, var(--foreground-base), ${ink} var(--contrast-ink-mix, 0%));`),
+      "a surface scope leaves body text on the other surface's target",
+    );
   }
   // The Images page redoes the derivation for its own base, on the page.
   assert.match(

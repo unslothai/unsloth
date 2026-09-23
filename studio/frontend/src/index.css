@@ -749,11 +749,13 @@ html[data-contrast-adjust] {
 	);
 }
 
-/* Muted text and lines on palette surfaces head for their pole, and back to the page
-   target on a page-coloured pane inside one. Menus paint their surface in
-   CSS, so they are listed by class, as is the Hub's download button. Without a custom foreground the panel
-   target is unset, so every rule here equals the root value. */
+/* Body text, muted text and lines on palette surfaces head for their pole,
+   and back to the page target on a page-coloured pane inside one. Menus
+   paint their surface in CSS, so they are listed by class, as is the Hub's
+   download button. Without a custom foreground both targets match the root,
+   so every rule here equals the root value. */
 html[data-contrast-adjust] :is(.bg-card, .bg-popover, .bg-sidebar, .hub-download-fab, .hub-download-panel, .menu-soft-surface-up, .menu-soft-surface) {
+	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
 	--muted-foreground: color-mix(
 		in oklab,
 		var(--panel-surface-fg-muted),
@@ -763,6 +765,7 @@ html[data-contrast-adjust] :is(.bg-card, .bg-popover, .bg-sidebar, .hub-download
 	--input: color-mix(in oklab, var(--input-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-control-mix));
 }
 html[data-contrast-adjust] :is(.bg-card, .bg-popover, .bg-sidebar, .hub-download-fab, .hub-download-panel, .menu-soft-surface-up, .menu-soft-surface) .bg-background:not(.dark [class*="dark:bg-"]:not([class*="dark:bg-background"])) {
+	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
 	--muted-foreground: color-mix(
 		in oklab,
 		var(--panel-surface-fg-muted),
@@ -775,6 +778,7 @@ html[data-contrast-adjust] :is(.bg-card, .bg-popover, .bg-sidebar, .hub-download
    (the Settings content pane) return to the page. A bg-background that
    repaints itself in dark (dark:bg-*) is not the page there, in either rule. */
 html[data-contrast-adjust].dark :is(.dialog-soft-surface, .settings-surface, .chat-composer-surface, .unsloth-composer-surface, .unsloth-plus-menu, [data-sonner-toast]) .bg-background:not([class*="dark:bg-"]:not([class*="dark:bg-background"])) {
+	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
 	--muted-foreground: color-mix(
 		in oklab,
 		var(--panel-surface-fg-muted),
@@ -788,6 +792,7 @@ html[data-contrast-adjust].dark :is(.dialog-soft-surface, .settings-surface, .ch
    After the resets, so a page pane that is a card in dark takes this. */
 html[data-contrast-adjust] :is(.bg-card\/50, .bg-card\/55, .bg-card\/60, .bg-card\/65, .bg-card\/70, .bg-card\/85, .bg-card\/90, .bg-card\/95, .bg-card\/96),
 html[data-contrast-adjust].dark :is(.dark\:bg-card, .dark\:bg-card\/85, .dark\:bg-card\/90, .dialog-soft-surface, .settings-surface, .chat-composer-surface, .unsloth-composer-surface, .unsloth-plus-menu, [data-sonner-toast]) {
+	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
 	--muted-foreground: color-mix(
 		in oklab,
 		var(--panel-surface-fg-muted),
@@ -799,6 +804,7 @@ html[data-contrast-adjust].dark :is(.dark\:bg-card, .dark\:bg-card\/85, .dark\:b
 /* Hub result rows are cards in light only; dark paints them as a wash over
    the page, which the page target already suits. */
 html[data-contrast-adjust]:not(.dark) .hub-page .hub-result-row {
+	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
 	--muted-foreground: color-mix(
 		in oklab,
 		var(--panel-surface-fg-muted),
