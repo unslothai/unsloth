@@ -2036,12 +2036,15 @@ def test_wan_a14b_dense_quant_applies_to_both_dits(fake_runtime, monkeypatch):
 
 def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
     # Offload hooks move modules with Module.to(), which torchao tensors reject, so any offload
-    # policy must SKIP quant. With the legacy escape hatch set the load still succeeds dense and the
-    # record explains why; the strict default refuses instead (see the test below).
+    # policy must SKIP a torchao quant. With the legacy escape hatch set the load still succeeds dense
+    # and the record explains why; the strict default refuses instead (see the test below). fp8, because
+    # an NVIDIA int8 under offload now runs torchao-free instead (see the native tests at the end).
     import core.inference.video as video_mod
+    from core.inference import diffusion_transformer_quant as tq
 
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "native_offload_host", lambda target: True)
     quantised = []
 
     def _fake_quant(
@@ -2066,7 +2069,7 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
     status = backend.load_pipeline(
         "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
         model_kind = "pipeline",
-        transformer_quant = "int8",
+        transformer_quant = "fp8",
     )
     _assert_placement_follows_the_target(placements, video_mod)
     assert status["offload_policy"] == "model"
@@ -2075,7 +2078,7 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
     resolved = status["resolved"]["transformer_quant"]
     assert "moves the DiT" in resolved["reason"]
     # BOTH sides of the story survive: the ask, the outcome, and that they disagree.
-    assert resolved["requested"] == "int8"
+    assert resolved["requested"] == "fp8"
     assert resolved["value"] == "off"
     assert resolved["status"] == "fell_back"
 
@@ -2106,13 +2109,15 @@ def test_the_video_load_places_on_the_selected_card_not_a_bare_device(fake_runti
 
 
 def test_explicit_dense_quant_refuses_under_offload(fake_runtime, monkeypatch):
-    # Strict default (no escape hatch): an explicit int8 the offload plan cannot honor stops the
-    # load, rather than denoising at bf16 while the Precision dropdown still reads INT8.
+    # Strict default (no escape hatch): an explicit fp8 the offload plan cannot honor stops the
+    # load, rather than denoising at bf16 while the Precision dropdown still reads FP8.
     import dataclasses
 
     import core.inference.video as video_mod
+    from core.inference import diffusion_transformer_quant as tq
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "native_offload_host", lambda target: True)
     monkeypatch.setattr(
         video_mod,
         "quantize_transformer",
@@ -2124,9 +2129,9 @@ def test_explicit_dense_quant_refuses_under_offload(fake_runtime, monkeypatch):
         backend.load_pipeline(
             "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
             model_kind = "pipeline",
-            transformer_quant = "int8",
+            transformer_quant = "fp8",
         )
-    assert "transformer_quant='int8' could not be used" in str(excinfo.value)
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
     assert "resident memory mode" in str(excinfo.value)
     assert backend.status()["loaded"] is False
 
@@ -9743,4 +9748,93 @@ def test_a_clean_video_decline_under_the_fallback_still_loads_dense(fake_runtime
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", transformer_quant = "int8"
     )
     assert status["transformer_quant"] in (None, "none", "off")
+    backend.unload()
+
+
+def _stub_nvidia_video_offload(monkeypatch, *, offload = True):
+    """An NVIDIA bf16 host with the torchao path open, whose plan offloads the DiT (or not). Records every
+    quantise call's kwargs, one per expert."""
+    import dataclasses
+
+    import core.inference.video as video_mod
+    from core.inference import diffusion_transformer_quant as tq
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "native_quant_host", lambda target: False)
+    monkeypatch.setattr(tq, "native_offload_host", lambda target: True)
+    monkeypatch.setattr(
+        video_mod, "select_transformer_quant_scheme", lambda target, mode, family = None: mode
+    )
+    monkeypatch.delenv("UNSLOTH_NATIVE_INT8_ACT", raising = False)
+    if offload:
+        real_plan = video_mod.plan_diffusion_memory
+        monkeypatch.setattr(
+            video_mod,
+            "plan_diffusion_memory",
+            lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
+        )
+    _stub_apply_memory_plan(monkeypatch, video_mod, policy = "model" if offload else "none")
+    calls: list = []
+
+    def _quantize(view, target, *, mode, family = None, **kw):
+        calls.append({"view": view, "mode": mode, **kw})
+        return mode
+
+    monkeypatch.setattr(video_mod, "quantize_transformer", _quantize)
+    monkeypatch.setattr(
+        video_mod, "native_quant_reason", lambda module, scheme: f"W8A8: {scheme} (stub)"
+    )
+    return calls
+
+
+def test_an_explicit_int8_under_offload_on_nvidia_runs_native_on_both_experts(
+    fake_runtime, monkeypatch
+):
+    """Dual-DiT Wan2.2-A14B: both experts take the torchao-free W8A8 route with the same kernel choice, instead of
+    the whole quant being skipped for the offload."""
+    calls = _stub_nvidia_video_offload(monkeypatch)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-T2V-A14B-Diffusers", model_kind = "pipeline", transformer_quant = "int8"
+    )
+    assert status["offload_policy"] == "model"
+    assert len(calls) == 2
+    assert all(c["offload"] is True and c["act_int8"] is True for c in calls)
+    assert status["transformer_quant"] == "int8"
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["status"] == "applied" and resolved["reason"].startswith("W8A8")
+    backend.unload()
+
+
+def test_the_video_act_kill_switch_keeps_offload_native_weight_only(fake_runtime, monkeypatch):
+    calls = _stub_nvidia_video_offload(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_NATIVE_INT8_ACT", "0")
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", transformer_quant = "int8"
+    )
+    assert calls and all(c["offload"] is True and c["act_int8"] is False for c in calls)
+    assert status["transformer_quant"] == "int8"
+    backend.unload()
+
+
+def test_a_resident_video_int8_on_nvidia_keeps_torchao(fake_runtime, monkeypatch):
+    calls = _stub_nvidia_video_offload(monkeypatch, offload = False)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", transformer_quant = "int8"
+    )
+    assert status["offload_policy"] == "none"
+    # The torchao call is the one it always was: no native kwargs at all.
+    assert calls and all("offload" not in c and "act_int8" not in c for c in calls)
+    assert "W8A8" not in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+def test_video_auto_under_offload_on_nvidia_is_still_skipped(fake_runtime, monkeypatch):
+    calls = _stub_nvidia_video_offload(monkeypatch)
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert calls == []
+    assert status["transformer_quant"] is None
     backend.unload()

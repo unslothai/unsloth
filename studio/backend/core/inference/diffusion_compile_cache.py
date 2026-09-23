@@ -285,6 +285,12 @@ def model_fingerprint(
     what gets compiled.
     """
     blocks = list(getattr(transformer, "_repeated_blocks", []) or [])
+    if quant is not None and transformer is not None:
+        # The torchao-free layers compile to a different graph than torchao's under the same scheme name, so keep
+        # their bundles apart (``int8`` vs ``int8-w8a8-rot256``).
+        from .diffusion_native_quant import native_quant_signature
+
+        quant = native_quant_signature(transformer) or quant
     return {
         "family": str(family),
         "transformer_cls": type(transformer).__name__ if transformer is not None else None,

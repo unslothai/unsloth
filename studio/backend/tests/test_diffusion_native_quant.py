@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Torchao-free weight-only int8 / fp8 on AMD and the Windows-ROCm torchao stub.
+"""Torchao-free int8 / fp8 on AMD and the Windows-ROCm torchao stub, and int8 W8A8 on NVIDIA under offload.
 
 ROCm is simulated by patching ``torch_is_rocm`` / ``is_stubbed`` on the quant module, so the suite
-runs on any host. Every NVIDIA / MPS / XPU / CPU case asserts the native branch stays inert, which is
-what keeps those paths unchanged.
+runs on any host. On NVIDIA the native branch is taken only for an explicit int8 whose plan offloads the
+transformer; every other NVIDIA / MPS / XPU / CPU case asserts it stays inert, which is what keeps those
+paths unchanged.
 """
 
 from __future__ import annotations
@@ -112,10 +113,85 @@ def test_non_cuda_or_non_bf16_is_never_native_even_on_rocm(rocm, target):
 
 
 @pytest.mark.parametrize("device", ["cuda", "cpu", "mps", "xpu"])
-def test_nvidia_and_other_hosts_are_never_native(nvidia, device):
+def test_nvidia_and_other_hosts_are_never_native_without_offload(nvidia, device):
     assert not tq.native_quant_host(_target(device = device))
     for scheme in ("int8", "fp8", "nvfp4", "mxfp8", "auto"):
         assert tq.native_quant_scheme(_target(device = device), scheme) is None
+        assert tq.native_quant_scheme(_target(device = device), scheme, offload = False) is None
+
+
+# The NVIDIA truth table: (scheme, offload) -> native scheme. Only an explicit int8 under offload goes native.
+_NVIDIA_TABLE = [
+    ("int8", True, "int8"),
+    ("INT8", True, "int8"),
+    ("int8", False, None),
+    ("fp8", True, None),
+    ("fp8", False, None),
+    ("nvfp4", True, None),
+    ("mxfp8", True, None),
+    ("auto", True, None),
+    (None, True, None),
+    ("none", True, None),
+]
+
+
+@pytest.mark.parametrize("scheme,offload,expect", _NVIDIA_TABLE)
+def test_nvidia_takes_native_int8_only_under_offload(nvidia, scheme, offload, expect):
+    assert tq.native_offload_host(_target())
+    assert tq.native_quant_scheme(_target(), scheme, offload = offload) == expect
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        _target(device = "cpu"),
+        _target(device = "mps"),
+        _target(device = "xpu"),
+        _target(dtype = torch.float16),
+        _target(dtype = torch.float32),
+    ],
+)
+def test_the_offload_route_needs_a_bf16_cuda_target(nvidia, target):
+    assert not tq.native_offload_host(target)
+    assert tq.native_quant_scheme(target, "int8", offload = True) is None
+
+
+def test_amd_hosts_are_not_the_nvidia_offload_host(rocm):
+    # AMD keeps its own route (int8 and fp8, any placement); the offload flag changes nothing there.
+    assert not tq.native_offload_host(_target())
+    for scheme in ("int8", "fp8"):
+        assert tq.native_quant_scheme(_target(), scheme, offload = True) == scheme
+        assert tq.native_quant_scheme(_target(), scheme, offload = False) == scheme
+
+
+def test_windows_stub_is_not_the_nvidia_offload_host(win_stub):
+    assert not tq.native_offload_host(_target())
+    assert tq.native_quant_scheme(_target(), "fp8", offload = True) == "fp8"
+
+
+def test_nvidia_offload_route_respects_the_family_deny_list(nvidia, monkeypatch):
+    monkeypatch.setitem(tq._FAMILY_SCHEME_DENY, "toy-family", frozenset({tq.TQ_INT8}))
+    assert tq.native_quant_scheme(_target(), "int8", family = "toy-family", offload = True) is None
+    assert tq.native_quant_scheme(_target(), "int8", family = "qwen-image-2.1", offload = True) == "int8"
+
+
+@pytest.mark.parametrize("env,expect_amd,expect_nvidia", [
+    (None, False, True),
+    ("1", True, True),
+    ("0", False, False),
+    ("yes", False, True),
+])
+def test_w8a8_default_differs_by_route(monkeypatch, env, expect_amd, expect_nvidia):
+    """AMD: opt-in (``=1``). NVIDIA offload: on unless the ``=0`` kill switch."""
+    if env is None:
+        monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
+    else:
+        monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, env)
+    monkeypatch.setattr(tq, "is_stubbed", lambda name: False)
+    monkeypatch.setattr(tq, "torch_is_rocm", lambda: True)
+    assert tq.native_int8_act(_target()) is expect_amd
+    monkeypatch.setattr(tq, "torch_is_rocm", lambda: False)
+    assert tq.native_int8_act(_target()) is expect_nvidia
 
 
 def test_family_deny_list_still_applies(rocm, monkeypatch):
@@ -296,16 +372,27 @@ def test_rotation_env_switch(monkeypatch):
     assert nq.int8_rotation_group() == 0
 
 
-def test_apply_native_weight_quant_reads_the_env(monkeypatch):
-    for value, scheme, expect in (("1", "int8", True), ("", "int8", False), ("1", "fp8", False)):
-        monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, value)
+def test_apply_native_weight_quant_takes_act_from_the_caller_not_the_env(monkeypatch):
+    for env, act, scheme, expect in (
+        ("", True, "int8", True),
+        ("1", False, "int8", False),
+        ("0", True, "int8", True),
+        ("1", True, "fp8", False),
+    ):
+        monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, env)
         model = _toy()
         n = nq.apply_native_weight_quant(
-            model, scheme, filter_fn = lambda m, name: isinstance(m, torch.nn.Linear)
+            model, scheme, filter_fn = lambda m, name: isinstance(m, torch.nn.Linear), act_int8 = act
         )
         assert n > 0
         flags = {m.act_int8 for m in model.modules() if hasattr(m, "act_int8")}
         assert flags == {expect}
+
+
+def test_int8_act_kill_switch_reads_only_zero(monkeypatch):
+    for value, disabled in (("", False), ("1", False), ("0", True), (" 0 ", True), ("off", False)):
+        monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, value)
+        assert nq.int8_act_disabled() is disabled
 
 
 # ---- quantize_transformer ---------------------------------------------------------------------
@@ -432,6 +519,138 @@ def test_quantize_transformer_on_nvidia_never_reaches_the_native_branch(nvidia, 
     assert len(seen) == 3
 
 
+def _logger(logs):
+    return types.SimpleNamespace(
+        info = lambda *a: logs.append(a[0] % a[1:]), warning = lambda *a: pytest.fail(f"warned: {a}")
+    )
+
+
+def test_quantize_transformer_on_nvidia_under_offload_runs_w8a8_convrot(nvidia, monkeypatch):
+    _block_torchao(monkeypatch)
+    monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
+    monkeypatch.delenv(nq.NATIVE_INT8_ROT_ENV, raising = False)
+    monkeypatch.setattr(
+        tq, "select_transformer_quant_scheme", lambda *a, **k: pytest.fail("torchao selector asked")
+    )
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(torch.nn.Linear(512, 512), torch.nn.GELU(), torch.nn.Linear(512, 512))
+    model = model.to(torch.bfloat16)
+    x = torch.randn(4, 512, dtype = torch.bfloat16)
+    with torch.no_grad():
+        ref = model(x).float()
+    logs = []
+    got = tq.quantize_transformer(
+        types.SimpleNamespace(transformer = model),
+        _target(),
+        mode = "int8",
+        min_features = 64,
+        logger = _logger(logs),
+        offload = True,
+    )
+    assert got == "int8"
+    layers = [m for m in model.modules() if nq.is_native_linear(m)]
+    assert len(layers) == 2
+    assert all(m.act_int8 and m.rot_group == 256 for m in layers)
+    assert any("W8A8 torch._int_mm ConvRot g256" in line for line in logs)
+    assert nq.native_quant_signature(model) == "int8-w8a8-rot256"
+    assert nq.native_quant_reason(model, "int8").startswith("W8A8")
+    # A CPU input takes the per-call weight-only fallback, in the same rotated basis.
+    with torch.no_grad():
+        out = model(x).float()
+    assert ((out - ref).norm() / ref.norm()).item() < 0.05
+
+
+def test_quantize_transformer_honours_the_kill_switches_on_nvidia(nvidia, monkeypatch):
+    _block_torchao(monkeypatch)
+    monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, "0")
+    model = _toy()
+    assert (
+        tq.quantize_transformer(
+            types.SimpleNamespace(transformer = model), _target(), mode = "int8", min_features = 64, offload = True
+        )
+        == "int8"
+    )
+    assert {m.act_int8 for m in model.modules() if nq.is_native_linear(m)} == {False}
+    assert nq.native_quant_signature(model) == "int8-wo"
+    assert nq.native_quant_reason(model, "int8").startswith("weight-only")
+
+    monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV)
+    monkeypatch.setenv(nq.NATIVE_INT8_ROT_ENV, "0")
+    model = _toy()
+    tq.quantize_transformer(
+        types.SimpleNamespace(transformer = model), _target(), mode = "int8", min_features = 64, offload = True
+    )
+    layers = [m for m in model.modules() if nq.is_native_linear(m)]
+    assert layers and all(m.act_int8 and m.rot_group == 0 for m in layers)
+    assert nq.native_quant_signature(model) == "int8-w8a8"
+
+
+def test_an_explicit_act_argument_overrides_the_host_default(nvidia, monkeypatch):
+    _block_torchao(monkeypatch)
+    monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
+    model = _toy()
+    tq.quantize_transformer(
+        types.SimpleNamespace(transformer = model),
+        _target(),
+        mode = "int8",
+        min_features = 64,
+        offload = True,
+        act_int8 = False,
+    )
+    assert {m.act_int8 for m in model.modules() if nq.is_native_linear(m)} == {False}
+
+
+@pytest.mark.parametrize("scheme", ["fp8", "auto", "nvfp4"])
+def test_other_schemes_under_offload_on_nvidia_stay_on_torchao(nvidia, monkeypatch, scheme):
+    monkeypatch.setattr(
+        tq, "_quantize_native", lambda *a, **k: pytest.fail("native branch for a non-int8 scheme")
+    )
+    seen = []
+    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda *a, **k: seen.append(a) or None)
+    assert (
+        tq.quantize_transformer(
+            types.SimpleNamespace(transformer = _toy()), _target(), mode = scheme, offload = True
+        )
+        is None
+    )
+    assert len(seen) == 1
+
+
+def test_amd_quantize_keeps_its_opt_in_w8a8(rocm, monkeypatch):
+    _block_torchao(monkeypatch)
+    for env, expect in (("", False), ("1", True)):
+        monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, env)
+        model = _toy()
+        tq.quantize_transformer(
+            types.SimpleNamespace(transformer = model), _target(), mode = "int8", min_features = 64
+        )
+        assert {m.act_int8 for m in model.modules() if nq.is_native_linear(m)} == {expect}
+
+
+def test_compile_cache_keys_native_apart_from_torchao():
+    from core.inference.diffusion_compile_cache import model_fingerprint
+
+    dense = _toy()
+    native = _toy()
+    nq.apply_native_weight_quant(
+        native, "int8", filter_fn = lambda m, name: isinstance(m, torch.nn.Linear), act_int8 = True
+    )
+
+    def fp(module, quant):
+        return model_fingerprint(
+            family = "toy",
+            transformer = module,
+            dtype = torch.bfloat16,
+            quant = quant,
+            attention_backend = None,
+            compile_kwargs = {},
+        )["quant"]
+
+    assert fp(dense, "int8") == "int8"
+    assert fp(dense, None) == "none"
+    assert fp(native, "int8").startswith("int8-w8a8")
+
+
 @pytest.mark.parametrize("scheme", ["int8", "fp8"])
 def test_reading_weight_gives_the_dense_weight_without_storing_it(scheme):
     """PEFT's DoRA forward reads ``base_layer.weight``, and some DiT blocks read a Linear's
@@ -504,6 +723,7 @@ def _image_gate(
     *,
     model_kind = "pipeline",
     memory_mode = None,
+    cpu_offload = False,
 ):
     import core.inference.diffusion as d
     monkeypatch.setattr(d, "effective_te_quant", lambda *a, **k: None)
@@ -515,7 +735,7 @@ def _image_gate(
         pinned = pinned,
         te_mode = None,
         memory_mode = memory_mode,
-        cpu_offload = False,
+        cpu_offload = cpu_offload,
     )
 
 
@@ -594,3 +814,123 @@ def test_video_gate_still_refuses_torchao_only_schemes_on_rocm(rocm, monkeypatch
 def test_video_gate_refuses_native_on_gguf_loads(rocm, monkeypatch):
     with pytest.raises(RuntimeError, match = "transformer_quant"):
         _video_gate(monkeypatch, _video_family("wan2.2-ti2v-5b"), "int8", model_kind = "gguf")
+
+
+# ---- NVIDIA preflight: int8 under a named offload is admitted, fp8 is not ------------------------------------
+
+
+def _torchao_gate_answers(monkeypatch, module, *, supported = True):
+    """The torchao half of the gate, stubbed so no smoke probe runs: every scheme usable, compile available."""
+    monkeypatch.setattr(module, "dense_transformer_supported", lambda target: supported)
+    monkeypatch.setattr(module, "select_transformer_quant_scheme", lambda target, mode, **k: mode)
+    if hasattr(module, "_pipeline_quant_uncompilable_reason"):
+        monkeypatch.setattr(module, "_pipeline_quant_uncompilable_reason", lambda *a, **k: None)
+
+
+@pytest.mark.parametrize(
+    "memory",
+    [{"memory_mode": "balanced"}, {"memory_mode": "low_vram"}, {"cpu_offload": True}],
+)
+def test_image_gate_admits_int8_under_offload_on_nvidia(nvidia, monkeypatch, memory):
+    import core.inference.diffusion as d
+
+    _torchao_gate_answers(monkeypatch, d)
+    _image_gate(monkeypatch, _image_family("qwen-image-2.1"), "int8", **memory)
+
+
+@pytest.mark.parametrize("pinned", ["fp8", "nvfp4", "mxfp8"])
+@pytest.mark.parametrize("memory", [{"memory_mode": "balanced"}, {"cpu_offload": True}])
+def test_image_gate_still_refuses_other_schemes_under_offload_on_nvidia(
+    nvidia, monkeypatch, pinned, memory
+):
+    import core.inference.diffusion as d
+
+    _torchao_gate_answers(monkeypatch, d)
+    with pytest.raises(RuntimeError, match = "cannot be moved by the offload hooks"):
+        _image_gate(monkeypatch, _image_family("qwen-image-2.1"), pinned, **memory)
+
+
+@pytest.mark.parametrize("kind", ["gguf", "single_file"])
+def test_image_gate_keeps_non_pipeline_int8_under_offload_refused_on_nvidia(nvidia, monkeypatch, kind):
+    import core.inference.diffusion as d
+
+    _torchao_gate_answers(monkeypatch, d)
+    with pytest.raises(RuntimeError, match = "transformer_quant"):
+        _image_gate(
+            monkeypatch, _image_family("qwen-image-2.1"), "int8", model_kind = kind, memory_mode = "balanced"
+        )
+
+
+def test_image_gate_refuses_a_denied_family_under_offload_on_nvidia(nvidia, monkeypatch):
+    import core.inference.diffusion as d
+
+    _torchao_gate_answers(monkeypatch, d)
+    monkeypatch.setitem(tq._FAMILY_SCHEME_DENY, "qwen-image-2.1", frozenset({tq.TQ_INT8}))
+    with pytest.raises(RuntimeError, match = "ruled out"):
+        _image_gate(monkeypatch, _image_family("qwen-image-2.1"), "int8", memory_mode = "balanced")
+
+
+@pytest.mark.parametrize("memory_mode", [None, "fast", "auto"])
+def test_image_gate_on_nvidia_without_a_named_offload_never_asks_native(nvidia, monkeypatch, memory_mode):
+    import core.inference.diffusion as d
+
+    _torchao_gate_answers(monkeypatch, d)
+    monkeypatch.setattr(d, "native_quant_scheme", lambda *a, **k: pytest.fail("native on a resident request"))
+    for pinned in ("int8", "fp8"):
+        _image_gate(monkeypatch, _image_family("qwen-image-2.1"), pinned, memory_mode = memory_mode)
+
+
+def test_image_gate_offload_route_needs_no_compile(nvidia, monkeypatch):
+    import core.inference.diffusion as d
+
+    _torchao_gate_answers(monkeypatch, d)
+    monkeypatch.setattr(d, "_pipeline_quant_uncompilable_reason", lambda *a, **k: "no compile (stub)")
+    _image_gate(monkeypatch, _image_family("qwen-image-2.1"), "int8", memory_mode = "low_vram")
+    with pytest.raises(RuntimeError, match = "no compile"):
+        _image_gate(monkeypatch, _image_family("qwen-image-2.1"), "int8", memory_mode = "fast")
+
+
+@pytest.mark.parametrize("memory_mode", ["balanced", "low_vram"])
+def test_video_gate_admits_int8_under_offload_on_nvidia(nvidia, monkeypatch, memory_mode):
+    import core.inference.video as v
+
+    _torchao_gate_answers(monkeypatch, v)
+    _video_gate(monkeypatch, _video_family("wan2.2-ti2v-5b"), "int8", memory_mode = memory_mode)
+
+
+@pytest.mark.parametrize("pinned", ["fp8", "nvfp4", "mxfp8"])
+def test_video_gate_still_refuses_other_schemes_under_offload_on_nvidia(nvidia, monkeypatch, pinned):
+    import core.inference.video as v
+
+    _torchao_gate_answers(monkeypatch, v)
+    with pytest.raises(RuntimeError, match = "cannot be moved by the offload hooks"):
+        _video_gate(monkeypatch, _video_family("wan2.2-ti2v-5b"), pinned, memory_mode = "balanced")
+
+
+def test_video_gate_refuses_a_denied_family_under_offload_on_nvidia(nvidia, monkeypatch):
+    import core.inference.video as v
+
+    _torchao_gate_answers(monkeypatch, v)
+    monkeypatch.setitem(tq._FAMILY_SCHEME_DENY, "wan2.2-ti2v-5b", frozenset({tq.TQ_INT8}))
+    with pytest.raises(RuntimeError, match = "ruled out"):
+        _video_gate(monkeypatch, _video_family("wan2.2-ti2v-5b"), "int8", memory_mode = "balanced")
+
+
+def test_video_gate_keeps_gguf_int8_under_offload_refused_on_nvidia(nvidia, monkeypatch):
+    import core.inference.video as v
+
+    _torchao_gate_answers(monkeypatch, v)
+    with pytest.raises(RuntimeError, match = "transformer_quant"):
+        _video_gate(
+            monkeypatch, _video_family("wan2.2-ti2v-5b"), "int8", model_kind = "gguf", memory_mode = "balanced"
+        )
+
+
+@pytest.mark.parametrize("memory_mode", [None, "fast"])
+def test_video_gate_on_nvidia_resident_keeps_the_torchao_answer(nvidia, monkeypatch, memory_mode):
+    import core.inference.video as v
+
+    _torchao_gate_answers(monkeypatch, v)
+    monkeypatch.setattr(v, "native_quant_scheme", lambda *a, **k: pytest.fail("native on a resident request"))
+    for pinned in ("int8", "fp8"):
+        _video_gate(monkeypatch, _video_family("wan2.2-ti2v-5b"), pinned, memory_mode = memory_mode)

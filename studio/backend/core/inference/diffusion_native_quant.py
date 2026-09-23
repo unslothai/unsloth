@@ -13,6 +13,10 @@ Measured on gfx1151 (Qwen-Image-2.1, 1024px, 20 steps): int8 weight-only ran at 
 transformer at 6.64 GiB instead of 13.25. Weights and scales are plain buffers, so unlike torchao tensors
 they survive the ``Module.to()`` calls the offload hooks make.
 
+That last property is why NVIDIA reaches here too, for one case: an explicit int8 whose memory plan offloads
+the transformer, which torchao cannot serve. There it runs W8A8 (``torch._int_mm``, ConvRot g256): on a B200,
+Qwen-Image-2.1 1024px under group offload ran 0.174 s/step against bf16's 0.31, LPIPS 0.031 vs bf16.
+
 Imports torch lazily, like the rest of the quant modules, so the module loads on a torch-free host.
 """
 
@@ -35,9 +39,17 @@ _INT_MM_MIN_ROWS = 17
 
 
 def int8_act_requested() -> bool:
+    """``UNSLOTH_NATIVE_INT8_ACT=1``: the opt-in AMD reads."""
     import os
 
     return os.environ.get(NATIVE_INT8_ACT_ENV, "").strip() == "1"
+
+
+def int8_act_disabled() -> bool:
+    """``UNSLOTH_NATIVE_INT8_ACT=0``: the kill switch the NVIDIA offload route reads, where W8A8 is the default."""
+    import os
+
+    return os.environ.get(NATIVE_INT8_ACT_ENV, "").strip() == "0"
 
 
 def int8_rotation_group() -> int:
@@ -190,16 +202,20 @@ def apply_native_weight_quant(
     scheme: str,
     *,
     filter_fn: Callable[[Any, str], bool],
+    act_int8: bool,
     logger: Any = None,
 ) -> int:
     """Swap every Linear ``filter_fn`` keeps for a native weight-only twin; returns layers swapped.
+
+    ``act_int8`` (int8 only) runs W8A8 instead of dequantising the weight. The caller decides it, since the
+    default differs by route (opt-in on AMD, on by default for the NVIDIA offload route).
 
     One layer at a time, like torchao's ``quantize_``, so the build peak is the dense model plus one
     layer rather than 1.5x it; on unified memory that peak is what the OS kills for. A failure part-way
     leaves a partial conversion, which ``is_native_quantised`` reports so the loader refuses it the
     same way it refuses a partial torchao pass."""
     cls = native_linear_class()
-    act_int8 = scheme == NATIVE_INT8 and int8_act_requested()
+    act_int8 = scheme == NATIVE_INT8 and bool(act_int8)
     rot_group = int8_rotation_group() if act_int8 else 0
     # Names only: holding the old modules would keep every bf16 weight alive until the pass ends.
     names = [name for name, mod in transformer.named_modules() if name and filter_fn(mod, name)]
@@ -215,6 +231,41 @@ def apply_native_weight_quant(
             len(names),
         )
     return len(names)
+
+
+def _first_native_linear(module: Any) -> Any:
+    try:
+        return next((sub for sub in module.modules() if is_native_linear(sub)), None)
+    except Exception:  # noqa: BLE001 -- a probe must never raise
+        return None
+
+
+def native_quant_signature(module: Any) -> Optional[str]:
+    """What the native pass built, as a short label (``int8-w8a8-rot256``, ``fp8-wo``), or None when
+    ``module`` holds no native layer. Read off the layers, so it reports what ran, not what was asked."""
+    layer = _first_native_linear(module)
+    if layer is None:
+        return None
+    if not getattr(layer, "act_int8", False):
+        return f"{layer.scheme}-wo"
+    rot = int(getattr(layer, "rot_group", 0) or 0)
+    return f"{layer.scheme}-w8a8" + (f"-rot{rot}" if rot else "")
+
+
+def native_quant_reason(module: Any, scheme: str) -> str:
+    """The status line for a native pass: W8A8 names its kernel and rotation, weight-only says it saves memory."""
+    layer = _first_native_linear(module)
+    if layer is not None and getattr(layer, "act_int8", False):
+        rot = int(getattr(layer, "rot_group", 0) or 0)
+        return (
+            f"W8A8: {scheme} weights and activations through torch._int_mm"
+            + (f" with a g{rot} ConvRot rotation" if rot else "")
+            + " (torchao-free; plain buffers, so the offload hooks can move it)"
+        )
+    return (
+        f"weight-only: {scheme} weights, bf16 compute "
+        "(torchao-free, a memory saving rather than a speed-up)"
+    )
 
 
 def native_weight_error(linear: Any, scheme: str) -> Optional[float]:
