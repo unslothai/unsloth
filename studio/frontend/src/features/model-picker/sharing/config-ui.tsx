@@ -33,7 +33,7 @@ export function SharedRunConfigActions({
   canImport: boolean;
   disabled: boolean;
   className: string;
-  onImport: (changes: Partial<PerModelConfig>) => void;
+  onImport: (changes: Partial<PerModelConfig>, model?: string) => void;
 }) {
   const [sharing, setSharing] = useState(false);
   const pending = useSyncExternalStore(
@@ -82,10 +82,12 @@ export function SharedRunConfigActions({
 
 export function SharedRunConfigReview({
   config,
+  model,
   draftConfig,
   currentConfig,
 }: {
   config: Partial<PerModelConfig> | null;
+  model?: string;
   draftConfig: PerModelConfig;
   currentConfig: PerModelConfig;
 }) {
@@ -105,8 +107,16 @@ export function SharedRunConfigReview({
       <summary className="cursor-pointer font-medium">
         {keys.length > 0
           ? `Settings changed by link (${keys.length})`
-          : "Link settings already match this editor"}
+          : model
+            ? "Model selected by link"
+            : "Link settings already match this editor"}
       </summary>
+      {model && (
+        <p className="my-2 break-words text-xs text-muted-foreground">
+          This link selected {model} from Hugging Face. Loading downloads any
+          model files that are not already cached.
+        </p>
+      )}
       <p className="my-2 text-xs text-muted-foreground">
         Loading with “Remember for this model” checked saves these settings for
         future loads, replacing any saved settings. Loading with it unchecked

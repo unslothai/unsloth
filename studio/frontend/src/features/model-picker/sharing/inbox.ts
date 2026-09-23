@@ -17,13 +17,15 @@ export type RunConfigRequest = {
 
 export function createRunConfigInbox() {
   let pending: RunConfigRequest | null = null;
+  let requestId: string | null = null;
   const listeners = new Set<() => void>();
   const editors = new Map<string, number>();
   const editedDrafts = new Set<string>();
-  const publish = (next: RunConfigRequest | null) => {
-    if (next?.id !== pending?.id) {
+  const publish = (next: RunConfigRequest | null, id = next?.id ?? null) => {
+    if (id !== requestId) {
       editedDrafts.clear();
     }
+    requestId = id;
     pending = next;
     for (const listener of listeners) {
       listener();
@@ -31,8 +33,9 @@ export function createRunConfigInbox() {
   };
   return {
     getSnapshot: () => pending,
+    begin: (id: string) => publish(null, id),
     recordEdit: (draftKey: string) => {
-      if (pending) editedDrafts.add(draftKey);
+      if (requestId !== null) editedDrafts.add(draftKey);
     },
     wasEdited: (draftKey: string) => editedDrafts.has(draftKey),
     subscribe: (listener: () => void) => {
@@ -80,8 +83,8 @@ export function createRunConfigInbox() {
         publish({ ...pending, draftKey });
       }
     },
-    clear: (id: string) => {
-      if (pending?.id === id) {
+    clear: (id = requestId) => {
+      if (requestId === id) {
         publish(null);
       }
     },

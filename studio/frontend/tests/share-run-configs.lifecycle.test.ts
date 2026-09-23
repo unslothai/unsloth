@@ -31,6 +31,13 @@ const { modelConfigHandoffForDestination, modelConfigTarget } = await import(
   "../src/features/model-picker/model-config/model-config-handoff.ts"
 );
 const { resolveRunConfigTarget } = await import("./helpers/sharing-target.ts");
+const links = await import("./helpers/sharing-links.ts");
+const linkAddress = await import(
+  "../src/features/model-picker/sharing/link-address.ts"
+);
+const { createDeepLinkIntentGate } = await import(
+  "../src/features/deep-links/deep-link-intent.ts"
+);
 const { RunConfigResolutionError } = loadWithStubs<typeof CachedTarget>(
   new URL(
     "../src/features/model-picker/sharing/cached-target.ts",
@@ -56,7 +63,9 @@ function deferred<T>() {
 }
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function harness(ui: Promise<unknown> = Promise.resolve({})) {
+function harness(
+  loadParser: () => typeof links | Promise<typeof links> = () => links,
+) {
   const inbox = createRunConfigInbox();
   inbox.submit({
     id: "first",
@@ -97,9 +106,9 @@ function harness(ui: Promise<unknown> = Promise.resolve({})) {
       import.meta.url,
     ),
     {
-      "@/features/auth": {},
+      "@/features/auth": { hasAuthToken: () => true },
       "@/features/deep-links": {
-        createDeepLinkIntentGate: () => undefined,
+        createDeepLinkIntentGate,
       },
       "@/lib/api-base": {},
       "@/lib/toast": {
@@ -107,11 +116,15 @@ function harness(ui: Promise<unknown> = Promise.resolve({})) {
       },
       "../model-config/model-config-draft": drafts,
       "../model-config/model-config-handoff": {
+        createModelConfigHandoffRequestId: () => "received",
         clearModelConfigHandoff: (id: string) =>
           calls.push(["clear handoff", id]),
       },
       "./inbox": { runConfigInbox: inbox },
-      "./link-address": {},
+      "./link-address": linkAddress,
+      get "./runtime"() {
+        return loadParser();
+      },
     },
   );
   const { scheduleRunConfigImport } = loadWithStubs<typeof ImportConfig>(
@@ -174,7 +187,6 @@ function harness(ui: Promise<unknown> = Promise.resolve({})) {
       },
       "./inbox": { runConfigInbox: inbox },
       "./target": { resolveRunConfigTarget },
-      "./runtime": ui,
       "./receive-link": receiver,
     },
   );
@@ -248,40 +260,6 @@ function harness(ui: Promise<unknown> = Promise.resolve({})) {
     destination,
   };
 }
-
-for (const cancelled of [false, true]) {
-  test(`shared settings wait for their UI before opening the editor; cancelled=${cancelled}`, async () => {
-    const ui = deferred<object>();
-    const app = harness(ui.promise);
-    const cleanup = app.openRunConfigTarget(app.open);
-    app.lookups[0].result.resolve(app.target);
-    await settle();
-    assert.equal(app.inbox.getSnapshot()?.target, undefined);
-    assert.deepEqual(app.calls, []);
-    if (cancelled) cleanup?.();
-    ui.resolve({});
-    await settle();
-    assert.deepEqual(
-      app.inbox.getSnapshot()?.target,
-      cancelled ? undefined : app.target,
-    );
-    assert.deepEqual(app.errors, []);
-    assert.equal(app.loading.size, 0);
-  });
-}
-
-test("a failed sharing UI download clears the import without opening an unconfigured editor", async () => {
-  const ui = deferred<object>();
-  const app = harness(ui.promise);
-  app.openRunConfigTarget(app.open);
-  app.lookups[0].result.resolve(app.target);
-  ui.reject(new Error("Chunk unavailable"));
-  await settle();
-  assert.equal(app.inbox.getSnapshot(), null);
-  assert.deepEqual(app.calls, []);
-  assert.equal(app.errors.length, 1);
-  assert.equal(app.loading.size, 0);
-});
 
 for (const pathname of ["/chat", "/hub", "/settings"]) {
   for (const newChatId of [null, "current-draft"]) {
@@ -706,6 +684,70 @@ for (const phase of ["resolving", "resolved", "scheduled"] as const) {
     assert.equal(app.inbox.getSnapshot(), null);
     assert.deepEqual(app.notices, ["Run settings import cancelled"]);
     assert.deepEqual(app.errors, []);
+  });
+}
+
+for (const editedVariant of ["Q4_K_M", "Q8_0"]) {
+  test(`an edit to ${editedVariant} during parser loading only cancels the matching resolved import`, async (t) => {
+    const parser = deferred<typeof links>();
+    const app = harness(() => parser.promise);
+    const key = modelConfigDraftKey(app.target.id, app.target.meta.ggufVariant);
+    t.after(drafts.retainModelConfigDraft(key));
+    drafts.primeModelConfigDraft(
+      key,
+      {
+        config: { ...DEFAULT_PER_MODEL_CONFIG, nParallel: 1 },
+        remembered: false,
+      },
+      "none",
+    );
+    app.receiver.receiveSharedRunConfigUrls([
+      "unsloth://run?v=1&model=owner/Model-GGUF&nParallel=3",
+    ]);
+    assert.equal(app.inbox.getSnapshot(), null);
+    app.receiver.cancelRunConfigImportForEdit(
+      modelConfigDraftKey(app.target.id, editedVariant),
+    );
+    if (editedVariant === "Q4_K_M") {
+      drafts.markModelConfigDraftEdited(key);
+      drafts.patchModelConfigDraft(key, { nParallel: 7 });
+    }
+    parser.resolve(links);
+    await settle();
+    app.openRunConfigTarget({ ...app.open, pending: app.inbox.getSnapshot() });
+    app.lookups[0].result.resolve(app.target);
+    await settle();
+    const pending = app.inbox.getSnapshot();
+    if (editedVariant === "Q4_K_M") {
+      assert.equal(pending, null);
+      assert.equal(drafts.readModelConfigDraft(key)?.config.nParallel, 7);
+      assert.deepEqual(app.notices, ["Run settings import cancelled"]);
+    } else {
+      assert.ok(pending?.target);
+      app.openRunConfigTarget({
+        ...app.open,
+        pending,
+        location: {
+          href: "/chat?new=received",
+          pathname: "/chat",
+          searchStr: "?new=received",
+        },
+      });
+      app.scheduleRunConfigImport({
+        canImport: true,
+        ready: true,
+        hydrated: true,
+        isGguf: true,
+        key,
+        pending: app.inbox.getSnapshot(),
+        onImport: () => undefined,
+      });
+      await settle();
+      assert.equal(drafts.readModelConfigDraft(key)?.config.nParallel, 3);
+      assert.deepEqual(app.notices, []);
+    }
+    assert.deepEqual(app.errors, []);
+    assert.equal(app.loading.size, 0);
   });
 }
 

@@ -33,6 +33,7 @@ function harness(t: TestContext, patch: Partial<Config> = { nParallel: 3 }) {
   const key = drafts.modelConfigDraftKey(`owner/model-${++sequence}`, "Q4_K_M");
   const inbox = inboxModule.createRunConfigInbox();
   const changes: Partial<Config>[] = [];
+  const models: (string | undefined)[] = [];
   const errors: string[] = [];
   const successes: string[] = [];
   const releaseDraft = drafts.retainModelConfigDraft(key);
@@ -73,7 +74,10 @@ function harness(t: TestContext, patch: Partial<Config> = { nParallel: 3 }) {
     hydrated: true,
     isGguf: true,
     pending: inbox.getSnapshot(),
-    onImport: (value: Partial<Config>) => changes.push(value),
+    onImport: (value: Partial<Config>, model?: string) => {
+      changes.push(value);
+      models.push(model);
+    },
   };
   t.after(releaseDraft);
   return {
@@ -82,6 +86,7 @@ function harness(t: TestContext, patch: Partial<Config> = { nParallel: 3 }) {
     errors,
     successes,
     changes,
+    models,
     options,
     schedule: scheduleRunConfigImport,
     releaseDraft,
@@ -267,14 +272,32 @@ test("reopening a link after failed hydration imports the new request once", asy
   assert.equal(drafts.readModelConfigDraft(app.key)?.remember, true);
 });
 
-test("model-only links do not mark settings edited or report a settings import", async (t) => {
-  const app = harness(t, {});
-  app.schedule(app.options);
-  await Promise.resolve();
-  assert.equal(app.inbox.getSnapshot(), null);
-  assert.equal(drafts.isModelConfigDraftEdited(app.key), false);
-  assert.deepEqual(app.successes, []);
-});
+for (const model of [undefined, "owner/model"]) {
+  test(`model-only links identify their source without changing settings: ${model}`, async (t) => {
+    const app = harness(t, {});
+    assert.ok(app.options.pending);
+    app.options.pending.value.model = model;
+    const before = drafts.readModelConfigDraft(app.key);
+    app.schedule(app.options);
+    await Promise.resolve();
+    assert.equal(app.inbox.getSnapshot(), null);
+    assert.equal(drafts.readModelConfigDraft(app.key), before);
+    assert.equal(drafts.isModelConfigDraftEdited(app.key), false);
+    assert.deepEqual(app.successes, []);
+    assert.deepEqual(app.changes, model ? [{}] : []);
+    assert.deepEqual(app.models, model ? [model] : []);
+  });
+
+  test(`settings imports preserve the model named by the link: ${model}`, async (t) => {
+    const app = harness(t);
+    assert.ok(app.options.pending);
+    app.options.pending.value.model = model;
+    app.schedule(app.options);
+    await Promise.resolve();
+    assert.deepEqual(app.changes, [{ nParallel: 3 }]);
+    assert.deepEqual(app.models, [model]);
+  });
+}
 
 test("review lists only changed fields including cleared context aliases and exact argv values", async (t) => {
   const patch = {

@@ -76,7 +76,7 @@ function text(node: unknown): string {
     : "";
 }
 
-function shareDialogHarness(config: PerModelConfig) {
+function shareDialogHarness(config: PerModelConfig, desktop = true) {
   const checkbox = Symbol("checkbox");
   const textarea = Symbol("textarea");
   const states: unknown[] = [];
@@ -128,7 +128,7 @@ function shareDialogHarness(config: PerModelConfig) {
         SelectValue: "value",
       },
       "@/components/ui/textarea": { Textarea: textarea },
-      "@/lib/api-base": { isTauri: true },
+      "@/lib/api-base": { isTauri: desktop },
       "@/lib/copy-to-clipboard": {},
       "@/lib/toast": {},
       "../model-config/per-model-config": { DEFAULT_PER_MODEL_CONFIG },
@@ -159,6 +159,7 @@ function shareDialogHarness(config: PerModelConfig) {
     assert.ok(parsed.kind === "valid");
     return {
       tree,
+      link: link as string,
       config: parsed.value.config,
       choice: (key: string) =>
         tree.find(
@@ -167,6 +168,39 @@ function shareDialogHarness(config: PerModelConfig) {
         ),
     };
   };
+}
+
+for (const [address, destination] of [
+  ["http://localhost:8888", "browser"],
+  ["http://127.0.0.1:8888", "browser"],
+  ["http://127.10.20.30:8888", "browser"],
+  ["http://[::1]:8888", "browser"],
+  ["http://192.168.1.20:8888", "desktop"],
+  ["http://10.0.0.2:8888", "desktop"],
+  ["http://[fd00::1]:8888", "desktop"],
+  ["https://studio.example.com", "desktop"],
+  ["https://studio.trycloudflare.com", "desktop"],
+  ["https://studio.ngrok.app", "desktop"],
+  ["https://localhost.example.com", "desktop"],
+]) {
+  test(`share dialog defaults safely at ${address}`, (t) => {
+    const previous = window.location;
+    Object.assign(window, { location: new URL(`${address}/chat?private=1`) });
+    t.after(() => Object.assign(window, { location: previous }));
+    const render = shareDialogHarness(DEFAULT_PER_MODEL_CONFIG, false);
+    const initial = render();
+    const select = initial.tree.find((element) => element.type === "select");
+    assert.ok(select);
+    assert.equal(select.props.value, destination);
+    assert.equal(
+      new URL(initial.link).protocol,
+      destination === "browser" ? new URL(address).protocol : "unsloth:",
+    );
+    (select.props.onValueChange as (value: string) => void)("browser");
+    const explicit = new URL(render().link);
+    assert.equal(explicit.origin, new URL(address).origin);
+    assert.equal(explicit.search, "?run=1");
+  });
 }
 
 test("sharing empty arguments and templates preserves recipient overrides unless explicitly selected", () => {
@@ -625,6 +659,26 @@ test("GPU reconciliation keeps imported settings visible and explains removed or
     );
     assert.ok(text(tree).includes("Requested: [0,1]"));
     assert.ok(text(tree).includes("unsupported values will not be used"));
+  }
+});
+
+test("review identifies a linked repository and explains uncached downloads, including model-only links", () => {
+  for (const config of [{}, { nParallel: 3 }]) {
+    const draftConfig = { ...DEFAULT_PER_MODEL_CONFIG, ...config };
+    const props = { config, draftConfig, currentConfig: draftConfig };
+    const tree = SharedRunConfigReview({ ...props, model: "owner/model" });
+    assert.match(
+      text(tree),
+      /This link selected owner\/model from Hugging Face/,
+    );
+    assert.match(
+      text(tree),
+      /Loading downloads any model files that are not already cached/,
+    );
+    assert.doesNotMatch(
+      text(SharedRunConfigReview(props)),
+      /This link selected/,
+    );
   }
 });
 

@@ -377,6 +377,7 @@ for (const newer of [
     const doc = app.loadDocument();
     const startup = doc.receiver.receiveStartupRunConfigUrl();
     assert.equal(window.location.href, "http://localhost/chat");
+    doc.receiver.cancelRunConfigImportForEdit("retired-draft");
     doc.receiver.receiveSharedRunConfigUrls([newer]);
     parser.resolve(links);
     await startup;
@@ -385,6 +386,7 @@ for (const newer of [
       doc.inbox.getSnapshot()?.value.model,
       newer.includes("nParallel") ? "owner/newer" : undefined,
     );
+    assert.equal(doc.inbox.wasEdited("retired-draft"), false);
     assert.deepEqual(app.errors, []);
     doc.dispose();
   });
@@ -396,14 +398,43 @@ test("sign-out retires a parser load before another account can receive its sett
   app.signIn();
   const doc = app.loadDocument();
   assert.equal(doc.receiver.receiveSharedRunConfigUrls([run]), true);
+  doc.receiver.cancelRunConfigImportForEdit("retired-draft");
   app.signOut();
   app.signIn();
   parser.resolve(links);
   await settle();
   assert.equal(doc.inbox.getSnapshot(), null);
+  assert.equal(doc.inbox.wasEdited("retired-draft"), false);
   assert.deepEqual(app.errors, []);
   doc.dispose();
 });
+
+for (const desktop of [false, true]) {
+  test(`edits during parser loading survive into model resolution: desktop=${desktop}`, async () => {
+    const parser = deferredParser();
+    const app = harness({
+      url: browserRun,
+      desktop,
+      loadParser: () => parser.promise,
+    });
+    app.signIn();
+    const doc = app.loadDocument();
+    doc.receiver.cancelRunConfigImportForEdit("older-draft");
+    const startup = desktop
+      ? doc.receiver.receiveSharedRunConfigUrls([run])
+      : doc.receiver.receiveStartupRunConfigUrl();
+    assert.equal(doc.inbox.getSnapshot(), null);
+    doc.receiver.cancelRunConfigImportForEdit("edited-draft");
+    parser.resolve(links);
+    await startup;
+    await settle();
+    assert.equal(doc.inbox.getSnapshot()?.value.config.nParallel, 3);
+    assert.equal(doc.inbox.wasEdited("edited-draft"), true);
+    assert.equal(doc.inbox.wasEdited("older-draft"), false);
+    assert.deepEqual(app.errors, []);
+    doc.dispose();
+  });
+}
 
 test("clearing absent credentials preserves a pre-login link while the parser loads", async () => {
   const parser = deferredParser();

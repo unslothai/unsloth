@@ -181,16 +181,13 @@ export function openRunConfigTarget({
   }
   const controller = new AbortController();
   const loadingToast = toast.loading("Resolving shared model…");
-  Promise.all([
-    resolveCachedRunConfigTarget(target, {
-      hfToken,
-      inventoryVersion,
-      signal: controller.signal,
-      checkLocalPath: !pending.value.model || Boolean(pending.selectedModel),
-    }),
-    import("./runtime"),
-  ])
-    .then(([resolved]) => {
+  resolveCachedRunConfigTarget(target, {
+    hfToken,
+    inventoryVersion,
+    signal: controller.signal,
+    checkLocalPath: !pending.value.model || Boolean(pending.selectedModel),
+  })
+    .then((resolved) => {
       if (
         controller.signal.aborted ||
         runConfigInbox.getSnapshot() !== pending

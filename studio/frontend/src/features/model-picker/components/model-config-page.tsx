@@ -2079,13 +2079,16 @@ export function ModelConfigPage({
   const [autoOpenAdvanced, setAutoOpenAdvanced] = useState(() =>
     hasNonDefaultAdvanced(configState),
   );
-  const [importedConfig, setImportedConfig] = useState<
-    Partial<PerModelConfig> | null
-  >(null);
+  const [importedConfig, setImportedConfig] = useState<{
+    changes: Partial<PerModelConfig>;
+    model?: string;
+  } | null>(null);
   const handleSharedConfigImport = useCallback(
-    (changes: Partial<PerModelConfig>) => {
-      setImportedConfig(changes);
-      setAutoOpenAdvanced(true);
+    (changes: Partial<PerModelConfig>, model?: string) => {
+      setImportedConfig({ changes, model });
+      if (Object.keys(changes).length > 0) {
+        setAutoOpenAdvanced(true);
+      }
     },
     [],
   );
@@ -3163,7 +3166,8 @@ export function ModelConfigPage({
 
       <SharedRunConfigReview
         target={target}
-        config={importedConfig}
+        config={importedConfig?.changes ?? null}
+        model={importedConfig?.model}
         draftConfig={configState}
         currentConfig={config}
       />
@@ -3336,7 +3340,7 @@ export function ModelConfigPage({
         className={
           variant === "sidebar"
             ? "mt-5 flex flex-col gap-2 border-t border-border pt-5"
-            : "mt-5 flex items-center justify-between gap-3 border-t border-border pt-5"
+            : "mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-5"
         }
       >
         <div className="flex min-w-0 items-center gap-2">

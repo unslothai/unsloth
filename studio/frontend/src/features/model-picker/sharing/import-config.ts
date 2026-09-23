@@ -27,7 +27,7 @@ export function scheduleRunConfigImport({
   key: string;
   hydrated: boolean;
   isGguf: boolean;
-  onImport: (changes: Partial<PerModelConfig>) => void;
+  onImport: (changes: Partial<PerModelConfig>, model?: string) => void;
 }): (() => void) | undefined {
   if (
     !(canImport && ready && pending) ||
@@ -44,6 +44,9 @@ export function scheduleRunConfigImport({
     }
     if (Object.keys(pending.value.config).length === 0) {
       runConfigInbox.take(pending.id, key);
+      if (pending.value.model) {
+        onImport({}, pending.value.model);
+      }
       return;
     }
     if (!hydrated) {
@@ -73,7 +76,7 @@ export function scheduleRunConfigImport({
     patchModelConfigDraft(key, (current) =>
       mergeSharedRunConfig(current, patch, isGguf),
     );
-    onImport(changes);
+    onImport(changes, pending.value.model);
     toast.success("Settings imported from link", {
       id: pending.id,
       description: "Review before loading.",

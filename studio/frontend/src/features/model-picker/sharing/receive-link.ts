@@ -86,8 +86,8 @@ function clearPendingImport() {
   const pending = runConfigInbox.getSnapshot();
   if (pending) {
     clearModelConfigHandoff(pending.id);
-    runConfigInbox.clear(pending.id);
   }
+  runConfigInbox.clear();
 }
 
 export function cancelRunConfigImportForEdit(draftKey: string): void {
@@ -122,6 +122,8 @@ async function receiveRunConfigUrl(
   startupUrl = "";
   clearPendingImport();
   const revision = intakeRevision;
+  const id = createModelConfigHandoffRequestId();
+  runConfigInbox.begin(id);
   awaitingLogin = !hasAuthToken();
   try {
     const { parseRunConfigLink } = await import("./runtime");
@@ -139,7 +141,7 @@ async function receiveRunConfigUrl(
       return;
     }
     runConfigInbox.submit({
-      id: createModelConfigHandoffRequestId(),
+      id,
       value: parsed.value,
       replaceHistory,
     });

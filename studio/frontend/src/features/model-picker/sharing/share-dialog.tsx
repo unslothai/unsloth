@@ -50,6 +50,8 @@ const SHARING_DEFAULTS: PerModelConfig = {
   selectedGpuIndexKind: null,
 };
 
+const loopbackHostname = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/;
+
 function linkPreview(value: SharedRunConfig, destination: string) {
   try {
     return {
@@ -118,8 +120,10 @@ export function ShareRunConfigDialog({
     Boolean(target.ggufVariant),
   );
   const [includeFormat, setIncludeFormat] = useState(shareableModel);
-  const [destination, setDestination] = useState(
-    isTauri ? "desktop" : "browser",
+  const [destination, setDestination] = useState(() =>
+    !isTauri && loopbackHostname.test(window.location.hostname)
+      ? "browser"
+      : "desktop",
   );
   const [selected, setSelected] = useState<Set<SharedConfigKey>>(
     () =>
