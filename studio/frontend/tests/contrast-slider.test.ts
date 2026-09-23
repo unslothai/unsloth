@@ -307,7 +307,7 @@ test("text and lines head away from whatever they are drawn on", () => {
     CSS.indexOf("/* Code font size"),
   );
   const rules = [...scopes.matchAll(/\{([^}]*)\}/g)].map((m) => m[1] ?? "");
-  assert.equal(rules.length, 5);
+  assert.equal(rules.length, 6);
   for (const rule of rules) {
     const target = /--muted-foreground: color-mix\(\s*in oklab,\s*var\(--panel-surface-fg-muted\),\s*(var\(--contrast-panel-target, var\(--contrast-target\)\)|var\(--contrast-target\)) var/.exec(rule)?.[1];
     assert.ok(target, "scope without muted text");
@@ -625,4 +625,16 @@ test("a pane that repaints itself in dark is not reset to the page there", () =>
     readSrc("features/settings/settings-dialog.tsx"),
     /bg-background[^"]*dark:bg-\[rgb\(255_255_255/,
   );
+});
+
+test("the dark Hub's popover repaint is scoped only where it wins", () => {
+  // hub.css repaints from @layer base, so bg-background/70 stays the page
+  // (its ink rises on the page target) while hover:bg-background at rest is a
+  // popover, whose muted icon fell from 9:1 to 2.5:1 on the page target.
+  assert.match(HUB_CSS, /@layer base \{[\s\S]*html\.dark \.hub-page \[class\*="bg-card"\],\s*html\.dark \.hub-page \[class\*="bg-background"\] \{\s*background-color: var\(--popover\);/);
+  const rule = CSS.match(
+    /html\[data-contrast-adjust\]\.dark \.hub-page :is\(\[class\*="bg-background"\], \[class\*="bg-card"\]\):not\(\[class\^="bg-"\], \[class\*=" bg-"\], \[class\*="dark:bg-"\], :hover\) \{([^}]*)\}/,
+  );
+  assert.ok(rule, "the repainted Hub popovers are not scoped");
+  assert.match(rule[1] ?? "", /var\(--contrast-panel-target, var\(--contrast-target\)\) var\(--contrast-text-mix\)/);
 });

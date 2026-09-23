@@ -813,6 +813,19 @@ html[data-contrast-adjust]:not(.dark) .hub-page .hub-result-row {
 	--border: color-mix(in oklab, var(--border-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-line-mix));
 	--input: color-mix(in oklab, var(--input-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-control-mix));
 }
+/* The dark Hub repaints [class*="bg-background"] and [class*="bg-card"] as
+   popovers from @layer base, so any background utility still wins. Only an
+   element with none in play (hover:bg-background at rest) is a popover. */
+html[data-contrast-adjust].dark .hub-page :is([class*="bg-background"], [class*="bg-card"]):not([class^="bg-"], [class*=" bg-"], [class*="dark:bg-"], :hover) {
+	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--muted-foreground: color-mix(
+		in oklab,
+		var(--panel-surface-fg-muted),
+		var(--contrast-panel-target, var(--contrast-target)) var(--contrast-text-mix)
+	);
+	--border: color-mix(in oklab, var(--border-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-line-mix));
+	--input: color-mix(in oklab, var(--input-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-control-mix));
+}
 
 /* Code font size: only overrides when the user sets an explicit size, so the
    per-element Tailwind sizes stay authoritative by default. */
