@@ -318,7 +318,6 @@ export {
   shouldAttachPastedText,
 } from "./utils/pasted-text";
 export {
-  chatThreadExistsOnBackend,
   deleteStoredChatThreads,
   ensureStoredChatThread,
   getStoredChatThread,
@@ -327,6 +326,7 @@ export {
   listStoredChatProjects,
   listStoredChatThreads,
   markThreadIncognito,
+  readBackendChatThread,
 } from "./utils/chat-history-storage";
 export { allRecordedSandboxSessionIds } from "./utils/recorded-sandbox-session";
 export {

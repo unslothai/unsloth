@@ -18,9 +18,9 @@ type Module = {
     messages: unknown[],
     options?: SyncOptions,
   ) => Promise<unknown>;
-  chatThreadExistsOnBackend: (
+  readBackendChatThread: (
     threadId: string,
-  ) => Promise<boolean | undefined>;
+  ) => Promise<Record<string, unknown> | null | undefined>;
 };
 
 type Published = [string, string | null | undefined, string | null | undefined];
@@ -179,20 +179,25 @@ test("the backend's answer is what decides, not this browser's legacy row", asyn
     },
   });
 
-  assert.equal(await module.chatThreadExistsOnBackend("src"), false);
+  assert.equal(await module.readBackendChatThread("src"), null);
 });
 
-test("a source the backend still holds is openable", async () => {
-  const { module } = harness({ id: "src" });
+test("a source the backend still holds comes back as its record", async () => {
+  // The record, not a boolean: the backlink reads pairId off it to reopen a comparison
+  // as a comparison rather than as one of its panes.
+  const { module } = harness({ id: "src", pairId: "pair-1" });
 
-  assert.equal(await module.chatThreadExistsOnBackend("src"), true);
+  assert.deepEqual(await module.readBackendChatThread("src"), {
+    id: "src",
+    pairId: "pair-1",
+  });
 });
 
 test("a backend that could not answer is not a deletion", async () => {
   const { module } = harness(undefined, { failReadsFrom: 1 });
 
   // Undefined, not false: the divider navigates rather than claiming the chat is gone.
-  assert.equal(await module.chatThreadExistsOnBackend("src"), undefined);
+  assert.equal(await module.readBackendChatThread("src"), undefined);
 });
 
 test("a source this tab deleted needs no round trip", async () => {
@@ -201,7 +206,7 @@ test("a source this tab deleted needs no round trip", async () => {
     { deletedSources: new Set(["src"]) },
   );
 
-  assert.equal(await module.chatThreadExistsOnBackend("src"), false);
+  assert.equal(await module.readBackendChatThread("src"), null);
   assert.deepEqual(threadReads, []);
 });
 

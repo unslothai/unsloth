@@ -139,13 +139,17 @@ test("a thread with no active id never claims a boundary", () => {
 test("the label links back to the source chat, and only while there is one", () => {
   const text = findDeclaration("ForkContinuationRule").getText();
   // Same navigation the fork action itself uses.
-  assert.match(text, /to: "\/chat",\s*search: \{ thread: sourceThreadId \}/);
+  assert.match(text, /to: "\/chat",/);
+  assert.match(text, /\{ thread: sourceThreadId \}/);
+  // A paired source reopens as the comparison it was forked from, not as one of its panes.
+  assert.match(text, /source\?\.pairId\s*\?\s*\{ compare: source\.pairId \}/);
   // The local tombstone set is this tab's own, so existence is settled on the way out, and
   // against the backend: getStoredChatThread answers with this browser's legacy row instead.
-  assert.match(text, /await chatThreadExistsOnBackend\(sourceThreadId\)/);
+  assert.match(text, /await readBackendChatThread\(sourceThreadId\)/);
   assert.doesNotMatch(text, /getStoredChatThread/);
-  // Only a definite "no" stops the trip; undefined means the backend could not say.
-  assert.match(text, /=== false\) \{[^}]*toast\.info/s);
+  // Only a definite null stops the trip; undefined means the backend could not say, and
+  // falls through to the single-chat view rather than claiming a deletion.
+  assert.match(text, /source === null\) \{[^}]*toast\.info/s);
   assert.match(text, /sourceThreadId \? \(/);
   // A deleted source keeps the words but drops the button.
   assert.match(text, /<span className=\{labelClass\}>\{label\}<\/span>/);

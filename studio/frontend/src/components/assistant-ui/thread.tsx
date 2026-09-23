@@ -260,7 +260,7 @@ import {
 } from "@/features/chat/utils/composer-send-guard";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import {
-  chatThreadExistsOnBackend,
+  readBackendChatThread,
   getStoredChatThread,
   updateStoredChatThread,
 } from "@/features/chat/utils/chat-history-storage";
@@ -1819,13 +1819,20 @@ const ForkContinuationRule: FC = () => {
           // source deleted on another device still looks openable until something asks for it.
           // Only a definite "no" stops the trip; an unreachable backend is not a deletion.
           onClick={async () => {
-            if ((await chatThreadExistsOnBackend(sourceThreadId)) === false) {
+            const source = await readBackendChatThread(sourceThreadId);
+            if (source === null) {
               toast.info("That chat has been deleted.");
               return;
             }
             navigate({
               to: "/chat",
-              search: { thread: sourceThreadId },
+              // A paired source is one half of a comparison, and the fork button is offered
+              // inside those panes. Opening it as a single chat would show one model's side
+              // rather than the view it was forked from. Same shape the sidebar opens a pair
+              // with. An unreachable backend has no record to ask, so it falls through.
+              search: source?.pairId
+                ? { compare: source.pairId }
+                : { thread: sourceThreadId },
               replace: false,
             });
           }}
