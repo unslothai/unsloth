@@ -356,9 +356,11 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
     repointed at a managed scratch dir (a downloaded binary must not see the real
     home's token caches), co-located libs on the loader path, WSL system HIP first
     on WSL2 ROCm."""
+    binary = str(Path(binary).resolve())
     env = scrub_env(os.environ)
     isolate_home(env, str(_managed_whisper_cpp_dir() / ".child_home"))
     bin_dir = str(Path(binary).parent)
+
     # A CUDA bundle needs the CUDA-from-PyTorch wheel dirs so libcudart/libcublas resolve at launch when they live only
     # in site-packages/nvidia/*/lib. Placed after bin_dir so co-located libs still win; empty for other bundles.
     cuda_runtime_dirs: list[str] = []

@@ -292,3 +292,19 @@ def test_the_default_dirs_cover_the_hosts_multiarch_paths():
         pytest.skip(f"no {triple} directory is installed on this host")
     for directory in installed:
         assert directory in _REAL_LOADER_DEFAULT_LIB_DIRS
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
+def test_usr_local_is_not_assumed_without_a_readable_cache(tmp_path, monkeypatch):
+    runtime_dir = _make_runtime(tmp_path, "cuda_v13")
+    monkeypatch.setattr(runtime_libs, "_ld_cache_entries", lambda: None)
+
+    # /usr/local is usually admitted through ld.so.conf/cache, not glibc's
+    # built-in defaults. Without a readable cache it must not mask the rescue.
+    assert not any(
+        directory.rstrip("/") in {"/usr/local/lib", "/usr/local/lib64"}
+        for directory in _REAL_LOADER_DEFAULT_LIB_DIRS
+    )
+    assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == [
+        str(runtime_dir.resolve())
+    ]

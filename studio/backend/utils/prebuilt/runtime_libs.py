@@ -76,9 +76,7 @@ _LOADER_DEFAULT_LIB_DIRS: tuple[str, ...] = (
     "/lib64",
     "/usr/lib",
     "/usr/lib64",
-    "/usr/local/lib",
-    "/usr/local/lib64",
-    # ld.so searches these ahead of the generic dirs above wherever they exist.
+    # ld.so searches the architecture-specific dirs below ahead of these generic dirs.
     *_multiarch_lib_dirs(),
 )
 

@@ -667,6 +667,37 @@ def test_child_env_omits_vendored_cuda_runtime_for_cpu_bundle(monkeypatch, tmp_p
     assert str(vendored.resolve()) not in env[_loader_path_var()].split(os.pathsep)
 
 
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
+def test_child_env_resolves_external_symlink_before_cuda_bundle_probe(monkeypatch, tmp_path):
+    import utils.prebuilt.runtime_libs as rl
+    from utils.whisper_cpp_freshness import reset_caches
+
+    managed_root = tmp_path / "managed"
+    managed_root.mkdir()
+    bindir = _make_cuda_bundle(managed_root)
+    external_dir = tmp_path / "external"
+    external_dir.mkdir()
+    alias = external_dir / _SERVER_NAME
+    alias.symlink_to(bindir / _SERVER_NAME)
+    vendored = tmp_path / "ollama" / "cuda_v13"
+    vendored.mkdir(parents = True)
+    (vendored / "libcudart.so.13").write_text("")
+    (vendored / "libcublas.so.13").write_text("")
+
+    monkeypatch.setattr(ggml_module, "_managed_whisper_cpp_dir", lambda: managed_root)
+    monkeypatch.setattr(rl, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),))
+    monkeypatch.setattr(rl, "_loader_already_provides_runtime", lambda _major: False)
+    reset_caches()
+    env = ggml_module._whisper_server_child_env(str(alias))
+    reset_caches()
+
+    parts = env["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert str(bindir.resolve()) in parts
+    assert parts[-1] == str(vendored.resolve())
+
+
+
 def test_engine_unavailable_is_stt_unavailable():
     # Routes map SttUnavailableError to HTTP 501; the engine error must share it.
     assert issubclass(SttEngineUnavailableError, SttUnavailableError)
