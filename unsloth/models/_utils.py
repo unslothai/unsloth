@@ -1127,17 +1127,18 @@ def _get_text_only_config(model_config, model_name):
         text_config = getattr(model_config, "text_config", None)
     if text_config is None:
         raise ValueError(f"Cannot load {model_name} as text-only; use FastVisionModel")
+    # unsloth_zoo's Gemma-4 guard (num_kv_shared_layers == 0) returns a read-only __slots__ proxy that
+    # resolve_model_class cannot map and that refuses new attributes; use the config it wraps. The
+    # loaded model's own get_text_config re-wraps it for the cache.
+    try:
+        text_config = object.__getattribute__(text_config, "_real")
+    except AttributeError:
+        pass
     # Carry over quantization_config; copy first, since get_text_config() shares the parent's object.
     qc = getattr(model_config, "quantization_config", None)
     if qc is not None and getattr(text_config, "quantization_config", None) is None:
         text_config = copy.copy(text_config)
-        try:
-            text_config.quantization_config = _remap_text_only_skip_modules(qc)
-        except AttributeError:
-            # unsloth_zoo's Gemma-4 config proxy (num_kv_shared_layers == 0 guard) is read-only __slots__;
-            # copy the config it wraps instead. The model's own get_text_config re-wraps it.
-            text_config = copy.copy(object.__getattribute__(text_config, "_real"))
-            text_config.quantization_config = _remap_text_only_skip_modules(qc)
+        text_config.quantization_config = _remap_text_only_skip_modules(qc)
     return text_config
 
 

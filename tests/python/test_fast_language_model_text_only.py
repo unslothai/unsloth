@@ -334,6 +334,21 @@ def test_text_only_helper_copies_config_behind_read_only_proxy():
     assert getattr(real_text, "quantization_config", None) is None
 
 
+def test_text_only_helper_unwraps_read_only_proxy_without_quantization():
+    # 16-bit text_only load: no quantization_config to attach, but the proxy must still be unwrapped
+    # so resolve_model_class maps the real text config class.
+    transformers = pytest.importorskip("transformers")
+    ns = _load_text_only_namespace()
+    helper, resolve = ns["_get_text_only_config"], ns["resolve_model_class"]
+    config = transformers.Gemma3Config()
+    real_text = config.get_text_config()
+    config.get_text_config = lambda *a, **k: _ReadOnlyTextConfigProxy(real_text)
+    text_config = helper(config, "google/gemma-4-31B-it")
+    assert type(text_config) is type(real_text)
+    model_class = resolve(transformers.AutoModelForCausalLM, text_config)
+    assert model_class is not None and model_class.__name__ == "Gemma3ForCausalLM"
+
+
 def test_text_only_key_mapping_targets_published_prefixes():
     # Remap the published VLM decoder prefixes, applying only on transformers >=5
     # (on 4.x base_model_prefix handles it and a mapping hurts).
