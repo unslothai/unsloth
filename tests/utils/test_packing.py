@@ -1056,7 +1056,8 @@ def test_enable_sample_packing_only_requires_torch_call():
 # has_real_accelerator(), not has_real_cuda(): the body below picks xpu when cuda is absent
 # and _build_packed_training_setup has an xpu dtype arm, so this is real XPU coverage.
 @pytest.mark.skipif(not has_real_accelerator(), reason = "builds a real 4bit model on an accelerator")
-def test_enable_sample_packing_trl_collator(tmp_path):
+def test_enable_sample_packing_trl_collator(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.xpu.is_available():
@@ -1120,7 +1121,8 @@ def test_enable_padding_free_metadata():
 # has_real_accelerator(), not has_real_cuda(): the body below picks xpu when cuda is absent
 # and _build_packed_training_setup has an xpu dtype arm, so this is real XPU coverage.
 @pytest.mark.skipif(not has_real_accelerator(), reason = "builds a real 4bit model on an accelerator")
-def test_packing_sdpa(tmp_path):
+def test_packing_sdpa(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.xpu.is_available():
@@ -1132,6 +1134,7 @@ def test_packing_sdpa(tmp_path):
     assert "packed_seq_lengths" in batch
     assert "attention_mask" not in batch
     assert batch["packed_seq_lengths"].dtype == torch.int32
+    assert batch["packed_seq_lengths"].numel() > 1
 
     total_tokens = batch["input_ids"].size(-1)
     assert int(batch["packed_seq_lengths"].sum().item()) == total_tokens
@@ -1161,13 +1164,16 @@ def test_packing_sdpa(tmp_path):
         device,
         *,
         sliding_window = None,
+        is_causal = True,
     ):
+        assert is_causal is True
         mask_calls.append(tuple(seq_info[0].tolist()))
         return original_mask(
             seq_info,
             dtype = dtype,
             device = device,
             sliding_window = sliding_window,
+            is_causal = is_causal,
         )
 
     def _capture_loss(*, logits, labels, **loss_kwargs):

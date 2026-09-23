@@ -24,6 +24,8 @@ from torch.nn.functional import scaled_dot_product_attention
 
 from ..models._utils import *
 from ..utils.packing import (
+    _XFormersBidirectionalMask,
+    _XFormersBlockMask,
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
     move_xformers_attention_bias,
@@ -91,7 +93,11 @@ XFORMERS = "xformers"
 SDPA = "sdpa"
 
 
-XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
+XFORMERS_BLOCK_DIAG_CLS = (
+    tuple(cls for cls in (_XFormersBlockMask, _XFormersBidirectionalMask) if cls is not None)
+    if HAS_XFORMERS
+    else None
+)
 
 
 # flash-attn 2 varlen backward int32 overflow guard: the varlen BACKWARD kernel allocates
@@ -200,6 +206,7 @@ class AttentionContext:
     # PrefixGrouper: non-None routes Q/K/V through the FlexAttention shared-prefix kernel; None leaves
     # every existing construction and behavior unchanged.
     prefix_seg_info: Optional[Any] = None
+    is_causal: bool = True
 
 
 def select_attention_backend(use_varlen: bool = False) -> str:
@@ -280,6 +287,12 @@ def run_attention(
     and SDPA handle packing via a block-diagonal mask.
     """
 
+    if not context.is_causal:
+        if context.sliding_window is not None and context.sliding_window > 0:
+            raise ValueError("Bidirectional attention does not support sliding_window")
+        if context.prefix_seg_info is not None:
+            raise ValueError("Shared-prefix attention requires causal attention")
+
     # PrefixGrouper shared-prefix attention (GRPO dedup): Q/K/V here are [bsz, H, T, D] while the kernel
     # takes and returns [1, T, H, D], matching the other backends.
     if context.prefix_seg_info is not None:
@@ -312,6 +325,20 @@ def run_attention(
         XFORMERS,
     ):
         backend = SDPA
+
+    # A build without the matching block-mask class must not attend across
+    # packed sentence boundaries. Older xFormers builds may lack the
+    # bidirectional class while still supporting causal packed attention.
+    if backend == XFORMERS and HAS_XFORMERS and context.seq_info is not None:
+        mask_class = _XFormersBlockMask if context.is_causal else _XFormersBidirectionalMask
+        if mask_class is None:
+            softcap = _configured_softcap(config)
+            if softcap:
+                raise RuntimeError(
+                    f"xFormers lacks the packed block mask required for this attention; "
+                    f"SDPA cannot preserve softcap={softcap}."
+                )
+            backend = SDPA
 
     # Both varlen-capable backends land in the same flash-attn 2 backward kernel, so guard both before
     # the int32 overflow aborts the process. Integer arithmetic only, no device sync.
@@ -359,6 +386,9 @@ def run_attention(
     flash_varlen_kwargs = config.flash_varlen_kwargs or {}
     sdpa_kwargs = config.sdpa_kwargs or {}
     xformers_kwargs = config.xformers_kwargs or {}
+    if not context.is_causal:
+        flash_dense_kwargs = {**flash_dense_kwargs, "causal": False}
+        flash_varlen_kwargs = {**flash_varlen_kwargs, "causal": False}
 
     bsz = context.bsz
     n_heads = context.n_heads
@@ -423,6 +453,7 @@ def run_attention(
             context.seq_info,
             sliding_window = sliding_window,
             base_mask = context.causal_mask,
+            is_causal = context.is_causal,
         )
         attn_bias = move_xformers_attention_bias(attn_bias, Q.device)
 
@@ -487,6 +518,7 @@ def run_attention(
                 dtype = Q.dtype,
                 device = Q.device,
                 sliding_window = sliding_window,
+                is_causal = context.is_causal,
             )
         else:
             q_len_local = Q.shape[-2]
@@ -507,7 +539,13 @@ def run_attention(
                     q_pos = torch.arange(past_len, past_len + q_len_local, device = Q.device)
                     k_pos = torch.arange(k_len_local, device = Q.device)
 
-                    causal_keep = k_pos[None, :] <= q_pos[:, None]  # True = allowed (SDPA)
+                    causal_keep = (
+                        k_pos[None, :] <= q_pos[:, None]
+                        if context.is_causal
+                        else torch.ones(
+                            (q_len_local, k_len_local), dtype = torch.bool, device = Q.device
+                        )
+                    )  # True = allowed (SDPA)
                     if sliding_window is not None:
                         causal_keep &= k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1))
 
@@ -537,11 +575,15 @@ def run_attention(
                     q_len_local, k_len_local, sliding_window, Q.device
                 )
 
-            is_causal_local = local_mask is None and q_len_local == k_len_local
+            is_causal_local = (
+                context.is_causal and local_mask is None and q_len_local == k_len_local
+            )
 
         kwargs = dict(sdpa_kwargs)
         kwargs.setdefault("attn_mask", local_mask)
         kwargs.setdefault("is_causal", is_causal_local)
+        if not context.is_causal:
+            kwargs["is_causal"] = False
 
         use_sdpa_gqa = SDPA_HAS_GQA and config.n_groups != 1
         if (
