@@ -165,6 +165,8 @@ def ensure_package() -> None:
                 env = env,
                 capture_output = True,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = INSTALL_TIMEOUT_S,
             )
             detail = ((result.stderr or result.stdout).strip().splitlines() or [""])[-1]
