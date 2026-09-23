@@ -5897,19 +5897,6 @@ def _linux_validation_setenv_args(payload_env: dict[str, str]) -> list[str]:
     return args
 
 
-def _drop_server_gpu_layers(command: list[str]) -> list[str]:
-    trimmed: list[str] = []
-    index = 0
-    while index < len(command):
-        arg = command[index]
-        if arg == "--n-gpu-layers" and index + 1 < len(command):
-            index += 2
-            continue
-        trimmed.append(arg)
-        index += 1
-    return trimmed
-
-
 def _extract_loopback_port(command: list[str]) -> int:
     for index, arg in enumerate(command):
         if arg != "--port":
@@ -6327,20 +6314,19 @@ def build_validation_sandbox_plan(
     )
     if _host_is_linux(host):
         bwrap_path = _resolve_command_path("bwrap")
-        if bwrap_path is not None and _bwrap_can_sandbox(bwrap_path):
+        sandbox_usable = bwrap_path is not None and _bwrap_can_sandbox(bwrap_path)
+        gpu_server = (
+            purpose == _VALIDATION_PURPOSE_SERVER
+            and enable_gpu_layers
+            and gpu_backend in {"cuda", "rocm"}
+        )
+        if sandbox_usable and gpu_server and not _binary_is_setuid_root(bwrap_path):
+            # GPU access inside a non-setuid bwrap's user namespace is unproven, and
+            # validating on the CPU instead would let a bundle whose GPU path is
+            # broken through. Keep main's direct GPU smoke test for this case.
+            sandbox_usable = False
+        if sandbox_usable:
             payload_command = _resolve_sandbox_command(command)
-            if (
-                purpose == _VALIDATION_PURPOSE_SERVER
-                and enable_gpu_layers
-                and gpu_backend in {"cuda", "rocm"}
-                and not _binary_is_setuid_root(bwrap_path)
-            ):
-                # Non-setuid bwrap needs a user namespace, which drops the host's
-                # supplementary GPU device groups. Keep the loopback-only sandbox
-                # and validate the bundle on the CPU path instead.
-                payload_command = _drop_server_gpu_layers(payload_command)
-                enable_gpu_layers = False
-                gpu_backend = None
             network_policy = _VALIDATION_NETWORK_POLICY_SANDBOX
             server_probe_mode = (
                 _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX
@@ -6404,10 +6390,11 @@ def build_validation_sandbox_plan(
                 sandbox_kind = "linux_bwrap",
                 reason = "No Linux sandbox adapter was available; skip ldd probe",
             )
-        # No usable bwrap (absent, or user namespaces restricted as on Ubuntu >= 23.10).
-        # Studio launches this same binary unsandboxed once installed, so skipping
-        # its smoke test buys no isolation and loses the check that routes a broken
-        # GPU bundle to a source build. Validate directly under the scrubbed env.
+        # No usable bwrap (absent, or user namespaces restricted as on Ubuntu >= 23.10),
+        # or a GPU smoke test the sandbox cannot host. Studio launches this same binary
+        # unsandboxed once installed, so skipping its smoke test buys no isolation and
+        # loses the check that routes a broken GPU bundle to a source build. Validate
+        # directly under the scrubbed env.
         return _ValidationLaunchPlan(
             command = command,
             env = env,

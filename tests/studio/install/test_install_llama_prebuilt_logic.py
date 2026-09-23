@@ -7921,18 +7921,18 @@ def test_build_validation_sandbox_plan_linux_server_probe_binds_nix_store(monkey
     assert _command_contains_path(plan, "nix/store")
 
 
-def test_build_validation_sandbox_plan_linux_gpu_keeps_sandbox_without_setuid_bwrap(
+def test_build_validation_sandbox_plan_linux_gpu_validates_directly_without_setuid_bwrap(
     monkeypatch, tmp_path
 ):
+    # A non-setuid bwrap cannot be shown to keep GPU access, and a CPU-only smoke test
+    # would pass a bundle whose GPU path is broken, so GPU validation keeps main's
+    # direct launch with its GPU layers; the CPU purposes stay sandboxed.
     bwrap_path = tmp_path / "bwrap"
     bwrap_path.write_text("")
     binary_path = tmp_path / "llama-server"
     binary_path.write_text("")
     install_dir = tmp_path / "install"
     install_dir.mkdir()
-    helper_path = tmp_path / "python3"
-    helper_path.write_text("")
-    seen: dict[str, object] = {}
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "_resolve_command_path",
@@ -7942,37 +7942,40 @@ def test_build_validation_sandbox_plan_linux_gpu_keeps_sandbox_without_setuid_bw
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "_linux_validation_server_probe_command",
-        lambda command, payload_env, timeout = 60: seen.update(
-            {
-                "command": list(command),
-                "payload_env": dict(payload_env),
-                "timeout": timeout,
-            }
-        )
-        or [str(helper_path), "-c", "server probe"],
+        lambda *a, **k: [str(tmp_path / "python3"), "-c", "server probe"],
     )
+    env = {"LD_LIBRARY_PATH": "/tmp/payload/libs"}
+    command = [str(binary_path), "--port", "7777", "--n-gpu-layers", "1"]
 
-    plan = build_validation_sandbox_plan(
-        [str(binary_path), "--port", "7777", "--n-gpu-layers", "1"],
+    for gpu_backend in ("cuda", "rocm"):
+        plan = build_validation_sandbox_plan(
+            command,
+            binary_path = binary_path,
+            install_dir = install_dir,
+            host = linux_host(),
+            purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+            runtime_line = None,
+            env = env,
+            enable_gpu_layers = True,
+            gpu_backend = gpu_backend,
+        )
+        assert plan.is_runnable
+        assert plan.sandbox_kind == "linux_direct_validation"
+        assert plan.command == command
+        assert plan.env == env
+        assert plan.server_probe_mode == INSTALL_LLAMA_PREBUILT._VALIDATION_SERVER_PROBE_MODE_HOST
+
+    cpu_plan = build_validation_sandbox_plan(
+        command[:3],
         binary_path = binary_path,
         install_dir = install_dir,
         host = linux_host(),
         purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
         runtime_line = None,
-        env = {"LD_LIBRARY_PATH": "/tmp/payload/libs"},
-        enable_gpu_layers = True,
-        gpu_backend = "cuda",
+        env = env,
     )
-
-    assert plan.is_runnable
-    assert plan.command[0] == str(bwrap_path.resolve())
-    assert plan.sandbox_kind == "linux_bwrap"
-    assert plan.network_policy == INSTALL_LLAMA_PREBUILT._VALIDATION_NETWORK_POLICY_SANDBOX
-    assert plan.server_probe_mode == INSTALL_LLAMA_PREBUILT._VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX
-    assert seen["command"] == [str(binary_path), "--port", "7777"]
-    assert seen["payload_env"] == {"LD_LIBRARY_PATH": "/tmp/payload/libs"}
-    assert plan.payload_command == [str(binary_path), "--port", "7777"]
-    assert "--n-gpu-layers" not in plan.command
+    assert cpu_plan.sandbox_kind == "linux_bwrap"
+    assert cpu_plan.command[0] == str(bwrap_path.resolve())
 
 
 def test_linux_validation_server_probe_command_passes_payload_env_to_server_spawn():
