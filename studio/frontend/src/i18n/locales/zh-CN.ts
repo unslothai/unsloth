@@ -162,6 +162,8 @@ export const zhCN = {
       noChatsYet: "暂无对话",
       // Shown under an empty project folder in the sidebar.
       noChats: "无对话",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "所有项目均已置顶",
       showMore: "显示更多",
       showLess: "显示更少",
       settings: "设置",
@@ -217,13 +219,6 @@ export const zhCN = {
       sortPinnedChats: "对置顶对话排序",
       moveUp: "上移",
       moveDown: "下移",
-    },
-    drag: {
-      reorder: "重新排序",
-      pin: "固定",
-      unpin: "取消固定",
-      moveTo: "移动到 {name}",
-      moveToRecents: "移动到最近",
     },
     dialog: {
       deleteChat: {

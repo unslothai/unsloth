@@ -1724,18 +1724,35 @@ def test_transformers_scopes_a_submodules_conversion_mapping():
     merge a submodule's own prefix renaming into the parent's conversion mapping
     verbatim, which renames a composite model's real weight names into names it does
     not have and throws away the bitsandbytes quant_state sidecars with them."""
-    pytest.importorskip("transformers")
-    from unsloth.import_fixes import _transformers_rescopes_submodule_prefix_renamings
+    transformers = pytest.importorskip("transformers")
+    from packaging.version import Version
 
-    if not _transformers_rescopes_submodule_prefix_renamings():
+    from unsloth.import_fixes import (
+        _composite_prefix_renaming_repaired,
+        _transformers_rescopes_submodule_prefix_renamings,
+    )
+
+    if _transformers_rescopes_submodule_prefix_renamings():
+        return
+    # Unscoped. Inside 5.4.0 to 5.5.4 that is the defect the repair exists for, and a lane that
+    # pins `transformers<5.5` lands there on purpose, so the drift is not the defect but a
+    # defect nobody repaired. On a release that ships upstream's fix, it is the probe that drifted.
+    if Version(transformers.__version__) >= Version("5.6.0"):
         pytest.fail(
-            "DRIFT DETECTED: this transformers recurses into submodules for "
-            "conversion mappings without scoping them to where the submodule lives "
-            "(no model_prefix argument, no PrefixChange.with_submodel_prefix, no "
-            "scope_prefix field) -- fix_transformers_composite_prefix_renaming would "
-            "wrap get_model_conversion_mapping. Pre-quantized multimodal checkpoints "
-            "load with quant_state=None here; install transformers>=5.6.0."
+            f"DRIFT DETECTED: transformers=={transformers.__version__} ships the submodule "
+            "re-scoping of PR #45567, but the probe finds none of its three spellings (no "
+            "model_prefix argument, no PrefixChange.with_submodel_prefix, no scope_prefix "
+            "field). fix_transformers_composite_prefix_renaming would wrap "
+            "get_model_conversion_mapping on a build that does not need it; teach the probe "
+            "the new spelling."
         )
+    assert _composite_prefix_renaming_repaired(), (
+        f"DRIFT DETECTED: transformers=={transformers.__version__} recurses into submodules "
+        "for conversion mappings without scoping them, and no repair is live -- neither "
+        "fix_transformers_composite_prefix_renaming nor unsloth_zoo's copy wrapped "
+        "get_model_conversion_mapping. Pre-quantized multimodal checkpoints load with "
+        "quant_state=None here."
+    )
 
 
 def test_composite_renaming_probe_agrees_with_the_real_mapping():

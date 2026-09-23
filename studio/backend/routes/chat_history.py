@@ -38,6 +38,7 @@ from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
+    ChatForkActiveGenerationError,
     ChatMessageConflictError,
     ChatMessageProtectedError,
     ChatThreadDeletedError,
@@ -1599,7 +1600,8 @@ def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_cur
 
 
 class ChatForkRequest(BaseModel):
-    messageId: str
+    # an omitted message selects the tip within the fork transaction.
+    messageId: Optional[str] = None
     newThreadId: str
     createdAt: int
 
@@ -1633,10 +1635,22 @@ def fork_thread(
     """
     import uuid
 
+    from hub.services.models import account_access
+    from state import active_generations
+
     source = get_chat_thread(thread_id)
     if source is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    if get_chat_message(thread_id, payload.messageId) is None:
+    # A generation in flight leaves the tip unsettled: the last message is a prompt with no
+    # answer yet, or a reply still being written, and a fork taken now would end there. A
+    # client check cannot close this on its own, since another tab can start a generation
+    # between its snapshot and this request.
+    if thread_id in active_generations.active_thread_ids(account_access.account_scope()):
+        raise HTTPException(
+            status_code = 409,
+            detail = "This chat is still generating. Fork it once it finishes.",
+        )
+    if payload.messageId is not None and get_chat_message(thread_id, payload.messageId) is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Message {payload.messageId} not found in thread {thread_id}",
@@ -1652,12 +1666,14 @@ def fork_thread(
             created_at = payload.createdAt,
             id_factory = lambda: str(uuid.uuid4()),
         )
+    except ChatForkActiveGenerationError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except ChatThreadDeletedError as exc:
         raise _deleted_thread_error(payload.newThreadId) from exc
     if forked is None:
         # The source can be deleted between the reads above and the fork transaction, which the
         # threadpool lets run concurrently. Report it gone rather than as a server fault.
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} or fork message not found")
     messages = list_chat_messages(payload.newThreadId)
     # Stub: v1 always starts a fresh container and surfaces the same warning for every provider.
     warning: Optional[str] = None

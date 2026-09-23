@@ -167,6 +167,8 @@ export const hi = {
       noChatsYet: "अभी तक कोई चैट नहीं",
       // Shown under an empty project folder in the sidebar.
       noChats: "कोई चैट नहीं",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "सभी प्रोजेक्ट पिन किए गए",
       showMore: "और दिखाएं",
       showLess: "कम दिखाएं",
       settings: "सेटिंग्स",
@@ -222,13 +224,6 @@ export const hi = {
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
       moveUp: "ऊपर ले जाएँ",
       moveDown: "नीचे ले जाएँ",
-    },
-    drag: {
-      reorder: "क्रम बदलें",
-      pin: "पिन करें",
-      unpin: "अनपिन करें",
-      moveTo: "{name} में ले जाएँ",
-      moveToRecents: "हाल के में ले जाएँ",
     },
     dialog: {
       deleteChat: {
