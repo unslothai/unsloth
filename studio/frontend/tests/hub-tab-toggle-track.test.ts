@@ -11,7 +11,8 @@ import { readSrc } from "./helpers/kit.ts";
 // the page the wash lands 21 levels below --accent; on an elevated panel the
 // same wash lands 7 below and the two halves stop reading apart. These pin the
 // panel case darkening instead, a page-coloured pane inside a panel getting the
-// page track back, and the pill's hover on borrowed-pill buttons.
+// page track back, a raised card in that pane sinking again, and the pill's
+// hover on borrowed-pill buttons.
 
 const HUB_CSS = readSrc("features/hub/hub.css");
 const PICKERS = readSrc(
@@ -22,9 +23,12 @@ const PANELS =
   ':is(.menu-soft-surface, .menu-soft-surface-up, [data-slot="dialog-content"])';
 const esc = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const PAGE_TRACK = /html\.dark \{([^}]*--hub-tab-track[^}]*)\}/;
-const PANEL_TRACK = new RegExp(`html\\.dark ${esc(PANELS)} \\{([^}]*)\\}`);
+const RAISED = '.bg-background[class*="dark:bg-"]';
+const PANEL_TRACK = new RegExp(
+  `html\\.dark ${esc(PANELS)},\\s*html\\.dark ${esc(PANELS)} ${esc(RAISED)} \\{([^}]*)\\}`,
+);
 const PANE_TRACK = new RegExp(
-  `html\\.dark ${esc(PANELS)} \\.bg-background \\{([^}]*)\\}`,
+  `html\\.dark ${esc(PANELS)} ${esc('.bg-background:not([class*="dark:bg-"])')} \\{([^}]*)\\}`,
 );
 
 test("the track reads its colour from the nearest surface", () => {
@@ -70,6 +74,14 @@ test("a page-coloured pane inside a panel gets the page track back", () => {
   assert.ok(HUB_CSS.search(PANE_TRACK) > HUB_CSS.search(PANEL_TRACK));
   const settings = readSrc("features/settings/settings-dialog.tsx");
   assert.match(settings, /<main className="[^"]*\bbg-background\b/);
+});
+
+test("a raised card inside a page-coloured pane keeps the panel track", () => {
+  // Profile's StatsCard is bg-background washed 6% white in dark. On the page
+  // track its pill sat 1.14:1 above the track, against 1.42:1 sunk.
+  assert.ok(HUB_CSS.match(PANEL_TRACK), "raised cards lost the sunk track");
+  const card = readSrc("features/profile/components/stats/stat-primitives.tsx");
+  assert.match(card, /\bbg-background dark:border-transparent dark:bg-\[/);
 });
 
 test("a selected segment shows no hover, being the tab you are already on", () => {
