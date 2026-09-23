@@ -30,6 +30,7 @@ from typing import Any, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from core._torchao_stub import is_stubbed, torch_is_rocm
+from .diffusion_native_quant import is_native_linear
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 
 # Also runs in the spawned smoke-probe child, which imports this module and nothing else of the backend.
@@ -590,10 +591,13 @@ def dense_quant_blocker(pipe: Any) -> Optional[str]:
 
 
 def transformer_is_quantised(module: Any) -> bool:
-    """Whether any Linear weight has been replaced by a torchao tensor subclass."""
+    """Whether any Linear weight has been replaced by a torchao tensor subclass, or any Linear by a
+    torchao-free weight-only twin (``diffusion_native_quant``)."""
     try:
         import torch
         for sub in module.modules():
+            if is_native_linear(sub):
+                return True
             if not isinstance(sub, torch.nn.Linear):
                 continue
             weight = getattr(sub, "weight", None)
@@ -638,6 +642,44 @@ def dense_transformer_unsupported_reason(target: Any) -> str:
     if is_stubbed("torchao"):
         return "this platform ships a torchao stub whose quantize_ is a no-op"
     return "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
+
+
+# Explicit schemes a torchao-free, weight-only path can honour where the dense torchao path cannot (see
+# ``diffusion_native_quant``). ``auto`` never lands here: weight-only measured no speed win on gfx1151, only memory.
+NATIVE_QUANT_SCHEMES = (TQ_INT8, TQ_FP8)
+
+
+def native_quant_host(target: Any) -> bool:
+    """Whether ``target`` is a bf16 GPU whose torchao path is closed for a platform reason: a ROCm torch
+    (the NVIDIA-shaped capability ladder misclassifies it, and gfx1151 refuses fp8 ``_scaled_mm``) or the
+    Windows-ROCm torchao stub. False on every NVIDIA, MPS, XPU and CPU host, which keep the torchao path."""
+    if getattr(target, "device", None) != "cuda":
+        return False
+    if not (torch_is_rocm() or is_stubbed("torchao")):
+        return False
+    try:
+        import torch
+        return getattr(target, "dtype", None) is torch.bfloat16
+    except Exception:
+        return False
+
+
+def native_quant_scheme(
+    target: Any,
+    requested: Optional[str],
+    family: Optional[str] = None,
+) -> Optional[str]:
+    """The weight-only scheme an EXPLICIT ``requested`` runs as on a ``native_quant_host``, or None.
+
+    Separate from ``select_transformer_quant_scheme`` on purpose: that selector also feeds the hosted
+    prequant planners, and a hosted checkpoint is a torchao serialisation these hosts cannot open. The
+    family deny list still applies, as it does to the torchao path."""
+    scheme = normalize_transformer_quant(requested)
+    if scheme not in NATIVE_QUANT_SCHEMES or not native_quant_host(target):
+        return None
+    if _family_denied(family, scheme):
+        return None
+    return scheme
 
 
 def select_transformer_quant_scheme(
@@ -1348,7 +1390,12 @@ def quantize_transformer(
     Returns the scheme engaged, or None when disabled / unsupported / failed (caller loads GGUF).
     Best-effort: never raises for an unsupported environment (failure leaves it dense).
     ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None auto-detects,
-    True/False force it."""
+    True/False force it. On a ``native_quant_host`` an explicit int8 / fp8 runs weight-only without torchao."""
+    native = native_quant_scheme(target, mode, family = family)
+    if native is not None:
+        return _quantize_native(
+            pipe, native, family = family, min_features = min_features, logger = logger
+        )
     scheme = select_transformer_quant_scheme(target, mode, family = family)
     if scheme is None:
         return None
@@ -1386,6 +1433,34 @@ def quantize_transformer(
         return scheme
     except Exception as exc:  # noqa: BLE001 - leave the transformer dense -> GGUF fallback
         _warn(logger, scheme, exc)
+        return None
+
+
+def _quantize_native(
+    pipe: Any, scheme: str, *, family: Optional[str], min_features: int, logger: Any
+) -> Optional[str]:
+    """The torchao-free branch of ``quantize_transformer``: the same layer filter, weight-only."""
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None:
+        return None
+    try:
+        from .diffusion_native_quant import apply_native_weight_quant
+
+        # require_bf16 keeps the fp32 linears some DiTs deliberately hold (Wan, Hunyuan) at full precision.
+        filter_fn = make_filter_fn(
+            min_features,
+            exclude_name_tokens = exclude_tokens_for_scheme(scheme, family) + ("lora_",),
+            require_bf16 = True,
+        )
+        if not apply_native_weight_quant(transformer, scheme, filter_fn = filter_fn, logger = logger):
+            return None
+        try:
+            transformer._unsloth_runtime_quant = scheme
+        except Exception:  # noqa: BLE001 - marker is best-effort
+            pass
+        return scheme
+    except Exception as exc:  # noqa: BLE001 - a partial swap is reported by transformer_is_quantised
+        _warn(logger, f"{scheme} (weight-only)", exc)
         return None
 
 
