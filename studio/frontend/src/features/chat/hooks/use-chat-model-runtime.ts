@@ -1284,16 +1284,42 @@ export function useChatModelRuntime() {
           }
         } else if (
           activeRunBeforeCredentials.loadAttemptPath &&
-          current.params.checkpoint != null &&
-          current.params.checkpoint !== activeRunBeforeCredentials.rollbackCheckpoint
+          current.params.checkpoint != null
         ) {
-          // The prior run successfully made its own model resident while credentials were open.
-          // It is now this replacement's rollback target, so snapshot its effective config.
-          previousConfigForReplacement = currentRuntimePerModelConfig({
-            includeMaxSeqLength: true,
-          });
+          if (
+            current.params.checkpoint !== activeRunBeforeCredentials.rollbackCheckpoint
+          ) {
+            // The prior run successfully made its target resident while credentials were open.
+            previousConfigForReplacement = currentRuntimePerModelConfig({
+              includeMaxSeqLength: true,
+            });
+          } else if (activeRunBeforeCredentials.residentModelUnloaded) {
+            // A failed target load can still settle with a successful compensation reload of the
+            // rollback checkpoint. Confirm that resident before snapshotting its effective config;
+            // a failed compensation leaves the same checkpoint in the store but no resident.
+            try {
+              const status = await getInferenceStatus();
+              if (
+                (status.loading?.length ?? 0) === 0 &&
+                residentModelMatchesPick(status, {
+                  id: activeRunBeforeCredentials.rollbackCheckpoint ?? "",
+                  loadPath:
+                    activeRunBeforeCredentials.rollbackLoadId ??
+                    activeRunBeforeCredentials.rollbackCheckpoint,
+                  ggufVariant: activeRunBeforeCredentials.rollbackVariant,
+                })
+              ) {
+                previousConfigForReplacement = currentRuntimePerModelConfig({
+                  includeMaxSeqLength: true,
+                });
+              }
+            } catch {
+              // Keep the existing snapshot if backend status is unavailable.
+            }
+          }
         }
       }
+
 
 
 

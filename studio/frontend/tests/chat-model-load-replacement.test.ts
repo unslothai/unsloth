@@ -835,3 +835,19 @@ test("declining Hub credentials reconciles an unloaded predecessor after it sett
     /status\.loading\?\.length[\s\S]*?!status\.active_model[\s\S]*?clearCheckpoint\(\)/,
   );
 });
+
+test("approved Hub credentials resnapshot a successfully compensated resident", () => {
+  const runtime = read(RUNTIME);
+  const refresh = section(
+    runtime,
+    "// A prior run may have failed while this pick was waiting for Hub credentials.",
+    "if (pendingReplacementRollback?.config)",
+  );
+  assert.match(refresh, /activeRunBeforeCredentials\.residentModelUnloaded/);
+  assert.match(refresh, /await getInferenceStatus\(\)/);
+  assert.match(refresh, /residentModelMatchesPick\(status/);
+  assert.match(
+    refresh,
+    /previousConfigForReplacement = currentRuntimePerModelConfig\(\{\s*includeMaxSeqLength: true/,
+  );
+});
