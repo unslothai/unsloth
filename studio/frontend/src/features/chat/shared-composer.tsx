@@ -811,9 +811,8 @@ export function SharedComposer({
     ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
   // Two-pill gating. Search: supportsTools (Code/python plus local web_search) OR
-  // supportsBuiltinWebSearch (OpenAI/Anthropic/OpenRouter/Kimi). Code: the local runtime OR
-  // Anthropic with a model taking code_execution_20250825, the only external code-execution tool
-  // today, per providerSupportsBuiltinCodeExecution.
+  // supportsBuiltinWebSearch (OpenAI/Anthropic/OpenRouter/Kimi). Code: supportsTools OR the
+  // provider's own sandbox, per providerSupportsBuiltinCodeExecution.
   const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
     selectedExternalProvider?.providerType,
     effectiveExternalModelId,
