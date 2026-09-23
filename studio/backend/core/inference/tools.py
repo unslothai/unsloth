@@ -17342,6 +17342,20 @@ def _check_signal_escape_patterns(code: str):
                             params = fn.args.posonlyargs + fn.args.args
                             if params:
                                 self.method_self[id(fn)] = (params[0].arg, family)
+                # A class without its own `__init__` uses the first local base's.
+                bases = {
+                    c.name: [b.id for b in c.bases if isinstance(b, ast.Name)] for c in classes
+                }
+                for name in bases:
+                    seen, stack = {name}, [name]
+                    while stack and name not in self.class_inits:
+                        for base in bases.get(stack.pop(), ()):
+                            if base in self.class_inits:
+                                self.class_inits[name] = self.class_inits[base]
+                                break
+                            if base not in seen:
+                                seen.add(base)
+                                stack.append(base)
             self.self_names: "list[tuple[str, str]]" = []
             # Function name -> its local definitions.
             self.local_functions: "dict[str, list[ast.AST]]" = {}
@@ -17546,6 +17560,13 @@ def _check_signal_escape_patterns(code: str):
                         found.update(self.instance_aliases.get(_returns_of(callee), ()))
                     if isinstance(alt.func, ast.Name) and alt.func.id in self.class_names:
                         found.add(self.class_names[alt.func.id])  # `API()` is an `<API>`
+                    if (
+                        isinstance(alt.func, ast.Name)
+                        and alt.func.id == "super"
+                        and not alt.args
+                        and self.self_names
+                    ):
+                        found.add(self.self_names[-1][1])  # `super()` in a method of `<S>`
                     continue
                 receiver = isinstance(alt, ast.Name) and any(
                     n == alt.id for n, _f in self.self_names
@@ -18060,6 +18081,8 @@ def _check_signal_escape_patterns(code: str):
                 self._record_flow(target, value, at, node)
                 if isinstance(target, ast.Name) and isinstance(value, ast.Dict):
                     self.dict_literals.setdefault(target.id, []).append(value)
+                if isinstance(target, ast.Name) and self._is_environ(value):
+                    self.environ_names.add(target.id)  # `env = os.environ`
                 if isinstance(target, ast.Name) and isinstance(value, ast.Lambda):
                     returns = ast.Name(id = _returns_of(target.id), ctx = ast.Store())
                     self._record_flow(returns, value.body, at, node)
@@ -18192,7 +18215,15 @@ def _check_signal_escape_patterns(code: str):
             held: "list[tuple[set[str], list[str]]]" = []
             if not isinstance(cur, ast.Name):
                 if parts:
-                    held.append((self._instances_named_by(cur, at), parts))
+                    classes = self._instances_named_by(cur, at)
+                    held.append((classes, parts))
+                    # `Wrapper(s).session.get` and `super().get` read the family's own client
+                    # and its attributes, as `w.session.get` and `self.get` do.
+                    for family in (c for c in classes if c.startswith("<")):
+                        for k in range(len(parts)):
+                            path = ".".join([family] + parts[:k])
+                            if path in self.instance_aliases:
+                                held.append((self.instance_aliases[path], parts[k:]))
             elif self.instance_aliases:
                 for root in self._roots(parts[0]):
                     for k in range(1, len(parts)):
