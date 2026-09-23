@@ -9516,6 +9516,18 @@ _CT_FINDER_SENTINEL = "__unsloth_compressed_tensors_ste_finder__"
 def _compressed_tensors_ste_forward_quantize(original):
     import torch
 
+    class _StraightThrough(torch.autograd.Function):
+        # The forward is the quantized tensor exactly: `value + (out - value).detach()` rounds
+        # wherever a static scale saturates. The backward is the identity onto the input.
+        @staticmethod
+        def forward(ctx, value, quantized):
+            ctx.value_dtype = value.dtype
+            return quantized.to(value.dtype).view_as(quantized)
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            return grad_output.to(ctx.value_dtype), None
+
     @functools.wraps(original)
     def forward_quantize(*args, **kwargs):
         out = original(*args, **kwargs)
@@ -9532,7 +9544,7 @@ def _compressed_tensors_ste_forward_quantize(original):
             and not out.requires_grad
             and out.shape == value.shape
         ):
-            return value + (out.to(value.dtype) - value).detach()
+            return _StraightThrough.apply(value, out)
         return out
 
     setattr(forward_quantize, _CT_STE_SENTINEL, True)
