@@ -951,3 +951,49 @@ def test_initialisers_that_rewrite_the_base_weight_refuse_a_packed_base(init):
     peft.get_peft_model(nn.Sequential(_filled(32, 64)), peft.LoraConfig(r = 4, target_modules = ["0"]))
     dense = nn.Sequential(nn.Linear(64, 32, bias = False))
     peft.get_peft_model(dense, peft.LoraConfig(r = 4, target_modules = ["0"], init_lora_weights = init))
+
+
+@_apply(needs_gpu_loader_any)
+def test_the_sixteen_bit_route_declines_without_the_zoo_full_save_support(tmp_path, monkeypatch):
+    from transformers import AutoModelForCausalLM
+    from unsloth_zoo.temporary_patches import mxfp4 as zoo_mxfp4
+    from unsloth.models.mxfp4_compressed_linear import install_compressed_tensors_keep_packed
+
+    packed_dir, _ = _write_tiny_mxfp4_llama(str(tmp_path))
+    assert install_compressed_tensors_keep_packed()
+    monkeypatch.delattr(zoo_mxfp4, "_densified_module_names")
+    model = AutoModelForCausalLM.from_pretrained(packed_dir, dtype = torch.bfloat16, device_map = {"": 0})
+    assert not any(isinstance(m, Mxfp4PackedLinear) for m in model.modules())
+
+
+@_apply(needs_gpu_loader)
+def test_a_partly_merged_bitsandbytes_route_model_saves_and_reloads(tmp_path):
+    """4-bit route, LoRA on q_proj only, merge_and_unload, full save: the merged q_proj is a
+    dense Linear now, the other packed Linears are written dense, and plain transformers reloads
+    both as dense Linears (not bitsandbytes ones) with the in-memory model's outputs."""
+    from transformers import AutoModelForCausalLM
+    from unsloth import FastLanguageModel
+
+    packed_dir, _ = _write_tiny_mxfp4_llama(str(tmp_path))
+    _add_tokenizer(packed_dir, str(tmp_path))
+    model, _ = FastLanguageModel.from_pretrained(
+        packed_dir, max_seq_length = 64, dtype = torch.bfloat16, load_in_4bit = True
+    )
+    model = FastLanguageModel.get_peft_model(model, r = 4, lora_alpha = 8, target_modules = ["q_proj"])
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if "lora_B" in name:
+                param.normal_(0, 0.05)
+    unloaded = model.merge_and_unload()
+    ids = torch.randint(0, 256, (1, 16), device = "cuda:0")
+    with torch.no_grad():
+        want = unloaded(input_ids = ids).logits
+    out = str(tmp_path / "unloaded")
+    unloaded.save_pretrained(out)
+    reloaded = AutoModelForCausalLM.from_pretrained(out, dtype = torch.bfloat16, device_map = {"": 0})
+    attn = reloaded.model.layers[0].self_attn
+    assert type(attn.q_proj) is nn.Linear and type(attn.k_proj) is nn.Linear
+    with torch.no_grad():
+        got = reloaded(input_ids = ids).logits
+    # Unsloth's fused kernels in memory vs plain transformers on reload.
+    torch.testing.assert_close(got, want, atol = 2e-2, rtol = 2e-2)

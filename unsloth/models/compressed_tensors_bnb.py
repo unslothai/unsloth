@@ -726,10 +726,25 @@ def _plan_is_mxfp4(plan) -> bool:
     )
 
 
+def _zoo_saves_packed_modules() -> bool:
+    """unsloth_zoo's full-save patch, which writes kept-packed modules (and Linears a merge made
+    dense) under the checkpoint's own names, is installed. Without it a full save of a
+    kept-packed model writes a checkpoint nothing reloads."""
+    try:
+        from transformers import PreTrainedModel
+        from unsloth_zoo.temporary_patches import mxfp4 as zoo_mxfp4
+
+        zoo_mxfp4._densified_module_names
+        zoo_mxfp4.patch_save_pretrained_mxfp4()
+    except Exception:
+        return False
+    return getattr(PreTrainedModel.save_pretrained, "_unsloth_mxfp4_patched", False)
+
+
 def keep_mxfp4_experts_packed(plan) -> bool:
     """Whether an all-MXFP4 checkpoint keeps its packed weights packed (the default)."""
     from .mxfp4_compressed_linear import mxfp4_keep_packed_enabled
-    return mxfp4_keep_packed_enabled() and _plan_is_mxfp4(plan)
+    return mxfp4_keep_packed_enabled() and _plan_is_mxfp4(plan) and _zoo_saves_packed_modules()
 
 
 def packed_expert_prefixes(keys) -> dict:

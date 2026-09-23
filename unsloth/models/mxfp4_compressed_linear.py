@@ -432,9 +432,12 @@ def install_compressed_tensors_keep_packed() -> bool:
             from .compressed_tensors_bnb import (
                 _checkpoint_keys,
                 _match_packed_linears,
+                _zoo_saves_packed_modules,
                 plan_mxfp4_keep_packed,
             )
 
+            if not _zoo_saves_packed_modules():
+                return result
             keys = _checkpoint_keys(kwargs.get("checkpoint_files"))
             plan = plan_mxfp4_keep_packed(model, keys) if keys else None
             matched = _match_packed_linears(model, keys) if plan is not None else None

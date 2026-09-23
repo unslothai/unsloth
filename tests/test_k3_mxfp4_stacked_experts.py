@@ -840,3 +840,14 @@ def test_packed_expert_targets_follow_the_finetune_family_flags(flags, experts, 
     got = _peft_target_parameters(model, monkeypatch, target_modules = ["q_proj", "w1", "w2"], **flags)
     want = ["experts.gate_up_proj", "experts.down_proj"] if experts else []
     assert sorted(got or []) == sorted(want)
+
+
+def test_nothing_stays_packed_without_the_zoo_full_save_support(monkeypatch):
+    """A kept-packed model saves loadable checkpoints only through unsloth_zoo's save patch; an
+    unsloth_zoo without it keeps the previous route instead."""
+    from unsloth_zoo.temporary_patches import mxfp4 as zoo_mxfp4
+
+    monkeypatch.delenv("UNSLOTH_MXFP4_KEEP_PACKED", raising = False)
+    assert keep_mxfp4_experts_packed(_mxfp4_plan())
+    monkeypatch.delattr(zoo_mxfp4, "_densified_module_names")
+    assert not keep_mxfp4_experts_packed(_mxfp4_plan())
