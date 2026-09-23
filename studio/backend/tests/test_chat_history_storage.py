@@ -1592,9 +1592,7 @@ def test_a_whole_record_save_without_the_boundary_keeps_it(tmp_path, monkeypatch
     assert boundary is not None
 
     stored = studio_db.get_chat_thread("fork-1")
-    studio_db.upsert_chat_thread(
-        {k: v for k, v in stored.items() if k != "forkBoundaryMessageId"}
-    )
+    studio_db.upsert_chat_thread({k: v for k, v in stored.items() if k != "forkBoundaryMessageId"})
 
     assert studio_db.get_chat_thread("fork-1")["forkBoundaryMessageId"] == boundary
 
