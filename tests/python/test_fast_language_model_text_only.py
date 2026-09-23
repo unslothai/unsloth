@@ -307,6 +307,33 @@ def test_text_only_helper_preserves_quantization_config():
     assert getattr(config.get_text_config(), "quantization_config", None) is None
 
 
+class _ReadOnlyTextConfigProxy:
+    # Mirrors unsloth_zoo's Gemma-4 _Gemma4KVSharedSafeProxy: __slots__, no __dict__, forwards reads.
+    __slots__ = ("_real",)
+
+    def __init__(self, real):
+        object.__setattr__(self, "_real", real)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_real"), name)
+
+
+def test_text_only_helper_copies_config_behind_read_only_proxy():
+    transformers = pytest.importorskip("transformers")
+    helper = _load_text_only_helper()
+    config = transformers.Gemma3Config()
+    real_text = config.get_text_config()
+    proxy = _ReadOnlyTextConfigProxy(real_text)
+    config.get_text_config = lambda *a, **k: proxy
+    sentinel = object()
+    config.quantization_config = sentinel
+    text_config = helper(config, "google/gemma-4-31B-it")
+    assert getattr(text_config, "quantization_config", None) is sentinel
+    assert type(text_config) is type(real_text)
+    assert text_config is not real_text
+    assert getattr(real_text, "quantization_config", None) is None
+
+
 def test_text_only_key_mapping_targets_published_prefixes():
     # Remap the published VLM decoder prefixes, applying only on transformers >=5
     # (on 4.x base_model_prefix handles it and a mapping hurts).
@@ -416,3 +443,30 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
     assert not any(
         "vision_tower" in n for n, _ in model.named_modules()
     ), "vision tower should be skipped on the text-only path"
+
+
+def _module_function(tree, name):
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"{name} not found")
+
+
+def test_base_fast_generate_tolerates_missing_architectures():
+    # A text_only load keeps the text sub-config (architectures is None), so generate must not
+    # iterate or index self.config.architectures directly.
+    method = _module_function(ast.parse(_source(VISION_PATH)), "unsloth_base_fast_generate")
+
+    def is_raw_architectures(node):
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "architectures"
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "config"
+        )
+
+    for node in ast.walk(method):
+        if isinstance(node, ast.comprehension):
+            assert not is_raw_architectures(node.iter)
+        if isinstance(node, ast.Subscript):
+            assert not is_raw_architectures(node.value)

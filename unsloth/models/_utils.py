@@ -1131,7 +1131,13 @@ def _get_text_only_config(model_config, model_name):
     qc = getattr(model_config, "quantization_config", None)
     if qc is not None and getattr(text_config, "quantization_config", None) is None:
         text_config = copy.copy(text_config)
-        text_config.quantization_config = _remap_text_only_skip_modules(qc)
+        try:
+            text_config.quantization_config = _remap_text_only_skip_modules(qc)
+        except AttributeError:
+            # unsloth_zoo's Gemma-4 config proxy (num_kv_shared_layers == 0 guard) is read-only __slots__;
+            # copy the config it wraps instead. The model's own get_text_config re-wraps it.
+            text_config = copy.copy(object.__getattribute__(text_config, "_real"))
+            text_config.quantization_config = _remap_text_only_skip_modules(qc)
     return text_config
 
 
