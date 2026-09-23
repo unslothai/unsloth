@@ -539,6 +539,7 @@ export const InventoryRow = memo(function InventoryRow({
   dimmed,
   deviceType,
   compact = false,
+  showFormatDot = true,
   onSelect,
   onChange,
 }: {
@@ -549,6 +550,7 @@ export const InventoryRow = memo(function InventoryRow({
   deviceType: string | null;
   /** Narrow split master pane: drop the capability column so the name fits. */
   compact?: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
   onChange?: () => void;
 }) {
@@ -599,8 +601,8 @@ export const InventoryRow = memo(function InventoryRow({
       : (row.repoId ?? row.loadId)
     : undefined;
   const tooltip = buildRowStatusTooltip({
-    isGguf: row.isGguf,
-    isAdapter: row.modelFormat === "adapter",
+    isGguf: showFormatDot && row.isGguf,
+    isAdapter: showFormatDot && row.modelFormat === "adapter",
     isAvailableOnDevice: !partialRepoId,
     partialRepoId,
     unsupported,
@@ -640,14 +642,14 @@ export const InventoryRow = memo(function InventoryRow({
 
   const statusMarkers = (
     <>
-      {row.isGguf && (
+      {showFormatDot && row.isGguf && (
         <span
           role="img"
           aria-label="GGUF"
           className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-gguf"
         />
       )}
-      {row.modelFormat === "adapter" && (
+      {showFormatDot && row.modelFormat === "adapter" && (
         <span
           role="img"
           aria-label="Adapter"

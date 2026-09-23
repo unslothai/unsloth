@@ -121,6 +121,7 @@ import { useIsMobileShell } from "@/hooks/use-mobile";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
+import { useDiffusionPickToast, usePickToastProgress } from "@/lib/use-diffusion-pick-toast";
 import {
   PRECISION_REFUSAL_TITLE,
   denseTextEncoderBuildLabel,
@@ -1073,6 +1074,7 @@ function VideoGenerator({
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
     loadToastId.current = null;
   }, []);
+  const pickToast = useDiffusionPickToast();
 
   // The load toast is built by handleLoad and the progress poll, both defined above
   // handleCancelLoad, so the action goes through a ref to keep a stable onClick.
@@ -1099,6 +1101,8 @@ function VideoGenerator({
     // Cancel, not release: a resolving pick or a staged download would load back what was just
     // ejected. Here rather than in handleUnload, so the loaded-models card is covered too.
     pickGuard.cancel();
+    // That pick can no longer load, so its toast must not keep promising it will.
+    pickToast.dismissAll();
     // Everything in flight is now stale. Clearing the timer stops the NEXT poll tick but not a
     // request awaiting its response; the counter is what those compare against.
     cancelSeq.current += 1;
@@ -1115,7 +1119,7 @@ function VideoGenerator({
       revertPick(quantRevert.current);
       quantRevert.current = null;
     }
-  }, [dismissLoadToast, pickGuard, revertPick]);
+  }, [dismissLoadToast, pickGuard, pickToast, revertPick]);
 
   // Mirror to the module cache so a tab switch re-renders instantly.
   useEffect(() => {
@@ -2423,6 +2427,8 @@ function VideoGenerator({
       opts: VideoLoadOptions,
       // Staged loads use the controls their preflight validated.
       pinned?: VideoLoadAdvanced,
+      // Reuse the pick toast when loading starts.
+      pickToastId?: string,
     ): Promise<boolean> => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
       // Read BEFORE the start request goes out: a Cancel pressed while it is in flight sends an
@@ -2444,7 +2450,8 @@ function VideoGenerator({
       setBusy("loading");
       dismissLoadToast();
       lastLoadSig.current = null;
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+      const handedOver = pickToast.take(pickToastId);
+      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast));
       // Snapshot the prior Reapply target first: a load that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
       const prevCanReapply = canReapply;
@@ -2509,6 +2516,7 @@ function VideoGenerator({
       cancelLoadFromToast,
       canReapply,
       currentLoadAdvanced,
+      pickToast,
     ],
   );
 
@@ -2520,6 +2528,7 @@ function VideoGenerator({
     advanced: VideoLoadAdvanced;
     // The pick that staged it: a download outlives its pick, so it must not evict a newer one when it lands.
     token: number;
+    toastId?: string;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
   handleLoadRef.current = handleLoad;
@@ -2532,9 +2541,12 @@ function VideoGenerator({
   const runStagedLoad = useCallback(
     (pending: NonNullable<typeof pendingStagedLoad.current>) => {
       if (pendingStagedLoad.current === pending) pendingStagedLoad.current = null;
-      if (!pickGuard.isLatest(pending.token)) return;
+      if (!pickGuard.isLatest(pending.token)) {
+        pickToast.dismiss(pending.toastId);
+        return;
+      }
       const owned = stagedQuantRevert.current;
-      void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced).then((started) => {
+      void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced, pending.toastId).then((started) => {
         if (started) return;
         if (quantRevert.current && quantRevert.current === owned) {
           revertPick(quantRevert.current);
@@ -2543,13 +2555,14 @@ function VideoGenerator({
         if (stagedQuantRevert.current === owned) stagedQuantRevert.current = null;
       });
     },
-    [pickGuard, revertPick],
+    [pickGuard, revertPick, pickToast],
   );
-  const { stage } = useStagedDownload({
+  const { stage, progress: stagedProgress } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
       if (!active) {
         stagedLoadDeferred.current = true;
+        pickToast.setPhase(pendingStagedLoad.current?.toastId, "ready");
         return;
       }
       const pending = pendingStagedLoad.current;
@@ -2558,6 +2571,7 @@ function VideoGenerator({
     onCancelled: () => {
       // Same rule as the images page: a plan that ends without every dependency on disk must not
       // leave an intent for a late completion to act on.
+      pickToast.dismiss(pendingStagedLoad.current?.toastId);
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
       // No load started, so the poll that owns the after-start rollback never runs: put the
@@ -2570,6 +2584,7 @@ function VideoGenerator({
       stagedQuantRevert.current = null;
     },
   });
+  usePickToastProgress(pickToast, stagedProgress);
 
   useEffect(() => {
     if (!active || !stagedLoadDeferred.current) return;
@@ -2596,9 +2611,12 @@ function VideoGenerator({
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
       stagedQuantRevert.current = null;
+      pickToast.dismissAll();
       const owns = () => token === undefined || pickGuard.holds(token);
       if (!owns()) return true;
       if (source !== "hub") return handleLoadRef.current(repoId, opts);
+      // Show feedback before the potentially slow Hub metadata request.
+      const pickToastId = pickToast.show();
 
       const advanced = currentLoadAdvanced(opts.kind);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
@@ -2624,7 +2642,10 @@ function VideoGenerator({
           gpu_ids: advanced.gpu_ids,
         });
         // Superseded. Report started so this pick's `.then` leaves the newer label alone.
-        if (pick !== pickSeq.current || !owns()) return true;
+        if (pick !== pickSeq.current || !owns()) {
+          pickToast.dismiss(pickToastId);
+          return true;
+        }
         // Same selection-time refusal the images page makes: the plan is the last point at which an
         // incompatible pairing can be caught before the download it would waste. The check is the FLUX.2
         // GGUF/base size pairing and the video planner has no diffusers base to pair against, so this is
@@ -2636,9 +2657,10 @@ function VideoGenerator({
             opts,
             advanced,
             token: token ?? pickGuard.claim(),
+            toastId: pickToastId,
           };
           stagedQuantRevert.current = ownRevert;
-          stage(
+          const staged = stage(
             plan.entries.map((e) => ({
               repoId: e.repo_id,
               files: e.files,
@@ -2655,20 +2677,25 @@ function VideoGenerator({
                   : e.repo_id === repoId),
             })),
           );
+          pickToast.setPhase(pickToastId, "downloading", staged);
           return true;
         }
       } catch {
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
-      if (pick !== pickSeq.current || !owns()) return true;
+      if (pick !== pickSeq.current || !owns()) {
+        pickToast.dismiss(pickToastId);
+        return true;
+      }
       if (incompatible) {
+        pickToast.dismiss(pickToastId);
         toast.error(incompatible);
         return false;
       }
-      return handleLoadRef.current(repoId, opts, advanced);
+      return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, pickGuard, currentLoadAdvanced],
+    [stage, pickGuard, currentLoadAdvanced, pickToast],
   );
 
   // A GGUF pick can arrive with only a repo id. The backend rejects a gguf load with no filename
@@ -2855,7 +2882,8 @@ function VideoGenerator({
     setPendingH3Load(null);
     abandonPick();
     pickGuard.cancel();
-  }, [abandonPick, pickGuard]);
+    pickToast.dismissAll();
+  }, [abandonPick, pickGuard, pickToast]);
 
   const handleReapply = useCallback(() => {
     // Status is authoritative when another client replaced the resident model; the ref remains the
@@ -2879,7 +2907,8 @@ function VideoGenerator({
     pendingStagedLoad.current = null;
     stagedLoadDeferred.current = false;
     stagedQuantRevert.current = null;
-  }, []);
+    pickToast.dismissAll();
+  }, [pickToast]);
 
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
@@ -4062,7 +4091,7 @@ function VideoGenerator({
                 variant="outline"
                 onClick={handleCancelGenerate}
               >
-                <Spinner variant="ring" className="mr-2 size-4" />
+                <Spinner className="mr-2 size-4" />
                 Cancel
               </Button>
             ) : (
@@ -4157,7 +4186,7 @@ function VideoGenerator({
             ) : selected ? (
               // The selected record's link has not landed yet; spin in place.
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <Spinner variant="ring" className="size-8" />
+                <Spinner className="size-8" />
                 <p className="text-sm">Loading…</p>
               </div>
             ) : busy === "generating" ? null : (
@@ -4181,9 +4210,8 @@ function VideoGenerator({
                   selectedSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
                 )}
               >
-                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg backdrop-blur dark:bg-card/95">
+                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
                   <ModelLoadDescription
-                    variant="floating"
                     className="min-h-0"
                     title={null}
                     message="Starting…"
@@ -4212,8 +4240,8 @@ function VideoGenerator({
               {/* In-progress generation: a placeholder tile at the front so past clips stay browsable while
                   the new one renders. */}
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-[10px] bg-muted/50">
-                  <Spinner variant="ring" className="size-6 text-muted-foreground" />
+                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-[10px] bg-muted/50 ring-2 ring-primary/30">
+                  <Spinner className="size-5 text-muted-foreground" />
                 </div>
               )}
               {/* The card is a wrapper, not a button: the actions menu must be the select button's SIBLING,

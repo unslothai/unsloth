@@ -249,6 +249,10 @@ import {
   type SidebarSection,
 } from "@/features/chat";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
+import {
+  buildChatItemMarkdown,
+  saveChatItemAsProjectSource,
+} from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { translate, useT, type TranslationKey } from "@/i18n";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
@@ -458,9 +462,6 @@ async function saveChatToProjectSources(
   item: SidebarItem,
   projectId: string,
 ): Promise<void> {
-  const { saveChatItemAsProjectSource } = await import(
-    "@/features/chat/prompt-storage/prompt-storage-dialog"
-  );
   await saveChatItemAsProjectSource(item, projectId);
 }
 
@@ -2788,9 +2789,6 @@ export function AppSidebar() {
     // The read runs inside the write: Safari drops the gesture across an
     // await, and a chord has no second one to fall back on.
     const copied = await copyToClipboardFrom(async () => {
-      const { buildChatItemMarkdown } = await import(
-        "@/features/chat/prompt-storage/prompt-storage-dialog"
-      );
       // A compare row is two threads: keep both, each under its model's name.
       const markdown = await buildChatItemMarkdown(item);
       if (!markdown) {
