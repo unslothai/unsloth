@@ -1219,6 +1219,7 @@ def _cast_text_only_prequantized_params(model, dtype):
             keep_fp32 = [k for k, v in get_dtype_plan(dtype).items() if v == torch.float32]
         except Exception:
             keep_fp32 = []
+
     def _is_quantized_storage(t):
         # Params4bit / Int8Params and tensor subclasses (torchao) or int / 1-byte float (EETQ int8, FP8) weights.
         if type(t) is not torch.nn.Parameter or type(t.data) is not torch.Tensor:
