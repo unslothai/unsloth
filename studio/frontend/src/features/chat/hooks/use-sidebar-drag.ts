@@ -190,16 +190,14 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
     [],
   );
 
-  /** One step of the edge scroll, true when the list actually moved. Driven by the frame loop,
-   *  not by pointermove: a pointer resting on the edge sends no moves and would stall. */
-  const edgeScroll = useCallback((y: number): boolean => {
+  /** One step of the edge scroll. Driven by the frame loop, not by pointermove: a pointer resting
+   *  on the edge sends no moves and would stall. */
+  const edgeScroll = useCallback((y: number) => {
     const list = scroller.current;
-    if (!list) return false;
+    if (!list) return;
     const rect = list.getBoundingClientRect();
-    const before = list.scrollTop;
     if (y < rect.top + EDGE_PX) list.scrollTop -= EDGE_STEP_PX;
     else if (y > rect.bottom - EDGE_PX) list.scrollTop += EDGE_STEP_PX;
-    return list.scrollTop !== before;
   }, []);
 
   const track = useCallback(
@@ -254,6 +252,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
         const pointerId = event.pointerId;
         const at = { x: startX, y: startY };
         let started = false;
+        let escaped = false;
         let frame = 0;
 
         const detach = () => {
@@ -269,8 +268,10 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
             document.body.releasePointerCapture(pointerId);
           }
         };
-        // Scrolling moves the rows, not the pointer, so the frame that scrolls re-aims too or
-        // the cue would sit on whichever row has slid out from under the pointer.
+        // The rows move under the pointer, not the other way about: the list edge-scrolls, a
+        // folder springs open under a pointer that by definition is resting. So every frame
+        // re-aims, not only the ones that scroll, or the cue would describe the layout as it was
+        // when the pointer last moved while the release hit-tests the layout as it is.
         const onFrame = () => {
           // Self-terminating, so an unmount mid-drag cannot leave the loop running.
           if (!sidebarDragSource()) {
@@ -278,7 +279,8 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
             return;
           }
           frame = requestAnimationFrame(onFrame);
-          if (edgeScroll(at.y)) track(at.x, at.y);
+          edgeScroll(at.y);
+          track(at.x, at.y);
         };
         // Abandons this gesture whole, for a drop that never came: the same as a cancel.
         const self = {
@@ -304,7 +306,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
         // Every window handler answers only the pointer that started the gesture. A second
         // pointer, a finger on a touch screen above all, is not this drag.
         function onMove(moved: PointerEvent) {
-          if (moved.pointerId !== pointerId) return;
+          if (moved.pointerId !== pointerId || escaped) return;
           at.x = moved.clientX;
           at.y = moved.clientY;
           if (!started) {
@@ -337,7 +339,9 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           if (released.pointerId !== pointerId) return;
           detach();
           if (!started) return;
+          // A drop or an escape: either way this release must not click the row it landed on.
           swallowClick();
+          if (escaped) return;
           const dragged = sidebarDragSource();
           const aimed = aim(released.clientX, released.clientY);
           clear();
@@ -346,18 +350,23 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           }
         }
 
-        function onCancel(cancelled: PointerEvent) {
-          if (cancelled.pointerId !== pointerId) return;
+        function onCancel(aborted: PointerEvent) {
+          if (aborted.pointerId !== pointerId) return;
           detach();
           if (started) clear();
         }
 
         function onKey(pressed: KeyboardEvent) {
-          if (pressed.key !== "Escape") return;
-          detach();
-          if (!started) return;
+          if (pressed.key !== "Escape" || escaped) return;
+          if (!started) {
+            // Nothing was lifted, so the press is abandoned and a click after it is the row's.
+            detach();
+            return;
+          }
           pressed.preventDefault();
-          swallowClick();
+          // The button is still down. The gesture keeps its listeners so the release, whenever
+          // it comes, is still ours to swallow: a guard armed now would be long gone by then.
+          escaped = true;
           clear();
         }
 

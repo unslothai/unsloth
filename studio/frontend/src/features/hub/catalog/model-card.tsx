@@ -309,21 +309,21 @@ export const ModelCard = memo(function ModelCard({
             <span
               role="img"
               aria-label="Partial download"
-              className="inline-block size-[5px] rounded-full bg-status-warning"
+              className="inline-block size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-status-warning"
             />
           )}
           {unsupported && (
             <span
               role="img"
               aria-label="May not be supported yet"
-              className="inline-block size-[5px] rounded-full bg-status-danger"
+              className="inline-block size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-status-danger"
             />
           )}
           {onDevice && (
             <span
               role="img"
               aria-label="On device"
-              className="inline-block size-[5px] rounded-full bg-status-success"
+              className="inline-block size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-status-success"
             />
           )}
         </div>
@@ -354,7 +354,7 @@ export const ModelCard = memo(function ModelCard({
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>{card}</TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact max-w-[240px]">
+      <TooltipContent side="top" className="tooltip-compact max-w-[calc(240px*var(--ui-space-scale,1))]">
         {tip}
       </TooltipContent>
     </Tooltip>

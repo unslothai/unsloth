@@ -2656,3 +2656,54 @@ def test_the_plan_route_refuses_an_unrecognised_model_before_planning(client):
 
     assert resp.status_code == 400, resp.text
     assert "Could not infer a diffusion family" in resp.json()["detail"]
+
+
+def test_edit_without_a_size_lets_the_backend_match_image_1(client, monkeypatch):
+    """An edit that names no size must not be pinned to the schema's 1024 square: the route hands
+    the backend None so it sizes from Image 1 on the family grid. A named size passes through."""
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    backend = diffusion_module.get_diffusion_backend()
+    seen = []
+    original = backend.generate
+
+    def _record(**kwargs):
+        seen.append(kwargs)
+        out = original(**kwargs)
+        out.update(workflow = "edit", reference_resolution = 512, localized_edit = "mask")
+        return out
+
+    monkeypatch.setattr(backend, "generate", _record)
+    layer = {"mode": "mask", "image": "QUJD"}
+    resp = _post_generate(
+        client,
+        prompt = "p",
+        workflow = "edit",
+        init_image = "QUJD",
+        reference_images = ["QUJD", "QUJD"],
+        reference_resolution = 512,
+        localized_edit = layer,
+    )
+    assert resp.status_code == 200
+    assert seen[-1]["width"] is None and seen[-1]["height"] is None
+    assert seen[-1]["workflow"] == "edit" and seen[-1]["reference_resolution"] == 512
+    assert seen[-1]["localized_edit"].mode == "mask"
+    record = resp.json()["images"][0]
+    # The engaged values are what the recipe keeps; the count stays images BEYOND the source.
+    assert record["reference_resolution"] == 512
+    assert record["localized_edit"] == "mask"
+    assert record["reference_image_count"] == 2
+    _post_generate(client, prompt = "p", workflow = "edit", init_image = "QUJD", width = 1024)
+    assert seen[-1]["width"] == 1024 and seen[-1]["height"] == 1024
+
+
+def test_generate_schema_bounds_for_unified_editing(client):
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    nine = _post_generate(client, prompt = "p", init_image = "QUJD", reference_images = ["QUJD"] * 9)
+    assert nine.status_code == 200
+    ten = _post_generate(client, prompt = "p", init_image = "QUJD", reference_images = ["QUJD"] * 10)
+    assert ten.status_code == 422
+    assert _post_generate(client, prompt = "p", workflow = "inpaint").status_code == 422
+    assert _post_generate(client, prompt = "p", width = 2752, height = 1536).status_code == 200
+    assert _post_generate(client, prompt = "p", width = 2768).status_code == 422
+    bad_mode = _post_generate(client, prompt = "p", localized_edit = {"mode": "lasso", "image": "QUJD"})
+    assert bad_mode.status_code == 422

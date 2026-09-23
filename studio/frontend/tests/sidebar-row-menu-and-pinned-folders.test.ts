@@ -108,7 +108,7 @@ test("the Project submenu puts its actions above the destinations", () => {
   assert.ok(sub.length > 0, "the Project submenu moved");
   const newProject = sub.indexOf("<span>New project</span>");
   const sources = sub.indexOf("<span>Project sources</span>");
-  const rule = sub.indexOf("<DropdownMenuSeparator />");
+  const rule = sub.indexOf("<P.Separator />");
   const recents = sub.indexOf("<span>Recents</span>");
   for (const [name, at] of Object.entries({
     newProject,

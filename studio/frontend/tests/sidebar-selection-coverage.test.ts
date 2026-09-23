@@ -33,7 +33,7 @@ test("folder rows select too, and open their own bulk menu", async () => {
     /handleProjectSelectionClick\(\n\s*event,\n\s*project\.id,\n\s*order\.selectionIds \?\? order\.orderedIds,\n\s*\)/,
   );
   assert.match(source, /selectProjectForContextMenu\(project\.id\)/);
-  assert.match(source, /\{renderProjectContextMenu\(\)\}/);
+  assert.match(source, /\{renderProjectContextMenu\(project, order\)\}/);
   assert.match(source, /selectedProjectIds\.has\(project\.id\)/);
 });
 
@@ -160,4 +160,136 @@ test("both sidebar expanders read translated labels", async () => {
   );
   const uses = source.match(/shell\.navigation\.show(More|Less)/g) ?? [];
   assert.equal(uses.length, 4, "both expanders read both keys");
+});
+
+
+// One menu per row, whichever way it is opened. Right-click used to render the bulk menu even
+// for a single row, so the same chat offered "Delete chats" on right-click and the whole
+// Rename/Project/Export menu from its 3-dot.
+
+test("a row's right-click menu and its 3-dot menu render the same items", () => {
+  for (const [kind, render] of [
+    ["chat", "renderChatRowMenuItems"],
+    ["project", "renderProjectRowMenuItems"],
+  ] as const) {
+    const calls = APP_SIDEBAR.match(new RegExp(`${render}\\(`, "g")) ?? [];
+    // Its declaration, the dropdown call and the context-menu call.
+    assert.equal(
+      calls.length,
+      3,
+      `${kind} rows should build their menu once and render it in both places`,
+    );
+    assert.match(
+      APP_SIDEBAR,
+      new RegExp(`${render}\\([^)]*DROPDOWN_ROW_MENU\\)`),
+      `${kind}: the 3-dot menu should render the shared items`,
+    );
+    assert.match(
+      APP_SIDEBAR,
+      new RegExp(`${render}\\([^)]*CONTEXT_ROW_MENU\\)`),
+      `${kind}: the right-click menu should render the same shared items`,
+    );
+  }
+});
+
+test("the bulk menu is reached only by a selection of more than one", () => {
+  for (const [name, count] of [
+    ["renderChatContextMenu", "selectionCount"],
+    ["renderProjectContextMenu", "projectSelectionCount"],
+  ] as const) {
+    const body = bodyOf(APP_SIDEBAR, name);
+    // One row takes the row's own menu and returns before the bulk content below.
+    assert.match(
+      body,
+      new RegExp(`if \\(${count} <= 1\\) \\{`),
+      `${name} should send a single row to the row menu`,
+    );
+    const guard = body.indexOf(`${count} <= 1`);
+    const bulk = body.indexOf("shell.selection.");
+    assert.ok(guard >= 0 && bulk > guard, `${name}: the guard should precede the bulk items`);
+  }
+});
+
+test("the shared menu items are written against the injected family", () => {
+  // Nothing inside either row menu may name a family directly, or the two would drift again.
+  for (const name of ["renderChatRowMenuItems", "renderProjectRowMenuItems"]) {
+    const body = bodyOf(APP_SIDEBAR, name);
+    assert.doesNotMatch(
+      body,
+      /<DropdownMenu|<ContextMenu/,
+      `${name} should use P.Item and friends, not one family's components`,
+    );
+    assert.match(body, /<P\.Item/);
+  }
+  // The two helpers these bodies call take the family too, rather than hardcoding the dropdown.
+  assert.match(APP_SIDEBAR, /function renderMoveRowItems\([^)]*P: RowMenuParts,\n\s*\)/s);
+  assert.match(APP_SIDEBAR, /<OpenChatFolderUnavailableItem Item=\{P\.Item\} \/>/);
+});
+
+
+// The row menu is the longest in the app, so it runs one step below the composer menus it
+// shares a look with. Scoped to .sidebar-row-menu: .unsloth-plus-menu alone dresses a dozen
+// other surfaces that must not move.
+
+test("every row-menu surface takes the compact class", () => {
+  const surfaces = APP_SIDEBAR.match(/className="unsloth-plus-menu[^"]*"/g) ?? [];
+  const rowMenus = surfaces.filter((c) => c.includes("menu-flat-destructive"));
+  assert.ok(rowMenus.length >= 6, "expected both 3-dot menus and both right-click menus");
+  for (const cls of rowMenus) {
+    assert.match(cls, /sidebar-row-menu/, `a row menu surface missed the class: ${cls}`);
+  }
+  // Sub-content is portaled out of the menu, so it carries the class itself.
+  for (const sub of APP_SIDEBAR.match(/<P\.SubContent[^>]*className="[^"]*"/g) ?? []) {
+    assert.match(sub, /sidebar-row-menu/, `a submenu missed the class: ${sub}`);
+  }
+});
+
+test("the compact class is scoped, and both menu families get the same rules", () => {
+  const CSS = readSrc("index.css");
+  // Sized only through the modifier, never on .unsloth-plus-menu itself.
+  assert.match(CSS, /\.unsloth-plus-menu\.sidebar-row-menu\[data-slot\] \{/);
+  assert.match(CSS, /--icon-size: var\(--ui-icon-size-sm\);/);
+  // A glyph is an svg, and the base rule pins svg size with !important straight off
+  // --ui-icon-size, so retuning --icon-size alone leaves every icon full size.
+  const svgRules = CSS.split("\n\t.unsloth-plus-menu").filter((r) =>
+    r.includes("svg:not(.unsloth-tick)"),
+  );
+  assert.equal(svgRules.length, 2, "expected a base svg rule and a row-menu override");
+  const scoped = svgRules.find((r) => r.startsWith(".sidebar-row-menu"));
+  assert.ok(scoped, "the row menu needs its own svg size rule");
+  assert.match(scoped, /width: var\(--icon-size\) !important;/);
+  assert.match(scoped, /height: var\(--icon-size\) !important;/);
+  // A right-click menu and a 3-dot menu must dress alike, so every item rule names both slots.
+  const plusRules = CSS.split("\n\t.unsloth-plus-menu").slice(1);
+  for (const rule of plusRules) {
+    const head = rule.slice(0, rule.indexOf("{"));
+    if (!head.includes('dropdown-menu-item')) continue;
+    assert.match(
+      head,
+      /context-menu-item/,
+      `a plus-menu item rule styles only the dropdown family: ${head.trim()}`,
+    );
+  }
+});
+
+
+// Rendered inline, a submenu's fixed popper wrapper sits inside the parent menu, whose open
+// animation transforms it. That makes it the containing block and its overflow clips the
+// submenu away. Both families portal out, so Project and Export survive either menu.
+
+test("both menu families portal their submenus out of the parent", () => {
+  for (const [file, primitive] of [
+    ["components/ui/dropdown-menu.tsx", "DropdownMenuPrimitive"],
+    ["components/ui/context-menu.tsx", "ContextMenuPrimitive"],
+  ] as const) {
+    const source = readSrc(file);
+    const at = source.indexOf(`<${primitive}.SubContent`);
+    assert.ok(at > 0, `${file}: no SubContent element`);
+    const before = source.slice(0, at);
+    assert.match(
+      before.slice(-400),
+      new RegExp(`<${primitive}\\.Portal>`),
+      `${file}: SubContent should be wrapped in a Portal`,
+    );
+  }
 });
