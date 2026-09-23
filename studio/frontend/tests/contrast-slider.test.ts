@@ -486,3 +486,23 @@ test("a reload repaints at the contrast the user chose", () => {
     );
   }
 });
+
+test("muted text on a palette surface heads away from that surface", () => {
+  // A white custom foreground on a dark page took muted card text from
+  // 4.9:1 to 2.1:1 on white cards at 100.
+  const panel = CSS.match(
+    /html\[data-contrast-adjust\] :is\(\.bg-card, \.bg-popover, \.bg-sidebar\) \{([^}]*)\}/,
+  );
+  assert.ok(panel, "palette surfaces do not re-derive muted text");
+  assert.match(
+    panel[1] ?? "",
+    /--muted-foreground: color-mix\(\s*in oklab,\s*var\(--panel-surface-fg-muted\),\s*var\(--contrast-panel-target, var\(--contrast-target\)\) var\(--contrast-text-mix\)/,
+  );
+  // A page-coloured pane inside one is the page again.
+  const pane = CSS.match(
+    /html\[data-contrast-adjust\] :is\(\.bg-card, \.bg-popover, \.bg-sidebar\) \.bg-background \{([^}]*)\}/,
+  );
+  assert.ok(pane, "page panes inside palette surfaces keep the panel target");
+  assert.match(pane[1] ?? "", /var\(--contrast-target\) var\(--contrast-text-mix\)/);
+  assert.doesNotMatch(pane[1] ?? "", /--contrast-panel-target/);
+});

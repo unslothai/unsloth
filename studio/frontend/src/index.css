@@ -747,6 +747,24 @@ html[data-contrast-adjust] {
 	);
 }
 
+/* Muted text on palette surfaces heads for their pole, and back to the page
+   target on a page-coloured pane inside one. Without a custom foreground the
+   panel target is unset, so both equal the root value. */
+html[data-contrast-adjust] :is(.bg-card, .bg-popover, .bg-sidebar) {
+	--muted-foreground: color-mix(
+		in oklab,
+		var(--panel-surface-fg-muted),
+		var(--contrast-panel-target, var(--contrast-target)) var(--contrast-text-mix)
+	);
+}
+html[data-contrast-adjust] :is(.bg-card, .bg-popover, .bg-sidebar) .bg-background {
+	--muted-foreground: color-mix(
+		in oklab,
+		var(--panel-surface-fg-muted),
+		var(--contrast-target) var(--contrast-text-mix)
+	);
+}
+
 /* Code font size: only overrides when the user sets an explicit size, so the
    per-element Tailwind sizes stay authoritative by default. */
 html[data-code-font-size] :is(pre, code, kbd, samp) {
