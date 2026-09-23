@@ -105,6 +105,7 @@ test("the client talks to the settings routes and maps the schema", () => {
 
 test("reports a resident model as loaded only when it is the selected one", () => {
   assert.match(SECTION, /settings\.loadedModel === settings\.model/);
+  assert.match(SECTION, /settings\.loadingModel === settings\.model/);
 });
 
 test("a failed first load still renders the section with its error", () => {

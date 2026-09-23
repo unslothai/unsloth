@@ -240,7 +240,7 @@ export function DecisionApiSection(): ReactElement | null {
   } else if (downloading) {
     tone = "pending";
     status = t("settings.apiKeys.decisionApi.downloading");
-  } else if (settings.loadingModel) {
+  } else if (settings.loadingModel === settings.model) {
     tone = "pending";
     status = t("settings.apiKeys.decisionApi.loading");
   } else if (settings.loadedModel === settings.model) {

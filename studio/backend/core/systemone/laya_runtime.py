@@ -442,15 +442,15 @@ def _decide(checkpoint: Checkpoint, state, questions: dict[str, dict[str, Any]])
 
 def status() -> dict[str, Any]:
     with _state_lock:
+        # Past its backoff a failure no longer blocks the next attempt, so it is not the current state.
+        failure = _failure if _failure and time.monotonic() < _failure[2] else None
         return {
             "loaded_model": _loaded.name if _loaded else None,
             "device": _device_name,
             "loading_model": _loading.name if _loading else None,
             "installing": installing(),
-            "error": _failure[1]
-            if _failure
-            else (_install_failure[0] if _install_failure else None),
-            "error_model": _failure[0].name if _failure else None,
+            "error": failure[1] if failure else (_install_failure[0] if _install_failure else None),
+            "error_model": failure[0].name if failure else None,
         }
 
 

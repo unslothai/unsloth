@@ -738,6 +738,18 @@ def test_runtime_reason_names_what_the_install_lacks(monkeypatch):
     assert expected in _REAL_UNAVAILABLE_REASON()
 
 
+def test_settings_drop_a_load_failure_once_its_backoff_expires(client, monkeypatch):
+    def fail(checkpoint):
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", fail)
+    assert _post(client).status_code == 503
+    assert "connection reset" in client.get("/api/settings/systemone").json()["error"]
+    checkpoint, message, _deadline = laya_runtime._failure
+    monkeypatch.setattr(laya_runtime, "_failure", (checkpoint, message, 0.0))
+    assert client.get("/api/settings/systemone").json()["error"] is None
+
+
 def test_settings_only_report_a_failure_of_the_selected_model(client, monkeypatch):
     def fail(checkpoint):
         raise OSError("connection reset")
