@@ -322,6 +322,41 @@ def test_quantize_transformer_on_nvidia_never_reaches_the_native_branch(nvidia, 
     assert len(seen) == 3
 
 
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_reading_weight_gives_the_dense_weight_without_storing_it(scheme):
+    """PEFT's DoRA forward reads ``base_layer.weight``, and some DiT blocks read a Linear's
+    ``weight.dtype`` to cast their input. Both get the dense weight in the original dtype, rebuilt on
+    each read, and nothing new lands in the state dict."""
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(128, 64).to(torch.bfloat16)
+    layer = nq.native_linear_class()(lin, scheme)
+    weight = layer.weight
+    assert weight.dtype == torch.bfloat16 and weight.shape == (64, 128)
+    assert torch.equal(weight, layer.dequantized_weight(torch.bfloat16))
+    assert "weight" not in set(layer.state_dict())
+    assert all(p is not weight for p in layer.parameters())
+
+
+def test_a_dora_adapter_runs_on_a_native_base_layer(rocm, monkeypatch):
+    peft = pytest.importorskip("peft")
+    _block_torchao(monkeypatch)
+    torch.manual_seed(0)
+    model = _toy()
+    cfg = peft.LoraConfig(r = 4, target_modules = ["to_q"], use_dora = True, init_lora_weights = False)
+    wrapped = peft.inject_adapter_in_model(cfg, model)
+    x = torch.randn(2, 128, dtype = torch.bfloat16)
+    with torch.no_grad():
+        ref = wrapped(x).float()
+    tq.quantize_transformer(
+        types.SimpleNamespace(transformer = wrapped), _target(), mode = "int8", min_features = 64
+    )
+    assert nq.is_native_linear(wrapped.blocks[0].to_q.base_layer)
+    with torch.no_grad():
+        out = wrapped(x).float()
+    assert torch.isfinite(out).all()
+    assert float((out - ref).norm() / ref.norm()) < 0.05
+
+
 def test_peft_wrapped_base_layer_runs_native(rocm, monkeypatch):
     peft = pytest.importorskip("peft")
     _block_torchao(monkeypatch)

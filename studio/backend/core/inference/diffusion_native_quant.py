@@ -43,6 +43,7 @@ def native_linear_class():
             self.in_features = int(linear.in_features)
             self.out_features = int(linear.out_features)
             self.scheme = scheme
+            self.compute_dtype = linear.weight.dtype
             weight = linear.weight.detach()
             with torch.no_grad():
                 w = weight.float()
@@ -68,6 +69,12 @@ def native_linear_class():
             )
             scale = self.weight_scale.view(torch.float32)
             return (wq.to(torch.float32) * scale[:, None]).to(dtype)
+
+        @property
+        def weight(self) -> Any:
+            """The dense weight, rebuilt on each read. Code that reads a wrapped Linear's weight directly
+            (PEFT's DoRA forward reads ``base_layer.weight``) keeps working; nothing holds it."""
+            return self.dequantized_weight(self.compute_dtype)
 
         def forward(self, x: Any) -> Any:
             return F.linear(x, self.dequantized_weight(x.dtype), self.bias)
