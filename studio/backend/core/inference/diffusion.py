@@ -7384,6 +7384,7 @@ class DiffusionBackend:
                 steps_done = [0]
 
                 static_skip = state.transformer_cache == TC_STATIC
+                static_chunks_run = 0
 
                 def _on_step(pipe, step_index, timestep, callback_kwargs):
                     if static_skip:
@@ -7480,7 +7481,10 @@ class DiffusionBackend:
                             state.pipe,
                             denoise_steps,
                             step_signal = "callback_on_step_end" in chunk_kwargs,
+                            # Counts add up over the chunks (and OOM retries) of this one generation.
+                            keep_stats = static_chunks_run > 0,
                         )
+                        static_chunks_run += 1
                     elif state.transformer_cache:
                         # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL
                         # __call__, so a raised call leaves a residual the next forward trips over.

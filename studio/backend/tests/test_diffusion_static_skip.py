@@ -773,3 +773,29 @@ def test_status_route_carries_the_last_generation_skip_counts():
     assert DiffusionStatusResponse().transformer_cache_stats is None
     src = inspect.getsource(diffusion.DiffusionBackend.status)
     assert '"transformer_cache_stats": static_skip_stats(state.pipe)' in src
+
+
+def test_stats_add_up_over_the_chunks_of_one_generation():
+    # Two pipeline calls of one generation (a batch cap or an OOM split): the status keeps both chunks' counts.
+    pipe = _installed()
+    _run(pipe, 25)
+    one = dict(ss.static_skip_stats(pipe)["stats"])
+    skip = ss._find(pipe)
+    real_reset = skip.reset
+    skip.reset = lambda steps, **kw: real_reset(steps, **{**kw, "keep_stats": True})
+    _run(pipe, 25)
+    skip.reset = real_reset
+    ss.reset_static_step_skip(pipe, None)
+    assert ss.static_skip_stats(pipe)["stats"] == {k: 2 * v for k, v in one.items()}
+    # A new generation starts from zero.
+    _run(pipe, 25)
+    assert ss.static_skip_stats(pipe)["stats"] == one
+
+
+def test_generate_keeps_stats_after_its_first_chunk():
+    import inspect
+
+    from core.inference import diffusion
+
+    src = inspect.getsource(diffusion.DiffusionBackend.generate)
+    assert "keep_stats = static_chunks_run > 0" in src
