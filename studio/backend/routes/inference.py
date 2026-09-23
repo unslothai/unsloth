@@ -7662,25 +7662,17 @@ def _public_model_identifier(requested: str, resolved: str) -> str:
     return requested if is_ollama_manifest_ref(requested) else resolved
 
 
-def _canonical_model_identity(model_id: str) -> str:
-    """Return a canonical identity for a model identifier, resolving HF cache
-    snapshot paths (``.../models--org--name/snapshots/<sha>``) to their repo
-    id (``org/name``). This lets the inheritance guard treat a load from a
-    snapshot path and a subsequent JIT auto-switch load of the same repo as
-    the same model, while still refusing cross-model inheritance.
-
-    Windows backslashes are normalised to forward slashes before parsing.
-    """
+def _canonical_model_identity(model_id: Optional[str]) -> str:
+    """Case-folded identity of *model_id*, with an HF cache snapshot path
+    (``models--org--name/snapshots/<sha>``, either slash) read as ``org/name``.
+    The picker loads a cached repo by that path and an API auto-switch by the
+    repo id, so both spellings must name one model. Other local paths stay as
+    they are: two files that share a stem are still two models."""
     from core.inference.model_ids import hf_cache_repo_id
 
     if not model_id:
-        return model_id
-    # Normalise backslashes so snapshot paths on Windows are parsed correctly.
-    normalised = str(model_id).replace("\\", "/")
-    repo = hf_cache_repo_id(normalised)
-    if repo is not None:
-        return repo.strip()
-    return model_id
+        return ""
+    return (hf_cache_repo_id(model_id) or str(model_id)).strip().lower()
 
 
 def _as_ollama_manifest_request(request):
@@ -14807,14 +14799,10 @@ def _resolve_inherited_extra_args(
     resolved_variant = (config.gguf_variant or "").lower()
     request_variant = (request.gguf_variant or "").lower()
     stored_variant = (source[1] or "").lower() if source else ""
-    # Resolve snapshot paths (``models--org--name/snapshots/<sha>``) to their
-    # repo id (``org/name``) so a load from a cache path and a subsequent
-    # JIT auto-switch load of the same Hub GGUF are treated as the same model.
+    # A picker load records the snapshot path, an API auto-switch loads the repo id.
+    stored_identity = _canonical_model_identity(source[0]) if source else ""
     same_model = bool(
-        source
-        and source[0]
-        and _canonical_model_identity(source[0]).lower()
-        == _canonical_model_identity(model_identifier).lower()
+        stored_identity and stored_identity == _canonical_model_identity(model_identifier)
     )
     if request.gguf_variant:
         variant_mismatch = request_variant != stored_variant
@@ -14822,15 +14810,10 @@ def _resolve_inherited_extra_args(
         variant_mismatch = bool(stored_variant and resolved_variant != stored_variant)
     same_source = same_model and not variant_mismatch
     if not same_source:
-        # Log the canonical identities so a snapshot-path vs repo-id
-        # mismatch for the *same* model is not confused with a real
-        # cross-model case.
-        _canonical_source = (_canonical_model_identity(source[0]).lower(), source[1])
-        _canonical_load = (_canonical_model_identity(model_identifier).lower(), resolved_variant)
         logger.info(
             "Not inheriting llama_extra_args: stored args came from %s, loading %s",
-            _canonical_source,
-            _canonical_load,
+            source,
+            (model_identifier, resolved_variant),
         )
         # Cross-model: clear explicitly so the backend doesn't
         # inherit via "no opinion" semantics.

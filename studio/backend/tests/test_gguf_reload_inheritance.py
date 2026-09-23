@@ -556,59 +556,31 @@ def test_an_inherited_env_budget_does_not_force_a_reload():
 def test_canonical_model_identity_resolves_snapshot_to_repo():
     from routes.inference import _canonical_model_identity
     snapshot = "/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc123"
-    assert _canonical_model_identity(snapshot) == "unsloth/Qwen3.8-27B-GGUF"
+    assert _canonical_model_identity(snapshot) == "unsloth/qwen3.8-27b-gguf"
 
 
-def test_canonical_model_identity_passes_through_repo_id():
+def test_canonical_model_identity_folds_repo_id_case():
     from routes.inference import _canonical_model_identity
-    assert _canonical_model_identity("unsloth/Qwen3.8-27B-GGUF") == "unsloth/Qwen3.8-27B-GGUF"
+    assert _canonical_model_identity("unsloth/Qwen3.8-27B-GGUF") == "unsloth/qwen3.8-27b-gguf"
 
 
-def test_canonical_model_identity_normalizes_windows_backslashes():
+def test_canonical_model_identity_reads_windows_snapshot_path():
     from routes.inference import _canonical_model_identity
-    snapshot = r"C:\models--unsloth--Qwen3.8-27B-GGUF\snapshots\abc123"
-    assert _canonical_model_identity(snapshot) == "unsloth/Qwen3.8-27B-GGUF"
+    snapshot = r"C:\hub\models--unsloth--Qwen3.8-27B-GGUF\snapshots\abc123"
+    assert _canonical_model_identity(snapshot) == "unsloth/qwen3.8-27b-gguf"
 
 
-def test_canonical_model_identity_returns_empty_for_empty():
+def test_canonical_model_identity_empty_and_none():
     from routes.inference import _canonical_model_identity
     assert _canonical_model_identity("") == ""
+    assert _canonical_model_identity(None) == ""
 
 
-def test_canonical_model_identity_passes_through_non_cache_path():
+def test_canonical_model_identity_keeps_other_local_paths():
     from routes.inference import _canonical_model_identity
     assert _canonical_model_identity("/models/my-model.gguf") == "/models/my-model.gguf"
-
-
-# ── _normalize_extra_args_source ────────────────────────────────
-
-
-def test_normalize_extra_args_source_resolves_snapshot():
-    from core.inference.llama_cpp import _normalize_extra_args_source
-
-    snapshot = "/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc123"
-    result = _normalize_extra_args_source(snapshot, "Q4_K_M")
-    assert result == ("unsloth/Qwen3.8-27B-GGUF", "Q4_K_M")
-
-
-def test_normalize_extra_args_source_passes_through_repo():
-    from core.inference.llama_cpp import _normalize_extra_args_source
-    result = _normalize_extra_args_source("unsloth/Qwen3.8-27B-GGUF", "Q4_K_M")
-    assert result == ("unsloth/Qwen3.8-27B-GGUF", "Q4_K_M")
-
-
-def test_normalize_extra_args_source_normalizes_windows():
-    from core.inference.llama_cpp import _normalize_extra_args_source
-
-    snapshot = r"C:\models--unsloth--Qwen3.8-27B-GGUF\snapshots\abc123"
-    result = _normalize_extra_args_source(snapshot, "q4_k_l")
-    assert result == ("unsloth/Qwen3.8-27B-GGUF", "q4_k_l")
-
-
-def test_normalize_extra_args_source_preserves_variant():
-    from core.inference.llama_cpp import _normalize_extra_args_source
-    result = _normalize_extra_args_source("models--org--name/snapshots/hash", None)
-    assert result == ("org/name", None)
+    # A models-- folder outside the cache layout is not a repo id.
+    assert _canonical_model_identity("/models--org--name/x.gguf") == "/models--org--name/x.gguf"
 
 
 # ── _resolve_inherited_extra_args: snapshot vs repo id ──────────
@@ -783,3 +755,37 @@ def test_explicit_empty_extras_still_clears():
         assert result is None  # early return because llama_extra_args is not None (it's [])
     finally:
         _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
+
+
+def test_missing_extra_args_source_refuses_without_raising():
+    """Stored extras with no recorded source are not inherited, and the refusal log
+    must not index into the missing source."""
+    from routes.inference import _resolve_inherited_extra_args
+    import routes.inference as _routes
+
+    class FakeRequest:
+        model_path = "unsloth/Qwen3.8-27B-GGUF"
+        gguf_variant = None
+        llama_extra_args = None
+        model_fields_set = set()
+
+    class FakeConfig:
+        is_gguf = True
+        gguf_variant = "ud-q6_k_l"
+        identifier = "unsloth/Qwen3.8-27B-GGUF"
+
+    original = _routes.get_llama_cpp_backend
+    try:
+        for source in (None, (None, "ud-q6_k_l"), ("", None)):
+
+            class FakeBackend:
+                extra_args = ["--rope-scaling", "yarn"]
+                extra_args_source = source
+
+            _routes.get_llama_cpp_backend = lambda: FakeBackend()
+            result = _resolve_inherited_extra_args(
+                FakeRequest(), FakeConfig(), "unsloth/Qwen3.8-27B-GGUF", None
+            )
+            assert result == [], (source, result)
+    finally:
+        _routes.get_llama_cpp_backend = original
