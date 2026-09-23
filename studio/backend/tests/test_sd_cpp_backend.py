@@ -764,7 +764,7 @@ def test_status_loaded_shape():
 def test_generate_returns_images_and_seed():
     eng = _FakeEngine()
     b = _loaded_backend(engine = eng)
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, seed = 123, batch_size = 2)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, seed = 123, batch_size = 2)
     assert out["seed"] == 123
     assert out["repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
     assert len(out["images"]) == 2
@@ -938,7 +938,7 @@ def test_generate_publishes_progress_before_lora_resolution(monkeypatch):
 
     monkeypatch.setattr(diffusion_lora, "resolve_specs", _resolve)
 
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, loras = [("some/lora", 1.0)])
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, loras = [("some/lora", 1.0)])
     assert out["images"]
     assert seen["progress"]["active"] is True
     assert seen["progress"]["total_steps"] == 8
@@ -1475,7 +1475,7 @@ def test_server_generate_uses_one_request_for_whole_batch(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, seed = 7, batch_size = 3)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, seed = 7, batch_size = 3)
     assert len(out["images"]) == 3
     assert all(isinstance(im, Image.Image) for im in out["images"])
     # ONE job for the whole batch (no per-image model reload), unlike the one-shot path.
@@ -1502,7 +1502,7 @@ def test_server_generation_restarts_on_the_cpu_backend_after_a_ggml_abort(monkey
     _run_server_load(monkeypatch, b, servers, device = "mps")
     servers[0].img_gen_error = RuntimeError(_GGML_ABORT)
 
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 3)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 3)
 
     assert len(out["images"]) == 1  # the retry produced the image
     assert len(servers) == 2 and servers[0].stopped is True
@@ -1558,7 +1558,7 @@ def test_server_generate_splits_batches_above_server_limit(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
-    out = b.generate(prompt = "x", width = 64, height = 64, steps = 4, seed = 100, batch_size = 10)
+    out = b.generate(prompt = "x", width = 256, height = 256, steps = 4, seed = 100, batch_size = 10)
     assert len(out["images"]) == 10
     counts = [p["batch_count"] for p in servers[0].payloads]
     assert counts == [bk._MAX_SERVER_BATCH, 10 - bk._MAX_SERVER_BATCH]  # [8, 2]
@@ -1578,7 +1578,7 @@ def test_server_generate_masks_large_seed(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
-    out = b.generate(prompt = "x", width = 64, height = 64, steps = 4, seed = 2**64 - 1, batch_size = 1)
+    out = b.generate(prompt = "x", width = 256, height = 256, steps = 4, seed = 2**64 - 1, batch_size = 1)
     assert servers[0].payloads[0]["seed"] <= (1 << 63) - 1
     assert all(s <= (1 << 63) - 1 for s in out["seeds"])
 
@@ -2210,7 +2210,7 @@ def test_generate_reports_the_build_the_recipe_persists():
         gguf_filename = "z-image-turbo-Q4_K_M.gguf",
         offload_flags = ("--vae-on-cpu", "--clip-on-cpu"),
     )
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
     assert out["model_kind"] == "gguf"
     assert out["gguf_filename"] == "z-image-turbo-Q4_K_M.gguf"
     assert out["offload_policy"] == "active"
@@ -2237,11 +2237,11 @@ def test_a_completed_native_generation_stops_advertising_itself_as_cancellable(m
 
     monkeypatch.setattr(b, "_generate_oneshot", _oneshot)
     with pytest.raises(RuntimeError, match = "cancelled"):
-        b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+        b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
 
     # And once a run completes, the event is gone before the result is handed back.
     b2 = _loaded_backend()
-    out = b2.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    out = b2.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
     assert out["images"]
     seen.append(b2.cancel_generate())
     assert seen == [False]
@@ -2286,7 +2286,7 @@ def test_a_card_pick_is_not_reported_as_an_offload():
     status = b.status()
     assert status["cpu_offload"] is False
     assert status["offload_policy"] == "none"
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
     assert out["offload_policy"] == "none"
 
 
@@ -2411,7 +2411,7 @@ def test_generation_in_flight_tracks_a_generation(monkeypatch):
     monkeypatch.setattr(diffusion_lora, "resolve_specs", _resolve)
 
     assert bk.generation_in_flight() is False
-    b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, loras = [("some/lora", 1.0)])
+    b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, loras = [("some/lora", 1.0)])
     assert (
         seen["in_flight"] is True
     ), "liveness cannot tell this backend from a dead one while the native engine renders"

@@ -689,7 +689,9 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
     assert "2.1" in fam.sd_cpp_vae[1]
 
     encoders = sd_cpp_text_encoders_for(fam, "unsloth/Qwen-Image-2.1-GGUF", None)
-    assert len(encoders) == 1
+    # The encoder, then the vision projector native editing reads through --llm_vision.
+    assert len(encoders) == 2
+    assert encoders[1] == ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision")
     repo, filename, kind = encoders[0]
     assert repo == "unsloth/Qwen3-VL-8B-Instruct-GGUF"
     # Which rung is the family's call, pinned by exact name in

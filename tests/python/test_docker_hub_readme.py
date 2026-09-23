@@ -72,9 +72,19 @@ def test_the_hub_readme_explains_the_studio_volume():
     # the helper is described as setting the flags of the quick start, which now
     # includes the volume: run.sh must mount it (test_docker_cpu_fallback.py checks)
     assert "including the `unsloth-studio` volume" in text
-    repo = REPO_README.read_text(encoding = "utf-8")
-    assert "-v unsloth-studio:/opt/unsloth-studio" in repo
-    assert ".unsloth-studio-legacy/" in repo
+    # The repository README keeps the quick start and hands the details to the Hub page and the
+    # Docker docs, which is where the migration story above lives. It must still mount the volume
+    # and still point at both, or a reader of the short version has no way to the long one.
+    # Read from the section that runs the image: the one-line Docker teaser higher up carries the
+    # same two links, so a check over the whole file would pass with them gone from here.
+    running = [
+        s for s in _docker_sections(REPO_README.read_text(encoding = "utf-8")) if "docker run" in s
+    ]
+    assert len(running) == 1, "expected exactly one README Docker section with a docker run"
+    quick_start = running[0]
+    assert "-v unsloth-studio:/opt/unsloth-studio" in quick_start
+    assert "https://hub.docker.com/r/unsloth/unsloth)" in quick_start
+    assert "https://unsloth.ai/docs/get-started/install/docker" in quick_start
 
 
 def _docker_sections(text: str) -> list[str]:
