@@ -517,3 +517,17 @@ def test_long_sequence_warns_once(tmp_path):
             model(input_ids = ids)
     messages = [str(w.message) for w in caught if "sparse attention" in str(w.message)]
     assert len(messages) == 1, messages
+
+
+def test_4bit_keeps_the_mla_up_projections_in_16bit():
+    # NF4 on q_b_proj / kv_b_proj alone took the real Flash-Lite-Sparse loss from 0.70 to 2.73.
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "unsloth",
+        "models",
+        "vision.py",
+    )
+    with open(path, encoding = "utf-8") as f:
+        source = f.read()
+    rule = source[source.index('"longcat_flash_lsa") for mt in') :]
+    assert '_skip_modules.extend(("q_b_proj", "kv_b_proj"))' in rule.split("\n\n")[0]
