@@ -65,7 +65,8 @@
     "--foreground",
     "--primary",
     "--primary-foreground",
-    "--ui-font-scale",
+    "--ui-font-size-scale",
+    "--ui-interface-scale",
   ];
 
   function clearStoredSnapshot() {

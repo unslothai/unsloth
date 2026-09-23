@@ -708,9 +708,17 @@ def _create_unsloth_optimizer(
     optimizer_kwargs,
     embedding_lr = 5e-5,
     require_embedding_match = False,
+    weight_decay = 0.0,
+    decay_parameter_names = None,
 ):
     lr = optimizer_kwargs["lr"]
-    weight_decay = optimizer_kwargs.get("weight_decay", 0.0)
+    # transformers puts weight_decay in optimizer_kwargs only for schedule-free and stable_adamw,
+    # so reading it from there alone meant the 0.0 default always won (Trainer.create_optimizer).
+    weight_decay = optimizer_kwargs.get("weight_decay", weight_decay)
+    # Trainer.get_decay_parameter_names excludes biases and norms; the default here decays all.
+    if decay_parameter_names is None:
+        decay_parameter_names = [name for name, _ in model.named_parameters()]
+    decay_parameter_names = set(decay_parameter_names)
 
     param_groups = {
         "non_embeddings": {},
@@ -743,20 +751,177 @@ def _create_unsloth_optimizer(
             "without FSDP, or drop embedding_learning_rate."
         )
 
-    optimizer_grouped_parameters = [
-        {
-            "params": list(param_groups["non_embeddings"].values()),
-            "weight_decay": weight_decay,
-            "lr": lr,
-        },
-        {
-            "params": list(param_groups["embeddings"].values()),
-            "weight_decay": weight_decay,
-            "lr": embedding_lr,
-        },
-    ]
+    # Empty groups are dropped (a LoRA run trains no bias and no norm, so both no-decay ones are
+    # empty): AdafactorSchedule.get_lr reads group["params"][0] unguarded, and load_state_dict
+    # rejects a checkpoint whose group count differs, which would break resume.
+    optimizer_grouped_parameters = []
+    group_roles = []
+    for group, group_lr in (("non_embeddings", lr), ("embeddings", embedding_lr)):
+        for decays in (True, False):
+            params = [
+                param
+                for name, param in param_groups[group].items()
+                if (name in decay_parameter_names) is decays
+            ]
+            if not params:
+                continue
+            optimizer_grouped_parameters.append(
+                {
+                    "params": params,
+                    "weight_decay": weight_decay if decays else 0.0,
+                    "lr": group_lr,
+                }
+            )
+            group_roles.append(group)
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+    _install_legacy_resume(
+        optimizer,
+        legacy_params = list(param_groups["non_embeddings"].values())
+        + list(param_groups["embeddings"].values()),
+        legacy_sizes = (len(param_groups["non_embeddings"]), len(param_groups["embeddings"])),
+        group_roles = group_roles,
+    )
     return optimizer
+
+
+_LEGACY_ROLE_ORDER = ("non_embeddings", "embeddings")
+
+
+def _migrate_legacy_optimizer_state(
+    state_dict, optimizer, legacy_params, legacy_sizes, group_roles
+):
+    """A pre-split checkpoint rewritten into this optimizer's layout, or None to refuse.
+
+    Exact, not inferred: torch keys saved state by a parameter's position in the flat
+    concatenation of its groups, and the old layout (non-embeddings then embeddings, each
+    in `named_parameters` order) is reproducible from the model. Anything else returns
+    None and lets torch raise, since pairing a parameter with another parameter's moments
+    would corrupt the run in silence where today it stops.
+    """
+    saved_groups = state_dict.get("param_groups") or []
+    if len(saved_groups) != len(_LEGACY_ROLE_ORDER):
+        return None
+    if tuple(len(g["params"]) for g in saved_groups) != tuple(legacy_sizes):
+        return None
+    saved_ids = [i for g in saved_groups for i in g["params"]]
+    if len(saved_ids) != len(legacy_params) or len(set(saved_ids)) != len(saved_ids):
+        return None
+
+    param_of_saved_id = dict(zip(saved_ids, legacy_params))
+    new_index_of_param = {
+        id(param): index
+        for index, param in enumerate(p for g in optimizer.param_groups for p in g["params"])
+    }
+    if len(new_index_of_param) != len(legacy_params):
+        return None
+    try:
+        remapped_state = {
+            new_index_of_param[id(param_of_saved_id[saved_id])]: value
+            for saved_id, value in state_dict["state"].items()
+        }
+    except KeyError:
+        return None
+
+    saved_of_role = dict(zip(_LEGACY_ROLE_ORDER, saved_groups))
+    cursor, migrated_groups = 0, []
+    for group, role in zip(optimizer.param_groups, group_roles):
+        size = len(group["params"])
+        # Saved group as the base so per-group optimizer state survives (schedule-free
+        # keeps k, weight_sum, lr_max there); only params and weight_decay are overridden.
+        migrated = {key: value for key, value in group.items() if key != "params"}
+        migrated.update(
+            {key: value for key, value in saved_of_role[role].items() if key != "params"}
+        )
+        migrated["weight_decay"] = group["weight_decay"]
+        migrated["params"] = list(range(cursor, cursor + size))
+        migrated_groups.append(migrated)
+        cursor += size
+    return {"state": remapped_state, "param_groups": migrated_groups}
+
+
+def _unsloth_base_optimizer(optimizer):
+    """The optimizer we built, through any wrapper, or None.
+
+    `accelerator.prepare` swaps in an `AcceleratedOptimizer`, which defines no
+    `__getattr__`, so asking it directly finds nothing and the hook silently no-ops.
+    """
+    seen = 0
+    while optimizer is not None and seen < 8:
+        if "_unsloth_group_roles" in optimizer.__dict__:
+            return optimizer
+        optimizer = getattr(optimizer, "optimizer", None)
+        seen += 1
+    return None
+
+
+def _install_legacy_scheduler_resume(scheduler, optimizer):
+    """The same remap for the scheduler, which keys `base_lrs` by group too.
+
+    Fixing only the optimizer moves the failure one line later: `load_state_dict` overwrites
+    `base_lrs` wholesale, and the next step raises from `zip(..., strict=True)`.
+    """
+    built = _unsloth_base_optimizer(optimizer)
+    if built is None:
+        return scheduler
+    roles = built._unsloth_group_roles
+    base = type(scheduler)
+    if getattr(base, "_unsloth_legacy_resume", False):
+        return scheduler
+
+    # On a per-instance subclass, NOT the instance: a scheduler's state_dict is its __dict__
+    # minus the optimizer, so an instance attribute puts this closure in every checkpoint and
+    # torch.save cannot pickle it, failing the first save even with no resume.
+    def load_state_dict(self, state_dict):
+        state_dict = dict(state_dict)
+        # Gated on the optimizer having just migrated: length alone cannot tell a legacy
+        # [ordinary, embedding] pair from two current non-embedding groups, and remapping
+        # the latter collapses distinct per-group min_lr floors onto the first.
+        if not getattr(built, "_unsloth_loaded_legacy", False):
+            return base.load_state_dict(self, state_dict)
+        for key in ("base_lrs", "_last_lr", "min_lrs"):
+            saved = state_dict.get(key)
+            if isinstance(saved, list) and len(saved) == len(_LEGACY_ROLE_ORDER):
+                by_role = dict(zip(_LEGACY_ROLE_ORDER, saved))
+                state_dict[key] = [by_role[role] for role in roles]
+        return base.load_state_dict(self, state_dict)
+
+    scheduler.__class__ = type(
+        base.__name__,
+        (base,),
+        {"load_state_dict": load_state_dict, "_unsloth_legacy_resume": True},
+    )
+    return scheduler
+
+
+def _install_legacy_resume(optimizer, legacy_params, legacy_sizes, group_roles):
+    """Let `load_state_dict` accept a checkpoint written before the decay split."""
+    optimizer._unsloth_group_roles = list(group_roles)
+    original = optimizer.load_state_dict
+
+    @wraps(original)
+    def load_state_dict(state_dict):
+        saved = state_dict.get("param_groups") or []
+        # Every recognisably legacy checkpoint, not only reshaped ones: torch takes group
+        # hyperparameters from the saved dict, so a LoRA resume, where the layouts coincide,
+        # would otherwise reload the 0.0 this change exists to correct.
+        migrated = _migrate_legacy_optimizer_state(
+            state_dict, optimizer, legacy_params, legacy_sizes, group_roles
+        )
+        # transformers loads the optimizer first, so this is what the scheduler hook reads.
+        optimizer._unsloth_loaded_legacy = migrated is not None
+        if migrated is not None:
+            if [len(group["params"]) for group in saved] != [
+                len(group["params"]) for group in optimizer.param_groups
+            ]:
+                print(
+                    f"Unsloth: remapping {len(saved)} optimizer parameter group(s) from a "
+                    f"checkpoint saved before weight decay was split out onto "
+                    f"{len(optimizer.param_groups)}."
+                )
+            state_dict = migrated
+        return original(state_dict)
+
+    optimizer.load_state_dict = load_state_dict
 
 
 _SUPER_CREATE_OPTIMIZER_TAKES_MODEL = None
@@ -802,8 +967,18 @@ class UnslothTrainer(SFTTrainer):
                 optimizer_kwargs,
                 embedding_learning_rate,
                 require_embedding_match = model is not None,
+                weight_decay = self.args.weight_decay,
+                decay_parameter_names = self.get_decay_parameter_names(target_model),
             )
         return self.optimizer
+
+    def create_scheduler(
+        self,
+        num_training_steps: int,
+        optimizer = None,
+    ):
+        scheduler = super().create_scheduler(num_training_steps, optimizer)
+        return _install_legacy_scheduler_resume(scheduler, optimizer or self.optimizer)
 
     def _create_q_galore_optimizer(
         self,
