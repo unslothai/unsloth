@@ -1502,7 +1502,9 @@ class FastBaseModel:
             and not full_finetuning
             and quantization_config_selects_bnb_4bit(user_quantization_config),
         )
-        if user_quantization_config is None:
+        # Only an explicit bitsandbytes 4-bit config keeps the caller's flags (the loader passed
+        # False for it); any other quantizer clears them as on the plain path.
+        if not _explicit_bnb_4bit:
             load_in_4bit, load_in_8bit = _checked_4bit, _checked_8bit
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env was built before remap/disable). gpt-oss only.
         sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)

@@ -930,6 +930,21 @@ def test_both_loaders_gate_packed_requantization_on_the_callers_quantizer():
             assert "quantization_config_selects_bnb_4bit" in ast.unparse(flag), module.__name__
 
 
+def test_only_an_explicit_bnb_4bit_config_keeps_the_callers_flags():
+    # A GPTQ / AWQ / FP8 config with the default load_in_4bit = True must still take the checker's
+    # answer, or the 4-bit branch below swaps the caller's quantizer for a BitsAndBytesConfig.
+    import ast, inspect
+    from unsloth.models import llama, vision
+    for module in (llama, vision):
+        guards = [
+            ast.unparse(node.test)
+            for node in ast.walk(ast.parse(inspect.getsource(module)))
+            if isinstance(node, ast.If)
+            and any("_checked_4bit" in ast.unparse(stmt) for stmt in node.body)
+        ]
+        assert guards == ["not _explicit_bnb_4bit"], (module.__name__, guards)
+
+
 @pytest.mark.skipif(not HAS_CONVERTERS, reason = "needs the transformers 5 loader")
 def test_both_loaders_treat_an_explicit_bnb_4bit_config_as_the_4bit_request():
     # The public loader forwards load_in_4bit = False when a quantization_config is passed, so a
