@@ -232,7 +232,11 @@ class HarmonyTextStreamer:
                 raise StopIteration
             return val
 
-    def _process_incremental(self, raw: str, final: bool = False) -> None:
+    def _process_incremental(
+        self,
+        raw: str,
+        final: bool = False,
+    ) -> None:
         """Parse harmony channels and emit per-channel deltas (tracked by length, not whole-text diff)."""
         self._raw = raw
         has_channel_token = "<|channel|>" in raw
