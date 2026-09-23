@@ -339,7 +339,8 @@ export function orderRecommendedRows<
   keep: (row: T) => boolean;
   deviceFiltered: boolean;
   fits: (row: T) => boolean;
-  /** Catalog family of a repo id; when set, families follow the listing's sort. */
+  /** Catalog family of a repo id; when set, families follow the listing's sort. `results` must be
+   *  one sorted listing, since a family ranks by its index there. */
   familyOf?: (id: string) => string | undefined;
 }): T[] {
   const { seeds, results, keep, deviceFiltered, fits, familyOf } = opts;
