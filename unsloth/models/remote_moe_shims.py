@@ -81,8 +81,8 @@ def _calls_moe_infer(nodes) -> bool:
 
 
 def _has_own_training_dispatch(body) -> bool:
-    """Whether a `self.training` branch computes the output itself: non-empty and not
-    through the no-grad `moe_infer`."""
+    """Whether a `self.training` branch computes the output itself: non-empty, not only a
+    raise, and not through the no-grad `moe_infer`."""
     import ast
 
     def value_in_training(node):
@@ -112,12 +112,20 @@ def _has_own_training_dispatch(body) -> bool:
             return [branch.body, branch.orelse]
         return [branch.body] if value else [branch.orelse]
 
+    def only_raises(branch):
+        """Kimi-K3's port refuses training with `else: raise NotImplementedError(...)`."""
+        return all(
+            isinstance(stmt, (ast.Raise, ast.Pass))
+            or (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))
+            for stmt in branch
+        )
+
     for node in body:
         for sub in ast.walk(node):
             if not isinstance(sub, ast.If):
                 continue
             for branch in training_branches(sub):
-                if branch and not _calls_moe_infer(branch):
+                if branch and not only_raises(branch) and not _calls_moe_infer(branch):
                     return True
     return False
 

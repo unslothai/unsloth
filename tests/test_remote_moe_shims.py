@@ -398,6 +398,52 @@ def test_an_eval_first_training_capable_remote_moe_is_left_alone():
 
 
 @pytest.mark.parametrize(
+    "training_branch, shimmed",
+    [
+        ('raise NotImplementedError("Training mode is not supported")', True),
+        ("pass", True),
+        ("y = self.experts[0](hidden_states)", False),
+    ],
+)
+def test_a_training_branch_that_only_raises_is_not_a_dispatch(training_branch, shimmed):
+    """Kimi-K3's port: `if not self.training: moe_infer(...) else: raise ...` is inference-only."""
+    import sys, textwrap, types
+    from unsloth.models.remote_moe_shims import is_remote_deepseek_moe
+
+    module = types.ModuleType("transformers_modules.raise_only.modeling_kimi")
+    source = textwrap.dedent(f"""
+        class RaiseOnlyMoE(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.experts = nn.ModuleList([nn.Linear(2, 2)])
+                self.gate = nn.Linear(2, 1)
+
+            def forward(self, hidden_states):
+                y = hidden_states
+                if not self.training:
+                    y = self.moe_infer(hidden_states)
+                else:
+                    {training_branch}
+                return y
+
+            def moe_infer(self, x):
+                return x
+    """)
+    path = os.path.join(tempfile.mkdtemp(dir = os.environ.get("TMPDIR")), "modeling_kimi.py")
+    with open(path, "w") as f:
+        f.write("import torch.nn as nn\n" + source)
+    namespace = {"nn": nn, "__name__": module.__name__}
+    exec(compile("import torch.nn as nn\n" + source, path, "exec"), namespace)
+    RaiseOnlyMoE = namespace["RaiseOnlyMoE"]
+    RaiseOnlyMoE.__module__ = module.__name__
+    sys.modules[module.__name__] = module
+    try:
+        assert is_remote_deepseek_moe(RaiseOnlyMoE()) is shimmed
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+@pytest.mark.parametrize(
     "predicate, trains_in_body",
     [
         ("self.training and self.ep_size == 1", True),
