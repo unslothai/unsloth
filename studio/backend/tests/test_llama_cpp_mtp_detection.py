@@ -854,8 +854,12 @@ def _make_vendored_cuda_runtime(tmp_path: Path, runtime_line: str = "cuda13") ->
     major = runtime_line.removeprefix("cuda")
     runtime_dir = tmp_path / "ollama" / f"cuda_v{major}"
     runtime_dir.mkdir(parents = True)
-    (runtime_dir / f"libcudart.so.{major}.0").write_bytes(b"")
-    (runtime_dir / f"libcublas.so.{major}.0").write_bytes(b"")
+    cudart_payload = runtime_dir / f"libcudart.so.{major}.0"
+    cublas_payload = runtime_dir / f"libcublas.so.{major}.0"
+    cudart_payload.write_bytes(b"")
+    cublas_payload.write_bytes(b"")
+    (runtime_dir / f"libcudart.so.{major}").symlink_to(cudart_payload.name)
+    (runtime_dir / f"libcublas.so.{major}").symlink_to(cublas_payload.name)
     return binary_dir, runtime_dir
 
 

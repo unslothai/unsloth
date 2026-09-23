@@ -216,8 +216,11 @@ def vendored_cuda_runtime_dirs(
                 directory
                 for directory in sorted(Path(root).glob(f"{prefix}*"))
                 if exact.fullmatch(directory.name)
-                and any(directory.glob(f"libcudart.so.{major}*"))
-                and any(directory.glob(f"libcublas.so.{major}*"))
+                and all(
+                    (directory / f"lib{name}.so.{major}").is_file()
+                    and os.access(directory / f"lib{name}.so.{major}", os.R_OK)
+                    for name in ("cudart", "cublas")
+                )
             )
         except OSError:
             continue

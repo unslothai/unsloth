@@ -38,13 +38,20 @@ def _make_runtime(
     cudart: bool = True,
     cublas: bool = True,
     major = "13",
+    major_soname_links: bool = True,
 ):
     directory = root / name
     directory.mkdir(parents = True)
     if cudart:
-        (directory / f"libcudart.so.{major}.0.48").write_bytes(b"")
+        payload = directory / f"libcudart.so.{major}.0.48"
+        payload.write_bytes(b"")
+        if major_soname_links:
+            (directory / f"libcudart.so.{major}").symlink_to(payload.name)
     if cublas:
-        (directory / f"libcublas.so.{major}.0.1").write_bytes(b"")
+        payload = directory / f"libcublas.so.{major}.0.1"
+        payload.write_bytes(b"")
+        if major_soname_links:
+            (directory / f"libcublas.so.{major}").symlink_to(payload.name)
     return directory
 
 
@@ -98,6 +105,25 @@ def test_requires_a_complete_runtime(tmp_path, missing):
 
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
 
+
+def test_rejects_payloads_without_major_soname_links(tmp_path):
+    runtime_dir = _make_runtime(tmp_path, "cuda_v13", major_soname_links = False)
+
+    assert (runtime_dir / "libcudart.so.13.0.48").is_file()
+    assert (runtime_dir / "libcublas.so.13.0.1").is_file()
+    assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason = "root can read mode-000 files despite missing permission bits"
+)
+def test_rejects_unreadable_major_soname_links(tmp_path):
+    runtime_dir = _make_runtime(tmp_path, "cuda_v13")
+    for soname in ("libcudart.so.13", "libcublas.so.13"):
+        (runtime_dir / soname).resolve().chmod(0)
+        assert not os.access(runtime_dir / soname, os.R_OK)
+
+    assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
 
 def test_ignores_a_file_named_like_a_runtime_dir(tmp_path):
     (tmp_path / "cuda_v13").write_bytes(b"")
