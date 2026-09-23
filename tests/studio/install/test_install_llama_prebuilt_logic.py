@@ -77,6 +77,21 @@ def _bwrap_usable_by_default(monkeypatch):
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_bwrap_can_sandbox", lambda _p: True)
     # Tests that want a sandbox mock bwrap's path themselves; hide the host's own so a
     # restricted-userns bwrap on the test machine is never launched as "usable".
+    # The ldd probe is only called for Linux hosts, and plans without a host, so on a
+    # macOS or Windows runner it would read the real OS (and Git for Windows' ldd).
+    # Pin it to what production guarantees: a Linux host with ldd on PATH.
+    real_host_is_linux = INSTALL_LLAMA_PREBUILT._host_is_linux
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_host_is_linux",
+        lambda host = None: True if host is None else real_host_is_linux(host),
+    )
+    real_which = INSTALL_LLAMA_PREBUILT.shutil.which
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.shutil,
+        "which",
+        lambda name, *a, **k: "/usr/bin/ldd" if name == "ldd" else real_which(name, *a, **k),
+    )
     real_resolve = INSTALL_LLAMA_PREBUILT._resolve_command_path
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
