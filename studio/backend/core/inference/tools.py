@@ -17355,14 +17355,13 @@ def _check_signal_escape_patterns(code: str):
                     if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         self.local_functions.setdefault(fn.name, []).append(fn)
                         self.def_names[id(fn)] = fn.name
-                    elif (
-                        isinstance(fn, ast.Assign)
-                        and isinstance(fn.value, ast.Lambda)
-                        and len(fn.targets) == 1
-                        and isinstance(fn.targets[0], ast.Name)
+                    elif isinstance(fn, (ast.Assign, ast.AnnAssign)) and isinstance(
+                        fn.value, ast.Lambda
                     ):
                         # `make = lambda: requests.Session()` is a local function named `make`.
-                        self.local_functions.setdefault(fn.targets[0].id, []).append(fn.value)
+                        for target in getattr(fn, "targets", None) or [fn.target]:
+                            if isinstance(target, ast.Name):
+                                self.local_functions.setdefault(target.id, []).append(fn.value)
                     elif isinstance(fn, ast.ClassDef):
                         for m in fn.body:
                             if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -18032,6 +18031,18 @@ def _check_signal_escape_patterns(code: str):
                     self.receiver_destinations.setdefault(owner, []).append((attr, value))
 
         def visit_Assign(self, node):
+            self._visit_binding(node, node.targets, node.value)
+
+        def visit_AnnAssign(self, node):
+            # `s: requests.Session = requests.Session()` binds exactly as the plain assignment.
+            if node.value is None:
+                if self.collecting:
+                    self._rebind(node)
+                self.generic_visit(node)
+                return
+            self._visit_binding(node, [node.target], node.value)
+
+        def _visit_binding(self, node, targets, value_node):
             if not self.collecting:
                 self.generic_visit(node)
                 return
@@ -18039,8 +18050,8 @@ def _check_signal_escape_patterns(code: str):
             # Every value is read before any target is bound, so `f, g = g, f` swaps.
             pairs = [
                 (target, value, self._named_by(value, at))
-                for whole in node.targets
-                for target, value in _paired(whole, node.value)
+                for whole in targets
+                for target, value in _paired(whole, value_node)
             ]
             registered: set[str] = set()
             for target, value, named in pairs:
@@ -18080,19 +18091,6 @@ def _check_signal_escape_patterns(code: str):
                     if isinstance(node.target, ast.Name):
                         self._record_dict_mutation(node.target.id, "__ior__", [node.value], [])
                     self._record_proxy(node.target, node.value, mutated = True)
-            self.generic_visit(node)
-
-        def visit_AnnAssign(self, node):
-            # `s: requests.Session = requests.Session()` binds exactly as the plain assignment.
-            if self.collecting and node.value is not None:
-                at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
-                self._record_proxy(node.target, node.value)
-                if self._carry(node.target, node.value, at, node):
-                    self._rebind(node, exempt = {node.target.id})
-                    self.generic_visit(node)
-                    return
-            if self.collecting:
-                self._rebind(node)
             self.generic_visit(node)
 
         def visit_NamedExpr(self, node):

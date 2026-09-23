@@ -1043,6 +1043,16 @@ class TestNetworkTargetResolution:
                 f"import requests\nfetch = lambda s: s.get('http://{_H}/')\nfetch(requests.Session())",
                 id = "client_passed_to_a_lambda",
             ),
+            pytest.param(
+                "import requests\nfrom typing import Callable\n"
+                f"make: Callable = lambda: requests.Session()\nmake().get('http://{_H}/')",
+                id = "annotated_lambda_factory",
+            ),
+            pytest.param(
+                "import requests\ns = requests.Session()\np: dict = s.proxies\n"
+                f"p['https'] = 'http://{_H}:8080'\ns.get('https://pypi.org/')",
+                id = "annotated_proxy_mapping_alias",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
