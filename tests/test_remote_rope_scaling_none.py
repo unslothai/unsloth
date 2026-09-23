@@ -123,3 +123,38 @@ def test_a_native_default_rope_is_not_replaced_on_load(tmp_path):
     rotary = loaded.language_model.rotary_emb
     expected, _ = type(rotary).compute_default_rope_parameters(rotary.config)
     torch.testing.assert_close(rotary.inv_freq.float(), expected.float(), rtol = 0, atol = 0)
+
+
+@only_v5
+def test_remote_scaling_dict_does_not_repeat_the_base_its_config_keeps():
+    # InternLM2's 4.x config keeps rope_theta as an attribute and rejects any rope_scaling that is
+    # not exactly {type, factor}; transformers 5 and the theta carry put the base in the dict too.
+    from transformers import PretrainedConfig
+
+    class InternLM2LikeConfig(PretrainedConfig):
+        model_type = "remote_internlm2_like_test"
+
+        def __init__(
+            self,
+            rope_theta = 1_000_000,
+            rope_scaling = None,
+            **kwargs,
+        ):
+            self.rope_theta = rope_theta
+            self.rope_scaling = rope_scaling
+            if self.rope_scaling is not None and len(self.rope_scaling) != 2:
+                raise ValueError(f"`rope_scaling` must have two fields, got {self.rope_scaling}")
+            super().__init__(**kwargs)
+
+    InternLM2LikeConfig.__module__ = "transformers_modules.internlm.configuration_internlm2"
+    config = InternLM2LikeConfig(rope_scaling = {"type": "dynamic", "factor": 2.0})
+    assert config.rope_scaling["type"] == "dynamic" and config.rope_scaling["factor"] == 2.0
+    assert "rope_theta" not in config.rope_scaling
+    assert config.rope_parameters["rope_theta"] == 1_000_000  # still where transformers 5 reads it
+
+
+def test_is_torch_fx_available_imports_as_in_4x():
+    # Ling / BailingMoe, DeepSeek-V3 and Kimi-K2 remote code import it at module level.
+    from transformers.utils.import_utils import is_torch_available, is_torch_fx_available
+
+    assert is_torch_fx_available() == is_torch_available()
