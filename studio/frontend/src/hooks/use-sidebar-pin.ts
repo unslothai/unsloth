@@ -36,6 +36,8 @@ function subscribe(cb: () => void) {
   }
   const onStorage = (e: StorageEvent) => {
     if (e.key === PINNED_KEY || e.key === null) {
+      // Another tab set or cleared it (Reset all local preferences), so follow what is stored.
+      chosen = readStored() !== null;
       pinnedValue = loadPinned();
       cb();
     }
