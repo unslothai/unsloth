@@ -733,7 +733,7 @@ export function DebuggingTab() {
               </TooltipContent>
             </Tooltip>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+          <div className="flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1">
             <Button
               size="sm"
               variant="ghost"

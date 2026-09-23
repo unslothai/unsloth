@@ -445,3 +445,43 @@ test("a menu's height cap keeps Radix's available height", () => {
     }
   }
 });
+
+test("settings stacks its rail where the scaled dialog is too narrow for it", () => {
+  // max-sm ignored the scale: at 200% a 1000px window kept a 480px pane.
+  const dialog = readSrc("features/settings/settings-dialog.tsx");
+  assert.match(dialog, /const width = 608 \* useUiSpaceScale\(\);/);
+  assert.match(dialog, /`\(width < \$\{width \+ 32\}px\)`/);
+  assert.match(dialog, /return width > 960 \|\| narrow;/);
+  assert.match(dialog, /data-stacked=\{stacked \|\| undefined\}/);
+  // Only the full-screen dialog shell stays on the viewport breakpoint.
+  const shell = dialog.match(/max-sm:[^\s"]+/g) ?? [];
+  assert.deepEqual(shell.sort(), [
+    "max-sm:!max-w-none",
+    "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))]",
+    "max-sm:rounded-none",
+    "max-sm:w-dvw",
+  ]);
+});
+
+test("composite settings controls shrink inside their row", () => {
+  // A fixed width's min-content blocks the row's max-w-full cap unless each
+  // wrapper can shrink.
+  assert.ok(
+    readSrc("features/settings/tabs/general-tab.tsx").includes(
+      '<div className="flex min-w-0 flex-col items-end gap-1.5">\n            <div className="flex max-w-full items-center gap-2">\n              <div className="relative w-[calc(260px*var(--ui-space-scale,1))] min-w-0">',
+    ),
+  );
+  assert.ok(
+    readSrc("features/settings/tabs/debugging-tab.tsx").includes(
+      '"flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1"',
+    ),
+  );
+  // The GPU meter sits in a plain row, so it caps and wraps under the name.
+  const resources = readSrc("features/settings/tabs/resources-tab.tsx");
+  assert.ok(resources.includes("flex min-w-0 flex-wrap items-center justify-between"));
+  assert.ok(
+    resources.includes(
+      '"flex w-[min(calc(392px*var(--ui-space-scale,1)),100%)] shrink-0 flex-col',
+    ),
+  );
+});

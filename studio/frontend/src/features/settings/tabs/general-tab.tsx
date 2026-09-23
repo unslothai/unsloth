@@ -502,9 +502,9 @@ export function GeneralTab() {
           label={t("settings.general.huggingFaceToken")}
           description={t("settings.general.huggingFaceTokenDescription")}
         >
-          <div className="flex flex-col items-end gap-1.5">
-            <div className="flex items-center gap-2">
-              <div className="relative w-[calc(260px*var(--ui-space-scale,1))]">
+          <div className="flex min-w-0 flex-col items-end gap-1.5">
+            <div className="flex max-w-full items-center gap-2">
+              <div className="relative w-[calc(260px*var(--ui-space-scale,1))] min-w-0">
                 <Input
                   type={showToken ? "text" : "password"}
                   name="hf-token"

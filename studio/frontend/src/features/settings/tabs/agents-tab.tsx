@@ -1532,10 +1532,10 @@ export function AgentsTab() {
             </div>
 
             <div className="flex min-w-0 flex-col gap-1.5">
-              <div className="flex h-5 items-center">
+              <div className="flex h-5 min-w-0 items-center">
                 <span
                   data-settings-label={t("settings.agents.quantization")}
-                  className="text-xs font-medium text-foreground"
+                  className="truncate text-xs font-medium text-foreground"
                 >
                   {t("settings.agents.quantization")}
                 </span>
