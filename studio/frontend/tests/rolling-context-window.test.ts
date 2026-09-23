@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   type ContextTruncation,
   compactionBoundary,
+  shouldShowCompactionNotice,
   mergeContextTruncation,
   promptWasShortened,
 } from "../src/features/chat/utils/context-truncation.ts";
@@ -192,7 +193,6 @@ test("tool-loop truncation metadata accumulates across stream events", () => {
   });
 });
 
-
 test("compaction counts accumulate and stay absent on a plain rolling window", () => {
   // A plain rolling-window response must keep exactly the shape it had before the
   // conversation archive existed, rather than carrying archive keys set to undefined.
@@ -218,13 +218,11 @@ test("the compaction notice renders from persisted metadata, not from a message"
   assert.match(COMPACTION_NOTICE, /This conversation got long, so it was compacted/);
 });
 
-test("the compaction notice is gated on the eviction boundary MOVING", () => {
-  // Every request after the window fills runs the fit, so "this turn compacted" puts a
-  // notice on every reply. The trigger is dropped_messages rising above the last turn
-  // that reported it: more of the conversation actually leaving the context.
+test("the compaction notice uses the shared boundary/checkpoint predicate", () => {
+  // Replayed fits stay quiet; a new boundary or checkpoint is a new compaction.
   assert.match(THREAD, /const showsNotice = useAuiState/);
   assert.match(THREAD, /contextTruncation && showsNotice && !isEditing/);
-  assert.match(THREAD, /dropped > previousDropped/);
+  assert.match(THREAD, /shouldShowCompactionNotice\(value, previousDropped\)/);
   // Walked in order, not against the preceding message: turns between two moves report
   // the same count and must not reset the baseline.
   assert.match(THREAD, /for \(const message of thread\.messages\)/);
@@ -237,7 +235,7 @@ const noticeTurns = (dropped: (number | null)[]): number[] => {
   let previousDropped = 0;
   dropped.forEach((value, index) => {
     const d = value ?? 0;
-    if (d > previousDropped) {
+    if (shouldShowCompactionNotice({ dropped_messages: d, boundary_messages: d, fits: true }, previousDropped)) {
       shown.push(index);
       previousDropped = d;
     }
@@ -385,4 +383,30 @@ test("the too-long check uses the prompt budget, not the raw window", () => {
   // Still measured against the budget, but through the helper that takes the prompt's
   // shared floor off the turn first.
   assert.match(CHAT_ADAPTER, /latestTurnIsTheProblem\(\s*irreducible,\s*budget,?\s*\)/);
+});
+
+test("a checkpoint inside the current tool loop shows a notice without advancing the saved boundary", () => {
+  const recorded = {
+    dropped_messages: 6,
+    boundary_messages: 0,
+    checkpoint_started: true,
+    fits: true,
+  };
+  assert.equal(shouldShowCompactionNotice(recorded, 0), true);
+  // Another checkpoint in the same saved-transcript position is still a new compaction.
+  assert.equal(shouldShowCompactionNotice({ ...recorded, boundary_messages: 4 }, 4), true);
+  // Sticky replay, with no new checkpoint, must remain quiet.
+  assert.equal(shouldShowCompactionNotice({ ...recorded, checkpoint_started: false }, 0), false);
+  assert.equal(shouldShowCompactionNotice({ ...recorded, dropped_messages: 0 }, 0), false);
+  assert.equal(shouldShowCompactionNotice(undefined, 0), false);
+});
+
+test("later tool-loop fits cannot erase a checkpoint started earlier in the same reply", () => {
+  const merged = mergeContextTruncation(
+    { dropped_messages: 6, boundary_messages: 0, checkpoint_started: true, fits: true },
+    { dropped_messages: 0, boundary_messages: 0, checkpoint_started: false, fits: true },
+  );
+  assert.equal(merged.checkpoint_started, true);
+  assert.equal(shouldShowCompactionNotice(merged, 0), true);
+  assert.equal(shouldShowCompactionNotice({ ...merged, checkpoint_started: false }, 0), false);
 });

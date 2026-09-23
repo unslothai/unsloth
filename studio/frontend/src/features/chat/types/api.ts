@@ -736,6 +736,8 @@ export interface OpenAIChatChunk {
     // dropped_messages, so re-sending it after a turn that refit several times cannot advance the
     // boundary past the turns actually evicted.
     boundary_messages?: number;
+    // True when this fit started a new checkpoint, including within the current tool loop.
+    checkpoint_started?: boolean;
     // The text the boundary landed ON, so the count can be re-derived by position: a count is only
     // valid against the transcript it was counted on, and deleting an already evicted prompt
     // shortens that transcript.

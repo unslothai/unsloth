@@ -40,6 +40,18 @@ export function compactionBoundary(
   );
 }
 
+/** A saved-transcript boundary can stay put when a tool loop compacts its own messages. */
+export function shouldShowCompactionNotice(
+  truncation: ContextTruncation | undefined,
+  previousBoundary: number,
+): boolean {
+  return (
+    promptWasShortened(truncation) &&
+    (truncation.checkpoint_started === true ||
+      compactionBoundary(truncation) > previousBoundary)
+  );
+}
+
 function nonNegativeInt(value: number | undefined): number {
   // A propagated NaN would print "NaN tokens on its own" at the user.
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value as number)) : 0;
@@ -100,6 +112,16 @@ export function mergeContextTruncation(
     ...current,
     ...incoming,
     dropped_messages: current.dropped_messages + incoming.dropped_messages,
+    // A tool loop can start a checkpoint and then merely replay it in a later fit.
+    // The assistant turn still needs its notice after that later fit (and on reload).
+    ...(current.checkpoint_started !== undefined ||
+    incoming.checkpoint_started !== undefined
+      ? {
+          checkpoint_started:
+            current.checkpoint_started === true ||
+            incoming.checkpoint_started === true,
+        }
+      : {}),
     prompt_tokens_before:
       current.prompt_tokens_before ?? incoming.prompt_tokens_before,
     prompt_tokens_after:
