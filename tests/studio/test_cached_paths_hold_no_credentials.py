@@ -1982,9 +1982,9 @@ def test_hf_token_path_overrides_the_home_when_both_are_set():
             {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
         ],
     }
-    assert _login_offenders({}, unsafe), (
-        "HF_TOKEN_PATH inside the cache is the finding, and it is the variable that decides"
-    )
+    assert _login_offenders(
+        {}, unsafe
+    ), "HF_TOKEN_PATH inside the cache is the finding, and it is the variable that decides"
 
 
 def test_a_reusable_workflow_does_not_inherit_the_callers_env(tmp_path, monkeypatch):
