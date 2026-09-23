@@ -1281,10 +1281,14 @@ def test_noncanonical_oom_under_a_compile_error_is_not_swallowed(monkeypatch, in
     block = _Block(fails)
     dit = _Dit([block])
     ds_mod.guard_compiled_blocks(dit)
-    with pytest.raises(_BackendCompilerFailed):
+    with pytest.raises(_BackendCompilerFailed) as raised:
         block(1)
     assert block.eager_calls == 0
     assert ds_mod.compile_fallback_error(types.SimpleNamespace(transformer = dit)) is None
+    # What the image / video handlers receive is the outer compiler error; their backoff must classify it as OOM.
+    from core.inference.diffusion_batched import is_oom_error
+
+    assert is_oom_error(raised.value)
 
 
 @pytest.mark.parametrize("kind", ["runtime", "oom"])

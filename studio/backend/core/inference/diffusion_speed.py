@@ -524,17 +524,10 @@ def is_compile_failure(exc: BaseException) -> bool:
         return False
     from .diffusion_batched import is_oom_error
 
-    seen = set()
-    cur: Optional[BaseException] = exc
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        # The batch backoff's own classifier (class name or "out of memory" message), plus backend-specific
-        # subclasses such as OutOfMemoryError_: anywhere in the chain means the OOM path must see it.
-        if is_oom_error(cur) or any(
-            k.__name__.startswith("OutOfMemory") for k in type(cur).__mro__
-        ):
-            return False
-        cur = cur.__cause__ or cur.__context__
+    # The batch backoff's own classifier walks the whole cause chain, so an OOM anywhere in it goes to the backoff
+    # (which recognises the same outer exception) instead of the eager retry.
+    if is_oom_error(exc):
+        return False
     kinds: list = []
     dynamo_exc = getattr(getattr(torch, "_dynamo", None), "exc", None)
     for name in (
